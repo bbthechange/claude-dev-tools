@@ -1,0 +1,5 @@
+{
+  "name": "project-scaffolder",
+  "version": "1.0.0",
+  "description": "Initialize new projects with Claude Code configuration, skills, agents, and best practices"
+}

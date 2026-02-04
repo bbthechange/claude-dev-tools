@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "brian-claude-tools",
+  "version": "1.0.0",
+  "description": "Personal Claude Code plugins for project initialization and development workflows",
+  "owner": {
+    "name": "Brian Butler",
+    "email": "bbthechange@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "project-scaffolder",
+      "description": "Initialize new projects with Claude Code configuration, skills, agents, and best practices",
+      "version": "1.0.0",
+      "source": "./project-scaffolder",
+      "category": "development"
+    }
+  ]
+}

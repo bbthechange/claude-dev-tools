@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(rm:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(open:*)",
+      "WebSearch",
+      "Bash(./gradlew:*)",
+      "Bash(adb:*)",
+      "Bash(adb shell:*)",
+      "Bash(adb install:*)",
+      "Bash(adb logcat:*)",
+      "Skill(code-reviewer)"
+    ]
+  }
+}

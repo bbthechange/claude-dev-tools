@@ -1,0 +1,63 @@
+# {{PROJECT_NAME}}
+
+{{PROJECT_DESCRIPTION}}
+
+## Architecture
+
+This project follows the patterns defined in `context/{{ARCHITECTURE_GUIDE}}`. Read this document before making changes.
+
+## Context Directory
+
+The `context/` directory contains documentation that helps Claude understand specific parts of the codebase:
+
+{{#if iOS}}
+- **{{ARCHITECTURE_GUIDE}}** - Core architecture patterns (MVVM, state management, logging)
+- **Page-specific docs** - Each major screen/feature should have its own context doc describing:
+  - What the page does
+  - Key ViewModels and their responsibilities
+  - Navigation flows
+  - API endpoints used
+  - Any special patterns or gotchas
+{{/if}}
+
+{{#if Android}}
+- **{{ARCHITECTURE_GUIDE}}** - Core architecture patterns (MVI, state management, logging)
+- **Page-specific docs** - Each major screen/feature should have its own context doc describing:
+  - What the page does
+  - Key ViewModels and their state/intent/effect contracts
+  - Navigation flows
+  - API endpoints used
+  - Any special patterns or gotchas
+{{/if}}
+
+{{#if Backend}}
+- **API group docs** - Each group of related endpoints should have a context doc describing:
+  - What the endpoints do
+  - Request/response formats
+  - Authentication requirements
+  - Error handling patterns
+  - Database interactions
+{{/if}}
+
+When adding new features, create or update the relevant context doc so Claude can understand and work with that code effectively.
+
+## Skills Available
+
+{{#if iOS}}
+- `/preview` - Build and view the app in the simulator
+- `/code-reviewer` - Review uncommitted changes
+- `/write-tests` - Write unit tests for ViewModels
+{{/if}}
+
+{{#if Android}}
+- `/code-reviewer` - Review uncommitted changes
+{{/if}}
+
+{{#if Backend}}
+- `/code-reviewer` - Review uncommitted changes
+{{/if}}
+
+## Agents Available
+
+- `code-reviewer` - Detailed code review for architecture compliance
+- `privacy-reviewer` - Check for unintentional data collection/sharing

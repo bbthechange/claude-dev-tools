@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(rm:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(open:*)",
+      "WebSearch",
+      "Bash(xcodebuild:*)",
+      "Bash(xcrun simctl:*)",
+      "Bash(xcrun simctl install:*)",
+      "Bash(xcrun simctl launch:*)",
+      "Bash(xcrun simctl boot:*)",
+      "Bash(xcrun simctl list:*)",
+      "Bash(xcrun simctl io:*)",
+      "Bash(xcrun simctl openurl:*)",
+      "Bash(swift:*)",
+      "Bash(swift test:*)",
+      "Bash(axe tap:*)",
+      "Bash(axe describe-ui:*)",
+      "Bash(axe swipe:*)",
+      "Skill(preview)",
+      "Skill(code-reviewer)",
+      "Skill(write-tests)"
+    ]
+  }
+}
