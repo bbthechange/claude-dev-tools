@@ -1,6 +1,12 @@
 # Detailed Setup Steps
 
-Complete step-by-step instructions for project initialization.
+Complete step-by-step instructions for Claude Code configuration. For new iOS projects, `references/ios-project-setup.md` runs first to create the Xcode project, then these steps add Claude Code configuration on top.
+
+## Step 0: Create Project (if needed)
+
+**iOS only**: If no existing project is detected (no `project.yml`, `*.xcodeproj`, or `*.swift` source files), follow `references/ios-project-setup.md` to create the full XcodeGen project first. That guide handles directory structure, source files, `project.yml`, linting config, `.gitignore`, build verification, and an initial git commit.
+
+After project creation, continue with the steps below. Steps 1-2 will be skipped since git and gitignore already exist from the project setup.
 
 ## Step 1: Initialize Git
 
@@ -111,6 +117,8 @@ Include appropriate sections based on project type (remove iOS-specific sections
 
 ### CLAUDE.md Content Structure
 
+The template file at `${CLAUDE_PLUGIN_ROOT}/templates/CLAUDE.md.template` is the source of truth. The structure below is illustrative:
+
 ```markdown
 # {{PROJECT_NAME}}
 
@@ -140,7 +148,9 @@ The `context/` directory contains documentation that helps Claude understand spe
 
 ### App Store Encryption Exemption
 
-Check if using XcodeGen:
+**Note**: If the project was just created via `references/ios-project-setup.md`, the encryption exemption is already included in `project.yml` under `settings.base.INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO`. Skip this step in that case.
+
+For existing projects, check if using XcodeGen:
 
 ```bash
 ls project.yml 2>/dev/null
@@ -181,6 +191,12 @@ After completing all steps, print a summary:
 Project initialized successfully!
 
 Created:
+[iOS new project only:]
+- project.yml (XcodeGen spec)
+- {{PROJECT_NAME}}/ (source directories)
+- {{PROJECT_NAME}}Tests/ (test directory)
+- Mintfile, .swiftlint.yml, .swiftformat (linting)
+[All projects:]
 - .git/ (initialized)
 - .gitignore ({type} template)
 - .claude/settings.json (with sensible defaults)
