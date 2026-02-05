@@ -30,6 +30,8 @@
       "Bash(axe tap:*)",
       "Bash(axe describe-ui:*)",
       "Bash(axe swipe:*)",
+      "Bash(axe type:*)",
+      "Bash(./scripts/sim.sh:*)",
       "Skill(preview)",
       "Skill(code-reviewer)",
       "Skill(write-tests)"

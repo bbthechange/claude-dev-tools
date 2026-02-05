@@ -34,6 +34,12 @@ brew list xcodegen &>/dev/null || brew install xcodegen
 
 # Mint — pins CLI tool versions (for SwiftLint, SwiftFormat)
 brew list mint &>/dev/null || brew install mint
+
+# xcsift — filters xcodebuild output for readability
+brew list xcsift &>/dev/null || (brew tap ldomaradzki/xcsift && brew install xcsift)
+
+# axe — accessibility automation for simulators
+brew list axe &>/dev/null || brew install cameroncooke/axe/axe
 ```
 
 ---
@@ -60,6 +66,12 @@ mkdir -p {{PROJECT_NAME}}/Resources/Assets.xcassets/AccentColor.colorset
 
 # Test directory
 mkdir -p {{PROJECT_NAME}}Tests
+
+# Scripts directory (for sim.sh)
+mkdir -p scripts
+
+# Temp directory for screenshots (gitignored)
+mkdir -p tmp
 ```
 
 ### Step 2: Create starter source files
@@ -78,15 +90,46 @@ struct {{PROJECT_NAME}}App: App {
 }
 ```
 
-**Root view** — `{{PROJECT_NAME}}/App/ContentView.swift`:
+**Root view with deep link support** — `{{PROJECT_NAME}}/App/ContentView.swift`:
 ```swift
 import SwiftUI
 
 struct ContentView: View {
+    @State private var showSettings = false
+
     var body: some View {
         NavigationStack {
             Text("Hello, World!")
                 .navigationTitle("{{PROJECT_NAME}}")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showSettings = true } label: {
+                            Image(systemName: "gearshape")
+                        }
+                        .accessibilityLabel("Settings")
+                    }
+                }
+        }
+        .sheet(isPresented: $showSettings) {
+            Text("Settings")
+        }
+        .onOpenURL { url in
+            handleDeepLink(url)
+        }
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        guard let route = DeepLinkRoute(url: url) else { return }
+        // Dismiss any sheets first
+        showSettings = false
+        switch route {
+        case .home:
+            break // Already on home
+        // Add cases as screens are built:
+        // case .settings:
+        //     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        //         showSettings = true
+        //     }
         }
     }
 }
@@ -95,6 +138,16 @@ struct ContentView: View {
     ContentView()
 }
 ```
+
+**Deep link handler** — `{{PROJECT_NAME}}/App/DeepLinkHandler.swift`:
+
+Copy from plugin template and replace placeholders:
+```bash
+cp ${CLAUDE_PLUGIN_ROOT}/templates/deeplink/DeepLinkHandler.swift {{PROJECT_NAME}}/App/
+# Replace {{PROJECT_NAME_LOWERCASE}} with actual value in the file
+```
+
+The file defines a `DeepLinkRoute` enum that parses URLs like `{{PROJECT_NAME_LOWERCASE}}://home`. Add routes as screens are built.
 
 **Test file** — `{{PROJECT_NAME}}Tests/{{PROJECT_NAME}}Tests.swift`:
 ```swift
@@ -154,9 +207,23 @@ struct {{PROJECT_NAME}}Tests {
 }
 ```
 
+### Step 3.5: Create Info.plist
+
+Create a minimal Info.plist with encryption export compliance and URL scheme for deep links:
+
+Copy from plugin template and replace placeholders:
+```bash
+cp ${CLAUDE_PLUGIN_ROOT}/templates/info-plist/ios-Info.plist {{PROJECT_NAME}}/Info.plist
+# Replace {{PROJECT_NAME_LOWERCASE}} with actual value in the file
+```
+
+This sets:
+- `ITSAppUsesNonExemptEncryption: NO` — declares app uses no custom encryption (HTTPS/TLS is exempt)
+- `CFBundleURLTypes` — registers `{{PROJECT_NAME_LOWERCASE}}://` URL scheme for deep links
+
 ### Step 4: Create `project.yml`
 
-XcodeGen spec defining the Xcode project. Note: `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` declares the app uses no custom encryption (HTTPS/TLS is exempt). Only change to YES if using proprietary or non-standard encryption.
+XcodeGen spec defining the Xcode project. The `info.path` tells XcodeGen to use the custom Info.plist (merged with generated INFOPLIST_KEY settings at build time).
 
 Use the lowercased project name for the bundle identifier suffix (e.g., `MyApp` → `com.yourcompany.myapp`).
 
@@ -176,7 +243,6 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
-    INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
 
 targets:
   {{PROJECT_NAME}}:
@@ -186,13 +252,16 @@ targets:
       - path: {{PROJECT_NAME}}
     resources:
       - path: {{PROJECT_NAME}}/Resources
+    info:
+      path: {{PROJECT_NAME}}/Info.plist
+      properties:
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations: {}
+        UILaunchScreen: {}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: {{BUNDLE_PREFIX}}.{{project_name_lowercased}}
-        INFOPLIST_GENERATION_MODE: GeneratedFile
-        GENERATE_INFOPLIST_FILE: true
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
-        INFOPLIST_KEY_UILaunchScreen_Generation: true
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
     scheme:
@@ -279,12 +348,29 @@ excluded:
 --maxwidth 120
 ```
 
-### Step 6: Create `.gitignore`
+### Step 6: Create `.gitignore` and copy scripts
 
 Copy the XcodeGen-aware gitignore from the plugin template:
 
 ```bash
 cp ${CLAUDE_PLUGIN_ROOT}/templates/gitignore/ios.gitignore .gitignore
+```
+
+Copy the simulator helper script:
+
+```bash
+cp ${CLAUDE_PLUGIN_ROOT}/templates/scripts/ios/sim.sh scripts/sim.sh
+chmod +x scripts/sim.sh
+# Replace placeholders in sim.sh:
+# {{PROJECT_NAME}}, {{BUNDLE_PREFIX}}, {{PROJECT_NAME_LOWERCASE}}
+```
+
+Add `tmp/` to gitignore (for screenshots):
+
+```bash
+echo "" >> .gitignore
+echo "# Preview screenshots" >> .gitignore
+echo "tmp/" >> .gitignore
 ```
 
 ### Step 7: Generate the Xcode project and verify

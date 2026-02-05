@@ -7,123 +7,110 @@ description: This skill should be used when the user asks to "preview UI changes
 
 Build, navigate, and screenshot the iOS app for visual verification of UI changes.
 
-## Setup (First Time)
+## CRITICAL: Chaining Rule
 
-### 1. Find Your Simulator UDID
-
-```bash
-xcrun simctl list devices available | grep "iPhone" | head -10
-```
-
-Pick one and note the UDID in parentheses, e.g., `(A1B2C3D4-E5F6-...)`.
-
-### 2. Install Required Tools
+**ALWAYS chain sim.sh commands in ONE Bash call.** Using `&&` or multiple Bash calls triggers approval prompts and breaks autonomous iteration.
 
 ```bash
-brew tap ldomaradzki/xcsift && brew install xcsift
-brew install cameroncooke/axe/axe
+# CORRECT — single call, no approval prompts:
+./scripts/sim.sh build go home tap "Settings" wait 1 screenshot
+
+# WRONG — triggers approval for each command:
+./scripts/sim.sh build && ./scripts/sim.sh go home && ./scripts/sim.sh screenshot
 ```
 
-## Quick Reference
+## Iterate-Fix Cycle
 
-| Task | Command |
-|------|---------|
-| Build | `xcodebuild -project {{PROJECT_NAME}}.xcodeproj -scheme {{PROJECT_NAME}} -destination "platform=iOS Simulator,id={{UDID}}" build 2>&1 \| xcsift` |
-| Find DerivedData | `ls ~/Library/Developer/Xcode/DerivedData/ \| grep {{PROJECT_NAME}}` |
-| Install | `xcrun simctl install {{UDID}} ~/Library/Developer/Xcode/DerivedData/{{PROJECT_NAME}}-{{HASH}}/Build/Products/Debug-iphonesimulator/{{PROJECT_NAME}}.app` |
-| Boot simulator | `xcrun simctl boot {{UDID}}` |
-| Screenshot | `xcrun simctl io {{UDID}} screenshot /tmp/preview.png` |
-| View | Read tool on `/tmp/preview.png` |
-| Get UI tree | `axe describe-ui --udid {{UDID}}` |
-| Tap coordinates | `axe tap -x X -y Y --udid {{UDID}}` |
-| Tap label | `axe tap --label "Label" --udid {{UDID}}` |
-| Swipe up | `axe swipe --start-x 200 --start-y 600 --end-x 200 --end-y 300 --udid {{UDID}}` |
+Every iteration = exactly 2 tool calls:
+1. **Bash**: `./scripts/sim.sh [commands] screenshot`
+2. **Read**: `tmp/preview.png`
 
-**Replace `{{UDID}}` with your simulator's actual UDID.**
+Analyze screenshot → make code changes → repeat.
 
-## Workflow
+## Commands
 
-### Step 1: Build (only when code changed)
+| Command | Description |
+|---------|-------------|
+| `build` | Build + install + launch (use after code changes) |
+| `install` | Install + launch (skip build, use for quick test) |
+| `go <screen>` | Navigate via deep link |
+| `screenshot` / `snap` | Save to `tmp/preview.png` |
+| `tap <label>` | Tap by accessibility label |
+| `tap-xy <x> <y>` | Tap at coordinates |
+| `labels` | List all accessibility labels on screen |
+| `ui` | Full accessibility tree (JSON) |
+| `type <text>` | Type into focused field |
+| `swipe <dir>` | Swipe up/down/left/right |
+| `wait <secs>` | Pause for animations |
+| `reset` | Uninstall + reinstall + launch fresh |
+
+## Navigation Targets
+
+Deep link routes defined in `App/DeepLinkHandler.swift`. Default route: `home`
+
+Add routes as screens are built. Update both `DeepLinkHandler.swift` and the sim.sh header.
+
+## Examples
 
 ```bash
-xcodebuild -project {{PROJECT_NAME}}.xcodeproj -scheme {{PROJECT_NAME}} -destination "platform=iOS Simulator,id={{UDID}}" build 2>&1 | xcsift
+# Build and verify home screen
+./scripts/sim.sh build screenshot
+
+# Navigate to settings and screenshot
+./scripts/sim.sh go home tap "Settings" wait 0.5 screenshot
+
+# Scroll down and screenshot
+./scripts/sim.sh swipe up wait 0.3 screenshot
+
+# Type in search field
+./scripts/sim.sh tap "Search" type "query" screenshot
 ```
 
-### Step 2: Install (get fresh DerivedData path first)
+## Finding Elements
 
+### List Labels (Quick)
 ```bash
-ls ~/Library/Developer/Xcode/DerivedData/ | grep {{PROJECT_NAME}}
-# Use output to construct path:
-xcrun simctl install {{UDID}} ~/Library/Developer/Xcode/DerivedData/{{PROJECT_NAME}}-{{HASH}}/Build/Products/Debug-iphonesimulator/{{PROJECT_NAME}}.app
+./scripts/sim.sh labels
 ```
 
-### Step 3: Navigate Using Accessibility Tree
-
+### Full UI Tree (Detailed)
 ```bash
-# Get all UI elements
-axe describe-ui --udid {{UDID}}
-
-# Get just labels
-axe describe-ui --udid {{UDID}} 2>&1 | grep -E "AXLabel" | head -20
+./scripts/sim.sh ui
 ```
 
-### Step 4: Screenshot and View
+### When Label Tap Fails
 
-```bash
-xcrun simctl io {{UDID}} screenshot /tmp/preview.png
-```
+If `tap <label>` doesn't work:
+1. Check exact label with `labels` command
+2. Watch for special characters (curly quotes, em-dashes)
+3. Fall back to coordinates: get frame from `ui` output, calculate center, use `tap-xy`
 
-Then use Read tool on `/tmp/preview.png`.
+## Key Labels
 
-## Finding and Tapping Elements
+Document important accessibility labels as screens are built:
 
-### By Label (when accessible)
+| Screen | Key Labels |
+|--------|------------|
+| Home | (add as built) |
+| Settings | (add as built) |
 
-```bash
-axe tap --label "Settings" --udid {{UDID}}
-axe tap --label "Back" --udid {{UDID}}
-```
+**Important**: Always add `.accessibilityLabel("Label")` to toolbar buttons. Without it, SwiftUI exposes the SF Symbol name which is hard to tap reliably.
 
-### By Coordinates (when label fails)
-
-Get frame from accessibility tree:
-```bash
-axe describe-ui --udid {{UDID}} 2>&1 | grep "TargetText" -B 5
-```
-
-From frame `{"x": 16, "y": 243, "width": 267, "height": 100}`:
-- Center X = 16 + 267/2 = 149.5
-- Center Y = 243 + 100/2 = 293
-
-```bash
-axe tap -x 150 -y 293 --udid {{UDID}}
-```
-
-### Scrolling
-
-```bash
-# Scroll down
-axe swipe --start-x 200 --start-y 600 --end-x 200 --end-y 300 --udid {{UDID}}
-
-# Scroll up
-axe swipe --start-x 200 --start-y 300 --end-x 200 --end-y 600 --udid {{UDID}}
-```
-
-## Known Issues
+## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| Special chars in labels (curly apostrophes) | Use coordinates instead of `--label` |
-| Nav bar buttons missing from accessibility | Use coordinates |
-| `$(find ...)` subshells fail | Run commands separately |
-| Simulator not booted | `xcrun simctl boot {{UDID}}` |
-| Label tap fails silently | Check `axe describe-ui` output, use coordinates |
+| "No simulator found" | Check `xcrun simctl list devices available` |
+| "No DerivedData found" | Run `build` first |
+| Label tap fails silently | Use `labels` to check exact text, or use `tap-xy` |
+| First deep link shows dialog | `reset` auto-accepts it; or manually tap "Open" |
+| Build fails | Check xcodebuild output, fix Swift errors |
 
 ## Validation Checklist
 
 After taking screenshot, verify:
 
-1. **Correct screen** - Navigation arrived at intended destination
-2. **No clipping** - All content fully visible
-3. **Layout correct** - Elements positioned as expected
-4. **Edge cases** - Consider different content lengths
+1. **Correct screen** — Navigation arrived at intended destination
+2. **No clipping** — All content fully visible
+3. **Layout correct** — Elements positioned as expected
+4. **Edge cases** — Consider different content lengths

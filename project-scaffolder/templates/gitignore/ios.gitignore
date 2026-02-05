@@ -24,3 +24,6 @@ GoogleService-Info.plist
 .env
 .env.*
 !.env.example
+
+# Preview screenshots
+tmp/

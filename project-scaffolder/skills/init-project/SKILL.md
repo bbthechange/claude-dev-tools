@@ -70,6 +70,9 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 | Skills | `skills/{shared,ios}/` |
 | Architecture | `architecture/{IOS,ANDROID}_APP_ARCHITECTURE_GUIDE.md` |
 | CLAUDE.md | `CLAUDE.md.template` |
+| iOS scripts | `scripts/ios/sim.sh` |
+| iOS deep links | `deeplink/DeepLinkHandler.swift` |
+| iOS Info.plist | `info-plist/ios-Info.plist` |
 
 ## Platform-Specific Notes
 
