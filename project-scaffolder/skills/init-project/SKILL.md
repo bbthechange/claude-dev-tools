@@ -10,7 +10,7 @@ Set up a project with Claude Code configuration, skills, agents, and best practi
 ## Overview
 
 Initialize projects with:
-- New project creation (iOS XcodeGen setup, with Android/Backend coming later)
+- New project creation (iOS XcodeGen, Android Gradle/Compose)
 - Git repository and appropriate `.gitignore`
 - `.claude/` directory with settings, agents, and skills
 - `context/` directory for project documentation
@@ -48,6 +48,8 @@ For iOS, also check if a project already exists (`project.yml`, `*.xcodeproj`, `
 
 **For new iOS projects** (no existing source files, project.yml, or .xcodeproj): First follow `references/ios-project-setup.md` to create the Xcode project, verify it builds, and make an initial git commit.
 
+**For new Android projects** (no existing build.gradle.kts, settings.gradle.kts, or Kotlin source files): First follow `references/android-project-setup.md` to create the Gradle project, verify it builds, and make an initial git commit.
+
 Then follow `references/setup-steps.md` for Claude Code configuration:
 - Git initialization (skipped if already done by project setup)
 - Copying templates from `${CLAUDE_PLUGIN_ROOT}/templates/`
@@ -73,6 +75,7 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 | iOS scripts | `scripts/ios/sim.sh` |
 | iOS deep links | `deeplink/DeepLinkHandler.swift` |
 | iOS Info.plist | `info-plist/ios-Info.plist` |
+| Android scripts | `scripts/android/emu.sh` |
 
 ## Platform-Specific Notes
 
@@ -85,8 +88,10 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 
 ### Android
 
+- **New projects**: Follow `references/android-project-setup.md` for full Gradle/Compose project creation
 - Copy architecture guide to `context/`
-- No additional skills beyond shared ones currently
+- Copy emu.sh script to `scripts/`
+- Replace `{{PROJECT_NAME}}`, `{{PACKAGE_NAME}}`, `{{PROJECT_NAME_LOWERCASE}}` placeholders
 
 ### Backend
 
@@ -99,3 +104,4 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 
 - **`references/setup-steps.md`** - Detailed step-by-step Claude Code setup instructions
 - **`references/ios-project-setup.md`** - iOS XcodeGen project creation from scratch (stack, prerequisites, project.yml, linting, verification)
+- **`references/android-project-setup.md`** - Android Gradle/Compose project creation from scratch (stack, prerequisites, build.gradle.kts, Hilt, deep links, verification)

@@ -35,3 +35,6 @@ secrets.properties
 # Test outputs
 /captures
 .externalNativeBuild
+
+# Preview screenshots
+tmp/

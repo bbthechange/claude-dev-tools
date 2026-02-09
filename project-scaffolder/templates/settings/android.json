@@ -22,6 +22,7 @@
       "Bash(adb shell:*)",
       "Bash(adb install:*)",
       "Bash(adb logcat:*)",
+      "Bash(./scripts/emu.sh:*)",
       "Skill(code-reviewer)"
     ]
   }

@@ -4,7 +4,9 @@ Complete step-by-step instructions for Claude Code configuration. For new iOS pr
 
 ## Step 0: Create Project (if needed)
 
-**iOS only**: If no existing project is detected (no `project.yml`, `*.xcodeproj`, or `*.swift` source files), follow `references/ios-project-setup.md` to create the full XcodeGen project first. That guide handles directory structure, source files, `project.yml`, linting config, `.gitignore`, build verification, and an initial git commit.
+**iOS**: If no existing project is detected (no `project.yml`, `*.xcodeproj`, or `*.swift` source files), follow `references/ios-project-setup.md` to create the full XcodeGen project first. That guide handles directory structure, source files, `project.yml`, linting config, `.gitignore`, build verification, and an initial git commit.
+
+**Android**: If no existing project is detected (no `build.gradle.kts`, `settings.gradle.kts`, or `*.kt` source files), follow `references/android-project-setup.md` to create the full Gradle/Compose project first. That guide handles directory structure, source files, `build.gradle.kts`, `libs.versions.toml`, Hilt setup, deep links, linting config, `.gitignore`, build verification, and an initial git commit.
 
 After project creation, continue with the steps below. Steps 1-2 will be skipped since git and gitignore already exist from the project setup.
 
