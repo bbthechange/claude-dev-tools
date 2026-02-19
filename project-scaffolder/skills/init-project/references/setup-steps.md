@@ -185,7 +185,30 @@ Option 2 - Info.plist:
 
 This declares the app uses no custom encryption (HTTPS/TLS is exempt). Only set to YES if using proprietary or non-standard encryption algorithms.
 
-## Step 7: Summary Output
+## Step 7: Beads Task Runner Config
+
+If [beads](https://github.com/anthropics/beads) is used for task tracking (or likely to be), set up the task runner config so `run-beads-tasks` works out of the box.
+
+```bash
+mkdir -p .beads
+```
+
+Copy the appropriate template:
+
+```bash
+# iOS
+cp ${CLAUDE_PLUGIN_ROOT}/templates/beads-runner/ios.sh .beads/runner.sh
+
+# Android
+cp ${CLAUDE_PLUGIN_ROOT}/templates/beads-runner/android.sh .beads/runner.sh
+
+# Backend
+cp ${CLAUDE_PLUGIN_ROOT}/templates/beads-runner/backend.sh .beads/runner.sh
+```
+
+This config file is sourced by `run-beads-tasks` (from [claude-tools](https://github.com/anthropics/claude-tools)) to set platform-appropriate permissions, claude flags, and setup hooks. Without it, the runner uses minimal defaults (git + bd only).
+
+## Step 8: Summary Output
 
 After completing all steps, print a summary:
 
@@ -211,6 +234,8 @@ Created:
 [iOS/Android only:]
 - context/{ARCHITECTURE_GUIDE}
 - CLAUDE.md
+[All projects:]
+- .beads/runner.sh (task runner config)
 
 Next steps:
 1. Review CLAUDE.md and customize for your project

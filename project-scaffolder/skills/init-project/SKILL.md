@@ -76,6 +76,7 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 | iOS deep links | `deeplink/DeepLinkHandler.swift` |
 | iOS Info.plist | `info-plist/ios-Info.plist` |
 | Android scripts | `scripts/android/emu.sh` |
+| Beads runner | `beads-runner/{ios,android,backend}.sh` |
 
 ## Platform-Specific Notes
 

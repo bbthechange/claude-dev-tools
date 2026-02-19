@@ -2,6 +2,34 @@
 
 A collection of plugins and tools for [Claude Code](https://claude.ai/claude-code), Anthropic's AI-powered CLI for software development.
 
+## Tools
+
+### beads-runner
+
+Process [beads](https://github.com/anthropics/beads) tasks sequentially, each in a fresh Claude Code session with clean 200k context.
+
+**Features**:
+- Fresh session per task (no autocompact drift)
+- Per-task retry + systemic failure abort (stops on quota exhaustion)
+- Stream parser with timestamped progress output
+- Watchdog kills stuck sessions after 10 min idle
+- Graceful stop: `touch .stop-beads` to finish current task then exit
+- Model selection via beads labels (`bd label add <id> model:sonnet`)
+
+**Per-project config**: Place a `.beads/runner.sh` in your project root to customize permissions, claude flags, prompt additions, and setup/teardown hooks. See `beads-runner/examples/` for iOS and Android configs.
+
+**Usage**:
+```bash
+# From your project directory:
+run-beads-tasks            # scoped permissions (default)
+run-beads-tasks --yolo     # skip all permission prompts
+```
+
+**Installation**:
+```bash
+ln -s ~/code/claude-tools/beads-runner/run-beads-tasks.sh /usr/local/bin/run-beads-tasks
+```
+
 ## Plugins
 
 ### project-scaffolder
@@ -56,6 +84,11 @@ The command will guide you through setup, detecting what exists and asking befor
 ```
 claude-tools/
 ├── README.md
+├── beads-runner/
+│   ├── run-beads-tasks.sh
+│   └── examples/
+│       ├── ios.sh
+│       └── android.sh
 └── project-scaffolder/
     ├── plugin.json
     ├── commands/
