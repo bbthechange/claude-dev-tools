@@ -27,6 +27,9 @@ PROMPT_EXTRA=""
 MAX_RETRIES=2
 MAX_CONSECUTIVE_FAILURES=3
 DEFAULT_MODEL=opus
+USAGE_THRESHOLD=70       # pause new tasks above this % (0 = disabled)
+USAGE_SLEEP_SECONDS=1800 # sleep duration when over threshold (30 min)
+USAGE_CACHE_SECONDS=300  # cache usage API response (avoid hammering per-loop)
 
 # Hook functions — override in .beads/runner.sh if needed
 runner_setup()   { :; }  # called once at script start
@@ -53,6 +56,9 @@ STOP_FILE=".stop-beads"
 rm -f "$STOP_FILE"
 
 echo "Running: $MODE_LABEL"
+if [[ "$USAGE_THRESHOLD" -gt 0 ]]; then
+  echo "Usage limit: pause at ${USAGE_THRESHOLD}%, retry every $((USAGE_SLEEP_SECONDS / 60))min"
+fi
 echo "Graceful stop: touch $STOP_FILE"
 echo ""
 
@@ -83,10 +89,84 @@ cleanup() {
     bd update "$CURRENT_TASK_ID" --status=open 2>/dev/null || true
   fi
   runner_cleanup
+  rm -f "$USAGE_CACHE_FILE"
   echo "Results: $COMPLETED completed, $FAILED failed"
   exit 1
 }
 trap cleanup INT TERM
+
+# ── Usage check ──────────────────────────────────────────────────────────────
+
+USAGE_CACHE_FILE=""
+USAGE_CACHE_TIME=0
+
+# Check Claude usage via API. Returns 0 (ok to proceed) or 1 (over threshold).
+# Caches result to avoid hitting the API every loop iteration.
+check_usage() {
+  if [[ "$USAGE_THRESHOLD" -eq 0 ]]; then
+    return 0  # disabled
+  fi
+
+  local now
+  now=$(date +%s)
+  local age=$((now - USAGE_CACHE_TIME))
+
+  # Use cached result if fresh enough
+  if [[ -n "$USAGE_CACHE_FILE" ]] && [[ -f "$USAGE_CACHE_FILE" ]] && [[ $age -lt $USAGE_CACHE_SECONDS ]]; then
+    local cached
+    cached=$(cat "$USAGE_CACHE_FILE")
+    if [[ "$cached" == "over" ]]; then return 1; else return 0; fi
+  fi
+
+  # Extract OAuth token from macOS Keychain
+  local creds token usage_json
+  creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || {
+    echo "  (Could not read credentials for usage check — skipping)" >&2
+    return 0
+  }
+  token=$(echo "$creds" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+  if [[ -z "$token" ]]; then
+    echo "  (No OAuth token found — skipping usage check)" >&2
+    return 0
+  fi
+
+  # Call usage API
+  usage_json=$(curl -s -f -X GET "https://api.anthropic.com/api/oauth/usage" \
+    -H "Accept: application/json" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $token" \
+    -H "anthropic-beta: oauth-2025-04-20" \
+    2>/dev/null) || {
+    echo "  (Usage API call failed — skipping check)" >&2
+    return 0
+  }
+
+  # Parse utilization from both windows
+  local five_hour seven_day
+  five_hour=$(echo "$usage_json" | jq -r '.five_hour.utilization // 0' 2>/dev/null)
+  seven_day=$(echo "$usage_json" | jq -r '.seven_day.utilization // 0' 2>/dev/null)
+
+  # Cache the result
+  if [[ -z "$USAGE_CACHE_FILE" ]]; then
+    USAGE_CACHE_FILE=$(mktemp) || return 0
+  fi
+  USAGE_CACHE_TIME=$now
+
+  # Check if either window exceeds threshold (compare as integers)
+  local five_int seven_int
+  five_int=${five_hour%.*}
+  seven_int=${seven_day%.*}
+
+  if [[ ${five_int:-0} -ge $USAGE_THRESHOLD ]] || [[ ${seven_int:-0} -ge $USAGE_THRESHOLD ]]; then
+    echo "over" > "$USAGE_CACHE_FILE"
+    echo "  Usage: 5h=${five_hour}% 7d=${seven_day}% (threshold: ${USAGE_THRESHOLD}%)"
+    return 1
+  fi
+
+  echo "ok" > "$USAGE_CACHE_FILE"
+  echo "  Usage: 5h=${five_hour}% 7d=${seven_day}%"
+  return 0
+}
 
 # ── Task selection ───────────────────────────────────────────────────────────
 
@@ -114,6 +194,23 @@ while true; do
     rm -f "$STOP_FILE"
     break
   fi
+
+  # Check usage quota before starting a new task
+  while ! check_usage; do
+    echo "  Above ${USAGE_THRESHOLD}% usage — sleeping $((USAGE_SLEEP_SECONDS / 60))min before rechecking..."
+    USAGE_CACHE_TIME=0  # force fresh API call after sleep
+    # Sleep in 60s chunks so stop file is detected promptly
+    slept=0
+    while [[ $slept -lt $USAGE_SLEEP_SECONDS ]]; do
+      if [[ -f "$STOP_FILE" ]]; then
+        echo "Stop file detected ($STOP_FILE) — stopping."
+        rm -f "$STOP_FILE"
+        break 3  # break out of: chunk loop, usage loop, main loop
+      fi
+      sleep 60
+      slept=$((slept + 60))
+    done
+  done
 
   TASK_JSON=$(next_task)
   TASK_ID=$(echo "$TASK_JSON" | jq -r '.[0].id // empty')
@@ -276,6 +373,7 @@ $PROMPT_EXTRA"
       echo ""
       echo "  $MAX_CONSECUTIVE_FAILURES consecutive failures — likely usage quota exhausted or systemic error."
       echo "  Stopping to avoid closing healthy tasks as skipped."
+      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
       exit 2
     fi
@@ -287,5 +385,6 @@ $PROMPT_EXTRA"
   echo ""
 done
 
+rm -f "$USAGE_CACHE_FILE"
 echo "Results: $COMPLETED completed, $FAILED failed"
 echo "Run 'bd stats' or 'git log --oneline' to review."
