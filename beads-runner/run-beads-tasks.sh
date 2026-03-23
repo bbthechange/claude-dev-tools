@@ -82,6 +82,7 @@ CLAUDE_PID=""
 LAST_FAILED_ID=""
 FAIL_COUNT=0
 CONSECUTIVE_FAILURES=0
+SIGNAL_FILE=""
 
 # ── Setup hook ───────────────────────────────────────────────────────────────
 
@@ -100,7 +101,7 @@ cleanup() {
     bd update "$CURRENT_TASK_ID" --status=open 2>/dev/null || true
   fi
   runner_cleanup
-  rm -f "$USAGE_CACHE_FILE"
+  rm -f "$USAGE_CACHE_FILE" "${SIGNAL_FILE:-}"
   echo "Results: $COMPLETED completed, $FAILED failed"
   exit 1
 }
@@ -195,6 +196,135 @@ next_task() {
   bd ready --json 2>/dev/null || echo "[]"
 }
 
+# Check if a task is actually workable (deps resolved, not a parent container)
+# Returns 0 if ok, 1 if should skip
+validate_task() {
+  local task_id="$1"
+
+  # Check for unresolved dependencies (may have been added after bd ready ran)
+  local blocked_ids
+  blocked_ids=$(bd blocked --json 2>/dev/null | jq -r '.[].id // empty' 2>/dev/null || true)
+  if echo "$blocked_ids" | grep -qxF "$task_id" 2>/dev/null; then
+    echo "  Skipping: has unresolved dependencies (added after task was queued)"
+    return 1
+  fi
+
+  # Check if this is a parent/container task with children
+  local children
+  children=$(bd show "$task_id" --children --json 2>/dev/null || echo "[]")
+  local child_count
+  child_count=$(echo "$children" | jq 'length' 2>/dev/null || echo "0")
+  if [[ "${child_count:-0}" -gt 0 ]]; then
+    # Check if all children are closed — if so, auto-close the parent
+    local open_children
+    open_children=$(echo "$children" | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || echo "0")
+    if [[ "${open_children:-0}" -eq 0 ]]; then
+      echo "  Auto-closing parent task: all $child_count children completed"
+      bd close "$task_id" --reason="All children completed" 2>/dev/null || true
+    else
+      echo "  Skipping parent task: $open_children of $child_count children still open"
+    fi
+    return 1
+  fi
+
+  return 0
+}
+
+# ── Failure classification ───────────────────────────────────────────────────
+
+# Read signal file and classify the failure.
+# Args: $1 = signal file, $2 = task ID, $3 = exit code
+# Prints classification to stdout.
+classify_failure() {
+  local signal_file="$1" task_id="$2" exit_code="$3"
+
+  # Exit 0: check if task was actually completed in beads
+  if [[ "$exit_code" -eq 0 ]]; then
+    local task_status
+    task_status=$(bd show "$task_id" --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
+    if [[ "$task_status" == "closed" || -z "$task_status" ]]; then
+      # Closed = success. Empty = bd show failed, default to success (fail-open).
+      [[ -z "$task_status" ]] && echo "  (Could not verify task status — assuming success)" >&2
+      echo "SUCCESS"
+    else
+      echo "TASK_NOT_CLOSED"
+    fi
+    return
+  fi
+
+  # Non-zero exit: check signal file for specific error types.
+  # Order matters: terminal conditions first, then transient ones.
+  # A session may accumulate multiple signals (e.g., transient rate_limit then
+  # terminal max_output_tokens), so check the more decisive signals first.
+  if [[ -f "$signal_file" ]]; then
+    grep -q '^AUTH_FAILURE=' "$signal_file" 2>/dev/null && { echo "AUTH_FAILURE"; return; }
+    grep -q '^BILLING_ERROR=' "$signal_file" 2>/dev/null && { echo "BILLING_ERROR"; return; }
+    # max_output_tokens can arrive as an api_retry error OR as a result stop_reason
+    grep -q '^MAX_OUTPUT_TOKENS=' "$signal_file" 2>/dev/null && { echo "MAX_OUTPUT_TOKENS"; return; }
+    grep -q '^RESULT_STOP_REASON=max_tokens' "$signal_file" 2>/dev/null && { echo "MAX_OUTPUT_TOKENS"; return; }
+    grep -q '^RESULT_STOP_REASON=length' "$signal_file" 2>/dev/null && { echo "MAX_OUTPUT_TOKENS"; return; }
+    grep -q '^SERVER_ERROR=' "$signal_file" 2>/dev/null && { echo "SERVER_ERROR"; return; }
+    grep -q '^WATCHDOG_KILL=' "$signal_file" 2>/dev/null && { echo "WATCHDOG_KILL"; return; }
+    grep -q '^RATE_LIMIT=' "$signal_file" 2>/dev/null && { echo "RATE_LIMIT"; return; }
+  fi
+
+  echo "UNKNOWN_FAILURE"
+}
+
+# Create an analysis task that blocks the failed task.
+# A fresh agent investigates the failure and creates follow-up tasks.
+# Args: $1 = task_id, $2 = task_title, $3 = failure_reason
+create_analysis_task() {
+  local task_id="$1" task_title="$2" reason="$3"
+
+  # Guard: don't create analysis tasks for analysis tasks (prevents infinite chains)
+  local labels
+  labels=$(bd label list "$task_id" --json 2>/dev/null || echo "[]")
+  if echo "$labels" | jq -e '.[] | select(. == "analysis")' >/dev/null 2>&1; then
+    echo "  (Skipping analysis task creation — this is already an analysis task)"
+    return 0
+  fi
+
+  local analysis_desc
+  read -r -d '' analysis_desc <<EOF || true
+Task $task_id ("$task_title") failed with reason: $reason.
+
+Investigate what went wrong and determine next steps:
+- Check the state of any code changes the previous agent made (git log, git diff)
+- Determine if the task needs to be split into smaller sub-tasks
+- Determine if a design task should be created first to plan the approach
+- Determine if the agent just needs a fresh context window to retry
+- Create any necessary follow-up beads tasks with appropriate dependencies
+
+Before closing, ensure $task_id is blocked by any new tasks you create:
+  bd dep add $task_id <new-task-id>
+EOF
+
+  local create_output analysis_id
+  create_output=$(bd create \
+    --title "Analyze failure: $task_title" \
+    -d "$analysis_desc" \
+    -p 1 \
+    --labels "model:opus,analysis" 2>&1) || {
+    echo "  WARNING: Failed to create analysis task"
+    return 1
+  }
+
+  # Parse ID from output like: "✓ Created issue: prefix-abc — title"
+  analysis_id=$(echo "$create_output" | sed -n 's/.*issue: \([^ ]*\).*/\1/p' | head -1)
+  if [[ -z "$analysis_id" ]]; then
+    echo "  WARNING: Could not parse analysis task ID from: $create_output"
+    return 1
+  fi
+
+  bd dep add "$task_id" "$analysis_id" 2>/dev/null || {
+    echo "  WARNING: Failed to add dependency $analysis_id -> $task_id"
+  }
+
+  echo "  Created analysis task: $analysis_id (blocks $task_id)"
+  bd update "$task_id" --append-notes="Failed ($reason). Analysis task: $analysis_id" 2>/dev/null || true
+}
+
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 while true; do
@@ -243,14 +373,20 @@ while true; do
   echo "  $TASK_TITLE ($TASK_ID) [$TASK_MODEL]"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+  # Pre-flight: skip tasks that aren't actually workable (no failure counted)
+  if ! validate_task "$TASK_ID"; then
+    echo ""
+    continue
+  fi
+
   # Track retries — skip task after MAX_RETRIES consecutive failures
   if [[ "$TASK_ID" == "$LAST_FAILED_ID" ]]; then
     FAIL_COUNT=$((FAIL_COUNT + 1))
     if [[ $FAIL_COUNT -ge $MAX_RETRIES ]]; then
       echo "  Skipping after $MAX_RETRIES failures"
       bd update "$TASK_ID" --status=open 2>/dev/null || true
-      bd update "$TASK_ID" --notes="Skipped by script after $MAX_RETRIES failures" 2>/dev/null || true
-      bd close "$TASK_ID" --reason="Skipped: failed $MAX_RETRIES times" 2>/dev/null || true
+      bd update "$TASK_ID" --append-notes="Skipped by runner after $MAX_RETRIES failures" 2>/dev/null || true
+      create_analysis_task "$TASK_ID" "$TASK_TITLE" "exceeded_max_retries"
       LAST_FAILED_ID=""
       FAIL_COUNT=0
       continue
@@ -308,6 +444,7 @@ $PROMPT_EXTRA"
   # ── Stream parser ────────────────────────────────────────────────────────
 
   ACTIVITY_FILE=$(mktemp)
+  SIGNAL_FILE=$(mktemp)
   date +%s > "$ACTIVITY_FILE"
 
   (
@@ -324,9 +461,32 @@ $PROMPT_EXTRA"
           TOOL=$(echo "$line" | jq -r '.tool // empty' 2>/dev/null)
           [[ -n "$TOOL" ]] && echo "  [$TS] -> $TOOL"
           ;;
+        system)
+          SUBTYPE=$(echo "$line" | jq -r '.subtype // empty' 2>/dev/null)
+          if [[ "$SUBTYPE" == "api_retry" ]]; then
+            ERROR=$(echo "$line" | jq -r '.error // empty' 2>/dev/null)
+            ERROR_STATUS=$(echo "$line" | jq -r '.error_status // empty' 2>/dev/null)
+            ATTEMPT=$(echo "$line" | jq -r '.attempt // empty' 2>/dev/null)
+            MAX_R=$(echo "$line" | jq -r '.max_retries // empty' 2>/dev/null)
+            echo "  [$TS] API retry ($ATTEMPT/$MAX_R): $ERROR (status: $ERROR_STATUS)"
+            case "$ERROR" in
+              rate_limit)           echo "RATE_LIMIT=${ERROR_STATUS:-429}" >> "$SIGNAL_FILE" ;;
+              authentication_failed) echo "AUTH_FAILURE=${ERROR_STATUS:-401}" >> "$SIGNAL_FILE" ;;
+              billing_error)        echo "BILLING_ERROR=1" >> "$SIGNAL_FILE" ;;
+              server_error)         echo "SERVER_ERROR=${ERROR_STATUS:-500}" >> "$SIGNAL_FILE" ;;
+              max_output_tokens)    echo "MAX_OUTPUT_TOKENS=1" >> "$SIGNAL_FILE" ;;
+            esac
+          else
+            echo "  [$TS] [system:$SUBTYPE] $(echo "$line" | jq -c '.' 2>/dev/null)"
+          fi
+          ;;
         result)
           RESULT=$(echo "$line" | jq -r '.result // empty' 2>/dev/null)
+          IS_ERROR=$(echo "$line" | jq -r '.is_error // false' 2>/dev/null)
+          STOP_REASON=$(echo "$line" | jq -r '.stop_reason // empty' 2>/dev/null)
           [[ -n "$RESULT" ]] && echo "  [$TS] $RESULT"
+          echo "RESULT_IS_ERROR=$IS_ERROR" >> "$SIGNAL_FILE"
+          [[ -n "$STOP_REASON" ]] && echo "RESULT_STOP_REASON=$STOP_REASON" >> "$SIGNAL_FILE"
           ;;
         "")
           ;;
@@ -349,6 +509,7 @@ $PROMPT_EXTRA"
         IDLE=$((NOW - LAST))
         if [[ $IDLE -ge 600 ]]; then
           echo "  Killing after ${IDLE}s idle — likely stuck"
+          echo "WATCHDOG_KILL=1" >> "$SIGNAL_FILE"
           kill "$CLAUDE_PID" 2>/dev/null || true
           break
         elif [[ $IDLE -ge 180 ]]; then
@@ -359,38 +520,105 @@ $PROMPT_EXTRA"
   ) &
   WATCHDOG_PID=$!
 
-  # ── Wait for result ──────────────────────────────────────────────────────
+  # ── Wait for result and classify ─────────────────────────────────────────
 
-  if wait "$CLAUDE_PID" 2>/dev/null; then
-    sleep 1
-    kill "$TAIL_PID" "$WATCHDOG_PID" 2>/dev/null || true
-    wait "$TAIL_PID" "$WATCHDOG_PID" 2>/dev/null || true
-    echo ""
-    echo "  Done: $TASK_TITLE"
-    COMPLETED=$((COMPLETED + 1))
-    CONSECUTIVE_FAILURES=0
-  else
-    EXIT_CODE=$?
-    kill "$TAIL_PID" "$WATCHDOG_PID" 2>/dev/null || true
-    wait "$TAIL_PID" "$WATCHDOG_PID" 2>/dev/null || true
-    echo ""
-    echo "  FAILED: $TASK_TITLE (exit code $EXIT_CODE)"
-    FAILED=$((FAILED + 1))
-    LAST_FAILED_ID="$TASK_ID"
-    CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-    bd update "$TASK_ID" --status=open 2>/dev/null || true
+  wait "$CLAUDE_PID" 2>/dev/null && CLAUDE_EXIT=0 || CLAUDE_EXIT=$?
+  sleep 1
+  kill "$TAIL_PID" "$WATCHDOG_PID" 2>/dev/null || true
+  pkill -P "$TAIL_PID" 2>/dev/null || true  # kill tail -f child that outlives subshell
+  wait "$TAIL_PID" "$WATCHDOG_PID" 2>/dev/null || true
+  echo ""
 
-    if [[ $CONSECUTIVE_FAILURES -ge $MAX_CONSECUTIVE_FAILURES ]]; then
-      echo ""
-      echo "  $MAX_CONSECUTIVE_FAILURES consecutive failures — likely usage quota exhausted or systemic error."
-      echo "  Stopping to avoid closing healthy tasks as skipped."
-      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$USAGE_CACHE_FILE"
+  CLASSIFICATION=$(classify_failure "$SIGNAL_FILE" "$TASK_ID" "$CLAUDE_EXIT")
+
+  case "$CLASSIFICATION" in
+    SUCCESS)
+      echo "  Done: $TASK_TITLE"
+      COMPLETED=$((COMPLETED + 1))
+      CONSECUTIVE_FAILURES=0
+      LAST_FAILED_ID=""
+      FAIL_COUNT=0
+      ;;
+
+    AUTH_FAILURE)
+      echo "  FATAL: Authentication failed — stopping runner."
+      FAILED=$((FAILED + 1))
+      bd update "$TASK_ID" --status=open 2>/dev/null || true
+      bd update "$TASK_ID" --append-notes="Runner stopped: auth failure" 2>/dev/null || true
+      runner_cleanup
+      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
-      exit 2
-    fi
+      exit 3
+      ;;
+
+    BILLING_ERROR)
+      echo "  FATAL: Billing error — stopping runner."
+      FAILED=$((FAILED + 1))
+      bd update "$TASK_ID" --status=open 2>/dev/null || true
+      bd update "$TASK_ID" --append-notes="Runner stopped: billing error" 2>/dev/null || true
+      runner_cleanup
+      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
+      echo "Results: $COMPLETED completed, $FAILED failed"
+      exit 4
+      ;;
+
+    RATE_LIMIT)
+      echo "  Rate limited — will retry after usage check."
+      FAILED=$((FAILED + 1))
+      bd update "$TASK_ID" --status=open 2>/dev/null || true
+      # Don't set LAST_FAILED_ID — rate limit retries are invisible to per-task retry counter
+      USAGE_CACHE_TIME=0  # force fresh usage check on next loop iteration
+      ;;
+
+    MAX_OUTPUT_TOKENS)
+      echo "  FAILED: $TASK_TITLE — ran out of context window"
+      FAILED=$((FAILED + 1))
+      bd update "$TASK_ID" --status=open 2>/dev/null || true
+      create_analysis_task "$TASK_ID" "$TASK_TITLE" "max_output_tokens"
+      LAST_FAILED_ID=""
+      FAIL_COUNT=0
+      ;;
+
+    TASK_NOT_CLOSED)
+      echo "  PARTIAL: $TASK_TITLE — exited 0 but task still open"
+      FAILED=$((FAILED + 1))
+      bd update "$TASK_ID" --status=open 2>/dev/null || true
+      # First time: retry (Claude might just close it). Second time: create analysis task.
+      # Note: FAIL_COUNT at the top of the loop also increments, but this check fires
+      # before FAIL_COUNT reaches MAX_RETRIES, so this is the effective gate.
+      if [[ "$TASK_ID" == "$LAST_FAILED_ID" ]]; then
+        create_analysis_task "$TASK_ID" "$TASK_TITLE" "task_not_closed"
+        LAST_FAILED_ID=""
+        FAIL_COUNT=0
+      else
+        LAST_FAILED_ID="$TASK_ID"
+      fi
+      ;;
+
+    SERVER_ERROR|WATCHDOG_KILL|UNKNOWN_FAILURE|*)
+      echo "  FAILED: $TASK_TITLE ($CLASSIFICATION, exit $CLAUDE_EXIT)"
+      FAILED=$((FAILED + 1))
+      bd update "$TASK_ID" --status=open 2>/dev/null || true
+      # Count toward consecutive failures only if different task
+      if [[ "$TASK_ID" != "$LAST_FAILED_ID" ]]; then
+        CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+      fi
+      LAST_FAILED_ID="$TASK_ID"
+      ;;
+  esac
+
+  # Consecutive failure circuit breaker
+  if [[ $CONSECUTIVE_FAILURES -ge $MAX_CONSECUTIVE_FAILURES ]]; then
+    echo ""
+    echo "  $MAX_CONSECUTIVE_FAILURES consecutive failures — likely systemic error."
+    echo "  Stopping to avoid closing healthy tasks as skipped."
+    runner_cleanup
+    rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
+    echo "Results: $COMPLETED completed, $FAILED failed"
+    exit 2
   fi
 
-  rm -f "$STREAM_FILE" "$ACTIVITY_FILE"
+  rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE"
   CLAUDE_PID=""
   CURRENT_TASK_ID=""
   echo ""

@@ -88,11 +88,12 @@ Every command must handle potential failures. Specifically:
 ### 4. Cleanup must reset active task to open
 If the script exits (Ctrl+C, crash, kill) while a task is `in_progress`, that task becomes orphaned. The cleanup handler resets `CURRENT_TASK_ID` to open. The `next_task()` function also checks for `in_progress` tasks first as a safety net.
 
-### 5. Two-level failure protection
-- **Per-task retries** (`FAIL_COUNT`/`MAX_RETRIES`): Same task failing consecutively — skip after N failures, close with reason
-- **Systemic failure abort** (`CONSECUTIVE_FAILURES`/`MAX_CONSECUTIVE_FAILURES`): Different tasks failing consecutively — abort script entirely. Prevents quota exhaustion from churning through every task and closing them all as "skipped"
+### 5. Three-level failure protection
+- **Stream-based classification**: The stream parser writes `api_retry` errors and result metadata to a `SIGNAL_FILE`. After each task, `classify_failure()` reads the signal file + checks beads status to classify: `SUCCESS`, `AUTH_FAILURE`, `BILLING_ERROR`, `RATE_LIMIT`, `MAX_OUTPUT_TOKENS`, `TASK_NOT_CLOSED`, `SERVER_ERROR`, `WATCHDOG_KILL`, `UNKNOWN_FAILURE`. Each classification has its own recovery strategy.
+- **Per-task retries** (`FAIL_COUNT`/`MAX_RETRIES`): Same task failing consecutively — after N failures, create an analysis task (blocks the original) instead of closing. Exception: analysis tasks themselves are closed as skipped (no infinite chains).
+- **Systemic failure abort** (`CONSECUTIVE_FAILURES`/`MAX_CONSECUTIVE_FAILURES`): Different tasks failing consecutively — abort script entirely. Only `SERVER_ERROR`, `WATCHDOG_KILL`, and `UNKNOWN_FAILURE` count. `RATE_LIMIT` sleeps instead, `AUTH_FAILURE`/`BILLING_ERROR` stop immediately, `MAX_OUTPUT_TOKENS`/`TASK_NOT_CLOSED` create analysis tasks.
 
-A single success resets `CONSECUTIVE_FAILURES` to 0.
+A single success resets `CONSECUTIVE_FAILURES` to 0. Rate-limit retries don't set `LAST_FAILED_ID`, so they're invisible to the per-task retry counter.
 
 ### 6. PERMISSION_FLAGS is a bash array, not a string
 The flags array is expanded directly into the `claude` invocation. The original version used `eval` with a quoted string — the array approach avoids quoting hell entirely. Do not convert back to a string.
