@@ -21,15 +21,26 @@ PERMISSION_FLAGS=(
   --permission-mode acceptEdits
   --allowedTools
     "Bash(git:*)" "Bash(bd:*)"
+    # File operations (git-recoverable)
+    "Bash(mkdir:*)" "Bash(cp:*)" "Bash(mv:*)"
+    "Bash(chmod:*)" "Bash(touch:*)" "Bash(ln:*)" "Bash(mktemp:*)"
+    # Read/inspect utilities
+    "Bash(ls:*)" "Bash(cat:*)" "Bash(head:*)" "Bash(tail:*)"
+    "Bash(find:*)" "Bash(tree:*)" "Bash(wc:*)" "Bash(diff:*)"
+    # Text processing
+    "Bash(jq:*)" "Bash(sort:*)" "Bash(uniq:*)" "Bash(echo:*)" "Bash(printf:*)"
+    # Environment checks
+    "Bash(which:*)" "Bash(command:*)" "Bash(date:*)"
+    "Bash(basename:*)" "Bash(dirname:*)" "Bash(realpath:*)"
 )
 EXTRA_CLAUDE_FLAGS=(--no-chrome)
 PROMPT_EXTRA=""
-MAX_RETRIES=2
-MAX_CONSECUTIVE_FAILURES=3
-DEFAULT_MODEL=opus
-USAGE_THRESHOLD=70       # pause new tasks above this % (0 = disabled)
-USAGE_SLEEP_SECONDS=1800 # sleep duration when over threshold (30 min)
-USAGE_CACHE_SECONDS=300  # cache usage API response (avoid hammering per-loop)
+MAX_RETRIES=${MAX_RETRIES:-2}
+MAX_CONSECUTIVE_FAILURES=${MAX_CONSECUTIVE_FAILURES:-3}
+DEFAULT_MODEL=${DEFAULT_MODEL:-opus}
+USAGE_THRESHOLD=${USAGE_THRESHOLD:-70}       # pause new tasks above this % (0 = disabled)
+USAGE_SLEEP_SECONDS=${USAGE_SLEEP_SECONDS:-1800} # sleep duration when over threshold (30 min)
+USAGE_CACHE_SECONDS=${USAGE_CACHE_SECONDS:-300}  # cache usage API response (avoid hammering per-loop)
 
 # Hook functions — override in .beads/runner.sh if needed
 runner_setup()   { :; }  # called once at script start
