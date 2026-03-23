@@ -210,8 +210,10 @@ validate_task() {
   fi
 
   # Check if this is a parent/container task with children
+  # Note: bd show --children includes the task itself in the result, so filter it out
   local children
   children=$(bd show "$task_id" --children --json 2>/dev/null || echo "[]")
+  children=$(echo "$children" | jq --arg id "$task_id" '[.[] | select(.id != $id)]')
   local child_count
   child_count=$(echo "$children" | jq 'length' 2>/dev/null || echo "0")
   if [[ "${child_count:-0}" -gt 0 ]]; then
