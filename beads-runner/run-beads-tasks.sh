@@ -182,16 +182,37 @@ check_usage() {
 
 # ── Task selection ───────────────────────────────────────────────────────────
 
-# Pick up any orphaned in_progress tasks first, then fall through to ready tasks
+# Snapshot in_progress tasks at startup — these are orphans from a previous crash.
+# Tasks that become in_progress later are being worked on by other agents.
+# Note: small race window between snapshot and first loop — another agent could claim
+# an orphan in that window. The status recheck inside next_task() mitigates this.
+read -ra ORPHANED_IDS <<< "$(bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id // empty' 2>/dev/null || true)"
+# Clear if the only element is empty string (no orphans)
+[[ ${#ORPHANED_IDS[@]} -eq 1 && -z "${ORPHANED_IDS[0]}" ]] && ORPHANED_IDS=()
+
+# Pick up orphaned tasks first (one per loop), then fall through to ready tasks
 next_task() {
-  local json
-  json=$(bd list --status=in_progress --json 2>/dev/null || echo "[]")
-  local id
-  id=$(echo "$json" | jq -r '.[0].id // empty')
-  if [[ -n "$id" ]]; then
-    echo "(Resuming interrupted task)" >&2
-    echo "$json"
-    return
+  if [[ ${#ORPHANED_IDS[@]} -gt 0 ]]; then
+    local remaining=() pos=0
+    local orphan_id task_json status
+    for orphan_id in "${ORPHANED_IDS[@]}"; do
+      pos=$((pos + 1))
+      task_json=$(bd show "$orphan_id" --json 2>/dev/null) || { remaining+=("$orphan_id"); continue; }
+      status=$(echo "$task_json" | jq -r '.status // empty' 2>/dev/null || true)
+      if [[ "$status" == "in_progress" ]]; then
+        # Resume this orphan. Keep unprocessed orphans (after current position) for later.
+        remaining+=("${ORPHANED_IDS[@]:$pos}")
+        ORPHANED_IDS=("${remaining[@]+"${remaining[@]}"}")
+        echo "(Resuming orphaned task from previous run)" >&2
+        echo "$task_json" | jq '[.]'
+        return
+      elif [[ -n "$status" ]]; then
+        : # Status changed (another agent closed it, etc.) — drop from list
+      else
+        remaining+=("$orphan_id")  # bd show returned bad data — keep for retry
+      fi
+    done
+    ORPHANED_IDS=("${remaining[@]+"${remaining[@]}"}")
   fi
   bd ready --json 2>/dev/null || echo "[]"
 }
