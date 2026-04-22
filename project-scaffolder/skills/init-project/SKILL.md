@@ -69,7 +69,7 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 | Gitignore | `gitignore/{ios,android,backend}.gitignore` |
 | Settings | `settings/{ios,android,backend}.json` |
 | Agents | `agents/{code-reviewer,privacy-reviewer}.md` |
-| Skills | `skills/{shared,ios}/` |
+| Skills | `skills/{shared,ios,android,backend}/` (includes `wrapup/` per platform) |
 | Architecture | `architecture/{IOS,ANDROID}_APP_ARCHITECTURE_GUIDE.md` |
 | CLAUDE.md | `CLAUDE.md.template` |
 | iOS scripts | `scripts/ios/sim.sh` |
@@ -83,7 +83,7 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 ### iOS
 
 - **New projects**: Follow `references/ios-project-setup.md` for full XcodeGen project creation (includes encryption exemption in `project.yml`)
-- Copy preview and write-tests skills
+- Copy preview, write-tests, and iOS wrapup skills
 - For existing projects without encryption exemption, add it (see `references/setup-steps.md`)
 - Replace `{{PROJECT_NAME}}` and `{{BUNDLE_PREFIX}}` placeholders in copied files
 
@@ -92,12 +92,14 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 - **New projects**: Follow `references/android-project-setup.md` for full Gradle/Compose project creation
 - Copy architecture guide to `context/`
 - Copy emu.sh script to `scripts/`
+- Copy Android wrapup skill
 - Replace `{{PROJECT_NAME}}`, `{{PACKAGE_NAME}}`, `{{PROJECT_NAME_LOWERCASE}}` placeholders
 
 ### Backend
 
 - No architecture guide (not yet created)
 - Basic settings with curl, docker permissions
+- Copy Backend wrapup skill
 
 ## Additional Resources
 

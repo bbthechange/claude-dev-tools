@@ -74,6 +74,21 @@ After copying `code-reviewer.md`, replace `{{ARCHITECTURE_GUIDE}}` placeholder:
 cp -r ${CLAUDE_PLUGIN_ROOT}/templates/skills/shared/code-reviewer .claude/skills/
 ```
 
+**Wrapup skill (platform-specific)** - Copy the wrapup skill matching the project type:
+
+```bash
+# iOS
+cp -r ${CLAUDE_PLUGIN_ROOT}/templates/skills/ios/wrapup .claude/skills/
+
+# Android
+cp -r ${CLAUDE_PLUGIN_ROOT}/templates/skills/android/wrapup .claude/skills/
+
+# Backend
+cp -r ${CLAUDE_PLUGIN_ROOT}/templates/skills/backend/wrapup .claude/skills/
+```
+
+**iOS only:** after copying the iOS wrapup, replace `{{PROJECT_NAME}}` in `.claude/skills/wrapup/SKILL.md` with the actual project name (the Android and Backend wrapup templates contain no placeholders).
+
 **iOS only** - Copy iOS-specific skills:
 
 ```bash
@@ -81,7 +96,7 @@ cp -r ${CLAUDE_PLUGIN_ROOT}/templates/skills/ios/preview .claude/skills/
 cp -r ${CLAUDE_PLUGIN_ROOT}/templates/skills/ios/write-tests .claude/skills/
 ```
 
-After copying iOS skills, replace `{{PROJECT_NAME}}` with the actual project name in:
+After copying, replace `{{PROJECT_NAME}}` with the actual project name in:
 - `.claude/skills/preview/SKILL.md`
 - `.claude/skills/write-tests/SKILL.md`
 
@@ -228,6 +243,7 @@ Created:
 - .claude/agents/code-reviewer.md
 - .claude/agents/privacy-reviewer.md
 - .claude/skills/code-reviewer/
+- .claude/skills/wrapup/ (platform-specific)
 [iOS only:]
 - .claude/skills/preview/
 - .claude/skills/write-tests/
@@ -241,8 +257,9 @@ Next steps:
 1. Review CLAUDE.md and customize for your project
 2. Add context docs for each major feature/page in context/
 3. Run /code-reviewer after making changes
+4. Run /wrapup when finishing a task (review + risk analysis + commit)
 [iOS only:]
-4. Run /preview to test UI changes
+5. Run /preview to test UI changes
 ```
 
 ## Repair Mode
