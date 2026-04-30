@@ -229,7 +229,7 @@ next_task() {
         remaining+=("${ORPHANED_IDS[@]:$pos}")
         ORPHANED_IDS=("${remaining[@]+"${remaining[@]}"}")
         echo "(Resuming orphaned task from previous run)" >&2
-        echo "$task_json" | jq '[.]'
+        echo "$task_json"
         return
       elif [[ -n "$status" ]]; then
         : # Status changed (another agent closed it, etc.) — drop from list
