@@ -109,6 +109,35 @@ fi
 
 INCIDENTS_LOG="$LOG_DIR/incidents.log"
 
+# ── Pre-flight environment snapshot ──────────────────────────────────────────
+# Project agents/skills are discovered relative to cwd. If the runner is invoked
+# from the wrong directory (or .claude/agents is empty), agents that worked
+# interactively will silently fail inside claude. Snapshot the environment once
+# per run so missing project assets are obvious from the first line of output.
+PREFLIGHT_LOG="$LOG_DIR/preflight.log"
+{
+  echo "=== preflight $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+  echo "pwd: $(pwd)"
+  echo ""
+  echo "=== .claude/agents ==="
+  if [[ -d .claude/agents ]]; then ls -1 .claude/agents; else echo "(no .claude/agents directory)"; fi
+  echo ""
+  echo "=== .claude/skills ==="
+  if [[ -d .claude/skills ]]; then ls -1 .claude/skills; else echo "(no .claude/skills directory)"; fi
+  echo ""
+  echo "=== claude version ==="
+  claude --version 2>&1 || echo "(claude --version failed)"
+  echo ""
+  echo "=== bd version ==="
+  bd version 2>&1 || echo "(bd version failed)"
+} > "$PREFLIGHT_LOG" 2>&1 || true
+
+PREFLIGHT_AGENTS=0
+PREFLIGHT_SKILLS=0
+[[ -d .claude/agents ]] && PREFLIGHT_AGENTS=$(find .claude/agents -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+[[ -d .claude/skills ]] && PREFLIGHT_SKILLS=$(find .claude/skills -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+echo "Pre-flight: ${PREFLIGHT_AGENTS} project agent(s), ${PREFLIGHT_SKILLS} project skill(s) — $PREFLIGHT_LOG"
+
 # ── Setup hook ───────────────────────────────────────────────────────────────
 
 runner_setup
@@ -425,6 +454,55 @@ print_incidents_summary() {
     echo "  $line"
   done
   echo "Full log: $INCIDENTS_LOG"
+}
+
+# Scan the stream for tool_result errors with high-signal patterns. Surfaces
+# silent failures (e.g., subagent-not-found) that don't fail the run but mean
+# the agent didn't actually do what we asked. Pattern-matched only — raw counts
+# would be dominated by routine probes (Read on missing file, grep no-match, etc.).
+# Side effects only: incidents log, beads note, optional notification. Never
+# changes classification or exit code.
+# Args: $1 = stream file, $2 = task_id
+scan_tool_errors() {
+  local stream="$1" task_id="$2"
+  [[ -f "$stream" ]] || return 0
+
+  # Cheap pre-filter: skip the jq pass entirely if no error markers exist.
+  grep -qF '"is_error":true' "$stream" 2>/dev/null || return 0
+
+  # Extract the textual body of every tool_result with is_error:true.
+  # .content can be a string or an array of {type,text} parts — handle both.
+  local all_errors
+  all_errors=$(jq -r '
+    .. | objects? | select(.type? == "tool_result" and .is_error? == true) |
+    (.content | if type == "string" then .
+                elif type == "array" then (map(select(.type? == "text") | .text) | join(" "))
+                else "" end)
+  ' "$stream" 2>/dev/null || true)
+  [[ -z "$all_errors" ]] && return 0
+
+  # Pattern strings come from claude-code/CLI; brittle by nature. Update if drift observed.
+  local subagent_hits perm_hits mcp_hits
+  subagent_hits=$(echo "$all_errors" | grep -cE "Agent type '[^']+' not found" 2>/dev/null || true)
+  perm_hits=$(echo "$all_errors" | grep -cE "Permission denied|is not allowed" 2>/dev/null || true)
+  mcp_hits=$(echo "$all_errors" | grep -cE "MCP server.*(unavailable|failed|not connected)" 2>/dev/null || true)
+
+  if [[ "${subagent_hits:-0}" -gt 0 ]]; then
+    local subagent_names
+    subagent_names=$(echo "$all_errors" | grep -oE "Agent type '[^']+'" | sort -u | sed -E "s/Agent type '([^']+)'/\1/" | paste -sd, - 2>/dev/null || echo "?")
+    local msg="subagent-unavailable: $subagent_names (×$subagent_hits)"
+    bd update "$task_id" --append-notes="Runner: tool-error $msg" 2>/dev/null || true
+    record_incident "$task_id" "TOOL_ERROR:$msg" "-"
+    notify_user "beads-runner: subagent unavailable" "$task_id — $subagent_names"
+  fi
+  if [[ "${perm_hits:-0}" -gt 0 ]]; then
+    bd update "$task_id" --append-notes="Runner: tool-error permission-denied (×$perm_hits)" 2>/dev/null || true
+    record_incident "$task_id" "TOOL_ERROR:permission-denied (×$perm_hits)" "-"
+  fi
+  if [[ "${mcp_hits:-0}" -gt 0 ]]; then
+    bd update "$task_id" --append-notes="Runner: tool-error mcp-unavailable (×$mcp_hits)" 2>/dev/null || true
+    record_incident "$task_id" "TOOL_ERROR:mcp-unavailable (×$mcp_hits)" "-"
+  fi
 }
 
 # macOS desktop notification + terminal bell. Best-effort, never fails the run.
@@ -781,6 +859,11 @@ $PROMPT_EXTRA"
       LAST_FAILED_ID="$TASK_ID"
       ;;
   esac
+
+  # Scan the stream for high-signal tool-level errors regardless of classification.
+  # Many silent failures (subagent missing, permission denied, MCP down) leave the
+  # exit code clean because the agent recovers inline — but we still want to know.
+  scan_tool_errors "$STREAM_FILE" "$TASK_ID"
 
   # Drop the proc snapshot if classification didn't end up using it.
   # (Only WATCHDOG_KILL writes to PROC_SNAPSHOT, and we keep it in that case.)
