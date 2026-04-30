@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bd list:*)",
+      "Bash(bd epic:*)",
+      "Bash(bd ready:*)",
+      "Bash(bd create:*)",
+      "Bash(bd info:*)",
+      "Bash(bd dep:*)",
+      "Bash(bd count:*)",
+      "Bash(bd --help)",
+      "Bash(bd update:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(rm:*)",
+      "Bash(open:*)",
+      "Bash(jq:*)",
+      "Bash(shellcheck:*)",
+      "Bash(bash -n:*)",
+      "WebSearch",
+      "Skill(code-reviewer)",
+      "Skill(wrapup)"
+    ]
+  }
+}
