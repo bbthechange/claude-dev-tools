@@ -33,7 +33,7 @@ auto_allow_xcode() {
           repeat with win in every window
             try
               set allText to value of every static text of win as text
-              if allText contains "claude-code" and allText contains "access Xcode" then
+              if allText contains "Claude Code" and allText contains "access Xcode" then
                 click button "Allow" of win
               end if
             end try
