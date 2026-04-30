@@ -32,6 +32,8 @@ PERMISSION_FLAGS=(
     # Environment checks
     "Bash(which:*)" "Bash(command:*)" "Bash(date:*)"
     "Bash(basename:*)" "Bash(dirname:*)" "Bash(realpath:*)"
+    # Network/scripting (needed by skills like /reddit)
+    "Bash(curl:*)" "Bash(python:*)" "Bash(python3:*)"
 )
 EXTRA_CLAUDE_FLAGS=(--no-chrome)
 PROMPT_EXTRA=""
@@ -41,6 +43,9 @@ DEFAULT_MODEL=${DEFAULT_MODEL:-opus}
 USAGE_THRESHOLD=${USAGE_THRESHOLD:-70}       # pause new tasks above this % (0 = disabled)
 USAGE_SLEEP_SECONDS=${USAGE_SLEEP_SECONDS:-1800} # sleep duration when over threshold (30 min)
 USAGE_CACHE_SECONDS=${USAGE_CACHE_SECONDS:-300}  # cache usage API response (avoid hammering per-loop)
+IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}                # seconds of stream silence before watchdog kills (env-overridable)
+LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-14}     # rotation: delete runner-logs older than this
+LOG_DIR=".beads/runner-logs"                     # post-mortem artifacts (stream-json, ps/lsof snapshots, incidents.log)
 
 # Hook functions — override in .beads/runner.sh if needed
 runner_setup()   { :; }  # called once at script start
@@ -83,6 +88,26 @@ LAST_FAILED_ID=""
 FAIL_COUNT=0
 CONSECUTIVE_FAILURES=0
 SIGNAL_FILE=""
+INCIDENTS=()        # human-readable incident lines for end-of-run summary
+
+# ── Log directory setup ──────────────────────────────────────────────────────
+
+# Self-gitignoring directory: any artifact written here is ignored by git
+# regardless of whether the parent .beads/ is tracked. Stream-json files contain
+# raw model output, file contents, and tool results — must never be committed.
+mkdir -p "$LOG_DIR"
+if [[ ! -f "$LOG_DIR/.gitignore" ]]; then
+  printf '*\n!.gitignore\n' > "$LOG_DIR/.gitignore"
+fi
+
+# Age-based rotation: prune artifacts older than LOG_RETENTION_DAYS at startup.
+# Runs once per script invocation (not per-iteration) so it can't race active runs.
+if [[ -d "$LOG_DIR" ]]; then
+  find "$LOG_DIR" -type f ! -name '.gitignore' ! -name 'incidents.log' \
+    -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null || true
+fi
+
+INCIDENTS_LOG="$LOG_DIR/incidents.log"
 
 # ── Setup hook ───────────────────────────────────────────────────────────────
 
@@ -198,7 +223,7 @@ next_task() {
     for orphan_id in "${ORPHANED_IDS[@]}"; do
       pos=$((pos + 1))
       task_json=$(bd show "$orphan_id" --json 2>/dev/null) || { remaining+=("$orphan_id"); continue; }
-      status=$(echo "$task_json" | jq -r '.status // empty' 2>/dev/null || true)
+      status=$(echo "$task_json" | jq -r '.[0].status // empty' 2>/dev/null || true)
       if [[ "$status" == "in_progress" ]]; then
         # Resume this orphan. Keep unprocessed orphans (after current position) for later.
         remaining+=("${ORPHANED_IDS[@]:$pos}")
@@ -264,7 +289,7 @@ classify_failure() {
   # Exit 0: check if task was actually completed in beads
   if [[ "$exit_code" -eq 0 ]]; then
     local task_status
-    task_status=$(bd show "$task_id" --json 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
+    task_status=$(bd show "$task_id" --json 2>/dev/null | jq -r '.[0].status // empty' 2>/dev/null || true)
     if [[ "$task_status" == "closed" || -z "$task_status" ]]; then
       # Closed = success. Empty = bd show failed, default to success (fail-open).
       [[ -z "$task_status" ]] && echo "  (Could not verify task status — assuming success)" >&2
@@ -348,6 +373,73 @@ EOF
   bd update "$task_id" --append-notes="Failed ($reason). Analysis task: $analysis_id" 2>/dev/null || true
 }
 
+# ── Post-mortem: visibility helpers ──────────────────────────────────────────
+
+# Preserve the claude stream-json file for post-mortem analysis.
+# Args: $1 = source stream file, $2 = destination basename (no extension)
+# Echoes the relative destination path on success, empty string on skip/failure.
+preserve_stream() {
+  local src="$1" dest_base="$2"
+  local dest="$LOG_DIR/${dest_base}.jsonl"
+  [[ -f "$src" ]] || { echo ""; return; }
+  cp "$src" "$dest" 2>/dev/null && echo "$dest" || echo ""
+}
+
+# Append a tab-separated incident record. Always called for every non-success
+# classification, regardless of whether a stream was preserved.
+# Args: $1 = task_id, $2 = classification, $3 = log_path (or "-" for none)
+record_incident() {
+  local task_id="$1" classification="$2" log_path="${3:--}"
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '%s\t%s\t%s\t%s\n' "$ts" "$task_id" "$classification" "$log_path" >> "$INCIDENTS_LOG" 2>/dev/null || true
+  INCIDENTS+=("$ts  $task_id  $classification  $log_path")
+}
+
+# Append a uniform "Runner: ..." note to a beads task. Greppable in `bd show`.
+# Args: $1 = task_id, $2 = classification, $3 = log_path (or "-" for none)
+append_runner_note() {
+  local task_id="$1" classification="$2" log_path="${3:--}"
+  local ts
+  ts=$(date -u +%H:%M:%SZ)
+  local msg="Runner: $classification at $ts"
+  if [[ "$log_path" != "-" ]]; then
+    msg="$msg — log: $log_path"
+  else
+    msg="$msg — no stream preserved"
+  fi
+  bd update "$task_id" --append-notes="$msg" 2>/dev/null || true
+}
+
+# Print the per-run incidents summary. Surfaces watchdog kills and other
+# silently-retried failures so they don't go unnoticed when the next attempt
+# succeeds.
+print_incidents_summary() {
+  if [[ ${#INCIDENTS[@]} -eq 0 ]]; then
+    return
+  fi
+  echo ""
+  echo "Incidents this run (${#INCIDENTS[@]}):"
+  local line
+  for line in "${INCIDENTS[@]}"; do
+    echo "  $line"
+  done
+  echo "Full log: $INCIDENTS_LOG"
+}
+
+# macOS desktop notification + terminal bell. Best-effort, never fails the run.
+# Args: $1 = title, $2 = body
+notify_user() {
+  local title="$1" body="$2"
+  printf '\a' 2>/dev/null || true
+  if command -v osascript >/dev/null 2>&1; then
+    # Escape double-quotes for AppleScript string literal
+    local safe_title="${title//\"/\\\"}"
+    local safe_body="${body//\"/\\\"}"
+    osascript -e "display notification \"$safe_body\" with title \"$safe_title\"" 2>/dev/null || true
+  fi
+}
+
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 while true; do
@@ -408,7 +500,9 @@ while true; do
     if [[ $FAIL_COUNT -ge $MAX_RETRIES ]]; then
       echo "  Skipping after $MAX_RETRIES failures"
       bd update "$TASK_ID" --status=open 2>/dev/null || true
-      bd update "$TASK_ID" --append-notes="Skipped by runner after $MAX_RETRIES failures" 2>/dev/null || true
+      append_runner_note "$TASK_ID" "exceeded_max_retries" "-"
+      record_incident "$TASK_ID" "exceeded_max_retries" "-"
+      notify_user "beads-runner: max retries" "$TASK_ID — analysis task created"
       create_analysis_task "$TASK_ID" "$TASK_TITLE" "exceeded_max_retries"
       LAST_FAILED_ID=""
       FAIL_COUNT=0
@@ -453,14 +547,19 @@ $PROMPT_EXTRA"
 
   # ── Run claude session ───────────────────────────────────────────────────
 
+  # Per-iteration timestamp drives artifact filenames so retries don't collide.
+  ITER_TS=$(date -u +%Y%m%dT%H%M%SZ)
+  LOG_BASE="$TASK_ID-$ITER_TS"
+  PROC_SNAPSHOT="$LOG_DIR/$LOG_BASE.proc.txt"
+
   STREAM_FILE=$(mktemp)
 
   claude -p "$PROMPT" \
     --output-format stream-json \
     --verbose \
     --model "$TASK_MODEL" \
-    "${EXTRA_CLAUDE_FLAGS[@]}" \
-    "${PERMISSION_FLAGS[@]}" \
+    "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
+    "${PERMISSION_FLAGS[@]+"${PERMISSION_FLAGS[@]}"}" \
     > "$STREAM_FILE" 2>&1 &
   CLAUDE_PID=$!
 
@@ -530,10 +629,31 @@ $PROMPT_EXTRA"
         LAST=$(cat "$ACTIVITY_FILE")
         NOW=$(date +%s)
         IDLE=$((NOW - LAST))
-        if [[ $IDLE -ge 600 ]]; then
+        if [[ $IDLE -ge $IDLE_TIMEOUT ]]; then
           echo "  Killing after ${IDLE}s idle — likely stuck"
           echo "WATCHDOG_KILL=1" >> "$SIGNAL_FILE"
-          kill "$CLAUDE_PID" 2>/dev/null || true
+
+          # Snapshot the stuck process before signalling: ps for state/CPU/mem,
+          # lsof for open sockets/pipes (tells us network-blocked vs CPU-bound
+          # vs child-pipe-blocked). Must run BEFORE SIGINT — lsof on a dying
+          # process returns nothing useful.
+          {
+            echo "=== ps (idle ${IDLE}s, IDLE_TIMEOUT=${IDLE_TIMEOUT}) ==="
+            ps -o pid,stat,etime,pcpu,pmem,command -p "$CLAUDE_PID" 2>&1 || true
+            echo ""
+            echo "=== lsof (TCP/IPv/PIPE) ==="
+            lsof -p "$CLAUDE_PID" 2>/dev/null | grep -E 'TCP|IPv|PIPE' || echo "(no matching fds)"
+          } > "$PROC_SNAPSHOT" 2>&1 || true
+
+          # Staged kill: SIGINT first to give the SDK a chance to flush in-flight
+          # HTTP retry state to stderr (which is merged into STREAM_FILE), then
+          # SIGKILL after 10s if still alive.
+          kill -INT "$CLAUDE_PID" 2>/dev/null || true
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 1
+            kill -0 "$CLAUDE_PID" 2>/dev/null || break
+          done
+          kill -0 "$CLAUDE_PID" 2>/dev/null && kill -KILL "$CLAUDE_PID" 2>/dev/null || true
           break
         elif [[ $IDLE -ge 180 ]]; then
           echo "  No activity for ${IDLE}s — possibly stuck"
@@ -554,6 +674,20 @@ $PROMPT_EXTRA"
 
   CLASSIFICATION=$(classify_failure "$SIGNAL_FILE" "$TASK_ID" "$CLAUDE_EXIT")
 
+  # Preserve the stream-json for serious failures so we can post-mortem what
+  # state the agent was in when it failed. Skipped for routine/transient cases
+  # (RATE_LIMIT, TASK_NOT_CLOSED) to avoid disk spam — those still get an
+  # incidents.log entry and a beads note, just no stream snapshot.
+  PRESERVED_LOG=""
+  case "$CLASSIFICATION" in
+    WATCHDOG_KILL|UNKNOWN_FAILURE|SERVER_ERROR|MAX_OUTPUT_TOKENS)
+      PRESERVED_LOG=$(preserve_stream "$STREAM_FILE" "$LOG_BASE-$CLASSIFICATION")
+      [[ -n "$PRESERVED_LOG" ]] && echo "  Stream preserved: $PRESERVED_LOG"
+      [[ "$CLASSIFICATION" == "WATCHDOG_KILL" && -f "$PROC_SNAPSHOT" ]] && \
+        echo "  Process snapshot: $PROC_SNAPSHOT"
+      ;;
+  esac
+
   case "$CLASSIFICATION" in
     SUCCESS)
       echo "  Done: $TASK_TITLE"
@@ -567,10 +701,13 @@ $PROMPT_EXTRA"
       echo "  FATAL: Authentication failed — stopping runner."
       FAILED=$((FAILED + 1))
       bd update "$TASK_ID" --status=open 2>/dev/null || true
-      bd update "$TASK_ID" --append-notes="Runner stopped: auth failure" 2>/dev/null || true
+      append_runner_note "$TASK_ID" "AUTH_FAILURE" "-"
+      record_incident "$TASK_ID" "AUTH_FAILURE" "-"
+      notify_user "beads-runner: auth failure" "$TASK_ID — runner stopped"
       runner_cleanup
       rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
+      print_incidents_summary
       exit 3
       ;;
 
@@ -578,10 +715,13 @@ $PROMPT_EXTRA"
       echo "  FATAL: Billing error — stopping runner."
       FAILED=$((FAILED + 1))
       bd update "$TASK_ID" --status=open 2>/dev/null || true
-      bd update "$TASK_ID" --append-notes="Runner stopped: billing error" 2>/dev/null || true
+      append_runner_note "$TASK_ID" "BILLING_ERROR" "-"
+      record_incident "$TASK_ID" "BILLING_ERROR" "-"
+      notify_user "beads-runner: billing error" "$TASK_ID — runner stopped"
       runner_cleanup
       rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
+      print_incidents_summary
       exit 4
       ;;
 
@@ -589,7 +729,10 @@ $PROMPT_EXTRA"
       echo "  Rate limited — will retry after usage check."
       FAILED=$((FAILED + 1))
       bd update "$TASK_ID" --status=open 2>/dev/null || true
+      append_runner_note "$TASK_ID" "RATE_LIMIT" "-"
+      record_incident "$TASK_ID" "RATE_LIMIT" "-"
       # Don't set LAST_FAILED_ID — rate limit retries are invisible to per-task retry counter
+      # No notification — RATE_LIMIT is routine and would spam.
       USAGE_CACHE_TIME=0  # force fresh usage check on next loop iteration
       ;;
 
@@ -597,6 +740,9 @@ $PROMPT_EXTRA"
       echo "  FAILED: $TASK_TITLE — ran out of context window"
       FAILED=$((FAILED + 1))
       bd update "$TASK_ID" --status=open 2>/dev/null || true
+      append_runner_note "$TASK_ID" "MAX_OUTPUT_TOKENS" "${PRESERVED_LOG:--}"
+      record_incident "$TASK_ID" "MAX_OUTPUT_TOKENS" "${PRESERVED_LOG:--}"
+      notify_user "beads-runner: max output tokens" "$TASK_ID — context exhausted"
       create_analysis_task "$TASK_ID" "$TASK_TITLE" "max_output_tokens"
       LAST_FAILED_ID=""
       FAIL_COUNT=0
@@ -606,9 +752,12 @@ $PROMPT_EXTRA"
       echo "  PARTIAL: $TASK_TITLE — exited 0 but task still open"
       FAILED=$((FAILED + 1))
       bd update "$TASK_ID" --status=open 2>/dev/null || true
+      append_runner_note "$TASK_ID" "TASK_NOT_CLOSED" "-"
+      record_incident "$TASK_ID" "TASK_NOT_CLOSED" "-"
       # First time: retry (Claude might just close it). Second time: create analysis task.
       # Note: FAIL_COUNT at the top of the loop also increments, but this check fires
       # before FAIL_COUNT reaches MAX_RETRIES, so this is the effective gate.
+      # No notification — first occurrence is often "Claude forgot to call bd close".
       if [[ "$TASK_ID" == "$LAST_FAILED_ID" ]]; then
         create_analysis_task "$TASK_ID" "$TASK_TITLE" "task_not_closed"
         LAST_FAILED_ID=""
@@ -622,6 +771,9 @@ $PROMPT_EXTRA"
       echo "  FAILED: $TASK_TITLE ($CLASSIFICATION, exit $CLAUDE_EXIT)"
       FAILED=$((FAILED + 1))
       bd update "$TASK_ID" --status=open 2>/dev/null || true
+      append_runner_note "$TASK_ID" "$CLASSIFICATION" "${PRESERVED_LOG:--}"
+      record_incident "$TASK_ID" "$CLASSIFICATION" "${PRESERVED_LOG:--}"
+      notify_user "beads-runner: $CLASSIFICATION" "$TASK_ID — see $LOG_DIR"
       # Count toward consecutive failures only if different task
       if [[ "$TASK_ID" != "$LAST_FAILED_ID" ]]; then
         CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
@@ -630,14 +782,22 @@ $PROMPT_EXTRA"
       ;;
   esac
 
+  # Drop the proc snapshot if classification didn't end up using it.
+  # (Only WATCHDOG_KILL writes to PROC_SNAPSHOT, and we keep it in that case.)
+  if [[ "$CLASSIFICATION" != "WATCHDOG_KILL" && -f "$PROC_SNAPSHOT" ]]; then
+    rm -f "$PROC_SNAPSHOT"
+  fi
+
   # Consecutive failure circuit breaker
   if [[ $CONSECUTIVE_FAILURES -ge $MAX_CONSECUTIVE_FAILURES ]]; then
     echo ""
     echo "  $MAX_CONSECUTIVE_FAILURES consecutive failures — likely systemic error."
     echo "  Stopping to avoid closing healthy tasks as skipped."
+    notify_user "beads-runner: stopped" "$MAX_CONSECUTIVE_FAILURES consecutive failures"
     runner_cleanup
     rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
     echo "Results: $COMPLETED completed, $FAILED failed"
+    print_incidents_summary
     exit 2
   fi
 
@@ -649,4 +809,5 @@ done
 
 rm -f "$USAGE_CACHE_FILE"
 echo "Results: $COMPLETED completed, $FAILED failed"
+print_incidents_summary
 echo "Run 'bd stats' or 'git log --oneline' to review."
