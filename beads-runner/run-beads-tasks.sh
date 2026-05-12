@@ -39,7 +39,7 @@ EXTRA_CLAUDE_FLAGS=(--no-chrome)
 PROMPT_EXTRA=""
 MAX_RETRIES=${MAX_RETRIES:-2}
 MAX_CONSECUTIVE_FAILURES=${MAX_CONSECUTIVE_FAILURES:-3}
-DEFAULT_MODEL=${DEFAULT_MODEL:-opus}
+DEFAULT_MODEL=${DEFAULT_MODEL:-opus[1m]}  # [1m] = 1M context variant; auto-tracks latest Opus
 USAGE_THRESHOLD=${USAGE_THRESHOLD:-70}       # pause new tasks above this % (0 = disabled)
 USAGE_SLEEP_SECONDS=${USAGE_SLEEP_SECONDS:-1800} # sleep duration when over threshold (30 min)
 USAGE_CACHE_SECONDS=${USAGE_CACHE_SECONDS:-300}  # cache usage API response (avoid hammering per-loop)
@@ -561,6 +561,9 @@ while true; do
   # Read model from label (model:sonnet, model:opus), default to configured model
   TASK_MODEL=$(bd label list "$TASK_ID" --json 2>/dev/null | jq -r '.[] | select(startswith("model:")) | sub("model:"; "")' 2>/dev/null)
   TASK_MODEL=${TASK_MODEL:-$DEFAULT_MODEL}
+  # Bare "opus" alias resolves to 200K — upgrade to the 1M variant.
+  # (sonnet[1m] requires "extra usage" which this org has disabled, so leave sonnet alone.)
+  [[ "$TASK_MODEL" == "opus" ]] && TASK_MODEL="opus[1m]"
 
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "  $TASK_TITLE ($TASK_ID) [$TASK_MODEL]"
