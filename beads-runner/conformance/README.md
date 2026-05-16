@@ -111,6 +111,35 @@ characterizing the current hazard, mirroring the T1a/T1b gate model, with the
 no-process-pileup constraint from the incident notes). The captured repro
 above is unchanged and remains the input for that follow-up.
 
+## O-1 headless version probe (T1c — `claude-tools-0vt`, upgrade-gated canary)
+
+`probes/o1-headless-version-probe.sh` is **referenced by this gate but is NOT
+in the `assertions/bc-*.sh` regression set** that `run-conformance.sh` runs:
+those rigs are offline (stubbed `claude`); the O-1 probe deliberately invokes
+the **live, networked `claude` binary** to re-assert the undocumented,
+version-pinned behavior all of AD3 / `INTERFACE.md v1 §7.2/§7.6` rests on
+(`research/headless-stuck-signal.md`, baseline claude 2.1.142):
+
+- **A1** AskUserQuestion → exit-0/`success`/`is_error:false` **with**
+  `permission_denials[AskUserQuestion]` (the §7.2 primary backstop hook).
+- **A2** EnterPlanMode → silent exit-0, **no** denial, stream carries
+  `"Entered plan mode."` (the *only* backstop for this residual gap).
+- **A3** ExitPlanMode (out of plan) → exit-0 soft-fail (`not in plan mode`).
+- **A4** `--disallowedTools` removes all three from the advertised `init`
+  tool list (the §7.6 guardrail).
+
+```bash
+bash beads-runner/conformance/probes/o1-headless-version-probe.sh
+# exit 0 = AD3 backstops safe on this claude
+# exit 1 = DRIFT (BLOCKING escalation → claude-tools-65z; do not weaken the probe)
+# exit 2 = probe could not run (no claude/jq, auth/network) — not drift, still non-zero
+```
+
+**MUST RE-RUN ON EVERY `claude` UPGRADE.** A red probe blocks trusting the AD3
+backstops (it is the canary `claude-tools-kqn`/T2.5 cross-links). It is kept
+out of the offline exit-code so a network/auth outage cannot RED the
+regression gate, while the gate still documents and points at it here.
+
 ## The four result statuses
 
 - **PASS** — regression green: the current script exhibits the SCAR. This is

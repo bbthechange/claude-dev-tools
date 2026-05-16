@@ -43,6 +43,9 @@ echo " target: $(cd "$CONF_DIR/.." && pwd)/run-beads-tasks.sh"
 echo " binds : INTERFACE.md v1 §3, §7.1, §7.5, §8.1/§8.2 (terminal-reason /"
 echo "         classification precedence) — assertions are the literal"
 echo "         close-criteria T2/T3 cite by BC id."
+echo " O-1   : AD3 §7.2/§7.6 backstops are version-pinned & live-claude — NOT"
+echo "         in the offline rigs below. Re-run on every claude upgrade:"
+echo "         bash $CONF_DIR/probes/o1-headless-version-probe.sh"
 echo "═══════════════════════════════════════════════════════════════════════"
 
 ran=0
