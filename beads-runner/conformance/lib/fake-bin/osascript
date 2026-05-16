@@ -1,0 +1,5 @@
+#!/bin/bash
+# Conformance harness — no-op osascript so notify_user never fires a real
+# macOS notification during a test run (BC-26 mechanism is T1b's; here we
+# only need it silenced).
+exit 0

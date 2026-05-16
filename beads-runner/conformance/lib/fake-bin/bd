@@ -1,0 +1,210 @@
+#!/bin/bash
+# Conformance harness — stateful `bd` stub (T1a, claude-tools-ooc).
+#
+# Black-box driving of run-beads-tasks.sh: a file-backed issue store so the
+# runner's status transitions, notes, deps, and analysis-child creation are
+# OBSERVABLE without reading the script's source. NOT a beads reimplementation —
+# only the surface run-beads-tasks.sh actually calls.
+#
+# State:  $BD_STORE/<id>/{status,title,desc,labels,notes,deps,attempts}
+# Audit:  $BD_AUDIT   — every status transition, one per line: "<id> <status>"
+#                       (this is the BC-15 / BC-35 release-to-open evidence)
+set -u
+
+STORE="${BD_STORE:?BD_STORE unset}"
+AUDIT="${BD_AUDIT:-/dev/null}"
+mkdir -p "$STORE"
+
+_dir()  { echo "$STORE/$1"; }
+_get()  { local f="$STORE/$1/$2"; [[ -f "$f" ]] && cat "$f" || echo "${3:-}"; }
+_set()  { local d="$STORE/$1"; mkdir -p "$d"; printf '%s' "$3" > "$d/$2"; }
+_exists(){ [[ -d "$STORE/$1" ]]; }
+
+# Is issue $1 blocked? (any dep whose issue is not closed)
+_blocked() {
+  local id="$1" deps dep
+  deps=$(_get "$id" deps "")
+  [[ -z "$deps" ]] && return 1
+  while IFS= read -r dep; do
+    [[ -z "$dep" ]] && continue
+    if _exists "$dep" && [[ "$(_get "$dep" status open)" != "closed" ]]; then
+      return 0
+    fi
+  done <<< "$deps"
+  return 1
+}
+
+# Emit a JSON array of issue objects for the given ids (id,title,description,status,labels[]).
+_emit_issues() {
+  local first=1
+  printf '['
+  local id
+  for id in "$@"; do
+    [[ -z "$id" ]] && continue
+    [[ $first -eq 1 ]] || printf ','
+    first=0
+    local title desc status labels
+    title=$(_get "$id" title "$id")
+    desc=$(_get "$id" desc "")
+    status=$(_get "$id" status open)
+    labels=$(_get "$id" labels "")
+    jq -cn \
+      --arg id "$id" --arg t "$title" --arg d "$desc" --arg s "$status" \
+      --arg L "$labels" \
+      '{id:$id,title:$t,description:$d,status:$s,
+        labels:($L|if .=="" then [] else split(",") end)}' | tr -d '\n'
+  done
+  printf ']'
+}
+
+_all_ids() { ls -1 "$STORE" 2>/dev/null; }
+
+# ordering: open & not-blocked, sorted by attempts asc then id (round-robin so
+# distinct-task failures rotate — exercises the BC-14 distinct-task breaker).
+_ready_ids() {
+  local id
+  for id in $(_all_ids); do
+    [[ "$(_get "$id" status open)" == "open" ]] || continue
+    _blocked "$id" && continue
+    printf '%s %s\n' "$(_get "$id" attempts 0)" "$id"
+  done | sort -n -k1,1 -k2,2 | awk '{print $2}'
+}
+
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+  version|--version|-v)
+    echo "bd stub (conformance harness, claude-tools-ooc)"; exit 0 ;;
+
+  list)
+    # bd list --status=<s> --json
+    want=""
+    for a in "$@"; do case "$a" in --status=*) want="${a#--status=}";; esac; done
+    ids=()
+    for id in $(_all_ids); do
+      [[ "$(_get "$id" status open)" == "$want" ]] && ids+=("$id")
+    done
+    _emit_issues "${ids[@]+"${ids[@]}"}"; echo ; exit 0 ;;
+
+  ready)
+    r=()
+    while IFS= read -r _rid; do [[ -n "$_rid" ]] && r+=("$_rid"); done < <(_ready_ids)
+    _emit_issues "${r[@]+"${r[@]}"}"; echo ; exit 0 ;;
+
+  blocked)
+    ids=()
+    for id in $(_all_ids); do
+      [[ "$(_get "$id" status open)" == "closed" ]] && continue
+      _blocked "$id" && ids+=("$id")
+    done
+    _emit_issues "${ids[@]+"${ids[@]}"}"; echo ; exit 0 ;;
+
+  show)
+    id="${1:-}"; shift || true
+    children=0; json=0
+    for a in "$@"; do
+      case "$a" in --children) children=1;; --json) json=1;; esac
+    done
+    if [[ "${HARNESS_BD_SHOW_STATUS_EMPTY:-}" == "$id" && $children -eq 0 ]]; then
+      # BC-09 fail-open driver: classify path sees an unparseable status.
+      echo '[]'; exit 0
+    fi
+    if ! _exists "$id"; then echo '[]'; exit 0; fi
+    if [[ $children -eq 1 ]]; then
+      # bd quirk (BC-07): --children includes self. Emit only self → 0 children.
+      jq -cn --arg id "$id" --arg s "$(_get "$id" status open)" \
+        '[{id:$id,status:$s}]'; exit 0
+    fi
+    _emit_issues "$id"; echo ; exit 0 ;;
+
+  label)
+    # bd label list <id> --json
+    sub="${1:-}"; id="${2:-}"
+    if [[ "$sub" == "list" ]]; then
+      L=$(_get "$id" labels "")
+      jq -cn --arg L "$L" '($L|if .=="" then [] else split(",") end)'
+      exit 0
+    fi
+    exit 0 ;;
+
+  create)
+    title=""; desc=""; labels=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --title) title="$2"; shift 2;;
+        --title=*) title="${1#--title=}"; shift;;
+        -d|--description) desc="$2"; shift 2;;
+        -p|--priority) shift 2;;
+        --labels) labels="$2"; shift 2;;
+        --labels=*) labels="${1#--labels=}"; shift;;
+        *) shift;;
+      esac
+    done
+    nid="htest-$(date +%s)$RANDOM"
+    _set "$nid" title "$title"
+    _set "$nid" desc "$desc"
+    _set "$nid" status "open"
+    _set "$nid" labels "$labels"
+    _set "$nid" attempts "0"
+    : > "$STORE/$nid/notes"; : > "$STORE/$nid/deps"
+    echo "$nid $(_get "$nid" status open)" >> "$AUDIT"
+    # BC-18: this human stdout shape is what create_analysis_task sed-scrapes.
+    echo "✓ Created issue: $nid — $title"
+    exit 0 ;;
+
+  dep)
+    # bd dep add <task> <dependsOn>
+    sub="${1:-}"; task="${2:-}"; dep="${3:-}"
+    if [[ "$sub" == "add" ]] && _exists "$task"; then
+      echo "$dep" >> "$STORE/$task/deps"
+    fi
+    exit 0 ;;
+
+  update)
+    id="${1:-}"; shift || true
+    _exists "$id" || exit 0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --status=*)
+          st="${1#--status=}"
+          _set "$id" status "$st"
+          [[ "$st" == "in_progress" ]] && \
+            _set "$id" attempts "$(( $(_get "$id" attempts 0) + 1 ))"
+          echo "$id $st" >> "$AUDIT"
+          shift;;
+        --status) st="$2"; _set "$id" status "$st"
+          [[ "$st" == "in_progress" ]] && \
+            _set "$id" attempts "$(( $(_get "$id" attempts 0) + 1 ))"
+          echo "$id $st" >> "$AUDIT"; shift 2;;
+        --append-notes=*) printf '%s\n' "${1#--append-notes=}" >> "$STORE/$id/notes"; shift;;
+        --append-notes) printf '%s\n' "$2" >> "$STORE/$id/notes"; shift 2;;
+        --notes=*|--design=*|--title=*) shift;;
+        --claim) _set "$id" status "in_progress"; echo "$id in_progress" >> "$AUDIT"; shift;;
+        *) shift;;
+      esac
+    done
+    exit 0 ;;
+
+  close)
+    for id in "$@"; do
+      case "$id" in --reason=*|--reason|--suggest-next) continue;; esac
+      _exists "$id" || continue
+      _set "$id" status "closed"
+      echo "$id closed" >> "$AUDIT"
+    done
+    exit 0 ;;
+
+  human)
+    # §7.2/§7.3 backstop driver — observable for the STUCK gate (T1a forward
+    # criterion; full e2e is T1b's).
+    id="${1:-}"
+    echo "$id" >> "${HARNESS_OUT:-/dev/null}/bd-human.log" 2>/dev/null || true
+    exit 0 ;;
+
+  prime|remember|memories|stats|doctor|dolt|preflight|lint|defer|supersede)
+    exit 0 ;;
+
+  *)
+    # Fail-open like real bd under the runner's `|| true` guards.
+    exit 0 ;;
+esac

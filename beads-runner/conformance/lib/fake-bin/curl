@@ -1,0 +1,9 @@
+#!/bin/bash
+# Conformance harness — `curl` stub for the Anthropic usage API (BC-34).
+# HARNESS_USAGE: fail | over | under
+set -u
+case "${HARNESS_USAGE:-under}" in
+  fail)  exit 22 ;;                                                  # API call fails → fail-OPEN
+  over)  echo '{"five_hour":{"utilization":95},"seven_day":{"utilization":40}}'; exit 0 ;;
+  *)     echo '{"five_hour":{"utilization":10},"seven_day":{"utilization":20}}'; exit 0 ;;
+esac

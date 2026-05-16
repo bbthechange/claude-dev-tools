@@ -1,0 +1,167 @@
+#!/bin/bash
+# Conformance harness — scripted `claude` stub (T1a, claude-tools-ooc).
+#
+# Emits stream-json on stdout exactly as run-beads-tasks.sh's parser expects
+# (the runner redirects our stdout+stderr into STREAM_FILE), then exits with a
+# controlled code. Behavior is read PER INVOCATION from $HARNESS_CLAUDE_PLAN
+# (one behavior per line; invocations past the last line repeat the last line —
+# end a plan with `success` to guarantee the queue drains and the runner
+# reaches its BC-21 exit-0 terminal).
+set -u
+
+PLAN="${HARNESS_CLAUDE_PLAN:?HARNESS_CLAUDE_PLAN unset}"
+CNT="${HARNESS_CLAUDE_COUNT:?HARNESS_CLAUDE_COUNT unset}"
+
+# --version (preflight) — not an invocation.
+for a in "$@"; do [[ "$a" == "--version" ]] && { echo "claude stub 0.0.0"; exit 0; }; done
+
+# Extract the -p prompt.
+prompt=""; i=1
+for a in "$@"; do
+  if [[ "$a" == "-p" ]]; then eval "prompt=\${$((i+1))}"; break; fi
+  i=$((i+1))
+done
+
+# Beads id is inside the prompt: `beads issue <ID>: "..."`
+bead_id=$(printf '%s' "$prompt" | sed -n 's/.*beads issue \([^ :]*\):.*/\1/p' | head -1)
+
+# Record the exact prompt + argv (BC-38 worker-prompt / §7.6 guardrail reads these).
+printf '%s' "$prompt" > "${HARNESS_OUT:-/dev/null}/last-prompt.txt" 2>/dev/null || true
+printf '%s\n' "$@"     > "${HARNESS_OUT:-/dev/null}/last-argv.txt"   2>/dev/null || true
+
+# Pick this invocation's behavior.
+n=$(( $(cat "$CNT" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$CNT"
+behavior=$(sed -n "${n}p" "$PLAN")
+[[ -z "$behavior" ]] && behavior=$(tail -1 "$PLAN")
+
+emit() { printf '%s\n' "$1"; }
+
+emit '{"type":"assistant","message":"working"}'
+emit '{"type":"tool_use","tool":"Bash"}'
+
+case "$behavior" in
+  success)
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"done","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  noclose)            # exit 0 but bead left open  → BC-09 TASK_NOT_CLOSED
+    emit '{"type":"result","result":"finished (forgot to close)","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  bdshow_empty)       # exit 0; harness makes bd-show status unparseable → BC-09 fail-open SUCCESS
+    emit '{"type":"result","result":"done","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  overflow)           # BC-11 context overflow (errored result, prompt too long)
+    emit '{"type":"result","result":"API Error: Prompt is too long","is_error":true,"stop_reason":"stop_sequence"}'
+    exit 1 ;;
+
+  overflow_then_fixed)
+    # BC-14 overflow STORM driver, keyed on the BEAD (not invocation index):
+    # every real task overflows on its first attempt (⇒ one analysis child
+    # each); the analysis child resolves; the re-scoped retry then succeeds.
+    # A positional `overflow overflow overflow success` plan is unsound here
+    # because the fake `bd ready` interleaves analysis children into the queue
+    # — an analysis child lands in an `overflow` slot, the BC-17 analysis-label
+    # guard suppresses its grandchild, and a real task never overflows. Keying
+    # on $BD_STORE/<id>/attempts makes the scenario order-independent so it
+    # actually exercises "3 DISTINCT overflows ⇒ analysis-per-task, no breaker"
+    # (BC-14's asserted behavior — unchanged; this fixes the driver only).
+    if [[ "$bead_id" == htest-* ]]; then            # analysis child → resolve
+      bd close "$bead_id" >/dev/null 2>&1
+      emit '{"type":"result","result":"analyzed","is_error":false,"stop_reason":"end_turn"}'
+      exit 0
+    fi
+    _att=$(cat "${BD_STORE:-/nonexistent}/$bead_id/attempts" 2>/dev/null || echo 1)
+    if [[ "${_att:-1}" -le 1 ]]; then               # first attempt → overflow
+      emit '{"type":"result","result":"API Error: Prompt is too long","is_error":true,"stop_reason":"stop_sequence"}'
+      exit 1
+    fi
+    bd close "$bead_id" >/dev/null 2>&1             # re-scoped retry → success
+    emit '{"type":"result","result":"done (re-scoped)","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  overflow_phrase_benign)   # BC-11 is_error guard: phrase present but NOT an error
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"Note: the prompt is too long to inline, summarizing instead.","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  server_slow)        # BC-29: SERVER_ERROR but spanning >1s so ITER_TS differs
+    sleep 2
+    emit '{"type":"system","subtype":"api_retry","error":"server_error","error_status":500,"attempt":1,"max_retries":5}'
+    emit '{"type":"result","result":"server error","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  maxtok_result)      # BC-12 max-output-tokens via result stop_reason
+    emit '{"type":"result","result":"truncated","is_error":true,"stop_reason":"max_tokens"}'
+    exit 1 ;;
+
+  maxtok_apiretry)    # BC-12 max-output-tokens via api_retry
+    emit '{"type":"system","subtype":"api_retry","error":"max_output_tokens","error_status":400,"attempt":1,"max_retries":5}'
+    emit '{"type":"result","result":"failed","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  ratelimit)
+    emit '{"type":"system","subtype":"api_retry","error":"rate_limit","error_status":429,"attempt":1,"max_retries":5}'
+    emit '{"type":"result","result":"rate limited","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  auth)
+    emit '{"type":"system","subtype":"api_retry","error":"authentication_failed","error_status":401,"attempt":1,"max_retries":5}'
+    emit '{"type":"result","result":"auth failed","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  billing)
+    emit '{"type":"system","subtype":"api_retry","error":"billing_error","error_status":402,"attempt":1,"max_retries":5}'
+    emit '{"type":"result","result":"billing","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  server)
+    emit '{"type":"system","subtype":"api_retry","error":"server_error","error_status":500,"attempt":1,"max_retries":5}'
+    emit '{"type":"result","result":"server error","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  unknown)            # nonzero, no markers → UNKNOWN_FAILURE (generic branch)
+    emit '{"type":"result","result":"died","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  rl_then_overflow)   # BC-10 multi-signal precedence: transient THEN terminal
+    emit '{"type":"system","subtype":"api_retry","error":"rate_limit","error_status":429,"attempt":1,"max_retries":5}'
+    emit '{"type":"result","result":"API Error: Prompt is too long","is_error":true,"stop_reason":"stop_sequence"}'
+    exit 1 ;;
+
+  overflow_then_maxtok) # BC-10: CONTEXT_OVERFLOW must beat MAX_OUTPUT_TOKENS
+    emit '{"type":"result","result":"context_length_exceeded","is_error":true,"stop_reason":"max_tokens"}'
+    exit 1 ;;
+
+  auth_then_rl)       # BC-10: AUTH_FAILURE must beat RATE_LIMIT
+    emit '{"type":"system","subtype":"api_retry","error":"rate_limit","error_status":429,"attempt":1,"max_retries":5}'
+    emit '{"type":"system","subtype":"api_retry","error":"authentication_failed","error_status":401,"attempt":2,"max_retries":5}'
+    emit '{"type":"result","result":"failed","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  hang)               # BC-22 watchdog: alive, no stream output, idle.
+    # `exec` so the watchdog's staged kill (SIGINT→SIGKILL on CLAUDE_PID)
+    # lands on THIS sleep directly. A plain `sleep N; exit 0` would let the
+    # wrapper bash defer the deferred-until-child SIGINT and then exit 0 —
+    # the runner's classify_failure short-circuits on exit 0 (never reads the
+    # signal file), masking the kill as TASK_NOT_CLOSED. A genuinely stuck
+    # agent never voluntarily exits 0; it dies by the watchdog's signal
+    # (nonzero), so WATCHDOG_KILL wins precedence. (Harness-mechanism fidelity
+    # fix — the asserted behavior is unchanged.)
+    exec sleep "${HARNESS_HANG_SECONDS:-86400}" ;;
+
+  stuck_primary)      # §7.2 worker-driven STUCK (the forward gate; no marker today)
+    if [[ -n "$bead_id" ]]; then
+      bd update "$bead_id" --status=blocked >/dev/null 2>&1
+      bd human "$bead_id" >/dev/null 2>&1
+    fi
+    emit '{"type":"result","result":"I need a human decision; blocked.","is_error":false,"stop_reason":"end_turn"}'
+    exit "${WORKER_STUCK_EXIT:-7}" ;;
+
+  *)
+    emit '{"type":"result","result":"unrecognized plan behavior","is_error":true,"stop_reason":"end_turn"}'
+    exit 1 ;;
+esac

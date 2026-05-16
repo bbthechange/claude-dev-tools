@@ -1,0 +1,9 @@
+#!/bin/bash
+# Conformance harness — `security` (macOS Keychain) stub, BC-34 driver.
+# HARNESS_KEYCHAIN: ok | fail | notoken
+set -u
+case "${HARNESS_KEYCHAIN:-ok}" in
+  fail)    exit 1 ;;                                  # keychain unreadable → fail-OPEN
+  notoken) echo '{"claudeAiOauth":{}}' ; exit 0 ;;    # creds but no token  → fail-OPEN
+  *)       echo '{"claudeAiOauth":{"accessToken":"stub-token"}}' ; exit 0 ;;
+esac
