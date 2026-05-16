@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Beads Runner — Attention Router · UX Mocks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#080a0e;
+    --ink-2:#0b0e14;
+    --panel:#10141c;
+    --panel-2:#161b25;
+    --panel-3:#1c2230;
+    --line:rgba(255,255,255,.07);
+    --line-2:rgba(255,255,255,.12);
+    --text:#e8ebf1;
+    --dim:#8b94a6;
+    --faint:#535b6b;        /* machinery — never look at this */
+    --amber:#ffb454;        /* YOU. the only warm thing. */
+    --amber-soft:#ffcd86;
+    --amber-glow:rgba(255,180,84,.22);
+    --mint:#4fd6a0;         /* healthy / auto-advancing */
+    --coral:#ff6b6b;        /* blocking / dead */
+    --sky:#74a8ff;          /* timed-fyi / informational */
+    --slate:#5b6577;        /* machine */
+    --font-display:'Fraunces',Georgia,serif;
+    --font-read:'Newsreader',Georgia,serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    background:var(--ink);
+    color:var(--text);
+    font-family:var(--mono);
+    min-height:100vh;
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+    background-image:
+      radial-gradient(900px 600px at 78% -5%, rgba(116,168,255,.06), transparent 60%),
+      radial-gradient(800px 700px at 8% 105%, rgba(79,214,160,.05), transparent 55%);
+  }
+  /* film grain */
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.4;
+    mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  }
+  ::selection{background:var(--amber);color:#1a1206}
+
+  /* ---------- gallery shell ---------- */
+  .wrap{max-width:1380px;margin:0 auto;padding:64px 28px 120px}
+  .masthead{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:28px;padding-bottom:34px;border-bottom:1px solid var(--line)}
+  .brand .kicker{font-size:11px;letter-spacing:.42em;text-transform:uppercase;color:var(--slate);margin-bottom:18px;display:flex;align-items:center;gap:12px}
+  .brand .kicker::before{content:"";width:34px;height:1px;background:var(--slate)}
+  .brand h1{font-family:var(--font-display);font-weight:300;font-size:clamp(38px,6vw,76px);line-height:.95;letter-spacing:-.02em}
+  .brand h1 em{font-style:italic;color:var(--amber);font-weight:400}
+  .brand .sub{margin-top:18px;color:var(--dim);font-size:13px;max-width:46ch;line-height:1.7}
+  .legend{display:flex;flex-direction:column;gap:9px;font-size:11px;color:var(--dim)}
+  .legend .row{display:flex;align-items:center;gap:10px;letter-spacing:.05em}
+  .legend .sw{width:20px;height:9px;border-radius:2px;flex:none}
+
+  .stage{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:50px;margin-top:60px;align-items:start}
+  @media(max-width:1080px){.stage{grid-template-columns:1fr;gap:42px}}
+
+  /* ---------- phone ---------- */
+  .phone-col{display:flex;justify-content:center}
+  .device{
+    width:390px;height:830px;border-radius:54px;flex:none;position:relative;
+    background:linear-gradient(150deg,#23262d,#0c0d11 55%,#1a1c22);
+    padding:13px;
+    box-shadow:0 0 0 1px rgba(255,255,255,.05),0 50px 100px -30px rgba(0,0,0,.85),0 0 80px -40px rgba(116,168,255,.3);
+  }
+  .device::before{content:"";position:absolute;top:0;left:0;right:0;bottom:0;border-radius:54px;border:1px solid rgba(255,255,255,.04);pointer-events:none}
+  .screen{position:relative;width:100%;height:100%;border-radius:42px;overflow:hidden;background:var(--ink);isolation:isolate}
+  .island{position:absolute;top:13px;left:50%;transform:translateX(-50%);width:104px;height:30px;background:#000;border-radius:18px;z-index:60}
+  .island::after{content:"";position:absolute;right:13px;top:50%;transform:translateY(-50%);width:8px;height:8px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#2a3550,#0a0d14)}
+
+  /* view system */
+  .view{position:absolute;inset:0;display:flex;flex-direction:column;opacity:0;visibility:hidden;transform:translateX(22px);transition:opacity .42s ease,transform .42s cubic-bezier(.2,.7,.2,1),visibility .42s}
+  .view.active{opacity:1;visibility:visible;transform:none}
+  .scroll{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .scroll::-webkit-scrollbar{display:none}
+  .statusbar{height:54px;display:flex;align-items:flex-end;justify-content:space-between;padding:0 30px 7px;font-size:12px;color:var(--text);font-weight:500;flex:none}
+  .statusbar .sig{display:flex;gap:6px;align-items:center}
+  .statusbar .sig svg{width:16px;height:11px}
+
+  /* app header */
+  .apphead{padding:6px 22px 16px;display:flex;align-items:center;justify-content:space-between;flex:none}
+  .apphead .t{font-family:var(--font-display);font-size:25px;font-weight:400;letter-spacing:-.01em;display:flex;align-items:center;gap:11px}
+  .apphead .t .dot{width:7px;height:7px;border-radius:50%;background:var(--mint);box-shadow:0 0 9px var(--mint)}
+  .iconbtn{width:38px;height:38px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--dim);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.2s}
+  .iconbtn:hover{color:var(--text);border-color:var(--line-2)}
+  .iconbtn svg{width:17px;height:17px}
+  .back{display:flex;align-items:center;gap:9px;color:var(--dim);font-size:12px;letter-spacing:.14em;text-transform:uppercase;cursor:pointer;background:none;border:none;font-family:var(--mono)}
+  .back:hover{color:var(--amber)}
+  .back svg{width:15px;height:15px}
+
+  /* ===== STATUS STRIP (board) ===== */
+  .strip{margin:0 14px 16px;border:1px solid var(--line);background:linear-gradient(180deg,var(--panel),var(--ink-2));border-radius:16px;padding:14px 15px;cursor:pointer;flex:none;position:relative;overflow:hidden}
+  .strip::before{content:"";position:absolute;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px);background-size:100% 13px;opacity:.4;pointer-events:none}
+  .strip-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;position:relative}
+  .strip-top .lbl{font-size:10px;letter-spacing:.34em;color:var(--slate)}
+  .strip-top .hb{font-size:10px;color:var(--mint);display:flex;align-items:center;gap:6px;letter-spacing:.1em}
+  .strip-top .hb::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--mint);box-shadow:0 0 8px var(--mint);animation:beat 2.4s infinite}
+  @keyframes beat{0%,72%,100%{opacity:1}80%{opacity:.25}}
+  .gauges{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:13px;position:relative}
+  .g{background:rgba(255,255,255,.022);border:1px solid var(--line);border-radius:11px;padding:10px 12px}
+  .g .gl{font-size:9px;letter-spacing:.22em;color:var(--slate);display:flex;justify-content:space-between;margin-bottom:9px}
+  .g .gv{font-family:var(--font-display);font-size:22px;font-weight:400;letter-spacing:-.01em}
+  .g .gv small{font-size:10px;color:var(--dim);font-family:var(--mono);margin-left:3px}
+  .track{height:5px;border-radius:3px;background:rgba(255,255,255,.07);margin-top:8px;position:relative;overflow:hidden}
+  .track i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;width:0;transition:width 1.4s cubic-bezier(.2,.8,.2,1)}
+  .track .spare{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--amber);box-shadow:0 0 6px var(--amber)}
+  .strip-tags{display:flex;gap:7px;flex-wrap:wrap;position:relative}
+  .tg{font-size:10px;letter-spacing:.06em;padding:5px 9px;border-radius:7px;border:1px solid var(--line);color:var(--dim);display:flex;align-items:center;gap:6px}
+  .tg b{color:var(--text);font-weight:600}
+  .tg.warn{border-color:rgba(255,180,84,.35);color:var(--amber-soft);background:var(--amber-glow)}
+  .tg.bad{border-color:rgba(255,107,107,.35);color:var(--coral);background:rgba(255,107,107,.1)}
+
+  /* ===== WAITING ON YOU lane ===== */
+  .lane-hd{display:flex;align-items:center;gap:11px;margin:6px 20px 11px;font-size:10px;letter-spacing:.32em;color:var(--amber);text-transform:uppercase;flex:none}
+  .lane-hd .pulse{width:8px;height:8px;border-radius:50%;background:var(--amber);position:relative}
+  .lane-hd .pulse::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:1px solid var(--amber);animation:ring 2s infinite}
+  @keyframes ring{0%{transform:scale(.6);opacity:.9}100%{transform:scale(1.7);opacity:0}}
+  .lane-hd .ln{flex:1;height:1px;background:linear-gradient(90deg,var(--amber-glow),transparent)}
+  .waitcard{margin:0 14px 10px;border-radius:18px;padding:17px;cursor:pointer;flex:none;position:relative;overflow:hidden;
+    background:linear-gradient(155deg,rgba(255,180,84,.16),rgba(255,180,84,.03));
+    border:1px solid rgba(255,180,84,.34);
+    box-shadow:0 0 0 1px rgba(255,180,84,.06),0 18px 40px -22px rgba(255,180,84,.5);
+    animation:breathe 4.6s ease-in-out infinite}
+  @keyframes breathe{0%,100%{box-shadow:0 0 0 1px rgba(255,180,84,.06),0 18px 40px -22px rgba(255,180,84,.42)}50%{box-shadow:0 0 0 1px rgba(255,180,84,.14),0 22px 52px -20px rgba(255,180,84,.62)}}
+  .waitcard .meta{display:flex;align-items:center;gap:9px;font-size:10px;letter-spacing:.1em;color:var(--amber-soft);margin-bottom:10px}
+  .waitcard .meta .p{padding:2px 7px;border:1px solid rgba(255,180,84,.4);border-radius:5px}
+  .waitcard .meta .sp{margin-left:auto;color:var(--dim)}
+  .waitcard .ask{font-family:var(--font-display);font-size:21px;line-height:1.22;font-weight:400;color:#fff;letter-spacing:-.01em}
+  .waitcard .tldr{margin-top:9px;font-family:var(--font-read);font-size:13.5px;color:var(--amber-soft);opacity:.85;line-height:1.5}
+  .waitcard .go{margin-top:14px;display:flex;align-items:center;justify-content:space-between;font-size:11px;letter-spacing:.16em;color:var(--amber)}
+  .waitcard .go svg{width:16px;height:16px}
+
+  /* ===== lifecycle columns ===== */
+  .spine{margin:8px 0 0;padding:14px 0 16px;border-top:1px solid var(--line);flex:none}
+  .spine .sl{font-size:10px;letter-spacing:.32em;color:var(--slate);padding:0 20px 13px}
+  .cols{display:flex;gap:9px;overflow-x:auto;padding:0 14px 4px;scrollbar-width:none}
+  .cols::-webkit-scrollbar{display:none}
+  .col{flex:none;width:118px}
+  .col-h{display:flex;align-items:center;justify-content:space-between;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);padding:0 3px 9px;border-bottom:1px solid var(--line);margin-bottom:9px}
+  .col-h .c{color:var(--faint)}
+  .col[data-gate="you"] .col-h{color:var(--amber)}
+  .col[data-gate="you"] .col-h .c{color:var(--amber)}
+  .bead{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 10px;margin-bottom:7px;cursor:pointer;transition:.18s}
+  .bead:hover{border-color:var(--line-2);transform:translateY(-1px)}
+  .bead .bt{font-size:11px;line-height:1.35;color:var(--text);margin-bottom:7px;font-family:var(--font-read)}
+  .bead .bf{display:flex;align-items:center;justify-content:space-between;font-size:9px;color:var(--faint)}
+  .bead .rs{width:5px;height:5px;border-radius:50%}
+  .rs.run{background:var(--mint);box-shadow:0 0 6px var(--mint)}
+  .rs.idle{background:var(--slate)}
+  .rs.fail{background:var(--coral);box-shadow:0 0 6px var(--coral)}
+  .bead.failbead{border-color:rgba(255,107,107,.32);background:linear-gradient(160deg,rgba(255,107,107,.1),var(--panel))}
+  .bead.failbead .warn{color:var(--coral);font-size:9px;letter-spacing:.1em;margin-top:6px;display:flex;align-items:center;gap:5px}
+
+  /* ===== bottom nav ===== */
+  .nav{flex:none;height:88px;border-top:1px solid var(--line);background:linear-gradient(180deg,rgba(16,20,28,.4),var(--ink));backdrop-filter:blur(20px);display:flex;align-items:flex-start;justify-content:space-around;padding:13px 26px 0;position:relative}
+  .navitem{display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--faint);cursor:pointer;font-size:9px;letter-spacing:.22em;text-transform:uppercase;background:none;border:none;font-family:var(--mono);transition:.2s;width:74px}
+  .navitem svg{width:22px;height:22px;stroke-width:1.6}
+  .navitem.on{color:var(--amber)}
+  .navitem:hover{color:var(--text)}
+  .navitem .badge{position:absolute;top:6px;margin-left:26px;background:var(--amber);color:#160f02;font-size:9px;font-weight:600;width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--mono)}
+  .fab{width:60px;height:60px;border-radius:20px;background:linear-gradient(150deg,var(--amber),#e89233);color:#160f02;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;margin-top:-22px;box-shadow:0 14px 30px -10px rgba(255,180,84,.6);transition:.2s}
+  .fab:hover{transform:translateY(-3px) rotate(90deg)}
+  .fab svg{width:25px;height:25px;stroke-width:2}
+
+  /* ===== INBOX ===== */
+  .inbox-sub{padding:0 22px 16px;font-family:var(--font-read);font-size:14px;color:var(--dim);line-height:1.55;flex:none}
+  .inbox-sub b{color:var(--text);font-weight:500}
+  .digestbar{margin:0 14px 14px;border:1px dashed var(--line-2);border-radius:13px;padding:11px 14px;display:flex;align-items:center;gap:11px;font-size:11px;color:var(--dim);flex:none}
+  .digestbar .dn{margin-left:auto;color:var(--sky)}
+  .inrow{margin:0 14px 11px;border:1px solid var(--line);background:var(--panel);border-radius:16px;padding:15px;cursor:pointer;transition:.2s;position:relative;overflow:hidden}
+  .inrow::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+  .inrow:hover{border-color:var(--line-2);transform:translateX(2px)}
+  .inrow.t-block::before{background:var(--amber);box-shadow:0 0 14px var(--amber)}
+  .inrow.t-pair::before{background:var(--mint)}
+  .inrow.t-fyi::before{background:var(--sky)}
+  .inrow.t-dig::before{background:var(--slate)}
+  .inrow .tier{font-size:9px;letter-spacing:.22em;text-transform:uppercase;display:flex;align-items:center;gap:8px;margin-bottom:11px}
+  .t-block .tier{color:var(--amber)}
+  .t-pair .tier{color:var(--mint)}
+  .t-fyi .tier{color:var(--sky)}
+  .t-dig .tier{color:var(--slate)}
+  .inrow .tier .age{margin-left:auto;color:var(--faint);letter-spacing:.08em}
+  .inrow .h{font-family:var(--font-display);font-size:18px;font-weight:400;line-height:1.25;color:var(--text);letter-spacing:-.01em}
+  .inrow .d{margin-top:8px;font-family:var(--font-read);font-size:13.5px;color:var(--dim);line-height:1.5}
+  .inrow .foot{margin-top:13px;display:flex;align-items:center;gap:8px;font-size:10px;color:var(--faint);letter-spacing:.06em}
+  .inrow .foot .chip{border:1px solid var(--line);padding:3px 8px;border-radius:6px}
+
+  /* ===== DOSSIER ===== */
+  .dscroll{padding:0 0 130px}
+  .deyebrow{padding:2px 24px 16px;display:flex;gap:9px;font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--slate);align-items:center;flex-wrap:wrap}
+  .deyebrow .pin{color:var(--amber);border:1px solid rgba(255,180,84,.4);padding:3px 8px;border-radius:6px;background:var(--amber-glow)}
+  .dask{padding:0 24px 18px;font-family:var(--font-display);font-size:30px;font-weight:400;line-height:1.16;letter-spacing:-.02em;color:#fff}
+  .tldr{margin:0 18px 20px;border-left:2px solid var(--amber);background:linear-gradient(90deg,var(--amber-glow),transparent);border-radius:0 12px 12px 0;padding:15px 17px}
+  .tldr .l{font-size:9px;letter-spacing:.3em;color:var(--amber);margin-bottom:9px}
+  .tldr p{font-family:var(--font-read);font-size:16px;line-height:1.5;color:var(--text)}
+  .sec{padding:0 24px;margin-bottom:24px}
+  .sec-h{font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--slate);margin-bottom:14px;display:flex;align-items:center;gap:11px}
+  .sec-h::after{content:"";flex:1;height:1px;background:var(--line)}
+  .opt{border:1px solid var(--line);background:var(--panel);border-radius:15px;padding:16px;margin-bottom:11px;cursor:pointer;transition:.24s;position:relative}
+  .opt:hover{border-color:var(--line-2)}
+  .opt.sel{border-color:var(--amber);background:linear-gradient(160deg,var(--amber-glow),var(--panel));box-shadow:0 16px 36px -22px rgba(255,180,84,.5)}
+  .opt-top{display:flex;align-items:flex-start;gap:13px}
+  .radio{width:20px;height:20px;border-radius:50%;border:1.5px solid var(--slate);flex:none;margin-top:2px;display:flex;align-items:center;justify-content:center;transition:.2s}
+  .opt.sel .radio{border-color:var(--amber)}
+  .opt.sel .radio::after{content:"";width:10px;height:10px;border-radius:50%;background:var(--amber);box-shadow:0 0 10px var(--amber)}
+  .opt-body .ot{font-family:var(--font-display);font-size:18px;font-weight:500;color:var(--text);display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .rec{font-size:9px;letter-spacing:.16em;color:var(--mint);border:1px solid rgba(79,214,160,.4);padding:2px 7px;border-radius:5px;background:rgba(79,214,160,.1)}
+  .opt-body .od{font-family:var(--font-read);font-size:14px;color:var(--dim);margin-top:7px;line-height:1.5}
+  .conseq{max-height:0;overflow:hidden;transition:max-height .42s ease,margin .42s ease,opacity .3s;opacity:0;margin-top:0}
+  .opt.sel .conseq{max-height:320px;opacity:1;margin-top:15px}
+  .conseq-in{border-top:1px dashed var(--line-2);padding-top:14px}
+  .conseq .cl{font-size:9px;letter-spacing:.24em;color:var(--amber);margin-bottom:11px;display:flex;align-items:center;gap:7px}
+  .cline{display:flex;gap:10px;font-size:12px;color:var(--dim);margin-bottom:8px;font-family:var(--mono);line-height:1.4}
+  .cline .v{font-weight:600;flex:none;width:74px;letter-spacing:.04em}
+  .cline.add .v{color:var(--mint)}
+  .cline.unb .v{color:var(--sky)}
+  .cline.fore .v{color:var(--coral)}
+  .cline .x{color:var(--text)}
+  .conseq .det{margin-top:11px;font-size:10px;color:var(--faint);letter-spacing:.04em}
+  .conseq .det b{color:var(--mint)}
+
+  .blast{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .bx{border:1px solid var(--line);border-radius:11px;padding:13px;background:rgba(255,255,255,.02)}
+  .bx .bl{font-size:9px;letter-spacing:.16em;color:var(--slate);margin-bottom:8px}
+  .bx .bv{font-family:var(--font-read);font-size:13px;color:var(--text);line-height:1.45}
+  .bx.ok{border-color:rgba(79,214,160,.22)}
+  .bx.ok .bv{color:var(--mint)}
+
+  .editbox{border:1px solid var(--line);border-radius:13px;background:var(--panel);overflow:hidden}
+  .editbox .eh{padding:11px 14px;font-size:9px;letter-spacing:.2em;color:var(--slate);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  .editbox .eh .pen{color:var(--amber);text-transform:none;letter-spacing:.04em;font-size:10px}
+  .recline{padding:15px;font-family:var(--font-read);font-size:14.5px;color:var(--text);line-height:1.55;outline:none}
+  .recline:focus{background:rgba(255,180,84,.05)}
+  .recline mark{background:rgba(255,180,84,.22);color:var(--amber-soft);padding:1px 3px;border-radius:3px}
+  .note{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:14px;color:var(--text);font-family:var(--font-read);font-size:14px;resize:none;outline:none;line-height:1.5;margin-top:11px}
+  .note:focus{border-color:var(--line-2)}
+  .note::placeholder{color:var(--faint)}
+
+  .dock{position:absolute;left:0;right:0;bottom:0;padding:16px 18px 26px;background:linear-gradient(180deg,transparent,var(--ink) 26%);display:flex;gap:11px}
+  .btn{flex:1;border:none;border-radius:15px;padding:17px;font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;gap:9px}
+  .btn svg{width:16px;height:16px}
+  .btn.ghost{flex:0 0 90px;background:var(--panel);border:1px solid var(--line);color:var(--dim)}
+  .btn.ghost:hover{color:var(--text);border-color:var(--line-2)}
+  .btn.prime{background:linear-gradient(150deg,var(--amber),#e08c2c);color:#160f02;font-weight:600;box-shadow:0 16px 34px -12px rgba(255,180,84,.6)}
+  .btn.prime:hover{transform:translateY(-2px)}
+
+  /* ===== CONFIRM ===== */
+  .confirm{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 36px;text-align:center}
+  .seal{width:96px;height:96px;border-radius:50%;border:1.5px solid var(--mint);display:flex;align-items:center;justify-content:center;margin-bottom:34px;position:relative;color:var(--mint)}
+  .seal::before{content:"";position:absolute;inset:-12px;border-radius:50%;border:1px solid rgba(79,214,160,.25);animation:ring 2.6s infinite}
+  .seal svg{width:42px;height:42px;stroke-width:1.6}
+  .confirm h2{font-family:var(--font-display);font-size:28px;font-weight:400;margin-bottom:18px}
+  .confirm .ack{font-family:var(--font-read);font-size:15px;color:var(--dim);line-height:1.7;max-width:30ch}
+  .confirm .ack b{color:var(--mint);font-weight:500}
+  .confirm .receipt{margin-top:30px;border:1px solid var(--line);border-radius:13px;padding:15px 18px;font-size:11px;color:var(--faint);letter-spacing:.05em;text-align:left;width:100%;line-height:2}
+  .confirm .receipt .ok{color:var(--mint)}
+  .confirm .auto{margin-top:26px;font-size:10px;letter-spacing:.22em;color:var(--slate);display:flex;align-items:center;gap:9px}
+
+  /* ===== CAPTURE ===== */
+  .cap{flex:1;display:flex;flex-direction:column;padding:4px 22px 26px}
+  .cap .ch{font-family:var(--font-display);font-size:26px;font-weight:400;line-height:1.2;margin-bottom:6px}
+  .cap .cs{font-family:var(--font-read);font-size:13.5px;color:var(--dim);margin-bottom:22px;line-height:1.5}
+  .ideabox{position:relative;border:1px solid var(--line-2);border-radius:18px;background:var(--panel);padding:18px;min-height:142px;margin-bottom:18px}
+  .ideabox textarea{width:100%;background:none;border:none;outline:none;resize:none;color:var(--text);font-family:var(--font-read);font-size:17px;line-height:1.55;min-height:104px}
+  .ideabox textarea::placeholder{color:var(--faint)}
+  .ideabox .mic{position:absolute;right:14px;bottom:14px;width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--panel-2);color:var(--amber);display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .ideabox .mic svg{width:17px;height:17px}
+  .flabel{font-size:10px;letter-spacing:.26em;color:var(--slate);text-transform:uppercase;margin-bottom:12px}
+  .picker{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px}
+  .pchip{font-size:12px;padding:9px 13px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--dim);cursor:pointer;transition:.18s;font-family:var(--mono)}
+  .pchip:hover{color:var(--text)}
+  .pchip.on{border-color:var(--amber);color:var(--amber);background:var(--amber-glow)}
+  .pchip.auto{font-style:italic;color:var(--slate)}
+  .presets{display:flex;flex-direction:column;gap:11px;margin-bottom:auto}
+  .pre{border:1px solid var(--line);background:var(--panel);border-radius:15px;padding:16px;cursor:pointer;transition:.22s;display:flex;gap:14px;align-items:flex-start}
+  .pre:hover{border-color:var(--line-2)}
+  .pre.on{border-color:var(--amber);background:linear-gradient(150deg,var(--amber-glow),var(--panel))}
+  .pre .pi{width:40px;height:40px;border-radius:11px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--amber);flex:none}
+  .pre.on .pi{background:var(--amber);color:#160f02;border-color:var(--amber)}
+  .pre .pi svg{width:19px;height:19px}
+  .pre .pt{font-family:var(--font-display);font-size:16px;font-weight:500;margin-bottom:5px}
+  .pre .pd{font-family:var(--font-read);font-size:12.5px;color:var(--dim);line-height:1.45}
+  .pre .dials{margin-top:9px;display:flex;gap:6px;font-size:9px;color:var(--slate);letter-spacing:.06em}
+  .pre .dials span{border:1px solid var(--line);padding:2px 6px;border-radius:5px}
+  .premore{font-size:11px;color:var(--faint);text-align:center;padding:10px;letter-spacing:.04em;font-style:italic;font-family:var(--font-read)}
+  .sendbtn{margin-top:18px;width:100%;border:none;border-radius:16px;padding:18px;background:linear-gradient(150deg,var(--amber),#e08c2c);color:#160f02;font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 16px 34px -14px rgba(255,180,84,.6);transition:.2s}
+  .sendbtn:hover{transform:translateY(-2px)}
+  .sendbtn svg{width:16px;height:16px}
+
+  /* ===== CAPACITY ===== */
+  .capa{padding:2px 22px 30px}
+  .arcs{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px}
+  .arc{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:18px 14px;text-align:center}
+  .ring{width:118px;height:118px;border-radius:50%;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;position:relative;
+    background:conic-gradient(var(--cl,var(--mint)) var(--a,0deg), rgba(255,255,255,.06) 0)}
+  .ring::before{content:"";position:absolute;inset:11px;border-radius:50%;background:var(--panel)}
+  .ring .rv{position:relative;font-family:var(--font-display);font-size:27px;font-weight:400}
+  .ring .rv small{font-size:11px;color:var(--dim);font-family:var(--mono);display:block;letter-spacing:.1em;margin-top:2px}
+  .arc .al{font-size:10px;letter-spacing:.2em;color:var(--slate);text-transform:uppercase}
+  .sparepanel{border:1px solid var(--line);background:var(--panel);border-radius:16px;padding:17px;margin-bottom:20px}
+  .sparepanel .sh{font-size:10px;letter-spacing:.2em;color:var(--slate);text-transform:uppercase;margin-bottom:6px}
+  .sparepanel .sx{font-family:var(--font-read);font-size:13px;color:var(--dim);margin-bottom:16px;line-height:1.5}
+  .sparepanel .sx b{color:var(--amber)}
+  .ramp{height:9px;border-radius:5px;background:rgba(255,255,255,.06);position:relative;margin-bottom:9px;overflow:visible}
+  .ramp .actual{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,var(--mint),#3bbf8a);width:0;transition:width 1.5s cubic-bezier(.2,.8,.2,1)}
+  .ramp .line{position:absolute;top:-5px;bottom:-5px;width:2px;background:var(--amber);box-shadow:0 0 8px var(--amber)}
+  .ramp .line::after{content:"today’s line · 51%";position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--amber);white-space:nowrap;letter-spacing:.04em}
+  .rampk{display:flex;justify-content:space-between;font-size:9px;color:var(--faint);letter-spacing:.06em;margin-top:14px}
+  .projhd{font-size:10px;letter-spacing:.26em;color:var(--slate);text-transform:uppercase;margin:6px 0 13px}
+  .proj{border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:14px;margin-bottom:9px;display:flex;align-items:center;gap:13px}
+  .proj .pn{flex:1;min-width:0}
+  .proj .pn .nm{font-family:var(--mono);font-size:13px;color:var(--text);margin-bottom:4px}
+  .proj .pn .st{font-size:10px;color:var(--faint);letter-spacing:.04em}
+  .modeswitch{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:9px;flex:none}
+  .modeswitch span{padding:7px 9px;color:var(--faint);cursor:pointer;letter-spacing:.06em;transition:.16s;border-right:1px solid var(--line)}
+  .modeswitch span:last-child{border:none}
+  .modeswitch span.on.full{background:var(--mint);color:#06140e}
+  .modeswitch span.on.spare{background:var(--amber);color:#160f02}
+  .modeswitch span.on.paused{background:var(--slate);color:var(--ink)}
+  .trustnote{margin-top:16px;border:1px solid var(--line);border-radius:12px;padding:14px;font-family:var(--font-read);font-size:12px;color:var(--dim);line-height:1.6;display:flex;gap:11px}
+  .trustnote svg{width:16px;height:16px;color:var(--amber);flex:none;margin-top:2px}
+  .trustnote b{color:var(--text)}
+
+  /* ===== FAILURE ===== */
+  .fl{padding:2px 22px 30px}
+  .fclass{display:flex;align-items:center;gap:13px;border:1px solid rgba(255,107,107,.3);background:linear-gradient(150deg,rgba(255,107,107,.12),var(--panel));border-radius:16px;padding:17px;margin-bottom:8px}
+  .fclass .fi{width:42px;height:42px;border-radius:12px;background:rgba(255,107,107,.16);color:var(--coral);display:flex;align-items:center;justify-content:center;flex:none}
+  .fclass .fi svg{width:21px;height:21px}
+  .fclass .ft{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--coral);margin-bottom:5px}
+  .fclass .fp{font-family:var(--font-read);font-size:14px;color:var(--text);line-height:1.4}
+  .ftier{font-size:10px;color:var(--coral);letter-spacing:.1em;margin:0 4px 22px;display:flex;align-items:center;gap:8px}
+  .step{position:relative;padding-left:34px;margin-bottom:8px}
+  .step::before{content:"";position:absolute;left:11px;top:26px;bottom:-8px;width:1px;background:var(--line)}
+  .step:last-child::before{display:none}
+  .stepn{position:absolute;left:0;top:0;width:24px;height:24px;border-radius:50%;border:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--slate)}
+  .step.done .stepn{border-color:var(--mint);color:var(--mint)}
+  .stepcard{border:1px solid var(--line);background:var(--panel);border-radius:13px;padding:14px}
+  .stepcard .sct{font-size:10px;letter-spacing:.18em;color:var(--slate);text-transform:uppercase;margin-bottom:9px;display:flex;justify-content:space-between}
+  .stepcard .scb{font-family:var(--font-read);font-size:13.5px;color:var(--text);line-height:1.55}
+  .stepcard .scb .t{color:var(--faint);font-family:var(--mono);font-size:11px}
+  .runnernote{font-family:var(--mono);font-size:11px;color:var(--dim);border-left:2px solid var(--line-2);padding:4px 0 4px 12px;margin:8px 0;line-height:1.6}
+  .runnernote span{color:var(--mint)}
+  .forensic{border:1px solid rgba(255,180,84,.26);border-radius:14px;background:linear-gradient(160deg,rgba(255,180,84,.05),var(--panel));padding:16px;margin-top:6px}
+  .forensic .lock{display:flex;align-items:center;gap:10px;font-size:10px;letter-spacing:.16em;color:var(--amber);text-transform:uppercase;margin-bottom:11px}
+  .forensic .lock svg{width:15px;height:15px}
+  .forensic p{font-family:var(--font-read);font-size:12.5px;color:var(--dim);line-height:1.6;margin-bottom:14px}
+  .forensic p b{color:var(--text)}
+  .fetchbtn{width:100%;border:1px solid rgba(255,180,84,.4);background:var(--amber-glow);color:var(--amber);border-radius:11px;padding:13px;font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;gap:9px}
+  .fetchbtn:hover{background:rgba(255,180,84,.18)}
+  .fetchbtn svg{width:15px;height:15px}
+  .redacted{margin-top:13px;border:1px solid var(--line);border-radius:10px;background:var(--ink-2);padding:0 13px;font-size:10.5px;line-height:1.7;color:var(--dim);max-height:0;overflow:hidden;opacity:0;transition:max-height .5s ease,opacity .4s,padding .4s}
+  .redacted.show{max-height:300px;opacity:1;padding:13px}
+  .redacted .rh{color:var(--slate);letter-spacing:.14em;font-size:9px;margin-bottom:9px}
+  .redacted .cl{color:var(--sky)}
+  .redacted .er{color:var(--coral)}
+  .redacted .strip-b{background:var(--panel-3);color:var(--faint);padding:1px 5px;border-radius:3px;letter-spacing:.04em}
+
+  /* ---------- caption rail ---------- */
+  .rail{position:sticky;top:40px;display:flex;flex-direction:column;gap:18px}
+  .rail .rt{font-family:var(--font-display);font-size:13px;color:var(--slate);letter-spacing:.24em;text-transform:uppercase;padding-bottom:16px;border-bottom:1px solid var(--line)}
+  .flowstack{position:relative;min-height:340px}
+  .flowcard{position:absolute;inset:0;border:1px solid var(--line);border-radius:16px;padding:22px;background:linear-gradient(170deg,var(--panel),var(--ink-2));opacity:0;visibility:hidden;transform:translateY(10px);transition:opacity .4s ease,transform .4s ease,visibility .4s}
+  .flowcard.active{opacity:1;visibility:visible;transform:none}
+  .flowcard .fc-tag{display:inline-flex;align-items:center;gap:9px;font-size:10px;letter-spacing:.2em;color:var(--amber);text-transform:uppercase;margin-bottom:16px;border:1px solid rgba(255,180,84,.3);padding:6px 11px;border-radius:7px}
+  .flowcard h3{font-family:var(--font-display);font-size:24px;font-weight:400;line-height:1.18;margin-bottom:14px;letter-spacing:-.01em}
+  .flowcard p{font-family:var(--font-read);font-size:14.5px;color:var(--dim);line-height:1.65;margin-bottom:14px}
+  .flowcard p:last-child{margin-bottom:0}
+  .flowcard .pr{color:var(--text);border-left:2px solid var(--amber);padding-left:13px;font-style:italic}
+  .navhint{font-size:11px;color:var(--faint);line-height:1.7;letter-spacing:.02em}
+  .navhint b{color:var(--mint)}
+
+  /* ---------- desktop board ---------- */
+  .deck{margin-top:110px;border-top:1px solid var(--line);padding-top:60px}
+  .deck-h{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:34px;flex-wrap:wrap}
+  .deck-h h2{font-family:var(--font-display);font-size:clamp(26px,3.6vw,42px);font-weight:300;letter-spacing:-.02em}
+  .deck-h h2 em{font-style:italic;color:var(--amber)}
+  .deck-h .note{font-family:var(--font-read);font-size:14px;color:var(--dim);max-width:42ch;line-height:1.6}
+  .dboard{border:1px solid var(--line);border-radius:22px;overflow:hidden;background:linear-gradient(180deg,var(--panel),var(--ink-2));position:relative}
+  .dboard::before{content:"";position:absolute;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px);background-size:100% 30px;opacity:.3;pointer-events:none}
+  .dstrip{display:flex;flex-wrap:wrap;align-items:center;gap:26px;padding:20px 28px;border-bottom:1px solid var(--line);position:relative;font-size:12px}
+  .dstrip .grp{display:flex;align-items:center;gap:11px;color:var(--dim);letter-spacing:.04em}
+  .dstrip .grp .k{font-size:10px;letter-spacing:.18em;color:var(--slate)}
+  .dstrip .grp b{color:var(--text);font-family:var(--font-display);font-size:18px;font-weight:400}
+  .dstrip .grp .mini{width:46px;height:5px;border-radius:3px;background:rgba(255,255,255,.08);position:relative;overflow:visible}
+  .dstrip .grp .mini i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
+  .dstrip .sep{width:1px;align-self:stretch;background:var(--line)}
+  .dstrip .alert{margin-left:auto;display:flex;gap:11px}
+  .dstrip .alert .a{font-size:11px;padding:7px 12px;border-radius:8px;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
+  .dstrip .alert .a.amber{color:var(--amber);border:1px solid rgba(255,180,84,.35);background:var(--amber-glow)}
+  .dstrip .alert .a.silent{color:var(--coral);border:1px solid rgba(255,107,107,.32);background:rgba(255,107,107,.08)}
+  .dwait{display:flex;align-items:center;gap:22px;padding:20px 28px;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--amber-glow),transparent 70%);position:relative;flex-wrap:wrap}
+  .dwait .wlbl{font-size:10px;letter-spacing:.3em;color:var(--amber);text-transform:uppercase;display:flex;align-items:center;gap:11px;flex:none}
+  .dwait .wlbl .pulse{width:8px;height:8px;border-radius:50%;background:var(--amber);position:relative}
+  .dwait .wlbl .pulse::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:1px solid var(--amber);animation:ring 2s infinite}
+  .dwait .witem{display:flex;align-items:center;gap:16px;cursor:pointer;flex-wrap:wrap}
+  .dwait .witem .qn{font-family:var(--font-display);font-size:19px;color:#fff}
+  .dwait .witem .mt{font-size:11px;color:var(--amber-soft);letter-spacing:.08em;border:1px solid rgba(255,180,84,.3);padding:3px 8px;border-radius:5px}
+  .dwait .witem .sp{color:var(--dim);font-size:11px}
+  .dwait .resolve{margin-left:auto;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--amber);display:flex;align-items:center;gap:9px;cursor:pointer}
+  .dwait .resolve svg{width:15px;height:15px}
+  .dcols{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:var(--line)}
+  @media(max-width:860px){.dcols{grid-template-columns:repeat(3,1fr)}}
+  .dcol{background:var(--ink-2);padding:18px 15px;min-height:280px}
+  .dcol .dch{display:flex;align-items:center;justify-content:space-between;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);padding-bottom:13px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+  .dcol[data-gate] .dch{color:var(--amber)}
+  .dcol .gatetag{font-size:9px;letter-spacing:.1em;color:var(--amber);border:1px solid rgba(255,180,84,.3);padding:4px 7px;border-radius:5px;display:inline-block;margin-top:9px}
+  .dcol .gatetag.auto{color:var(--mint);border-color:rgba(79,214,160,.25)}
+  .dbead{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px;margin-bottom:9px;cursor:pointer;transition:.18s}
+  .dbead:hover{border-color:var(--line-2);transform:translateY(-2px)}
+  .dbead .dbt{font-family:var(--font-read);font-size:13px;color:var(--text);line-height:1.4;margin-bottom:11px}
+  .dbead .dbf{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--faint);letter-spacing:.04em}
+  .dbead .dbf .l{display:flex;align-items:center;gap:7px}
+  .dot-run{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--mint);box-shadow:0 0 6px var(--mint)}
+  .dbead.f{border-color:rgba(255,107,107,.3);background:linear-gradient(160deg,rgba(255,107,107,.09),var(--panel))}
+  .dbead.f .fl2{color:var(--coral);font-size:10px;margin-top:9px;display:flex;align-items:center;gap:6px;letter-spacing:.04em}
+
+  footer{margin-top:90px;padding-top:34px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:20px;justify-content:space-between;color:var(--faint);font-size:11px;letter-spacing:.06em}
+  footer b{color:var(--dim)}
+  .pop{position:fixed;left:50%;bottom:38px;transform:translateX(-50%) translateY(20px);background:var(--panel-3);border:1px solid var(--line-2);color:var(--text);padding:14px 22px;border-radius:13px;font-size:12px;letter-spacing:.04em;opacity:0;pointer-events:none;transition:.32s;z-index:9000;display:flex;align-items:center;gap:11px;max-width:90vw}
+  .pop.show{opacity:1;transform:translateX(-50%)}
+  .pop .pd{width:7px;height:7px;border-radius:50%;background:var(--mint);box-shadow:0 0 8px var(--mint);flex:none}
+
+  @media(max-width:520px){.wrap{padding:40px 14px 70px}.device{width:100%;max-width:390px;height:780px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="brand">
+      <div class="kicker">Beads Runner · UX Mocks · Flows A–G</div>
+      <h1>The machine is dim.<br><em>You</em> are the light.</h1>
+      <p class="sub">An attention router for an autonomous idea→test pipeline. Every machine process renders as cold slate telemetry. The only warm thing in the entire interface is the moment that genuinely needs you — resolvable in ~60&nbsp;seconds, from your phone, batched.</p>
+    </div>
+    <div class="legend">
+      <div class="row"><span class="sw" style="background:var(--amber)"></span> waiting on you · the ask</div>
+      <div class="row"><span class="sw" style="background:var(--mint)"></span> healthy · auto-advancing</div>
+      <div class="row"><span class="sw" style="background:var(--sky)"></span> timed-fyi · informational</div>
+      <div class="row"><span class="sw" style="background:var(--coral)"></span> blocking failure · runner dead</div>
+      <div class="row"><span class="sw" style="background:var(--slate)"></span> machinery — never look here</div>
+    </div>
+  </header>
+
+  <div class="stage">
+    <!-- ============ PHONE ============ -->
+    <div class="phone-col">
+      <div class="device">
+        <div class="island"></div>
+        <div class="screen" id="screen">
+
+          <!-- ===================== BOARD ===================== -->
+          <section class="view active" id="v-board">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="sig">
+                <svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg>
+              </span>
+            </div>
+            <div class="apphead">
+              <div class="t"><span class="dot"></span>Board</div>
+              <button class="iconbtn" onclick="toast('Read model over beads — local &amp; remote are the same view')" aria-label="info">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01" stroke-linecap="round"/></svg>
+              </button>
+            </div>
+            <div class="scroll">
+              <div class="strip" onclick="go('capacity')">
+                <div class="strip-top">
+                  <span class="lbl">SYSTEM · CAPACITY</span>
+                  <span class="hb">ALL NOMINAL</span>
+                </div>
+                <div class="gauges">
+                  <div class="g">
+                    <div class="gl"><span>5H WINDOW</span><span>31%</span></div>
+                    <div class="gv">31<small>%</small></div>
+                    <div class="track"><i data-w="31" style="background:var(--mint)"></i></div>
+                  </div>
+                  <div class="g">
+                    <div class="gl"><span>7D BUDGET</span><span>44%</span></div>
+                    <div class="gv">44<small>%</small></div>
+                    <div class="track"><i data-w="44" style="background:var(--mint)"></i><span class="spare" style="left:51%"></span></div>
+                  </div>
+                </div>
+                <div class="strip-tags">
+                  <span class="tg"><b>3</b> runners up</span>
+                  <span class="tg warn">⚠ <b>2</b> decisions</span>
+                  <span class="tg bad">⚠ <b>1</b> silent fail</span>
+                </div>
+              </div>
+
+              <div class="lane-hd"><span class="pulse"></span> Waiting on you <span class="ln"></span> 2</div>
+              <div class="waitcard" onclick="go('dossier')">
+                <div class="meta"><span class="p">P1</span><span>bead-204 · stage:design</span><span class="sp">2h</span></div>
+                <div class="ask">Auth: cookie session or signed token?</div>
+                <div class="tldr">Worker hit a fork it can’t resolve — both paths touch the API surface. One tap unblocks 3 impl tasks.</div>
+                <div class="go"><span>OPEN DOSSIER · ~45s</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </div>
+              </div>
+              <div class="waitcard" style="animation:none;background:linear-gradient(155deg,rgba(255,180,84,.09),rgba(255,180,84,.02));box-shadow:none" onclick="go('dossier')">
+                <div class="meta"><span class="p">PAIR</span><span>bead-188 · stage:ux</span><span class="sp">5h</span></div>
+                <div class="ask" style="font-size:18px">Ready to pair on: onboarding UX</div>
+                <div class="tldr" style="font-size:12.5px">Collaborative session — you wanted to be <i>in</i> this stage, not just approve it.</div>
+              </div>
+
+              <div class="spine">
+                <div class="sl">LIFECYCLE SPINE · idea → done</div>
+                <div class="cols" id="cols">
+                  <div class="col"><div class="col-h">idea<span class="c">3</span></div>
+                    <div class="bead" onclick="toast('idea · auto-advances to ux')"><div class="bt">Export beads to PDF digest</div><div class="bf"><span>P3</span><span class="rs idle"></span></div></div>
+                    <div class="bead" onclick="toast('idea · auto-advances to ux')"><div class="bt">Slack notifier channel</div><div class="bf"><span>P2</span><span class="rs idle"></span></div></div>
+                  </div>
+                  <div class="col" data-gate="you"><div class="col-h">ux<span class="c">GATE</span></div>
+                    <div class="bead" onclick="go('dossier')"><div class="bt">Onboarding UX — pair session</div><div class="bf"><span>P2</span><span class="rs idle"></span></div></div>
+                  </div>
+                  <div class="col" data-gate="you"><div class="col-h">design<span class="c">GATE</span></div>
+                    <div class="bead" onclick="go('dossier')"><div class="bt">Auth: cookie vs token?</div><div class="bf"><span>P1</span><span class="rs idle"></span></div></div>
+                  </div>
+                  <div class="col"><div class="col-h">impl<span class="c">3</span></div>
+                    <div class="bead" onclick="toast('runner active on this bead')"><div class="bt">Coordinator usage-authority RPC</div><div class="bf"><span>P1</span><span class="rs run"></span></div></div>
+                    <div class="bead" onclick="toast('runner active on this bead')"><div class="bt">Spare-cycles ramp math</div><div class="bf"><span>P2</span><span class="rs run"></span></div></div>
+                    <div class="bead failbead" onclick="go('failure')"><div class="bt">Dossier reconciler agent</div><div class="bf"><span>P2</span><span class="rs fail"></span></div><div class="warn">⚠ WATCHDOG_KILL · retry 2/3</div></div>
+                  </div>
+                  <div class="col"><div class="col-h">docs<span class="c">1</span></div>
+                    <div class="bead" onclick="toast('docs · auto-advances to tests')"><div class="bt">Capacity API reference</div><div class="bf"><span>P2</span><span class="rs run"></span></div></div>
+                  </div>
+                  <div class="col" data-gate="you"><div class="col-h">tests<span class="c">e2e↩</span></div>
+                    <div class="bead" onclick="toast('manual-e2e routes to your Inbox like a decision')"><div class="bt">Manual e2e: remote intake</div><div class="bf"><span>P1</span><span class="rs idle"></span></div></div>
+                  </div>
+                  <div class="col"><div class="col-h">done<span class="c">12</span></div>
+                    <div class="bead" style="opacity:.5" onclick="toast('shipped')"><div class="bt">bd init + Dolt sync</div><div class="bf"><span>✓</span><span class="rs idle"></span></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <nav class="nav">
+              <button class="navitem" onclick="go('inbox')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7l9 6 9-6M4 6h16a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span>Inbox</span><span class="badge">2</span>
+              </button>
+              <button class="fab" onclick="go('capture')" aria-label="capture idea">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+              </button>
+              <button class="navitem on">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="16" rx="1"/></svg>
+                <span>Board</span>
+              </button>
+            </nav>
+          </section>
+
+          <!-- ===================== INBOX ===================== -->
+          <section class="view" id="v-inbox">
+            <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
+            <div class="apphead">
+              <div class="t"><span class="dot" style="background:var(--amber);box-shadow:0 0 9px var(--amber)"></span>Inbox</div>
+              <button class="iconbtn" onclick="toast('Ranked · batched · one queue. Never pinged twice.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M7 12h10M10 18h4" stroke-linecap="round"/></svg></button>
+            </div>
+            <div class="inbox-sub">The product. <b>2 things</b> genuinely need you. Everything else is flowing.</div>
+            <div class="scroll">
+              <div class="digestbar">
+                <svg viewBox="0 0 24 24" width="15" fill="none" stroke="var(--sky)" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3" stroke-linecap="round"/></svg>
+                3 low-stakes items batched into the 6pm digest — not pinged
+                <span class="dn">view →</span>
+              </div>
+
+              <div class="inrow t-block" onclick="go('dossier')">
+                <div class="tier"><span>● Blocking · decide</span><span class="age">2h ago · P1</span></div>
+                <div class="h">Auth: cookie session or signed token?</div>
+                <div class="d">Hard-blocks until answered. A worker forked here and stopped clean — no burning cycles.</div>
+                <div class="foot"><span class="chip">bead-204</span><span class="chip">stage:design</span><span class="chip">unblocks 3</span></div>
+              </div>
+
+              <div class="inrow t-pair" onclick="go('dossier')">
+                <div class="tier"><span>● Pair · scheduled session</span><span class="age">5h ago · P2</span></div>
+                <div class="h">Ready to pair on: onboarding UX</div>
+                <div class="d">You asked to be <i>in</i> this stage. A working session, not an approval — open when you have ~15 min.</div>
+                <div class="foot"><span class="chip">bead-188</span><span class="chip">stage:ux</span><span class="chip">collaborative</span></div>
+              </div>
+
+              <div class="inrow t-fyi" onclick="toast('timed-fyi · object within 24h or it proceeds (reversible)')">
+                <div class="tier"><span>● Timed-FYI · auto-proceeds 24h</span><span class="age">40m ago</span></div>
+                <div class="h">How auth is going to fit together</div>
+                <div class="d">Proactive design dossier. Skim it or ignore it — proceeds in 23h 20m unless you object. Reversible.</div>
+                <div class="foot"><span class="chip">bead-204</span><span class="chip">post-design</span><span class="chip">⏱ 23h 20m</span></div>
+              </div>
+
+              <div class="inrow t-fyi" onclick="go('failure')">
+                <div class="tier"><span>● Timed-FYI · silent failure</span><span class="age">1h ago</span></div>
+                <div class="h">A task looked green but isn’t</div>
+                <div class="d">TOOL_ERROR scan hit: a subagent was missing. Silent failures get surfaced <i>louder</i> than loud ones.</div>
+                <div class="foot"><span class="chip">bead-191</span><span class="chip">tool_error</span><span class="chip">⏱ 22h</span></div>
+              </div>
+
+              <div class="inrow t-dig" onclick="toast('Daily roll-up · informational only')">
+                <div class="tier"><span>● Digest · daily roll-up</span><span class="age">since 6pm</span></div>
+                <div class="h">12 tasks advanced · 4 stages auto-passed</div>
+                <div class="d">Nothing needed you. Here’s what the machine did while you didn’t look.</div>
+              </div>
+            </div>
+            <nav class="nav">
+              <button class="navitem on">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7l9 6 9-6M4 6h16a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span>Inbox</span>
+              </button>
+              <button class="fab" onclick="go('capture')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg></button>
+              <button class="navitem" onclick="go('board')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="16" rx="1"/></svg>
+                <span>Board</span>
+              </button>
+            </nav>
+          </section>
+
+          <!-- ===================== DOSSIER ===================== -->
+          <section class="view" id="v-dossier">
+            <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
+            <div class="apphead">
+              <button class="back" onclick="go('inbox')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Inbox
+              </button>
+              <button class="iconbtn" onclick="toast('Pass 1 dedup · Pass 2 framing · Pass 3 readability · Pass 4 respondability')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v4H4zM4 12h16v4H4zM4 20h10" stroke-linecap="round"/></svg></button>
+            </div>
+            <div class="scroll dscroll">
+              <div class="deyebrow"><span class="pin">● Blocking</span><span>bead-204</span><span>·</span><span>stage:design</span><span>·</span><span>2h</span></div>
+              <h1 class="dask">Auth: cookie session or signed token?</h1>
+              <div class="tldr">
+                <div class="l">TL;DR — THE ASK</div>
+                <p>The worker reached the auth boundary and both paths fork the API surface. Pick one — it unblocks 3 implementation tasks. Reversible for 24h.</p>
+              </div>
+
+              <div class="sec">
+                <div class="sec-h">The options · consequences pre-declared</div>
+                <div class="opt" data-opt="A" onclick="pick(this)">
+                  <div class="opt-top">
+                    <div class="radio"></div>
+                    <div class="opt-body">
+                      <div class="ot">A · Cookie session</div>
+                      <div class="od">Server-side session, HttpOnly cookie. Simpler revocation, ties clients to the API origin.</div>
+                      <div class="conseq"><div class="conseq-in">
+                        <div class="cl">▸ IF YOU PICK A — DETERMINISTIC, APPLIED INSTANTLY</div>
+                        <div class="cline add"><span class="v">creates</span><span class="x">2 impl beads · session store + middleware</span></div>
+                        <div class="cline unb"><span class="v">unblocks</span><span class="x">bead-204 · runner picks up immediately</span></div>
+                        <div class="cline fore"><span class="v">forecloses</span><span class="x">stateless multi-origin clients (native app later)</span></div>
+                        <div class="det">Reversible window: <b>24h</b> · pure checkbox → no agent interprets</div>
+                      </div></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="opt sel" data-opt="B" onclick="pick(this)">
+                  <div class="opt-top">
+                    <div class="radio"></div>
+                    <div class="opt-body">
+                      <div class="ot">B · Signed token <span class="rec">★ recommended</span></div>
+                      <div class="od">Stateless JWT, short TTL + refresh. Works for web, future native, and agent-workspace clients with no shared session store.</div>
+                      <div class="conseq"><div class="conseq-in">
+                        <div class="cl">▸ IF YOU PICK B — DETERMINISTIC, APPLIED INSTANTLY</div>
+                        <div class="cline add"><span class="v">creates</span><span class="x">3 impl beads · signer · refresh flow · revlist</span></div>
+                        <div class="cline unb"><span class="v">unblocks</span><span class="x">bead-204 + 2 downstream remote-intake beads</span></div>
+                        <div class="cline fore"><span class="v">forecloses</span><span class="x">trivial instant server-side revoke (mitigated)</span></div>
+                        <div class="det">Reversible window: <b>24h</b> · pure checkbox → no agent interprets</div>
+                      </div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sec">
+                <div class="sec-h">Blast radius</div>
+                <div class="blast">
+                  <div class="bx ok"><div class="bl">UNBLOCKS</div><div class="bv">3 impl tasks + remote-intake epic</div></div>
+                  <div class="bx"><div class="bl">REVERSIBLE</div><div class="bv">Yes — within 24h, both paths</div></div>
+                  <div class="bx"><div class="bl">WHY RECOMMEND B</div><div class="bv">Agent-workspace clients need stateless auth</div></div>
+                  <div class="bx"><div class="bl">RISK</div><div class="bv">B adds a revocation list to maintain</div></div>
+                </div>
+              </div>
+
+              <div class="sec">
+                <div class="sec-h">Edit the recommendation · the doc is the form</div>
+                <div class="editbox">
+                  <div class="eh"><span>RECONCILER READS YOUR EDITS</span><span class="pen">✎ tap to edit</span></div>
+                  <div class="recline" contenteditable="true" spellcheck="false">Go with <mark>B (signed token)</mark>, TTL <mark>15&nbsp;min</mark>, refresh rotation on. Defer the revocation list to a fast-follow bead.</div>
+                </div>
+                <textarea class="note" rows="2" placeholder="Freeform note (optional) — a reconciler agent interprets only if you edit or write here…"></textarea>
+              </div>
+            </div>
+            <div class="dock">
+              <button class="btn ghost" onclick="toast('Your “no” is as cheap as your “yes” — never a penalty path')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+              </button>
+              <button class="btn prime" id="approveBtn" onclick="go('confirm')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span id="approveLbl">Approve B</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- ===================== CONFIRM ===================== -->
+          <section class="view" id="v-confirm">
+            <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
+            <div class="confirm">
+              <div class="seal">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12l5 5L20 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+              <h2>It landed.</h2>
+              <p class="ack">You don’t need to go check. <b>Approved B · created 3 impl tasks · the runner already picked up the first.</b></p>
+              <div class="receipt">
+                <div><span class="ok">✓</span> consequence block applied — deterministic</div>
+                <div><span class="ok">✓</span> bead-204 → unblocked → stage:impl</div>
+                <div><span class="ok">✓</span> 3 impl beads created &amp; on the Board</div>
+                <div><span class="ok">✓</span> runner picked up signer-impl · running</div>
+              </div>
+              <div class="auto"><span class="pd" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--mint)"></span> returning to Inbox · 1 left</div>
+            </div>
+          </section>
+
+          <!-- ===================== CAPTURE ===================== -->
+          <section class="view" id="v-capture">
+            <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
+            <div class="apphead">
+              <button class="back" onclick="go('board')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Close
+              </button>
+            </div>
+            <div class="cap">
+              <div class="ch">What do you want?</div>
+              <div class="cs">~5 seconds of effort. An enricher agent pulls the project context, dedups against existing beads, and scopes it.</div>
+              <div class="ideabox">
+                <textarea placeholder="Type or speak a raw thought…&#10;e.g. “the dossier should remember which option I leaned toward last time”"></textarea>
+                <button class="mic" onclick="toast('voice → text · ~5s of effort')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3" stroke-linecap="round"/></svg></button>
+              </div>
+              <div class="flabel">Project</div>
+              <div class="picker">
+                <button class="pchip on" onclick="pchip(this)">claude-tools</button>
+                <button class="pchip" onclick="pchip(this)">beads-runner</button>
+                <button class="pchip" onclick="pchip(this)">site</button>
+                <button class="pchip auto" onclick="pchip(this)">or let it pick ↯</button>
+              </div>
+              <div class="flabel">Entry intent · preset = entry stage + gate aggressiveness</div>
+              <div class="presets">
+                <div class="pre on" onclick="pre(this)">
+                  <div class="pi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+                  <div>
+                    <div class="pt">Send it down the pipeline</div>
+                    <div class="pd">Maximally autonomous. No gate until a worker genuinely can’t proceed — then a dossier.</div>
+                    <div class="dials"><span>entry: idea</span><span>gate: until-stuck</span></div>
+                  </div>
+                </div>
+                <div class="pre" onclick="pre(this)">
+                  <div class="pi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="9" r="3"/><circle cx="17" cy="15" r="3"/><path d="M3 20a6 6 0 0112 0M14 9h6" stroke-linecap="round"/></svg></div>
+                  <div>
+                    <div class="pt">I want to go over the UI with an agent</div>
+                    <div class="pd">Enters at <i>ux</i> as a collaborative session — scheduled into your Inbox as “ready to pair”.</div>
+                    <div class="dials"><span>entry: ux</span><span>gate: collaborative</span></div>
+                  </div>
+                </div>
+                <div class="premore">+ more presets added as real usage reveals them</div>
+              </div>
+              <button class="sendbtn" onclick="go('board');toast('Enricher scoping in claude-tools · bead drafting…')">
+                Send to enricher
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l16-7-7 16-2-7-7-2z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+          </section>
+
+          <!-- ===================== CAPACITY ===================== -->
+          <section class="view" id="v-capacity">
+            <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
+            <div class="apphead">
+              <button class="back" onclick="go('board')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Board
+              </button>
+              <div class="t" style="font-size:18px">Capacity</div>
+            </div>
+            <div class="scroll">
+              <div class="capa">
+                <div class="arcs">
+                  <div class="arc"><div class="ring" data-deg="112" style="--cl:var(--mint)"><span class="rv">31<small>5H</small></span></div><div class="al">Hard ceiling</div></div>
+                  <div class="arc"><div class="ring" data-deg="158" style="--cl:var(--mint)"><span class="rv">44<small>7D</small></span></div><div class="al">Weekly budget</div></div>
+                </div>
+                <div class="sparepanel">
+                  <div class="sh">Spare-cycles envelope · day 4 of 7</div>
+                  <div class="sx">Linear daily ramp — 100% ÷ 7 = <b>14.2%/day</b>. Today’s line sits at <b>51%</b>; actual 7d use is 44%. Low-priority work backfills the gap without ever starving the weekly cap.</div>
+                  <div class="ramp"><div class="actual" data-w="44"></div><div class="line" style="left:51%"></div></div>
+                  <div class="rampk"><span>day 1 · 14%</span><span>now · day 4</span><span>day 7 · 100%</span></div>
+                </div>
+                <div class="projhd">Per-project mode · you control · honest state</div>
+                <div class="proj">
+                  <div class="pn"><div class="nm">claude-tools</div><div class="st">running · 2 workers · hard-ceiling gated</div></div>
+                  <div class="modeswitch"><span class="on full" onclick="mode(this,'full')">full</span><span onclick="mode(this,'spare')">spare</span><span onclick="mode(this,'paused')">pause</span></div>
+                </div>
+                <div class="proj">
+                  <div class="pn"><div class="nm">beads-runner</div><div class="st">spare-only · backfilling under today’s line</div></div>
+                  <div class="modeswitch"><span onclick="mode(this,'full')">full</span><span class="on spare" onclick="mode(this,'spare')">spare</span><span onclick="mode(this,'paused')">pause</span></div>
+                </div>
+                <div class="proj">
+                  <div class="pn"><div class="nm">site</div><div class="st">stopping… → paused (agent downgraded · blocked on you)</div></div>
+                  <div class="modeswitch"><span onclick="mode(this,'full')">full</span><span onclick="mode(this,'spare')">spare</span><span class="on paused" onclick="mode(this,'paused')">pause</span></div>
+                </div>
+                <div class="trustnote">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z" stroke-linejoin="round"/></svg>
+                  <div><b>Trust boundary.</b> An agent may downgrade or pause its <i>own</i> environment to save cycles. Only <b>you</b> can promote a project back to <b>full</b>.</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ===================== FAILURE ===================== -->
+          <section class="view" id="v-failure">
+            <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
+            <div class="apphead">
+              <button class="back" onclick="go('board')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Board
+              </button>
+              <div class="t" style="font-size:18px;color:var(--coral)">Failure</div>
+            </div>
+            <div class="scroll">
+              <div class="fl">
+                <div class="fclass">
+                  <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5M12 17h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" stroke-linejoin="round"/></svg></div>
+                  <div><div class="ft">WATCHDOG_KILL</div><div class="fp">Stuck 10 min with no output. The runner killed it.</div></div>
+                </div>
+                <div class="ftier">▸ digest tier — self-heals via an analysis task. Synced metadata, always visible remote.</div>
+
+                <div class="sec-h" style="padding:0 2px;color:var(--slate)">Tier 2 · the human-worded summary</div>
+                <div style="padding:14px 2px 0">
+                  <div class="step done"><div class="stepn">1</div>
+                    <div class="stepcard"><div class="sct"><span>What happened</span><span class="t">attempt 2/3 · 1h ago</span></div>
+                      <div class="scb">Worker on <b>bead-191 · dossier reconciler</b> produced no stream output for 10 minutes. Watchdog tripped and killed the process clean.</div>
+                    </div>
+                  </div>
+                  <div class="step done"><div class="stepn">2</div>
+                    <div class="stepcard"><div class="sct"><span>What the runner did next</span><span class="t">auto</span></div>
+                      <div class="scb">Re-queued with fresh context, then spawned an analysis task — a blocking child bead. It already appears in the Board’s Waiting lane and opens as a normal dossier.</div>
+                      <div class="runnernote">Runner: watchdog kill @attempt2 → requeue<br>Runner: spawned <span>analysis bead-191a</span> (blocking child)</div>
+                    </div>
+                  </div>
+                  <div class="step"><div class="stepn">3</div>
+                    <div class="stepcard"><div class="sct"><span>Where it is now</span><span class="t">retry 3/3 queued</span></div>
+                      <div class="scb">Waiting on a spare cycle in <span class="t">beads-runner</span>. No action needed unless retry 3 also fails — then it escalates to a dossier.</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="sec-h" style="padding:18px 2px 14px;color:var(--slate)">Tier 3 · forensic</div>
+                <div class="forensic">
+                  <div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3" stroke-linecap="round"/></svg> Across a security boundary</div>
+                  <p>The raw <b>stream-json</b> holds file contents and model output — it never rides the beads sync. Pull it <b>on demand, redacted</b> (tool sequence + errors + last turn; file bodies stripped). Never persisted server-side.</p>
+                  <button class="fetchbtn" id="fetchBtn" onclick="fetchForensic()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span id="fetchLbl">Fetch redacted forensic log</span>
+                  </button>
+                  <div class="redacted" id="redout">
+                    <div class="rh">— REDACTED · tool_use seq + errors + last assistant turn —</div>
+                    <div class="cl">tool_use → Read(beads-runner/reconciler.ts)</div>
+                    <div class="cl">tool_use → Grep("interpret", glob:*.ts)</div>
+                    <div>↳ result <span class="strip-b">[file body stripped · 412 lines]</span></div>
+                    <div class="cl">tool_use → Edit(reconciler.ts) <span class="strip-b">[diff stripped]</span></div>
+                    <div class="er">✗ no stream activity · 600s · WATCHDOG</div>
+                    <div style="margin-top:9px;color:var(--slate)">last assistant turn:</div>
+                    <div>“…re-deriving the option mapping before I apply the cons<span class="strip-b">[truncated · not persisted]</span>”</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ CAPTION RAIL ============ -->
+    <aside class="rail">
+      <div class="rt">Now showing</div>
+      <div class="flowstack" id="flowstack">
+        <div class="flowcard active" data-for="board">
+          <span class="fc-tag">● Flow E</span>
+          <h3>The Board — situational awareness</h3>
+          <p>Its #1 job isn’t task management. In 5 seconds it answers: <i>is anything waiting on me, and is the machine healthy?</i> Status strip, the pinned amber Waiting lane, then the lifecycle spine.</p>
+          <p class="pr">Built as a read model over beads — local and remote are the same view.</p>
+        </div>
+        <div class="flowcard" data-for="inbox">
+          <span class="fc-tag">● Cross-cut #1</span>
+          <h3>The Inbox is the product</h3>
+          <p>One ranked, batched queue — decisions and ideas, in and out. Amber blocks, mint is a pair session, sky is timed-fyi, slate is a digest roll-up. Never pinged twice for what could be one digest.</p>
+          <p class="pr">Your “no” must be as cheap as your “yes.”</p>
+        </div>
+        <div class="flowcard" data-for="dossier">
+          <span class="fc-tag">● Flow B — the heart</span>
+          <h3>Every ask is a standalone dossier</h3>
+          <p>Pass 1 dedup → Pass 2 framing → Pass 3 readability → Pass 4 respondability. TL;DR, options with pre-declared consequences, blast radius, an inline-editable recommendation. The doc <i>is</i> the form.</p>
+          <p class="pr">Pure checkbox → deterministic &amp; instant. Reconciler agent only for freeform.</p>
+        </div>
+        <div class="flowcard" data-for="confirm">
+          <span class="fc-tag">● Flow B · step 6</span>
+          <h3>A receipt, so you trust it landed</h3>
+          <p>A lightweight ack so you never have to go back and check. The consequence block was applied deterministically; the runner already moved.</p>
+          <p class="pr">Confirm — so you trust it landed without checking.</p>
+        </div>
+        <div class="flowcard" data-for="capture">
+          <span class="fc-tag">● Flow A — intake</span>
+          <h3>Raw thought → pipelined work</h3>
+          <p>~5s of effort: one box, a project (or “let it pick”), and a tapped entry-intent preset. Each preset is a named bundle of two dials — entry stage + gate aggressiveness. An enricher agent dedups and scopes it.</p>
+          <p class="pr">You declare entry intent. The system never guesses the size.</p>
+        </div>
+        <div class="flowcard" data-for="capacity">
+          <span class="fc-tag">● Flow C — capacity</span>
+          <h3>One usage authority, honest state</h3>
+          <p>5h ceiling, 7d budget, today’s spare line vs. actual. Per-project mode is glanceable and remotely flippable. “stopping…” renders honestly — never optimistic.</p>
+          <p class="pr">Agents downgrade their own env; only you promote to full.</p>
+        </div>
+        <div class="flowcard" data-for="failure">
+          <span class="fc-tag">● Flow G — failure</span>
+          <h3>Progressive disclosure across a boundary</h3>
+          <p>Glance → human-worded summary → forensic. Metadata rides the sync and is always visible. The raw stream-json never does — fetched on demand, redacted, never persisted.</p>
+          <p class="pr">Surface the silent failures loudest. Loud ones self-heal; silent ones rot.</p>
+        </div>
+      </div>
+      <div class="navhint">
+        <b>Try it →</b> Tap the amber card to open the dossier. Use the bottom nav to switch the two surfaces. The <b>＋</b> captures an idea. The status strip opens capacity; the red bead opens a failure.
+      </div>
+    </aside>
+  </div>
+
+  <!-- ============ DESKTOP BOARD ============ -->
+  <div class="deck">
+    <div class="deck-h">
+      <h2>Same read model, <em>wider glass</em></h2>
+      <p class="note">“Remote” isn’t a new datastore — it’s the same beads sync rendered at desk width. The amber lane stays pinned to the top no matter the viewport.</p>
+    </div>
+    <div class="dboard">
+      <div class="dstrip">
+        <div class="grp"><span class="k">5H</span><b>31%</b><span class="mini"><i style="width:31%;background:var(--mint)"></i></span></div>
+        <div class="sep"></div>
+        <div class="grp"><span class="k">7D</span><b>44%</b><span class="mini"><i style="width:44%;background:var(--mint)"></i><span style="position:absolute;left:51%;top:-2px;bottom:-2px;width:2px;background:var(--amber)"></span></span><span style="color:var(--amber);font-size:10px">spare 51%</span></div>
+        <div class="sep"></div>
+        <div class="grp"><span class="k">RUNNERS</span><b>3</b><span style="color:var(--mint);font-size:11px">up</span></div>
+        <div class="alert">
+          <span class="a amber">⚠ 2 decisions</span>
+          <span class="a silent">⚠ 1 silent fail</span>
+        </div>
+      </div>
+      <div class="dwait">
+        <div class="wlbl"><span class="pulse"></span> Waiting on you</div>
+        <div class="witem" onclick="document.getElementById('screen').scrollIntoView({behavior:'smooth',block:'center'});go('dossier')">
+          <span class="qn">Auth: cookie session or signed token?</span>
+          <span class="mt">bead-204 · P1</span>
+          <span class="sp">2h · stops 3 impl tasks</span>
+        </div>
+        <div class="resolve" onclick="document.getElementById('screen').scrollIntoView({behavior:'smooth',block:'center'});go('dossier')">
+          Resolve · ~45s
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+      </div>
+      <div class="dcols">
+        <div class="dcol"><div class="dch">idea<span>3</span></div>
+          <div class="dbead"><div class="dbt">Export beads to PDF digest</div><div class="dbf"><span class="l">P3</span><span>1d</span></div></div>
+          <div class="dbead"><div class="dbt">Slack notifier channel</div><div class="dbf"><span class="l">P2</span><span>3h</span></div></div>
+          <div class="dbead"><div class="dbt">Dossier remembers last lean</div><div class="dbf"><span class="l">P3</span><span>2m</span></div></div>
+          <span class="gatetag auto">↳ auto → ux</span>
+        </div>
+        <div class="dcol" data-gate><div class="dch">ux<span>1</span></div>
+          <div class="dbead" onclick="go('dossier')"><div class="dbt">Onboarding UX — pair session</div><div class="dbf"><span class="l">P2</span><span>5h</span></div></div>
+          <span class="gatetag">GATE · you (pair)</span>
+        </div>
+        <div class="dcol" data-gate><div class="dch">design<span>1</span></div>
+          <div class="dbead" onclick="go('dossier')"><div class="dbt">Auth: cookie vs token?</div><div class="dbf"><span class="l" style="color:var(--amber)">⏸ P1</span><span>2h</span></div></div>
+          <span class="gatetag">GATE · you (big)</span>
+        </div>
+        <div class="dcol"><div class="dch">impl<span>3</span></div>
+          <div class="dbead"><div class="dbt">Coordinator usage-authority RPC</div><div class="dbf"><span class="l"><span class="dot-run"></span> running</span><span>22m</span></div></div>
+          <div class="dbead"><div class="dbt">Spare-cycles ramp math</div><div class="dbf"><span class="l"><span class="dot-run"></span> running</span><span>8m</span></div></div>
+          <div class="dbead f" onclick="go('failure')"><div class="dbt">Dossier reconciler agent</div><div class="dbf"><span class="l">P2</span><span>1h</span></div><div class="fl2">⚠ WATCHDOG_KILL · retry 2/3</div></div>
+          <span class="gatetag auto">↳ auto → docs</span>
+        </div>
+        <div class="dcol"><div class="dch">docs<span>1</span></div>
+          <div class="dbead"><div class="dbt">Capacity API reference</div><div class="dbf"><span class="l"><span class="dot-run"></span> running</span><span>4m</span></div></div>
+          <span class="gatetag auto">↳ auto → tests</span>
+        </div>
+        <div class="dcol" data-gate><div class="dch">tests<span>1</span></div>
+          <div class="dbead"><div class="dbt">Manual e2e: remote intake</div><div class="dbf"><span class="l" style="color:var(--amber)">↩ you</span><span>—</span></div></div>
+          <span class="gatetag">GATE · manual-e2e → Inbox</span>
+        </div>
+        <div class="dcol"><div class="dch">done<span>12</span></div>
+          <div class="dbead" style="opacity:.55"><div class="dbt">bd init + Dolt sync</div><div class="dbf"><span class="l">✓</span><span>2d</span></div></div>
+          <div class="dbead" style="opacity:.55"><div class="dbt">Headless runner loop</div><div class="dbf"><span class="l">✓</span><span>3d</span></div></div>
+          <span class="gatetag auto">↳ shipped</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span><b>Beads Runner</b> · attention-router UX · mocks for beads-runner/UX-DESIGN.md</span>
+    <span>Fraunces · Newsreader · IBM&nbsp;Plex&nbsp;Mono · <b>two surfaces only</b></span>
+  </footer>
+</div>
+
+<div class="pop" id="pop"><span class="pd"></span><span id="popmsg"></span></div>
+
+<script>
+  let cur='board';
+  function go(id){
+    const next=document.getElementById('v-'+id);
+    if(!next) return;
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    next.classList.add('active');
+    const sc=next.querySelector('.scroll'); if(sc) sc.scrollTop=0;
+    cur=id;
+    document.querySelectorAll('.flowcard').forEach(f=>f.classList.toggle('active', f.dataset.for===id));
+    if(id==='capacity') setTimeout(animateGauges,140);
+    if(id==='board') setTimeout(animateTracks,150);
+    if(id==='confirm') setTimeout(()=>{ if(cur==='confirm') go('inbox'); },4400);
+  }
+
+  function pick(el){
+    el.parentElement.querySelectorAll('.opt').forEach(o=>o.classList.remove('sel'));
+    el.classList.add('sel');
+    document.getElementById('approveLbl').textContent='Approve '+el.dataset.opt;
+  }
+  function pchip(el){ el.parentElement.querySelectorAll('.pchip').forEach(c=>c.classList.remove('on')); el.classList.add('on'); }
+  function pre(el){ el.parentElement.querySelectorAll('.pre').forEach(p=>p.classList.remove('on')); el.classList.add('on'); }
+  function mode(el,m){
+    const sw=el.parentElement;
+    sw.querySelectorAll('span').forEach(s=>s.className='');
+    el.classList.add('on',m);
+    const st=sw.parentElement.querySelector('.st');
+    const nm=sw.parentElement.querySelector('.nm').textContent;
+    if(m==='paused'){ st.textContent='stopping… → paused'; setTimeout(()=>{ if(st.isConnected) st.textContent='paused · honest state confirmed'; },1600); }
+    else if(m==='spare'){ st.textContent='spare-only · backfilling under today’s line'; }
+    else { st.textContent='running · hard-ceiling gated'; }
+    toast(nm+' → '+m+(m==='full'?'  ·  you promoted (trust boundary)':''));
+  }
+  function fetchForensic(){
+    const lbl=document.getElementById('fetchLbl');
+    lbl.textContent='Pulling over authed channel…';
+    setTimeout(()=>{
+      document.getElementById('redout').classList.add('show');
+      lbl.textContent='✓ Redacted log fetched · not persisted';
+      document.getElementById('fetchBtn').style.opacity='.6';
+    },950);
+  }
+
+  let toastT;
+  function toast(msg){
+    const p=document.getElementById('pop');
+    document.getElementById('popmsg').textContent=msg;
+    p.classList.add('show');
+    clearTimeout(toastT);
+    toastT=setTimeout(()=>p.classList.remove('show'),2600);
+  }
+
+  function animateTracks(){
+    document.querySelectorAll('#v-board .track i').forEach(i=>{
+      i.style.width='0';
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{ i.style.width=i.dataset.w+'%'; }));
+    });
+  }
+  function sweep(r){
+    const target=+r.dataset.deg; let d=0;
+    const step=()=>{ d+=target/24; if(d>=target) d=target; r.style.setProperty('--a',d+'deg'); if(d<target) requestAnimationFrame(step); };
+    r.style.setProperty('--a','0deg'); requestAnimationFrame(step);
+  }
+  function animateGauges(){
+    document.querySelectorAll('#v-capacity .ring').forEach(sweep);
+    const a=document.querySelector('#v-capacity .ramp .actual');
+    if(a){ a.style.width='0'; requestAnimationFrame(()=>requestAnimationFrame(()=>{ a.style.width=a.dataset.w+'%'; })); }
+  }
+
+  window.addEventListener('load',()=>{
+    animateTracks();
+    ['.strip','.lane-hd','.waitcard','.spine'].forEach((s,i)=>{
+      document.querySelectorAll('#v-board '+s).forEach(el=>{
+        el.style.opacity=0; el.style.transform='translateY(14px)';
+        el.style.transition='opacity .6s ease,transform .6s cubic-bezier(.2,.7,.2,1)';
+        setTimeout(()=>{ el.style.opacity=1; el.style.transform='none'; }, 220+i*150);
+      });
+    });
+  });
+</script>
+</body>
+</html>
