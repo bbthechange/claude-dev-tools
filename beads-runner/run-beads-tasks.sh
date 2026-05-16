@@ -336,6 +336,10 @@ classify_failure() {
   if [[ -f "$signal_file" ]]; then
     grep -q '^AUTH_FAILURE=' "$signal_file" 2>/dev/null && { echo "AUTH_FAILURE"; return; }
     grep -q '^BILLING_ERROR=' "$signal_file" 2>/dev/null && { echo "BILLING_ERROR"; return; }
+    # Context overflow is the most decisive terminal: the session physically
+    # cannot continue, and retrying the same task on the same model re-overflows
+    # deterministically. Check before max_output_tokens (same family).
+    grep -q '^CONTEXT_OVERFLOW=' "$signal_file" 2>/dev/null && { echo "CONTEXT_OVERFLOW"; return; }
     # max_output_tokens can arrive as an api_retry error OR as a result stop_reason
     grep -q '^MAX_OUTPUT_TOKENS=' "$signal_file" 2>/dev/null && { echo "MAX_OUTPUT_TOKENS"; return; }
     grep -q '^RESULT_STOP_REASON=max_tokens' "$signal_file" 2>/dev/null && { echo "MAX_OUTPUT_TOKENS"; return; }
@@ -690,6 +694,17 @@ $PROMPT_EXTRA"
           [[ -n "$RESULT" ]] && echo "  [$TS] $RESULT"
           echo "RESULT_IS_ERROR=$IS_ERROR" >> "$SIGNAL_FILE"
           [[ -n "$STOP_REASON" ]] && echo "RESULT_STOP_REASON=$STOP_REASON" >> "$SIGNAL_FILE"
+          # Context overflow ("Prompt is too long") arrives as an errored result
+          # with stop_reason=stop_sequence — it does NOT match the max_tokens /
+          # length stop reasons, so without this it falls through to
+          # UNKNOWN_FAILURE and gets pointlessly retried (each retry re-overflows
+          # at the same point). Pattern-matched on the result text; the API 400
+          # surfaces as "Prompt is too long", context_length_exceeded is a
+          # defensive secondary. is_error guard avoids matching a normal summary.
+          if [[ "$IS_ERROR" == "true" ]] && \
+             echo "$RESULT" | grep -qiE 'prompt is too long|context_length_exceeded' 2>/dev/null; then
+            echo "CONTEXT_OVERFLOW=1" >> "$SIGNAL_FILE"
+          fi
           ;;
         "")
           ;;
@@ -761,7 +776,7 @@ $PROMPT_EXTRA"
   # incidents.log entry and a beads note, just no stream snapshot.
   PRESERVED_LOG=""
   case "$CLASSIFICATION" in
-    WATCHDOG_KILL|UNKNOWN_FAILURE|SERVER_ERROR|MAX_OUTPUT_TOKENS)
+    WATCHDOG_KILL|UNKNOWN_FAILURE|SERVER_ERROR|MAX_OUTPUT_TOKENS|CONTEXT_OVERFLOW)
       PRESERVED_LOG=$(preserve_stream "$STREAM_FILE" "$LOG_BASE-$CLASSIFICATION")
       [[ -n "$PRESERVED_LOG" ]] && echo "  Stream preserved: $PRESERVED_LOG"
       [[ "$CLASSIFICATION" == "WATCHDOG_KILL" && -f "$PROC_SNAPSHOT" ]] && \
@@ -825,6 +840,22 @@ $PROMPT_EXTRA"
       record_incident "$TASK_ID" "MAX_OUTPUT_TOKENS" "${PRESERVED_LOG:--}"
       notify_user "beads-runner: max output tokens" "$TASK_ID — context exhausted"
       create_analysis_task "$TASK_ID" "$TASK_TITLE" "max_output_tokens"
+      LAST_FAILED_ID=""
+      FAIL_COUNT=0
+      ;;
+
+    CONTEXT_OVERFLOW)
+      echo "  FAILED: $TASK_TITLE — context window overflowed (Prompt is too long)"
+      FAILED=$((FAILED + 1))
+      bd update "$TASK_ID" --status=open 2>/dev/null || true
+      append_runner_note "$TASK_ID" "CONTEXT_OVERFLOW" "${PRESERVED_LOG:--}"
+      record_incident "$TASK_ID" "CONTEXT_OVERFLOW" "${PRESERVED_LOG:--}"
+      notify_user "beads-runner: context overflow" "$TASK_ID — see $LOG_DIR"
+      # Retrying as-is re-overflows at the same point, so go straight to an
+      # analysis task (runs on opus). Reason carries salvage guidance: the
+      # previous agent usually completed early phases before overflowing.
+      create_analysis_task "$TASK_ID" "$TASK_TITLE" \
+        "context_overflow — ran out of context mid-session. The previous agent likely completed early phases before overflowing: inspect git log / git diff for committed or staged work and re-scope this task to ONLY the remaining steps (do not redo completed work). If the task is inherently too large for one window, split it into smaller dependent tasks. Overflow-prone tasks are usually labeled model:sonnet (200K window); relabel the re-scoped task model:opus (the runner auto-selects the 1M-context Opus variant) before it is retried."
       LAST_FAILED_ID=""
       FAIL_COUNT=0
       ;;
