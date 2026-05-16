@@ -81,6 +81,16 @@ PERMISSION_FLAGS=(--permission-mode acceptEdits)
 EXTRA_CLAUDE_FLAGS=(--no-chrome)
 PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"     # §4.2 project_ref (controllable unit); Coordinator owns desired-state
 STOP_FILE="${STOP_FILE:-.stop-beads}"
+
+# BC-35/BC-36 (T2.4, claude-tools-7hx): the project cleanup hook the teardown
+# invokes. Defined as a no-op BEFORE the project config source so a
+# `.beads/runner.sh` `runner_cleanup` override wins (the broader BC-37 config
+# seam — allowlist / --yolo / runner_setup — is NOT this child's surface; only
+# the runner_cleanup hook the BC-36 symmetry decision invokes is). v1 ran this
+# on INT/TERM + the three fatal exits but NOT on normal completion — the
+# asymmetry this child consciously resolves below (symmetric EXIT-trap funnel).
+runner_cleanup() { :; }
+
 if [[ -f .beads/runner.sh ]]; then
   # shellcheck source=/dev/null
   source .beads/runner.sh 2>/dev/null || echo "degrade: CONFIG_UNREADABLE — .beads/runner.sh failed to source; using defaults" >&2
@@ -189,37 +199,187 @@ classify_outcome() {
   if [[ "$status" == "closed" ]]; then echo "SUCCESS"; else echo "NOT_CLOSED"; fi
 }
 
-# ── SEAM (T2.4 owns): full process-group/tree teardown on EVERY exit path,
-#    BC-35 interrupt reset-to-open, BC-29 timestamped artifact basenames,
-#    BC-36 cleanup symmetry. The skeleton does the MINIMAL safe thing — reap
-#    the one worker process it tracks — and nothing more; the leaked-subshell /
-#    PG-kill / EXIT+SIGHUP coverage is explicitly T2.4. ───────────────────────
-_reap_worker() {
-  [[ -n "$CLAUDE_PID" ]] || return 0
-  kill -0 "$CLAUDE_PID" 2>/dev/null && kill "$CLAUDE_PID" 2>/dev/null
-  # KNOWN MARKED GAP (T2.4 seam): a worker that ignores SIGTERM makes this
-  # `wait` block until a second signal. The bounded SIGINT→SIGKILL staged
-  # escalation + full process-group/tree teardown is T2.4's owned surface —
-  # deliberately NOT implemented here (non-overlapping ownership).
-  wait "$CLAUDE_PID" 2>/dev/null || true
-  CLAUDE_PID=""
+# ── T2.4 (claude-tools-7hx): FULL process-tree teardown on EVERY exit path +
+#    BC-35 interrupt reset-to-open + BC-36 cleanup-asymmetry RESOLUTION +
+#    BC-39/BC-40 reaping guarantee. (BC-29 timestamped basenames live at the
+#    artifact-creation site in st_run_task.) INTERFACE.md v1 §8.1 exit table is
+#    FROZEN — preserved verbatim on every path (a change is a §11 BLOCKING
+#    escalation: reopen claude-tools-65z, never a local divergence).
+#
+# THE CONSCIOUS BC-36 DECISION (the hazard the contract demands we RESOLVE, not
+# silently inherit): v1 had NO `EXIT` trap — runner_cleanup + in-flight
+# handling ran on INT/TERM and the three fatal exits but NOT on normal/graceful
+# completion, and not at all on an unguarded `set -e` abort, which stranded
+# CURRENT_TASK_ID `in_progress`. RESOLUTION: cleanup is made SYMMETRIC by
+# routing EVERY exit path — normal completion, fatal, signal, parent-death —
+# through ONE idempotent funnel via `trap … EXIT` (+ HUP for parent death; +
+# INT/TERM for the signal path). The funnel: (a) reaps the worker + watchdog
+# process SUBTREES (not just the tracked pid — their `claude` subagents /
+# `sleep`/`ps` grandchildren too) with a BOUNDED staged escalation, then sweeps
+# any still-attached stray descendant; (b) if a task is genuinely in flight,
+# resets it to `open` (BC-35) so NO exit path strands it; (c) runs
+# runner_cleanup; (d) removes the usage cache + the current signal file. The
+# `set -e`-abort sub-hazard is additionally eliminated at the ROOT by this
+# file's BC-42 posture (NO `set -e`); the EXIT trap covers every remaining
+# non-SIGKILL path. RESIDUALS — consciously characterized, NOT silently
+# inherited (the BC-36 mandate), each recovered by §6.1 lease expiry / orphan
+# recovery (the backstop v1's PID-1 reaper *cron* was a stopgap for):
+#  R1 SIGKILL of the runner ITSELF runs no trap (irreducible — no process can
+#     clean up after its own SIGKILL).
+#  R2 The reset-to-open issues an UNbounded `bd update` AFTER signals are
+#     masked; if `bd`/Dolt is itself wedged (the BD_UNAVAILABLE scenario) the
+#     strand window is wider than just R1 — the operator's recourse is SIGKILL
+#     (→ R1). A bounded `bd` is intentionally NOT added: `timeout` is
+#     non-portable here and lease-expiry already recovers the bead.
+#  R3 `_sweep_self`'s broad `$$`-subtree TERM/KILL is PID-based: between the
+#     `ps` snapshot and the signal a recycled PID could be hit. Inherent to any
+#     PID teardown; the window is sub-millisecond and bounded to the dying
+#     runner's own former descendants.
+# The new runner
+# closes the v1 leak AT THE SOURCE: it has NO `tail -f`/parser subshell at all
+# (BC-39/BC-40 re-implemented — see st_run_task) and BOTH async children
+# (worker, watchdog) are tracked and reaped here on every path, so nothing
+# reparents in the normal/signal/abort cases.
+#
+# BC-39/BC-40 (re-implemented, SCAFFOLDING not transcribed): worker stdout+
+# stderr are already merged into ONE file (st_run_task `> … 2>&1`, no `tail -f`
+# subshell, no tempfile-as-IPC `tail`/`pkill -P`/`sleep 1`-to-flush); the
+# capture-then-classify happens-before is already structural (st_run_task
+# `wait` the worker → reap+join the watchdog → THEN POST_TASK classifies). The
+# half the contract assigns HERE: the GUARANTEED reaping of that subtree on
+# every exit path, plus a worker teardown that sends SIGINT FIRST so the SDK
+# flushes in-flight HTTP-retry stderr into the merged stream file (BC-39
+# intent) before the bounded escalation to SIGKILL.
+
+# _tree_pids is defined further below (the T2.3 ps/ppid fixpoint helper); these
+# are CALLED only at teardown / in-band-reap time, by which point it exists
+# (bash resolves function calls late) — no forward-reference hazard.
+
+# _kill_tree <root> <signal> — signal every pid in <root>'s subtree (incl.
+# root, incl. grandchildren) BEFORE any of them can reparent. Skips $$ ALWAYS
+# (BC-21: never signal the runner itself ⇒ its frozen exit code is preserved).
+# A dead pid is a harmless no-op. Sets _KT_N = number actually signaled.
+_KT_N=0
+_kill_tree() {
+  local root="$1" sig="$2" p
+  _KT_N=0
+  [[ -n "$root" ]] || return 0
+  while IFS= read -r p; do
+    [[ -n "$p" && "$p" != "$$" ]] || continue
+    if kill "-$sig" "$p" 2>/dev/null; then _KT_N=$((_KT_N+1)); fi
+  done < <(_tree_pids "$root" 2>/dev/null)
+  return 0
 }
 
-# Interrupt → BC-21 exit 1 (§8.1 row 1). The runner still owns its six-job
-# CALLS on this path: pair the lease release (§6.1) and write the §8.2
-# last-durable terminal-reason (job 6) BEFORE exit. The fuller BC-35
-# reset-the-in-flight-bead-to-open + lifecycle cleanup is T2.4's SEAM.
-_on_interrupt() {
-  trap - INT TERM
-  echo ""
-  echo "runner: SIGINT/SIGTERM — stopping (BC-21 exit 1)"
-  _reap_worker
-  [[ -n "$CURRENT_TASK_ID" ]] && job_release_lease "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null 2>&1
-  job_report_terminal INTERRUPTED 1 "${CURRENT_TASK_ID:-}" >/dev/null 2>&1
-  echo "runner: $COMPLETED completed / $PROCESSED processed"
-  exit 1
+# _reap_tree <root> <first_sig> <grace_secs> — staged, BOUNDED teardown of a
+# child SUBTREE: first_sig the whole tree → ≤grace×1s poll → SIGKILL the
+# survivors → reap the direct-child zombie. Bounded by construction — this is
+# the fix for the skeleton's marked hazard (an UNbounded `wait` on a
+# SIGTERM-ignoring worker would block teardown until a second signal).
+_reap_tree() {
+  local root="$1" first="${2:-TERM}" grace="${3:-2}" i
+  [[ -n "$root" ]] || return 0
+  if kill -0 "$root" 2>/dev/null; then
+    _kill_tree "$root" "$first"
+    for ((i=0; i<grace; i++)); do
+      kill -0 "$root" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$root" 2>/dev/null; then _kill_tree "$root" KILL; fi
+  fi
+  wait "$root" 2>/dev/null || true     # reap our direct-child zombie
 }
-trap _on_interrupt INT TERM
+
+# _sweep_self — TERM, then (only if something was signaled) KILL, every
+# still-ATTACHED descendant of THIS runner: the defensive catch-all for a stray
+# subshell the tracked-pid reaps missed. Skips $$ (exit code preserved).
+# Reparented-to-init orphans (ppid=1) have LEFT $$'s subtree and are the
+# LAUNCHER's process-group sweep (the harness `_reap_runner_pg` does exactly
+# `kill -KILL -- -RUNNER_PID` AFTER observing the exit code; the T3 launch
+# contract SHOULD start the runner in its own group/session). A self-issued
+# negative-PGID kill is deliberately NOT used: it would SIGKILL the runner
+# mid-EXIT-trap and turn the frozen BC-21 code into 137 — the contract's
+# "process-group kill" option is the launcher's, not the dying process's.
+_sweep_self() {
+  _kill_tree "$$" TERM
+  [[ "${_KT_N:-0}" -gt 0 ]] || return 0
+  sleep 1
+  _kill_tree "$$" KILL
+}
+
+# THE single idempotent teardown funnel — invoked via `trap … EXIT`, so it runs
+# on literally every exit path (normal st_terminal `exit`, the signal path's
+# `exit 1`, any unexpected abort). Does NOT call `exit` (bash would override
+# the in-flight exit code — BC-21 §8.1 is preserved by NOT touching it here).
+_TEARDOWN_DONE=0
+runner_teardown() {
+  # Disarm signals FIRST — before the idempotency latch (T2.4 hardening). If
+  # this ran after the latch, a signal landing in the window between entering
+  # the trap and the disarm could run _on_signal → `exit 1` → re-enter this
+  # trap → the latch returns early → teardown SKIPPED (worker/watchdog not
+  # reaped, task not reset) AND a clean 0 corrupted to 1. Masking first closes
+  # that race: once any exit funnel starts, signals are inert immediately.
+  trap '' INT TERM HUP
+  [[ "$_TEARDOWN_DONE" -eq 1 ]] && return 0
+  _TEARDOWN_DONE=1
+
+  # (a) Reap the worker subtree FIRST with SIGINT — BC-39 intent: a graceful
+  #     interrupt lets the SDK flush in-flight HTTP-retry stderr into the
+  #     merged stream file before it dies — then bounded-escalate; then the
+  #     watchdog subtree; then the attached-stray catch-all.
+  if [[ -n "$CLAUDE_PID" ]];   then _reap_tree "$CLAUDE_PID" INT 3;   CLAUDE_PID=""; fi
+  if [[ -n "$WATCHDOG_PID" ]]; then _reap_tree "$WATCHDOG_PID" TERM 2; WATCHDOG_PID=""; fi
+  _sweep_self
+
+  # (b) BC-35 / BC-36 in-flight safety net — fires on EVERY path (signal,
+  #     fatal, parent-death, unexpected abort), NOT just INT/TERM. CURRENT_TASK_ID
+  #     is set at task start and cleared on clean finish, so this resets ONLY a
+  #     genuinely in-flight task ⇒ NO exit path strands it `in_progress`.
+  if [[ -n "$CURRENT_TASK_ID" ]]; then
+    echo "Interrupted — resetting $CURRENT_TASK_ID to open"
+    safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
+    job_release_lease "$CURRENT_TASK_ID" "${LEASE_GENERATION:-}" >/dev/null 2>&1   # §6.1 pairing
+    CURRENT_TASK_ID=""
+  fi
+
+  # (c) project cleanup hook — now SYMMETRIC (THE BC-36 resolution: v1 ran this
+  #     on INT/TERM+fatal but NOT on normal completion; here it runs on ALL).
+  runner_cleanup 2>/dev/null || true
+
+  # (d) lifecycle file removal — BC-35 literal: usage cache + the current
+  #     signal file. STREAM_FILE / PROC_SNAPSHOT are deliberately LEFT:
+  #     selective retention-vs-delete by FINAL classification is T2.2/BC-28's
+  #     seam — this child owns the BC-29 BASENAME scheme, NOT the retention
+  #     policy, and must not destroy that seam's input.
+  rm -f "${USAGE_CACHE_FILE:-}" "${SIGNAL_FILE:-}" 2>/dev/null || true
+
+  echo "runner: Results: $COMPLETED completed / $PROCESSED processed"
+  # NO `exit` — preserve the code set by st_terminal / _on_signal (BC-21).
+}
+trap runner_teardown EXIT
+
+# Signal path (INT/TERM + HUP for parent-death hangup) → BC-21 exit 1 (§8.1
+# row 1). Writes the §8.2 last-durable terminal-reason (job 6, INTERRUPTED/1)
+# BEFORE the process exits, then `exit 1`. The `exit` triggers the EXIT trap
+# above, which performs the SINGLE symmetric teardown (subtree reap +
+# reset-to-open + runner_cleanup + file cleanup + Results) — so the signal path
+# and the normal path share ONE teardown (the BC-36 symmetry, by construction).
+_on_signal() {
+  trap '' INT TERM HUP
+  echo ""
+  echo "runner: SIGINT/SIGTERM/SIGHUP — stopping (BC-21 exit 1)"
+  # Defense-in-depth for the FROZEN BC-21 table (st_terminal already disarms
+  # signals before deciding 0/2/3/4, so this is normally unreachable after a
+  # terminal decision): only claim row-1 (signal=1) if NO terminal code has
+  # been decided yet (EXIT_CODE==0 ⇒ a genuine in-flight interrupt). If a
+  # fatal 2/3/4 is already set, preserve it — never downgrade to 1.
+  if [[ "${EXIT_CODE:-0}" -eq 0 ]]; then
+    EXIT_CODE=1; TERMINAL_CLASS="INTERRUPTED"
+    job_report_terminal INTERRUPTED 1 "${CURRENT_TASK_ID:-}" >/dev/null 2>&1
+  fi
+  exit "$EXIT_CODE"
+}
+trap _on_signal INT TERM HUP
 
 # ── SEAM (T2.3 owns, claude-tools-9e7): BC-22 idle watchdog, RE-IMPLEMENTED ───
 # WHAT CHANGED vs v1 (the behavior CORRECTION, not an interface change):
@@ -451,8 +611,15 @@ st_claim() {
   fi
 
   # Lease held ⇒ now (and only now) drive the bead to in_progress (AD2.1).
-  safe_capture BD_UNAVAILABLE "" -- bd update "$CANDIDATE_ID" --status=in_progress >/dev/null
+  # T2.4: CURRENT_TASK_ID is set BEFORE the in_progress write (v1/skeleton set
+  # it AFTER) — it is the BC-35/BC-36 teardown safety-net marker, so a signal
+  # or abort landing DURING the write still resets the bead to open ⇒ NO exit
+  # path strands it `in_progress`. (AD2.1 is lease-before-in_progress, already
+  # satisfied above; CURRENT_TASK_ID is a teardown marker, not a state
+  # transition — this reorder is in this child's BC-35/BC-36 surface, not the
+  # T2.1 state machine's.)
   CURRENT_TASK_ID="$CANDIDATE_ID"
+  safe_capture BD_UNAVAILABLE "" -- bd update "$CANDIDATE_ID" --status=in_progress >/dev/null
   transition RUN_TASK
 }
 
@@ -475,15 +642,40 @@ st_run_task() {
   # lands under LOG_DIR; BC-27's self-gitignore is re-asserted defensively
   # where we write post-mortem artifacts (raw model output must never reach
   # git) — the full LOG_DIR lifecycle/retention policy is T2.2/BC-28's seam.
-  local iter_ts log_dir
+  local iter_ts log_dir base
   iter_ts="$(date -u +%Y%m%dT%H%M%SZ)"
   log_dir=".beads/runner-logs"
   mkdir -p "$log_dir" 2>/dev/null || true
   [[ -f "$log_dir/.gitignore" ]] || printf '*\n!.gitignore\n' > "$log_dir/.gitignore" 2>/dev/null || true
-  STREAM_FILE="$(mktemp 2>/dev/null)" || STREAM_FILE="$log_dir/$CURRENT_TASK_ID-$iter_ts.stream.jsonl"
-  SIGNAL_FILE="$(mktemp 2>/dev/null)" || SIGNAL_FILE="$log_dir/$CURRENT_TASK_ID-$iter_ts.signal"
-  PROC_SNAPSHOT="$log_dir/$CURRENT_TASK_ID-$iter_ts.proc.txt"
-  : > "$STREAM_FILE"; : > "$SIGNAL_FILE"
+  # BC-29 (T2.4, claude-tools-7hx): per-iteration timestamped basenames
+  # `<TASK_ID>-<ITER_TS>` for ALL three artifacts so repeated attempts of the
+  # SAME task never overwrite each other's preserved stream / signal /
+  # proc-snapshot. v1's skeleton used `mktemp` for STREAM/SIGNAL: unique, but
+  # neither `<TASK_ID>-<ITER_TS>` NOR inside the BC-27 self-gitignored log_dir
+  # — the timestamped basename is THIS child's owned surface. mktemp survives
+  # ONLY as the degraded fallback when log_dir is unwritable (BC-42 posture:
+  # one visible typed degrade, never crash the loop). Selective
+  # retention-vs-delete by final classification stays T2.2/BC-28's seam — this
+  # child owns the NAMING, not the retention.
+  base="$log_dir/$CURRENT_TASK_ID-$iter_ts"
+  if [[ -d "$log_dir" && -w "$log_dir" ]]; then
+    STREAM_FILE="$base.stream.jsonl"
+    SIGNAL_FILE="$base.signal"
+    PROC_SNAPSHOT="$base.proc.txt"
+  else
+    # Degraded: ALL THREE get a unique mktemp fallback (symmetric — a
+    # timestamped path inside an unwritable dir would silently fail to write
+    # AND, for the proc-snapshot, defeat BC-29's no-collide intent on the
+    # degraded path too). BC-42 posture: one visible typed degrade, continue.
+    degrade LOGDIR_UNWRITABLE "$log_dir unwritable — artifacts to mktemp (BC-29 basename degraded; loop continues)"
+    STREAM_FILE="$(mktemp 2>/dev/null)"   || STREAM_FILE="$base.stream.jsonl"
+    SIGNAL_FILE="$(mktemp 2>/dev/null)"   || SIGNAL_FILE="$base.signal"
+    PROC_SNAPSHOT="$(mktemp 2>/dev/null)" || PROC_SNAPSHOT="$base.proc.txt"
+  fi
+  # Truncate to a known-empty start; a failure here is the doubly-degraded edge
+  # (log_dir AND mktemp both unusable) — typed, visible, never a silent crash.
+  : > "$STREAM_FILE" 2>/dev/null && : > "$SIGNAL_FILE" 2>/dev/null \
+    || degrade ARTIFACT_UNWRITABLE "could not init stream/signal files — watchdog output-progress signal degraded; loop continues"
 
   # BC-39: stdout+stderr → the one stream file (stderr carries SDK HTTP-retry
   # state; the watchdog's SIGINT-before-SIGKILL exists so it flushes here).
@@ -502,7 +694,14 @@ st_run_task() {
   # task early, and ONLY for genuine no-progress-anywhere-in-the-tree stall;
   # this is orthogonal to the §2.5 stop semantic below (a stop REQUEST is never
   # a mid-task kill — honored after the task).
-  _watchdog_loop "$CLAUDE_PID" "$STREAM_FILE" "$SIGNAL_FILE" "$PROC_SNAPSHOT" &
+  # T2.4: the watchdog runs in a subshell that EXPLICITLY drops the runner's
+  # traps — a subshell exiting must NEVER fire runner_teardown, and a signal
+  # must hit the runner main (its _on_signal), not this child. (Bash already
+  # resets subshell traps; making it explicit is defensive and documents
+  # intent. T2.3's _watchdog_loop body is byte-unchanged — this is T2.4's
+  # trap-isolation, not a watchdog-policy edit.)
+  ( trap - EXIT HUP INT TERM
+    _watchdog_loop "$CLAUDE_PID" "$STREAM_FILE" "$SIGNAL_FILE" "$PROC_SNAPSHOT" ) &
   WATCHDOG_PID=$!
 
   # §2.5 DURING-task cadence. We poll on a fine RUNNER_TICK and act on the
@@ -534,14 +733,16 @@ st_run_task() {
   wait "$CLAUDE_PID" 2>/dev/null || true       # BC-01: exit code is NOT trusted (BC-09); see classify_outcome
   CLAUDE_PID=""
 
-  # In-band reap of the watchdog subtree (its SHAPE is T2.3's). The loop
-  # already self-exits within ≤WATCHDOG_POLL once CLAUDE_PID dies; this makes
-  # it prompt and deterministic for the normal path. The GUARANTEED teardown
-  # on EVERY exit path (interrupt, set -e abort, parent death — BC-35/BC-36
-  # symmetry + full PG kill) is T2.4's owned seam — NOT implemented here.
+  # In-band reap of the watchdog SUBTREE (its SHAPE/policy is T2.3's; the
+  # reaping GUARANTEE is T2.4's, claude-tools-7hx). The loop self-exits within
+  # ≤WATCHDOG_POLL once CLAUDE_PID dies; reaping the whole subtree here makes
+  # it prompt + deterministic on the normal path AND collects the subshell's
+  # own `sleep`/`ps`/`lsof` grandchildren (a pid-only `kill` left that `sleep`
+  # to reparent — the exact v1-class leak). The EVERY-exit-path guarantee
+  # (interrupt, parent-death, abort — BC-35/BC-36 symmetry) is the EXIT/HUP
+  # trap funnel above (runner_teardown), which re-reaps this subtree too.
   if [[ -n "$WATCHDOG_PID" ]]; then
-    kill "$WATCHDOG_PID" 2>/dev/null || true
-    wait "$WATCHDOG_PID" 2>/dev/null || true
+    _reap_tree "$WATCHDOG_PID" TERM 2     # subshell + its sleep/ps/lsof kids
     WATCHDOG_PID=""
   fi
   # SIGNAL_FILE + STREAM_FILE + PROC_SNAPSHOT are intentionally LEFT in place:
@@ -616,6 +817,13 @@ st_terminal() {
   job_heartbeat stopped "" "" >/dev/null
   job_report_terminal "$TERMINAL_CLASS" "$EXIT_CODE" "" >/dev/null
   echo "runner: $COMPLETED completed / $PROCESSED processed — terminal=$TERMINAL_CLASS exit=$EXIT_CODE"
+  # T2.4 / BC-21 §8.1 (FROZEN): the terminal code is now DECIDED. Disarm the
+  # signal trap BEFORE `exit` so a signal racing the exit→EXIT-trap handoff
+  # cannot run _on_signal and downgrade a decided 0/2/3/4 to 1 (a coordinator
+  # distinguishing AUTH=3 / BILLING=4 / breaker=2 from clean=0 depends on this;
+  # the fatal 2/3/4 producers are T2.2's, but this funnel must already be safe
+  # for them — the table is honored on EVERY exit path, this child's OWNS #1).
+  trap '' INT TERM HUP
   exit "$EXIT_CODE"
 }
 
