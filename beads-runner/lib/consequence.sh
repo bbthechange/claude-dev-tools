@@ -258,15 +258,31 @@ do__apply_cb() {
 # ════════════════════════════════════════════════════════════════════════════
 # do__is_deterministic <item_json> <response_json> — 0 iff this is the PURE
 #   un-edited common path: decision ∈ {approve,reject,pick}, NO `edited_value`,
-#   item `kind` ∈ {approve-reject,pick-option,approve-recommendation}. Anything
-#   else — decision ∈ {edit,freeform,object}, an `edited_value` present, or a
-#   `freeform-edit`/`fyi-objectable` kind — is the RECONCILER path. PURE.
+#   item `kind` ∈ {approve-reject,pick-option,approve-recommendation,
+#   fyi-objectable}. Anything else — decision ∈ {edit,freeform,object}, an
+#   `edited_value` present, or a `freeform-edit` kind — is the RECONCILER path.
+#   PURE.
+#
+#   §5.2.2-CONFORMANCE (claude-tools-864, found by T5.4/claude-tools-it2):
+#   §5.2.2 + §4.1.1 + parent EXIT 2 require an UN-objected `fyi-objectable`
+#   item to AUTO-PROCEED on the §2.2 timer = deterministically apply THAT
+#   item's pre-declared `consequence_block` exactly once (idempotent per-Item
+#   §7.4). This file ALREADY documented that path as T5.4 "calling THIS
+#   entrypoint with a proceed response; T5.3 owns only the idempotent apply",
+#   but the kind allow-list had excluded `fyi-objectable`, so an un-objected
+#   proceed wrongly fell to the reconciler (no block applied — T5.4 EXIT 1
+#   unsatisfiable). `fyi-objectable` is now in the allow-list; a
+#   `decision:"object"` still falls through the `case "$dec"` (object ∉
+#   {approve,reject,pick}) to the RECONCILER — the human-objected path is
+#   UNCHANGED (test-consequence.sh case (e) stays GREEN). NOT an INTERFACE
+#   gap (no §11): the frozen contract is clear; this is a routing-predicate
+#   conformance fix in §5.2.2's OWNING file, apply LOGIC untouched.
 do__is_deterministic() {
   local item="${1:-}" resp="${2:-}" dec kind edited
   dec=$(printf '%s'  "$resp" | jq -r '.decision // ""' 2>/dev/null) || dec=""
   kind=$(printf '%s' "$item" | jq -r '.kind // ""'     2>/dev/null) || kind=""
   edited=$(printf '%s' "$resp" | jq -r 'if has("edited_value") and .edited_value!=null then "y" else "n" end' 2>/dev/null) || edited="n"
-  case "$kind" in approve-reject|pick-option|approve-recommendation) : ;; *) return 1 ;; esac
+  case "$kind" in approve-reject|pick-option|approve-recommendation|fyi-objectable) : ;; *) return 1 ;; esac
   [[ "$edited" == "n" ]] || return 1
   case "$dec" in approve|reject|pick) return 0 ;; *) return 1 ;; esac
 }

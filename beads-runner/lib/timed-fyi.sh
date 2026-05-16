@@ -1,0 +1,323 @@
+# shellcheck shell=bash
+# beads-runner/lib/timed-fyi.sh — T5.4 DURABLE timed-fyi TIMER + S-6
+#                                 missed-alarm fire-on-next-poll dedup
+#                                 (claude-tools-it2; epic claude-tools-glk).
+# ════════════════════════════════════════════════════════════════════════════
+# OWNS (INTERFACE.md v1 — bound to section numbers, never re-stated locally):
+#
+#   • §2.2 fire(dossier_id)@T WIRING for the `timed-fyi` auto-proceed window.
+#     `timer_fire_at = created_at + window`; window default `TIMED_FYI_DEFAULT`
+#     (§0.5), a per-dossier override ∈ (0, `TIMED_FYI_DEFAULT`]; a `null`
+#     window ⇒ NO timer (`timer_fire_at` stays null, nothing armed). The
+#     §4.1 `tier` drives whether a §2.2 timer is set — only `timed-fyi` arms.
+#
+#   • The S-6 BACKSTOP. The §2.2 timer is best-effort BY CONTRACT; a missed
+#     fire MUST degrade to fire-on-next-poll. `tf_fire` is the SHARED
+#     auto-proceed handler the alarm path AND the poll-fallback both invoke;
+#     it auto-proceeds each un-objected `fyi-objectable` item by calling the
+#     T5.3 idempotent per-Item entrypoint `do_item_apply` with a proceed
+#     response. Alarm-fire vs poll-fallback therefore apply each item's
+#     consequence EXACTLY ONCE **via the §7.4 per-Item latch (S-6)** — never
+#     via timer reliability and never via the best-effort ack.
+#
+#   • A `timed-fyi` dossier can NEVER stall forever (S-6): every un-objected
+#     `fyi-objectable` item auto-proceeds on the window; non-auto-proceeding
+#     items (objected, or a non-`fyi-objectable` item carried in a `timed-fyi`
+#     dossier) are simply LEFT OPEN — they block neither siblings nor the
+#     pipeline (AD7 partial resolution; the §4.1 rollup is never a gate).
+#
+#   • Consumes the T4 §2.2 timer SURFACE (claude-tools-ick) via the §2.3 authed
+#     front door ONLY — `co_request <bearer> timer-arm|timer-due|timer-ack`
+#     (never a co__timer_* internal) — and the T5.3 idempotent per-Item apply
+#     ENTRYPOINT `do_item_apply` (the §5.3/§7.4/§5.2.2 LOGIC is T5.3's; this
+#     file never re-implements it). The §4.1 envelope round-trips through the
+#     T5.1 PUBLIC surface (`do_dossier_get` / `do_dossier_put`); the §4.1
+#     `timer_fire_at` field is stored-verbatim by T5.1 — T5.4 is the tier that
+#     COMPUTES and SETS it (T5.1 header: "§2.2 durable-timer wiring — T5.4").
+#
+# MUST NOT TOUCH (sibling surfaces — drift is a BLOCKING escalation, §11):
+#   • §4.1 envelope / §4.1.1 per-Item record / state-machine + latch/dedup
+#     PRIMITIVE internals — T5.1 (claude-tools-fuy). Consumed as a black box
+#     via the PUBLIC surface (`do_dossier_get`, `do_dossier_put`, the exposed
+#     single-writer `do__with_dossier_lock`, `do__safe_key`); no `do__*_locked`
+#     internal is called and the §4 store is never re-implemented.
+#   • §5 generation of `body`/`items[]` content — T5.2. The proceed response
+#     is the §4.1.1 `.response` RECORD only; NO §5 content is synthesised.
+#   • §5.3 apply LOGIC + §7.4 per-Item latch + §5.2.2 deterministic/reconciler
+#     routing — T5.3 (claude-tools-o0u). `tf_fire` CALLS `do_item_apply`; it
+#     never selects/applies a ConsequenceBlock, flips a latch, or moves a
+#     `.state` itself. (A T5.3 §5.2.2-conformance defect that blocked this
+#     task — fyi-objectable excluded from the deterministic kind allow-list —
+#     was filed as claude-tools-864 and fixed in T5.3's OWNING file
+#     consequence.sh, NOT worked around or re-implemented here.)
+#   • §7.3/§7.4 DOSSIER-level `task_ref` dedup + S-2 reconcile — T5.5. The S-6
+#     dedup this file relies on is the PER-ITEM latch (T5.3), a distinct layer.
+#   • §4.3 Notification — T5.6.
+#   • The T4 §2.2 timer-surface INTERNALS (`co__timer_*`) — claude-tools-ick.
+#     Consumed only through `co_request` (the §2.3 authed front door).
+#
+# ANTI-DRIFT: binds INTERFACE.md v1 §2.2 / §7.4 (S-6). The timer is
+#   best-effort BY CONTRACT — exactly-once is the §7.4 per-Item latch, never
+#   timer reliability and never the ack. An INTERFACE gap/contradiction is a
+#   BLOCKING §11 escalation (reopen claude-tools-65z, amend+bump+re-freeze,
+#   Brian sign-off) — never diverge locally. (No INTERFACE gap was found; the
+#   one defect hit was a T5.3 implementation non-conformance, fixed in T5.3.)
+#
+# Safe to `source` under `set -euo pipefail`: only function definitions below;
+# every fallible call is guarded. Requires `jq`.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── consume the T5.3 entrypoint + T5.1 surface + T4 §2.2 timer surface ───────
+# Sources consequence.sh (→ dossier.sh → coordinator.sh) the way the focused
+# tests do, binding ONLY to the public surface:
+#   do_item_apply                  — the T5.3 idempotent per-Item apply (§7.4)
+#   do_dossier_get / do_dossier_put— the T5.1 §4.1 envelope round-trip
+#   do__with_dossier_lock          — the exposed single-writer critical section
+#   do__safe_key                   — the shared id-safety predicate
+#   co_request                     — the §2.3 authed front door (timer-* §2.2)
+#   co_authenticate                — the ONE §9.1 authenticate→principal step
+tf__lib_dir() { cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd; }
+if ! declare -F do_item_apply >/dev/null 2>&1; then
+  # shellcheck source=/dev/null
+  . "$(tf__lib_dir)/consequence.sh"
+fi
+
+# ── §0.5 frozen constant — single normative definition is INTERFACE.md ───────
+# §0.5 forbids a competing local restatement; each consuming file provides an
+# env-overridable lookup defaulting to the §0.5 value (the la__/co__ discipline
+# — la__LEASE_TTL, co__FORENSIC_BLOB_TTL). T5.4 is the REAL use site for the
+# `timed-fyi` window, so — mirroring that discipline — it is defined HERE.
+tf__TIMED_FYI_DEFAULT() { echo "${TIMED_FYI_DEFAULT:-86400}"; }   # §0.5
+
+# ── portable RFC-3339(…Z, §0.4) ↔ epoch arithmetic ───────────────────────────
+# created_at + window must be computed without coupling to a T4 internal
+# (consume only the §2.2 timer SURFACE). Dual-path GNU(`-d`)/BSD-macOS(`-j`/
+# `-r`), exactly the portability shape coordinator.sh's own date helper uses.
+# `created_at` is §0.4 RFC-3339 UTC integer-seconds (`…Z`); fractional seconds
+# / numeric offsets are OUT OF CONTRACT — the GNU `-d` path tolerates them, the
+# BSD literal-format `-j -f` path does not, and an unparseable created_at fails
+# CLOSED (tf_arm returns 3, NO timer) rather than guessing a fire time.
+tf__rfc_to_epoch() {
+  local ts="${1:-}" e
+  [[ -n "$ts" ]] || return 1
+  e=$(date -u -d "$ts" +%s 2>/dev/null) && { printf '%s' "$e"; return 0; }
+  e=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null) && { printf '%s' "$e"; return 0; }
+  return 1
+}
+tf__epoch_to_rfc() {
+  local ep="${1:-}" r
+  [[ "$ep" =~ ^-?[0-9]+$ ]] || return 1
+  r=$(date -u -d "@$ep" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) && { printf '%s' "$r"; return 0; }
+  r=$(date -u -r "$ep"   +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) && { printf '%s' "$r"; return 0; }
+  return 1
+}
+tf__now_rfc() { date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo ""; }
+
+# ════════════════════════════════════════════════════════════════════════════
+# §2.2 fire(dossier_id)@T WIRING — arm the timed-fyi auto-proceed window
+# ════════════════════════════════════════════════════════════════════════════
+# tf_arm <bearer> <dossier_id> [window]
+#   Compute `timer_fire_at = created_at + window` for a `timed-fyi` dossier,
+#   STORE it on the §4.1 envelope (via the T5.1 surface, stored-verbatim), and
+#   arm the T4 §2.2 one-shot `fire(dossier_id)` via the §2.3 front door. The
+#   timer id IS the dossier id (§2.2 `fire(dossier_id)`).
+#
+#   <window> resolution (the §2.2 / §0.5 contract):
+#     • omitted / "" / "default"        ⇒ `TIMED_FYI_DEFAULT` (§0.5)
+#     • the literal token `null`        ⇒ NO auto-proceed: `timer_fire_at`
+#                                         cleared to null AND any prior §2.2
+#                                         arm SOFT-DISARMED (see below); §4.1
+#                                         "`null` when no auto-proceed window"
+#     • a positive integer N            ⇒ override; MUST be ∈ (0,
+#                                         `TIMED_FYI_DEFAULT`] else REJECTED
+#                                         (a caller error against the frozen
+#                                         range — NOT an INTERFACE gap)
+#   A non-`timed-fyi` tier ⇒ NO timer (the §4.1 `tier` drives this); a no-op
+#   informational success (a `blocking`/`digest` dossier has no auto-proceed).
+#
+#   SOFT-DISARM (review claude-tools-it2 #1). The frozen §2.2 surface exposes
+#   only arm/due/ack — there is NO disarm primitive (correctly: a missed fire
+#   degrading to fire-on-next-poll is the whole S-6 model). So clearing a
+#   window that was ALREADY armed cannot "un-arm" the T4 timer; instead the
+#   `null` path best-effort `timer-ack`s it — `timer-ack` is precisely the
+#   §2.2 "stop the poll-fallback re-surfacing it" primitive (coordinator.sh:
+#   co__timer_ack), so an ack'd timer is excluded by `timer-due` and never
+#   fires. This is NOT a §2.2 extension and NOT a §11 gap: it uses the
+#   surface's stated primitive for its stated purpose. Even if a fire raced
+#   the ack, the §7.4 per-Item latch still bounds every item to exactly-once
+#   (S-6) — the latch, never the timer, is the correctness mechanism.
+#
+#   RE-ARM semantics. `tf_arm` is intended to be called ONCE at dossier
+#   creation. A live-window re-arm (window→window) deliberately resets the T4
+#   timer (un-acks it) — correct while no fire has happened yet. After a fire,
+#   a window re-arm would re-surface the dossier on the next poll, but every
+#   already-applied item is an idempotent no-op under the §7.4 latch, so the
+#   only effect is a redundant poll pass (best-effort timer, by contract).
+#
+#   The get→set→put runs under the T5.1 single-writer lock so a concurrent
+#   sibling-Item write cannot clobber the envelope (AD7 holds under
+#   concurrency). NOTE: `tf_arm` never calls `do_item_apply`, so taking the
+#   dossier lock here cannot self-deadlock against T5.3's internal lock.
+tf_arm() {
+  do__with_dossier_lock "${2:-}" tf__arm_locked "$@"
+}
+tf__arm_locked() {
+  local bearer="${1:-}" did="${2:-}" win="${3:-}"
+  local rec tier ca def fire_at epoch upd
+  rec="$(do_dossier_get "$bearer" "$did")" \
+    || { echo "timed-fyi: arm — dossier '$did' not found OR not authorized (§9.1 chokepoint collapses 401/absent; no second auth path — C4)" >&2; return 1; }
+
+  tier=$(printf '%s' "$rec" | jq -r '.tier // ""' 2>/dev/null) || tier=""
+  if [[ "$tier" != "timed-fyi" ]]; then
+    # Soft-disarm any stale prior arm (harmless no-op if none — timer-ack
+    # returns nonzero when no timer file exists, swallowed). A non-timed-fyi
+    # dossier MUST NOT auto-proceed (§4.1 tier drives this).
+    co_request "$bearer" timer-ack "$did" >/dev/null 2>&1 || true
+    echo "timed-fyi: arm — dossier '$did' tier='$tier' is not 'timed-fyi'; no §2.2 timer set (the §4.1 tier drives this) — no-op" >&2
+    return 0
+  fi
+
+  def="$(tf__TIMED_FYI_DEFAULT)"
+
+  # null window ⇒ explicit NO auto-proceed (§4.1 timer_fire_at null when no
+  # window). Clear the envelope field AND soft-disarm a prior §2.2 arm via
+  # the surface's stop-re-surfacing primitive timer-ack (review #1; §2.2 has
+  # no disarm — the per-Item §7.4 latch still bounds any race to once).
+  if [[ "$win" == "null" ]]; then
+    upd=$(printf '%s' "$rec" | jq -c '.timer_fire_at=null' 2>/dev/null) \
+      || { echo "timed-fyi: arm — could not clear timer_fire_at" >&2; return 3; }
+    do_dossier_put "$bearer" "$upd" >/dev/null || return $?
+    co_request "$bearer" timer-ack "$did" >/dev/null 2>&1 || true
+    echo "timed-fyi: arm — dossier '$did' window=null ⇒ no §2.2 timer; any prior arm soft-disarmed (timer-ack)" >&2
+    return 0
+  fi
+
+  # default vs per-dossier override ∈ (0, TIMED_FYI_DEFAULT].
+  if [[ -z "$win" || "$win" == "default" ]]; then
+    win="$def"
+  else
+    if [[ ! "$win" =~ ^[0-9]+$ ]]; then
+      echo "timed-fyi: arm REJECTED — window '$win' not a non-negative integer of seconds (§0.4 durations are integer seconds)" >&2
+      return 2
+    fi
+    if [[ "$win" -le 0 || "$win" -gt "$def" ]]; then
+      echo "timed-fyi: arm REJECTED — window $win out of range; per-dossier override MUST be ∈ (0, TIMED_FYI_DEFAULT=$def] (§2.2/§0.5)" >&2
+      return 2
+    fi
+  fi
+
+  ca=$(printf '%s' "$rec" | jq -r '.created_at // ""' 2>/dev/null) || ca=""
+  epoch="$(tf__rfc_to_epoch "$ca")" \
+    || { echo "timed-fyi: arm — dossier '$did' created_at '$ca' unparseable (§0.4 RFC-3339 …Z)" >&2; return 3; }
+  fire_at="$(tf__epoch_to_rfc "$(( epoch + win ))")" \
+    || { echo "timed-fyi: arm — could not derive timer_fire_at" >&2; return 3; }
+
+  # Store timer_fire_at on the §4.1 envelope (T5.1 stores it verbatim) ...
+  upd=$(printf '%s' "$rec" | jq -c --arg t "$fire_at" '.timer_fire_at=$t' 2>/dev/null) \
+    || { echo "timed-fyi: arm — could not set timer_fire_at" >&2; return 3; }
+  do_dossier_put "$bearer" "$upd" >/dev/null || return $?
+
+  # ... and arm the T4 §2.2 one-shot fire(dossier_id) via the §2.3 front door.
+  co_request "$bearer" timer-arm "$did" "$fire_at" \
+    || { echo "timed-fyi: arm — T4 §2.2 timer-arm failed for '$did'@$fire_at" >&2; return 4; }
+  printf '%s' "$fire_at"
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# §2.2 / S-6 — the SHARED auto-proceed handler (alarm-fire AND poll-fallback)
+# ════════════════════════════════════════════════════════════════════════════
+# tf_fire <bearer> <dossier_id>
+#   Auto-proceed every un-objected `fyi-objectable` item of <dossier_id> by
+#   calling the T5.3 idempotent entrypoint `do_item_apply` with a proceed
+#   response. INVOKED IDENTICALLY by the §2.2 alarm path AND the S-6
+#   poll-fallback (`tf_poll`) — so a missed alarm degrades to fire-on-next-poll
+#   and alarm-then-poll cannot double-apply: exactly-once is the §7.4 per-Item
+#   latch inside `do_item_apply`, NOT this handler and NOT the ack.
+#
+#   An item is auto-proceeded iff: kind == `fyi-objectable` AND state == `open`
+#   AND consequence_applied == false. That EXCLUDES:
+#     • an OBJECTED item — the human's `decision:"object"` already moved it off
+#       `open` (answered/applied via the T5.3 reconciler); never auto-proceeds.
+#     • a non-`fyi-objectable` item carried in a `timed-fyi` dossier — left
+#       OPEN, untouched (it blocks neither siblings nor the pipeline — AD7).
+#   Each kept item is applied INDEPENDENTLY: a per-item failure is observable
+#   on stderr and never stops a sibling (AD7 partial resolution). `tf_fire`
+#   takes NO dossier lock — `do_item_apply` acquires the T5.1 single-writer
+#   lock internally; an outer lock here would self-deadlock that re-entrantly
+#   and a stale enumeration is safe (the per-Item latch is the truth).
+#   The §2.2 timer is ack'd best-effort at the end ONLY to stop the
+#   poll-fallback re-surfacing it; correctness never depends on the ack.
+tf_fire() {
+  local bearer="${1:-}" did="${2:-}"
+  local rec tier ids id rc=0 proceed principal now
+
+  rec="$(do_dossier_get "$bearer" "$did")" \
+    || { echo "timed-fyi: fire — dossier '$did' not found OR not authorized (§9.1 collapses 401/absent — C4)" >&2; return 1; }
+
+  tier=$(printf '%s' "$rec" | jq -r '.tier // ""' 2>/dev/null) || tier=""
+  if [[ "$tier" != "timed-fyi" ]]; then
+    echo "timed-fyi: fire — dossier '$did' tier='$tier' not 'timed-fyi'; nothing auto-proceeds (§4.1 tier) — no-op" >&2
+    return 0
+  fi
+
+  # The §9.1-resolved principal (the ONE chokepoint — never a literal at the
+  # use site, C7). It tags the synthetic auto-proceed response so the record
+  # is self-describing ("not a human turn — the window lapsed un-objected").
+  principal="$(co_authenticate "$bearer" 2>/dev/null)" || principal=""
+  now="$(tf__now_rfc)"
+  proceed=$(jq -cn --arg p "$principal" --arg at "$now" \
+    '{decision:"approve", auto_proceed:true, responded_at:$at, principal:$p}' 2>/dev/null) \
+    || proceed='{"decision":"approve","auto_proceed":true}'
+
+  # Enumerate the un-objected, unresolved fyi-objectable items (snapshot; the
+  # per-Item latch — re-read under do_item_apply's own lock — is the truth).
+  ids=$(printf '%s' "$rec" | jq -r '
+    .items[]? | select(.kind=="fyi-objectable" and .state=="open"
+                        and (.consequence_applied==false)) | .id' 2>/dev/null) || ids=""
+
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    # T5.3 idempotent apply. With the proceed response (decision:"approve",
+    # un-edited) an un-objected fyi-objectable routes DETERMINISTIC (T5.3
+    # §5.2.2, post claude-tools-864) ⇒ its pre-declared §5.3 block is applied
+    # EXACTLY ONCE via the §7.4 per-Item latch; a re-fire (alarm⇄poll, S-6)
+    # sees the latch true and no-ops. Per-item failure: observable, sibling
+    # continues (AD7) — never silently swallowed.
+    if ! do_item_apply "$bearer" "$did" "$id" "$proceed"; then
+      echo "timed-fyi: fire — WARN auto-proceed of item '$id' in '$did' returned nonzero (observable, not silent; sibling auto-proceed continues — AD7 partial)" >&2
+      rc=5
+    fi
+  done <<< "$ids"
+
+  # Best-effort ack so the S-6 poll-fallback stops re-surfacing this fire.
+  # NEVER the correctness mechanism (that is the §7.4 per-Item latch): a
+  # failed/absent ack just means the next poll re-runs tf_fire idempotently.
+  co_request "$bearer" timer-ack "$did" >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# S-6 poll-fallback DRIVER — a missed alarm degrades to fire-on-next-poll
+# ════════════════════════════════════════════════════════════════════════════
+# tf_poll <bearer> [now_rfc3339]
+#   Ask the T4 §2.2 surface (via the §2.3 front door) for every armed, un-acked
+#   timer whose fire_at ≤ now (`timer-due` IS the S-6 poll-fallback — T4 has no
+#   alarm daemon) and run `tf_fire` for each. This is the "missed fire ⇒
+#   fire-on-next-poll" backstop: whether the alarm fired, was suppressed, or
+#   raced this poll, the §7.4 per-Item latch makes every auto-proceed
+#   exactly-once. Echoes each fired dossier id (observability).
+tf_poll() {
+  local bearer="${1:-}" now="${2:-}" due id rc=0
+  due="$(co_request "$bearer" timer-due "$now" 2>/dev/null)" \
+    || { echo "timed-fyi: poll — T4 §2.2 timer-due query failed" >&2; return 1; }
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    if tf_fire "$bearer" "$id"; then
+      printf '%s\n' "$id"
+    else
+      echo "timed-fyi: poll — tf_fire('$id') reported a per-item WARN (S-6 still exactly-once via the §7.4 latch)" >&2
+      printf '%s\n' "$id"; rc=5
+    fi
+  done <<< "$due"
+  return "$rc"
+}
