@@ -1,6 +1,6 @@
 # Beads Runner — Cross-Tier Interface Contract
 
-**Version: `v1` · Status: DRAFT-PENDING-FREEZE (gated checkpoint — claude-tools-65z)**
+**Version: `v1` · Status: FROZEN (gated checkpoint claude-tools-65z — signed off by Brian, 2026-05-16)**
 Owner: Brian · Produced: 2026-05-16 · Sourced from: `DESIGN.md` v2 (architecture
 decisions), `UX-DESIGN.md` (§0 requirement provenance), `BEHAVIORAL-CONTRACT.md`
 (SCAR regression gate), `research/headless-stuck-signal.md` (AD3 basis).
@@ -9,10 +9,12 @@ decisions), `UX-DESIGN.md` (§0 requirement provenance), `BEHAVIORAL-CONTRACT.md
 §5 (§5.1–§5.3), §7.4 re-synced to **DESIGN.md AD7** (the Dossier model — committed `71d08f5`,
 *after* the v2 draft this contract was first written against) per the
 SCHEMA-CORRECTION note on claude-tools-65z; §9.1/§4.2 corrected to **not**
-over-bind the DESIGN-C4-deferred trust asymmetry. The keystone is still
-`in_progress` (never frozen); this is a clean source-resync, not a re-freeze.
-This is the anti-drift process working as intended: the authoritative source
-moved, so the keystone re-synced *before* the freeze gate, not after.
+over-bind the DESIGN-C4-deferred trust asymmetry. That resync happened
+*before* the freeze gate (clean source-resync, never a re-freeze): the
+anti-drift process working as intended — the authoritative source moved, the
+keystone re-synced, *then* the gate. **This `v1` is now FROZEN** (Brian
+sign-off, 2026-05-16); any further change is the §11 BLOCKING-escalation
+protocol (reopen claude-tools-65z, bump version, re-freeze).
 
 > **This document is the single versioned source of truth for every cross-tier
 > contract in the beads-runner overhaul (epic claude-tools-glk).** Every
