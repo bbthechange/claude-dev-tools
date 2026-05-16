@@ -70,6 +70,18 @@ if [[ -f "$LA_LIB" ]]; then
   # shellcheck source=/dev/null
   source "$LA_LIB"
 fi
+
+# ── STUCK_NEEDS_HUMAN DO routing (T5.5, claude-tools-j7f) ─────────────────────
+# §7.3 backstop-drives-the-bead + §7.4 dossier-level task_ref dedup + S-2
+# control→work reconcile. OPTIONAL & guarded exactly like the §8.2 la_* calls:
+# absent lib ⇒ runner unchanged. It NEVER touches classify_failure (§7.1) or
+# the §7.5 breaker/retry counters (T2/T1a own those); it asserts only the
+# cross-tier OUTCOME (a fired backstop ⇒ bead blocked-for-human, ONE Dossier).
+SR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/stuck-routing.sh"
+if [[ -f "$SR_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$SR_LIB"
+fi
 # The controllable unit reported UP (§4.2 project_ref). Derived locally; the
 # Coordinator owns desired-state, never the LA (§1.1).
 PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"
@@ -831,6 +843,34 @@ $PROMPT_EXTRA"
 
   CLASSIFICATION=$(classify_failure "$SIGNAL_FILE" "$TASK_ID" "$CLAUDE_EXIT")
 
+  # ── §7.3 STUCK_NEEDS_HUMAN — a fired backstop drives the bead (T5.5) ──────
+  # The worker slipped past the §7.6 guardrail (result.permission_denials[
+  # AskUserQuestion|ExitPlanMode] OR a "Entered plan mode." tool_result). §7.3:
+  # the backstop MUST ITSELF drive the bead to blocked-for-human and route the
+  # fork into ONE Dossier (§7.4 dossier-level dedup keyed task_ref; S-2 the
+  # Coordinator owns blocked-for-human). This is the cross-tier OUTCOME ONLY —
+  # classify_failure (§7.1) is byte-untouched and NO §7.5 breaker/retry counter
+  # is advanced (STUCK is not a failure: the runner blocks the bead and moves
+  # on — §7.5, like a blocking analysis child). The worker-driven primary
+  # (WORKER_STUCK_EXIT) is the §7.1 classification slot = T2's, deliberately
+  # NOT handled here. Guarded-optional like the §8.2 la_* calls.
+  SR_STUCK_HANDLED=""
+  if command -v sr_route_stuck >/dev/null 2>&1 && command -v sr_scan_backstop >/dev/null 2>&1; then
+    SR_BACKSTOP="$(sr_scan_backstop "$STREAM_FILE" 2>/dev/null || true)"
+    if [[ -n "$SR_BACKSTOP" ]]; then
+      : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
+      sr_route_stuck "${SR_BEARER:-bearer-runner-stuck}" "$TASK_ID" \
+        "backstop:$SR_BACKSTOP" "$(sr_worker_ask "$TASK_ID" 2>/dev/null || true)" \
+        >/dev/null 2>&1 || true
+      append_runner_note "$TASK_ID" "STUCK_NEEDS_HUMAN" "-"
+      record_incident   "$TASK_ID" "STUCK_NEEDS_HUMAN" "-"
+      if command -v la_report_terminal_reason >/dev/null 2>&1; then
+        la_report_terminal_reason STUCK_NEEDS_HUMAN "" "$TASK_ID" "${PROJECT_REF:-}" || true
+      fi
+      SR_STUCK_HANDLED=1
+    fi
+  fi
+
   # Preserve the stream-json for serious failures so we can post-mortem what
   # state the agent was in when it failed. Skipped for routine/transient cases
   # (RATE_LIMIT, TASK_NOT_CLOSED) to avoid disk spam — those still get an
@@ -845,6 +885,14 @@ $PROMPT_EXTRA"
       ;;
   esac
 
+  # §7.3/§7.5: a backstop-driven STUCK_NEEDS_HUMAN bypasses the normal
+  # classification dispatch — the bead is ALREADY blocked-for-human and the
+  # runner just moves on (it must NOT be reset to --status=open and is
+  # breaker/retry-exempt). classify_failure (§7.1) is untouched; this is the
+  # §7.3 OUTCOME guard, not a new classification arm.
+  if [[ -n "$SR_STUCK_HANDLED" ]]; then
+    echo "  STUCK_NEEDS_HUMAN: $TASK_TITLE — backstop fired ($SR_BACKSTOP); bead driven to blocked-for-human (§7.3), fork ⇒ one Dossier (§7.4). Runner continues (§7.5)."
+  else
   case "$CLASSIFICATION" in
     SUCCESS)
       echo "  Done: $TASK_TITLE"
@@ -962,6 +1010,7 @@ $PROMPT_EXTRA"
       LAST_FAILED_ID="$TASK_ID"
       ;;
   esac
+  fi
 
   # Scan the stream for high-signal tool-level errors regardless of classification.
   # Many silent failures (subagent missing, permission denied, MCP down) leave the
