@@ -58,6 +58,20 @@ HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"         # §0.5 (60 s) actual-sta
 RECLAIM_POLL_INTERVAL="${RECLAIM_POLL_INTERVAL:-60}"   # §0.5 (60 s) re-poll cadence after a clean drain (relaunch itself is T3)
 RUNNER_TICK="${RUNNER_TICK:-1}"                        # during-task poll granularity (s); test-tunable
 
+# ── BC-22 watchdog constants (T2.3, claude-tools-9e7) ────────────────────────
+# IDLE_TIMEOUT is the ONLY env-overridable knob (BC-22). The 15s poll cadence
+# and the 180s soft-warn tier are SCAR-tuned and HARDCODED (BC-22 classification:
+# "the 180s-vs-IDLE_TIMEOUT two-tier and the 15s poll cadence are tuned values").
+# Default is back to the v1 600s: the 2026-05-16 incident's `.beads/runner.sh`
+# IDLE_TIMEOUT=1200 stopgap is now REDUNDANT (not removed here — not T2.3's
+# surface) because the liveness SIGNAL is corrected below from "parent-stream
+# silence" to "agent+child-process-tree progress" (the real fix the stopgap
+# comment itself points at). Declared BEFORE the .beads/runner.sh source so a
+# project stopgap can still override; harmless if it does.
+IDLE_TIMEOUT="${IDLE_TIMEOUT:-600}"                    # §0.5 / BC-22 — idle-progress kill threshold (env-overridable)
+WATCHDOG_POLL=15                                       # BC-22 SCAR — HARDCODED poll cadence (not env-tunable)
+WATCHDOG_SOFT_WARN=180                                 # BC-22 SCAR — HARDCODED soft-warn tier (not env-tunable)
+
 # ── Minimal runtime config (skeleton). The full BC-37 config seam — sourced
 #    allowlist, --yolo, runner_setup/runner_cleanup hooks — is NOT T2.1's owned
 #    surface; the skeleton keeps a minimal default + an optional project source
@@ -118,6 +132,10 @@ CANDIDATE_DESC=""
 CURRENT_TASK_ID=""       # task whose lease+in_progress we hold (in flight)
 LEASE_GENERATION=""      # §4.4 fencing token for the held lease
 CLAUDE_PID=""            # in-flight worker process (BC-01: one fresh proc/task)
+WATCHDOG_PID=""          # T2.3 BC-22 watchdog subshell (one per task; in-band-reaped)
+STREAM_FILE=""           # T2.3: worker stream-json capture (watchdog output-progress signal)
+SIGNAL_FILE=""           # T2.3 BC-40 IPC seam: watchdog appends WATCHDOG_KILL=1; T2.2 classify consumes
+PROC_SNAPSHOT=""         # T2.3 BC-22 snapshot-before-signal artifact (retention policy = T2.2/BC-28 seam)
 STOP_REQUESTED=""        # set when stop/desired∈{stopped} OBSERVED (§2.5); honored AFTER current task
 COMPLETED=0
 PROCESSED=0
@@ -202,6 +220,136 @@ _on_interrupt() {
   exit 1
 }
 trap _on_interrupt INT TERM
+
+# ── SEAM (T2.3 owns, claude-tools-9e7): BC-22 idle watchdog, RE-IMPLEMENTED ───
+# WHAT CHANGED vs v1 (the behavior CORRECTION, not an interface change):
+#   v1 keyed "stuck" PURELY on PARENT stream-json line cadence (an ACTIVITY_FILE
+#   stamped by the stream parser). Real incident 2026-05-16: a healthy agent
+#   that backgrounded a long op and waited went parent-stream-silent on a
+#   CPU-idle machine and was SIGKILLed at the 600s default (forcing the
+#   .beads/runner.sh IDLE_TIMEOUT=1200 stopgap). The liveness SIGNAL is now
+#   "agent + child-process-tree progress": a working child / Task subagent /
+#   spawned `claude -p` / bash op making CPU **or** output progress is NOT
+#   stuck. Everything else BC-22 (snapshot-BEFORE-signal, staged
+#   SIGINT→poll→SIGKILL, the 180s soft tier, the 15s SCAR poll, the
+#   WATCHDOG_KILL marker) is PRESERVED.
+#
+# EMPIRICAL BASIS (probe run IN this bead, claude 2.1.142, darwin 25.5.0,
+# conformance/probes/t23-subagent-stream-warmth-probe.sh): while a real
+# CPU-bound child op ran for 60s the PARENT stream-json file did not grow at
+# all (frozen 60s) yet the process-tree cumulative CPU climbed monotonically
+# 0→53s across that exact silence. ⇒ a subagent/long-op does NOT keep the
+# parent stream warm; child-process-tree liveness is **LOAD-BEARING** (not
+# optional) for the subagent-heavy task design — not a robustness nicety.
+#
+# OWNERSHIP: T2.3 defines the watchdog subtree's SHAPE + liveness POLICY and
+# only EMITS `WATCHDOG_KILL=1` into the SIGNAL_FILE. It does NOT classify
+# (precedence / §7.1 slot / exit-code map = T2.2) and does NOT guarantee the
+# subtree is reaped on every exit path (full PG/EXIT/SIGHUP teardown = T2.4) —
+# both are marked seams below. The stream-json PARSER (BC-39/40) is T2.2's; the
+# watchdog needs only stream-file GROWTH (a byte count), never a parse.
+
+# _tree_pids <root> — every pid in the subtree incl. root (portable
+# macOS+Linux: one `ps -A` snapshot, ppid fixpoint; n is tiny).
+_tree_pids() {
+  local root="$1" table
+  table="$(ps -A -o pid=,ppid= 2>/dev/null)" || return 1
+  awk -v root="$root" '
+    { ppid[$1]=$2; all[++n]=$1 }
+    END{
+      inset[root]=1; changed=1
+      while(changed){ changed=0
+        for(i=1;i<=n;i++){ c=all[i]
+          if(!inset[c] && inset[ppid[c]]){ inset[c]=1; changed=1 } } }
+      for(i=1;i<=n;i++) if(inset[all[i]]) print all[i]
+    }' <<<"$table"
+}
+# _cputime_to_secs "[[DD-]HH:]MM:SS[.f]" — ps -o time= → integer secs
+# (10# defeats octal on zero-padded fields).
+_cputime_to_secs() {
+  local t="$1" d=0 rest h=0 m=0 s=0
+  [[ "$t" == *-* ]] && { d="${t%%-*}"; rest="${t#*-}"; } || rest="$t"
+  rest="${rest%%.*}"
+  local IFS=:; set -- $rest
+  case $# in 3) h="$1"; m="$2"; s="$3";; 2) m="$1"; s="$2";; 1) s="$1";; esac
+  echo $(( 10#${d:-0}*86400 + 10#${h:-0}*3600 + 10#${m:-0}*60 + 10#${s:-0} ))
+}
+# _tree_cpu_secs <root> — Σ cumulative CPU secs across the live subtree. A
+# child still alive and accruing CPU IS progress even if the parent stream is
+# silent (the load-bearing signal). Dead children leave the ps table, so this
+# tracks ONGOING work — exactly the liveness we want.
+_tree_cpu_secs() {
+  local root="$1" pids csv total=0 line
+  pids="$(_tree_pids "$root")" || return 1
+  [[ -z "$pids" ]] && { echo 0; return 0; }
+  csv="$(echo "$pids" | tr '\n' ',')"; csv="${csv%,}"
+  while IFS= read -r line; do
+    line="$(echo "$line" | tr -d ' ')"; [[ -z "$line" ]] && continue
+    total=$(( total + $(_cputime_to_secs "$line") ))
+  done < <(ps -o time= -p "$csv" 2>/dev/null)
+  echo "$total"
+}
+
+# _watchdog_loop <claude_pid> <stream_file> <signal_file> <proc_snapshot>
+# Polls every WATCHDOG_POLL while the worker is alive. Liveness = progress
+# since the last poll, where progress is (stream-file GREW) OR (tree CPU
+# ADVANCED). idle = seconds since the last observed progress (init at spawn,
+# BC-22). Soft-warn at WATCHDOG_SOFT_WARN; KILL at IDLE_TIMEOUT with
+# snapshot-BEFORE-signal then staged SIGINT→(≤10×1s)→SIGKILL.
+_watchdog_loop() {
+  local pid="$1" stream="$2" sig="$3" snap="$4"
+  local now last_progress prev_bytes prev_cpu bytes cpu idle warned=0
+  now="$(date +%s)"; last_progress="$now"
+  prev_bytes="$(wc -c < "$stream" 2>/dev/null | tr -d ' ')"; prev_bytes="${prev_bytes:-0}"
+  prev_cpu="$(_tree_cpu_secs "$pid" 2>/dev/null)"; prev_cpu="${prev_cpu:-0}"
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep "$WATCHDOG_POLL"
+    kill -0 "$pid" 2>/dev/null || break
+    now="$(date +%s)"
+    bytes="$(wc -c < "$stream" 2>/dev/null | tr -d ' ')"; bytes="${bytes:-0}"
+    cpu="$(_tree_cpu_secs "$pid" 2>/dev/null)"; cpu="${cpu:-0}"
+    # CPU or output progress anywhere in the agent+child tree ⇒ NOT stuck.
+    if [[ "$bytes" -gt "$prev_bytes" || "$cpu" -gt "$prev_cpu" ]]; then
+      last_progress="$now"; warned=0
+    fi
+    prev_bytes="$bytes"; prev_cpu="$cpu"
+    idle=$(( now - last_progress ))
+    if [[ "$idle" -ge "$IDLE_TIMEOUT" ]]; then
+      echo "  Killing after ${idle}s idle — no CPU or output progress in the agent+child-process tree (likely stuck)"
+      # BC-22/BC-40: emit the marker for the classifier (T2.2 owns precedence).
+      echo "WATCHDOG_KILL=1" >> "$sig"
+      # Snapshot the WHOLE stuck tree BEFORE any signal — lsof on a dying
+      # process returns nothing useful, so order is load-bearing (BC-22 SCAR).
+      {
+        echo "=== ps (tree, idle ${idle}s, IDLE_TIMEOUT=${IDLE_TIMEOUT}, signal=child-tree-progress) ==="
+        ps -o pid,ppid,stat,etime,pcpu,pmem,time,command -p \
+           "$(_tree_pids "$pid" | tr '\n' ',' | sed 's/,$//')" 2>&1 || true
+        echo ""
+        echo "=== lsof (TCP/IPv/PIPE, root pid $pid) ==="
+        lsof -p "$pid" 2>/dev/null | grep -E 'TCP|IPv|PIPE' || echo "(no matching fds)"
+      } > "$snap" 2>&1 || true
+      # Staged kill (BC-22 SCAR): SIGINT first so the SDK flushes in-flight
+      # HTTP-retry state to stderr (merged into the stream file), poll up to
+      # 10×1s, then SIGKILL. Signals the root worker pid (full process-tree
+      # TEARDOWN is T2.4's owned surface — marked seam, NOT done here).
+      echo "  watchdog: staged kill — interrupt first, up to 10s grace, then hard-kill"
+      echo "  watchdog: SIGINT sent"
+      kill -INT "$pid" 2>/dev/null || true
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        kill -0 "$pid" 2>/dev/null || break
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        echo "  watchdog: SIGKILL sent (grace elapsed)"
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+      break
+    elif [[ "$idle" -ge "$WATCHDOG_SOFT_WARN" && "$warned" -eq 0 ]]; then
+      echo "  No activity for ${idle}s — possibly stuck (soft warning; still waiting)"
+      warned=1
+    fi
+  done
+}
 
 # ── Explicit state machine ───────────────────────────────────────────────────
 # States (enumerated; transitions are the ONLY control flow — no scattered
@@ -320,21 +468,49 @@ st_run_task() {
   local prompt
   prompt="$(build_worker_prompt "$CURRENT_TASK_ID" "$CANDIDATE_TITLE" "$CANDIDATE_DESC")"
 
+  # T2.3 watchdog artifacts. The stream file is BC-39's intent (stdout+stderr
+  # merged so SDK HTTP-retry state is captured) re-implemented idiomatically;
+  # the watchdog reads only its GROWTH (a byte count) as the output-progress
+  # signal — it never parses it (the parser/classifier is T2.2). PROC_SNAPSHOT
+  # lands under LOG_DIR; BC-27's self-gitignore is re-asserted defensively
+  # where we write post-mortem artifacts (raw model output must never reach
+  # git) — the full LOG_DIR lifecycle/retention policy is T2.2/BC-28's seam.
+  local iter_ts log_dir
+  iter_ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  log_dir=".beads/runner-logs"
+  mkdir -p "$log_dir" 2>/dev/null || true
+  [[ -f "$log_dir/.gitignore" ]] || printf '*\n!.gitignore\n' > "$log_dir/.gitignore" 2>/dev/null || true
+  STREAM_FILE="$(mktemp 2>/dev/null)" || STREAM_FILE="$log_dir/$CURRENT_TASK_ID-$iter_ts.stream.jsonl"
+  SIGNAL_FILE="$(mktemp 2>/dev/null)" || SIGNAL_FILE="$log_dir/$CURRENT_TASK_ID-$iter_ts.signal"
+  PROC_SNAPSHOT="$log_dir/$CURRENT_TASK_ID-$iter_ts.proc.txt"
+  : > "$STREAM_FILE"; : > "$SIGNAL_FILE"
+
+  # BC-39: stdout+stderr → the one stream file (stderr carries SDK HTTP-retry
+  # state; the watchdog's SIGINT-before-SIGKILL exists so it flushes here).
   claude -p "$prompt" \
     --output-format stream-json \
     --verbose \
     --model "$DEFAULT_MODEL" \
     "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
     "${PERMISSION_FLAGS[@]+"${PERMISSION_FLAGS[@]}"}" \
-    >/dev/null 2>&1 &
+    > "$STREAM_FILE" 2>&1 &
   CLAUDE_PID=$!
 
+  # BC-22 watchdog (T2.3): a sibling background subshell keying liveness on
+  # agent+child-process-tree progress (CPU or stream output) — NOT parent-
+  # stream silence (the corrected v1 SCAR). It is the ONLY thing that may end a
+  # task early, and ONLY for genuine no-progress-anywhere-in-the-tree stall;
+  # this is orthogonal to the §2.5 stop semantic below (a stop REQUEST is never
+  # a mid-task kill — honored after the task).
+  _watchdog_loop "$CLAUDE_PID" "$STREAM_FILE" "$SIGNAL_FILE" "$PROC_SNAPSHOT" &
+  WATCHDOG_PID=$!
+
   # §2.5 DURING-task cadence. We poll on a fine RUNNER_TICK and act on the
-  # CONTROL_POLL_INTERVAL / HEARTBEAT_INTERVAL boundaries. We DO NOT evaluate
-  # "stuck" (idle watchdog is T2.3) and we DO NOT kill mid-task: a stop is
+  # CONTROL_POLL_INTERVAL / HEARTBEAT_INTERVAL boundaries. A stop REQUEST is
   # OBSERVED here (≤ CONTROL_POLL_INTERVAL so the Board can render `stopping…`
   # immediately) but only ACTED ON after the task completes (§2.5 "stop after
-  # current task"). Heartbeat (job 3) renews the held lease (§4.4 fenced).
+  # current task" — no mid-task kill for a stop). The watchdog above is the
+  # separate BC-22 liveness concern. Heartbeat (job 3) renews the held lease.
   local since_ctl=0 since_hb=0
   while kill -0 "$CLAUDE_PID" 2>/dev/null; do
     sleep "$RUNNER_TICK"
@@ -357,6 +533,21 @@ st_run_task() {
   done
   wait "$CLAUDE_PID" 2>/dev/null || true       # BC-01: exit code is NOT trusted (BC-09); see classify_outcome
   CLAUDE_PID=""
+
+  # In-band reap of the watchdog subtree (its SHAPE is T2.3's). The loop
+  # already self-exits within ≤WATCHDOG_POLL once CLAUDE_PID dies; this makes
+  # it prompt and deterministic for the normal path. The GUARANTEED teardown
+  # on EVERY exit path (interrupt, set -e abort, parent death — BC-35/BC-36
+  # symmetry + full PG kill) is T2.4's owned seam — NOT implemented here.
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    wait "$WATCHDOG_PID" 2>/dev/null || true
+    WATCHDOG_PID=""
+  fi
+  # SIGNAL_FILE + STREAM_FILE + PROC_SNAPSHOT are intentionally LEFT in place:
+  # T2.2 (classify/precedence/§7.1) consumes WATCHDOG_KILL=1 from SIGNAL_FILE
+  # and T2.2/BC-28 owns selective stream/proc-snapshot retention-vs-delete by
+  # final classification. Pre-deleting here would destroy that seam's input.
   transition POST_TASK
 }
 
