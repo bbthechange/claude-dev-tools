@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Beads Runner — Board</title>
+<!--
+  T6a (claude-tools-p2m) — the Board: the situational-awareness surface
+  (UX Flow E). Cloudflare Pages app shell. Responsive (phone-first → desktop).
+  Reads ONLY the §4.5 projection via /api/board (the §9.1 read-proxy
+  chokepoint). NO write path to Dolt. The Inbox/dossier UI is T6b — NOT here.
+  Visual direction: beads-runner/ux-mocks.html v1 (presentation guidance; the
+  frozen INTERFACE.md v1 §4.2/§4.5 DATA contract wins on any disagreement).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./board.css">
+</head>
+<body>
+  <main class="app" id="app" aria-live="polite">
+    <header class="apphead">
+      <div class="t"><span class="dot" id="health-dot"></span>Board</div>
+      <div class="who" id="who" title="The §9.1 constant principal (AD6; C7 later)">—</div>
+    </header>
+
+    <div class="scroll" id="scroll">
+      <p class="loading" id="loading">Reading the projection…</p>
+      <section class="board" id="board" hidden>
+        <!-- STATUS STRIP — "is the machine healthy?" in one glance -->
+        <div class="strip" id="strip">
+          <div class="strip-top">
+            <span class="lbl">SYSTEM · HEALTH</span>
+            <span class="hb" id="health-hb">—</span>
+          </div>
+          <div class="strip-headline" id="health-headline"></div>
+          <div class="strip-tags" id="health-tags"></div>
+        </div>
+
+        <!-- WAITING ON YOU — pinned amber lane, always top -->
+        <div class="lane-hd"><span class="pulse"></span> Waiting on you
+          <span class="ln"></span> <span id="woy-count">0</span></div>
+        <div id="woy"></div>
+        <p class="woy-empty" id="woy-empty" hidden>Nothing waiting on you.</p>
+
+        <!-- LIFECYCLE SPINE — idea → done -->
+        <div class="spine">
+          <div class="sl">LIFECYCLE SPINE · idea → done</div>
+          <div class="cols" id="cols"></div>
+        </div>
+
+        <!-- PER-PROJECT RUNNERS — honest actual + S-1 liveness -->
+        <div class="spine">
+          <div class="sl">RUNNERS · honest state (§4.2)</div>
+          <div class="runners" id="runners"></div>
+        </div>
+      </section>
+
+      <section class="errbox" id="errbox" hidden>
+        <div class="err-h">Cannot render the Board</div>
+        <p class="err-b" id="err-b"></p>
+      </section>
+    </div>
+
+    <footer class="foot" id="foot">
+      <span id="foot-status">read-only projection · no write path</span>
+      <span class="foot-sep">·</span>
+      <span id="foot-updated">—</span>
+    </footer>
+  </main>
+
+  <script src="./board-view.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
