@@ -60,6 +60,20 @@ if [[ -f "$CONFIG_FILE" ]]; then
   source "$CONFIG_FILE"
 fi
 
+# ── Local Agent (T3, claude-tools-3al) ───────────────────────────────────────
+# The per-computer measurement & supervision authority owns the BC-34
+# credential/usage path (§6.2/§6.3) and writes the §8.2 terminal-reason record
+# before this process exits. Sourced from the runner's own dir; OPTIONAL — the
+# runner still works standalone if the lib is absent (each call is guarded).
+LA_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/local-agent.sh"
+if [[ -f "$LA_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$LA_LIB"
+fi
+# The controllable unit reported UP (§4.2 project_ref). Derived locally; the
+# Coordinator owns desired-state, never the LA (§1.1).
+PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"
+
 # ── Handle --yolo flag ───────────────────────────────────────────────────────
 
 MODE_LABEL="scoped permissions"
@@ -155,6 +169,11 @@ cleanup() {
     bd update "$CURRENT_TASK_ID" --status=open 2>/dev/null || true
   fi
   runner_cleanup
+  # §8.2 terminal-reason re-home: last durable control-plane write BEFORE the
+  # process exits — exit 1 = SIGINT/SIGTERM (BC-21 table / BC-35).
+  if command -v la_report_terminal_reason >/dev/null 2>&1; then
+    la_report_terminal_reason INTERRUPTED 1 "${CURRENT_TASK_ID:-}" "${PROJECT_REF:-}" || true
+  fi
   rm -f "$USAGE_CACHE_FILE" "${SIGNAL_FILE:-}"
   echo "Results: $COMPLETED completed, $FAILED failed"
   exit 1
@@ -184,7 +203,25 @@ check_usage() {
     if [[ "$cached" == "over" ]]; then return 1; else return 0; fi
   fi
 
-  # Extract OAuth token from macOS Keychain
+  if [[ -z "$USAGE_CACHE_FILE" ]]; then
+    USAGE_CACHE_FILE=$(mktemp) || return 0
+  fi
+  USAGE_CACHE_TIME=$now
+
+  # The Local Agent (T3) owns the BC-34 credential/usage path & §6.3 coarse
+  # verdict (Keychain read, usage API, threshold + spare-cycles ramp, fail-OPEN
+  # on every credential/API/keychain error). The runner only manages the
+  # USAGE_CACHE_SECONDS TTL wrapper around the verdict. `standard` cost class —
+  # the loop-level "may I start a task" gate is the hard 5h/7d ceiling.
+  if command -v la_capacity_check >/dev/null 2>&1; then
+    if la_capacity_check standard; then
+      echo "ok"   > "$USAGE_CACHE_FILE"; return 0
+    else
+      echo "over" > "$USAGE_CACHE_FILE"; return 1
+    fi
+  fi
+
+  # ── Fallback (Local Agent lib absent): original inline path, preserved ─────
   local creds token usage_json
   creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) || {
     echo "  (Could not read credentials for usage check — skipping)" >&2
@@ -195,8 +232,6 @@ check_usage() {
     echo "  (No OAuth token found — skipping usage check)" >&2
     return 0
   fi
-
-  # Call usage API
   usage_json=$(curl -s -f -X GET "https://api.anthropic.com/api/oauth/usage" \
     -H "Accept: application/json" \
     -H "Content-Type: application/json" \
@@ -206,29 +241,16 @@ check_usage() {
     echo "  (Usage API call failed — skipping check)" >&2
     return 0
   }
-
-  # Parse utilization from both windows
-  local five_hour seven_day
+  local five_hour seven_day five_int seven_int
   five_hour=$(echo "$usage_json" | jq -r '.five_hour.utilization // 0' 2>/dev/null)
   seven_day=$(echo "$usage_json" | jq -r '.seven_day.utilization // 0' 2>/dev/null)
-
-  # Cache the result
-  if [[ -z "$USAGE_CACHE_FILE" ]]; then
-    USAGE_CACHE_FILE=$(mktemp) || return 0
-  fi
-  USAGE_CACHE_TIME=$now
-
-  # Check if either window exceeds threshold (compare as integers)
-  local five_int seven_int
   five_int=${five_hour%.*}
   seven_int=${seven_day%.*}
-
   if [[ ${five_int:-0} -ge $USAGE_THRESHOLD ]] || [[ ${seven_int:-0} -ge $USAGE_THRESHOLD ]]; then
     echo "over" > "$USAGE_CACHE_FILE"
     echo "  Usage: 5h=${five_hour}% 7d=${seven_day}% (threshold: ${USAGE_THRESHOLD}%)"
     return 1
   fi
-
   echo "ok" > "$USAGE_CACHE_FILE"
   echo "  Usage: 5h=${five_hour}% 7d=${seven_day}%"
   return 0
@@ -804,6 +826,9 @@ $PROMPT_EXTRA"
       rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
       print_incidents_summary
+      if command -v la_report_terminal_reason >/dev/null 2>&1; then
+        la_report_terminal_reason AUTH_FAILURE 3 "$TASK_ID" "${PROJECT_REF:-}" || true
+      fi
       exit 3
       ;;
 
@@ -818,6 +843,9 @@ $PROMPT_EXTRA"
       rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
       print_incidents_summary
+      if command -v la_report_terminal_reason >/dev/null 2>&1; then
+        la_report_terminal_reason BILLING_ERROR 4 "$TASK_ID" "${PROJECT_REF:-}" || true
+      fi
       exit 4
       ;;
 
@@ -915,6 +943,9 @@ $PROMPT_EXTRA"
     rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
     echo "Results: $COMPLETED completed, $FAILED failed"
     print_incidents_summary
+    if command -v la_report_terminal_reason >/dev/null 2>&1; then
+      la_report_terminal_reason CIRCUIT_BREAKER 2 "${TASK_ID:-}" "${PROJECT_REF:-}" || true
+    fi
     exit 2
   fi
 
@@ -927,4 +958,10 @@ done
 rm -f "$USAGE_CACHE_FILE"
 echo "Results: $COMPLETED completed, $FAILED failed"
 print_incidents_summary
+# §8.2 terminal-reason re-home: clean drain / graceful-stop = exit 0 (BC-21
+# §8.1 row 0). Recorded so a heartbeat-absence channel can tell clean=0 from
+# AUTH=3 (the whole point of the re-home, S-7).
+if command -v la_report_terminal_reason >/dev/null 2>&1; then
+  la_report_terminal_reason CLEAN 0 "" "${PROJECT_REF:-}" || true
+fi
 echo "Run 'bd stats' or 'git log --oneline' to review."
