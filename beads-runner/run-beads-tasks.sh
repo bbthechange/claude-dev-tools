@@ -74,6 +74,31 @@ fi
 # Coordinator owns desired-state, never the LA (§1.1).
 PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"
 
+# ── §6.1 lease ↔ beads-status binding (T4.2, claude-tools-am8) ────────────────
+# AD2.1: a GLOBAL EXCLUSIVE lease is acquired BEFORE `bd update
+# --status=in_progress`; its release pairs that (lease release/expiry ⇒ the
+# bead maps back to --status=open — binds the strong plane onto BC-15/BC-09/
+# BC-35). This CLOSES the BC-04 multi-runner race the bash startup-snapshot
+# left RESIDUAL (BEHAVIORAL-CONTRACT §18): no lease ⇒ do not run it. The
+# `lease` seam is provided by the Local Agent tier (mirroring how `bd` /
+# `security` / `curl` are external commands), which routes arbitration to the
+# hosted Coordinator (lib/coordinator.sh §6.1/§4.4) and applies the §6.2/AD2.2
+# posture: Coordinator-unreachable with NO held still-valid lease ⇒
+# DEGRADED-CLOSED (a non-zero `lease acquire`); a held still-valid lease ⇒
+# the bounded local fallback continues it. OPTIONAL — if no `lease` command
+# is present the runner still works standalone (every call guarded, exactly
+# like the §8.2 la_report_terminal_reason calls; anti-drift: this file owns
+# only the §6.1 WORK-PLANE binding, not the arbitration/fallback mechanism).
+lease_acquire_ok() {   # <task_ref> → 0 may run · 1 must NOT claim (no new claim)
+  command -v lease >/dev/null 2>&1 || return 0   # no seam ⇒ standalone, proceed
+  lease acquire "$1"
+}
+lease_release_seam() {  # <task_ref> — release pairs the acquire (⇒ bead open)
+  [[ -n "${1:-}" ]] || return 0
+  command -v lease >/dev/null 2>&1 || return 0
+  lease release "$1" 2>/dev/null || true
+}
+
 # ── Handle --yolo flag ───────────────────────────────────────────────────────
 
 MODE_LABEL="scoped permissions"
@@ -167,6 +192,7 @@ cleanup() {
   if [[ -n "$CURRENT_TASK_ID" ]]; then
     echo "Interrupted — resetting $CURRENT_TASK_ID to open"
     bd update "$CURRENT_TASK_ID" --status=open 2>/dev/null || true
+    lease_release_seam "$CURRENT_TASK_ID"   # §6.1 release⇒open (BC-35 interrupt)
   fi
   runner_cleanup
   # §8.2 terminal-reason re-home: last durable control-plane write BEFORE the
@@ -620,6 +646,19 @@ while true; do
     FAIL_COUNT=0
   fi
 
+  # §6.1/AD2.1: acquire the GLOBAL EXCLUSIVE lease BEFORE driving the bead to
+  # in_progress (the lease is consulted on EVERY pickup — this is what closes
+  # BC-04). No lease ⇒ do NOT claim it: §6.2/AD2.2 DEGRADED-CLOSED — a
+  # Coordinator-unreachable runner with no held still-valid lease, or the
+  # BC-04 race loser, MUST NOT make a new unsynchronised claim (no
+  # --status=in_progress, no run, no close). Placed AFTER validate_task /
+  # the MAX_RETRIES gate so a skipped task never leaks an unreleased lease.
+  if ! lease_acquire_ok "$TASK_ID"; then
+    echo "  Lease unavailable for $TASK_ID — not claiming (no lease ⇒ no run)."
+    sleep "${LEASE_DENY_BACKOFF:-3}"   # avoid hot-spin re-polling the same task
+    continue
+  fi
+
   CURRENT_TASK_ID="$TASK_ID"
   bd update "$TASK_ID" --status=in_progress 2>/dev/null || true
 
@@ -826,6 +865,7 @@ $PROMPT_EXTRA"
       rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
       print_incidents_summary
+      lease_release_seam "$TASK_ID"   # §6.1 release ⇒ bead open (fatal exit)
       if command -v la_report_terminal_reason >/dev/null 2>&1; then
         la_report_terminal_reason AUTH_FAILURE 3 "$TASK_ID" "${PROJECT_REF:-}" || true
       fi
@@ -843,6 +883,7 @@ $PROMPT_EXTRA"
       rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
       print_incidents_summary
+      lease_release_seam "$TASK_ID"   # §6.1 release ⇒ bead open (fatal exit)
       if command -v la_report_terminal_reason >/dev/null 2>&1; then
         la_report_terminal_reason BILLING_ERROR 4 "$TASK_ID" "${PROJECT_REF:-}" || true
       fi
@@ -943,12 +984,17 @@ $PROMPT_EXTRA"
     rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
     echo "Results: $COMPLETED completed, $FAILED failed"
     print_incidents_summary
+    lease_release_seam "${TASK_ID:-}"   # §6.1 release ⇒ bead open (fatal exit)
     if command -v la_report_terminal_reason >/dev/null 2>&1; then
       la_report_terminal_reason CIRCUIT_BREAKER 2 "${TASK_ID:-}" "${PROJECT_REF:-}" || true
     fi
     exit 2
   fi
 
+  # §6.1: per-task end (SUCCESS or any non-fatal class that reset the bead to
+  # --status=open above) — release pairs the acquire so the lease never
+  # outlives the work (release/expiry ⇒ bead open; orphan recovery = expiry).
+  lease_release_seam "$TASK_ID"
   rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE"
   CLAUDE_PID=""
   CURRENT_TASK_ID=""

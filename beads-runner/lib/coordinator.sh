@@ -348,6 +348,14 @@ co_authenticate() {
 #     forensic-dismiss <id>            → §10.3 "done with forensic" ⇒ hard-delete
 #     forensic-sweep [now_epoch]       → §10.3 TTL poll-fallback hard-delete
 #     forensic-audit [n]               → §10.3 content-free deletion audit log
+#     lease-acquire <task> <owner>     → §6.1/§4.4 acquire the global
+#                                        exclusive TTL'd lease (BC-04 close;
+#                                        generation bumped; rc 0=granted,
+#                                        nonzero=denied — exactly one owner)
+#     lease-renew <task> <owner> <gen> → §4.4 renew; a STALE generation or
+#                                        owner mismatch is REJECTED (fencing)
+#     lease-release <task> <owner> <gen>→ §6.1 release (⇒ bead maps to open at
+#                                        the work plane); stale gen REJECTED
 #     report-capacity <report_json>    → §1.1 ingest the upward coarse
 #                                        capacity report (T3 shape, verbatim)
 #     ask-capacity <cost_class>        → §6.3 aggregated verdict ok|over
@@ -390,12 +398,15 @@ co_request() {
     forensic-dismiss) co__forensic_dismiss "$principal" "${1:-}" ;;
     forensic-sweep)   co__forensic_sweep "$principal" "${1:-}" ;;
     forensic-audit)   co__forensic_audit_tail "${1:-}" ;;
+    lease-acquire)    co__lease_acquire "$principal" "${1:-}" "${2:-}" ;;
+    lease-renew)      co__lease_renew  "$principal" "${1:-}" "${2:-}" "${3:-}" ;;
+    lease-release)    co__lease_release "$principal" "${1:-}" "${2:-}" "${3:-}" ;;
     report-capacity)  co__capacity_report "$principal" "${1:-}" ;;
     ask-capacity)     co__ask_capacity "${1:-}" ;;
     heartbeat)        co__heartbeat "$principal" "${1:-}" ;;
     reconcile)        co__reconcile "$principal" "${1:-}" "${2:-}" ;;
     work-snapshot)    co__work_snapshot "$principal" "${1:-}" "${2:-}" ;;
-    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot)" >&2; return 2 ;;
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot)" >&2; return 2 ;;
   esac
 }
 
@@ -1279,6 +1290,258 @@ co__work_snapshot() {
     || printf '{"schema_version":1,"principal":"%s","read_only":true,"projects":[],"lifecycle_columns":{},"waiting_on_you":[]}' "$principal"
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# §6.1 / §6.2 / §4.4 — global exclusive TTL'd LEASE arbitration  (T4.2, am8)
+# ════════════════════════════════════════════════════════════════════════════
+# OWNS INTERFACE.md v1 §6.1 (lease ↔ beads-status binding & precedence), §4.4
+# (the Lease record incl. the monotonic `generation` fencing token) and the
+# §6.2 COORDINATOR-SIDE AD2.2 posture (lease fails DEGRADED-CLOSED). This is
+# the strong-plane EXCLUSIVITY authority — the mechanism that actually closes
+# the BC-04 multi-runner race the bash startup-snapshot left RESIDUAL
+# (BEHAVIORAL-CONTRACT §18: the status-recheck closed the status-CHANGED race
+# only; the two-runners-one-orphan race was unguarded). Highest blast radius.
+#
+#   • §6.1 ACQUIRE-before-in_progress & precedence: a lease is granted on a
+#     task_ref to EXACTLY ONE owner at a time. The runner acquires it BEFORE
+#     `bd update --status=in_progress`; lease release OR expiry maps the bead
+#     back to --status=open — that WORK-PLANE binding is the runner's (the
+#     run-beads-tasks.sh §6.1 wiring); THIS tier owns the EXCLUSIVITY decision
+#     the binding rests on. Precedence on disagreement: the LEASE is
+#     authoritative for EXCLUSIVITY (who may run it); beads status is
+#     authoritative for WORK TRUTH (done/blocked/open) — neither store alone
+#     answers both. The lease is consulted on EVERY pickup (co__lease_acquire
+#     is the chokepoint; binds BC-15/BC-09/BC-35 — release/expiry⇒open).
+#
+#   • ORPHAN RECOVERY = an EXPIRED lease (replaces the BC-02/03/04 startup-
+#     in_progress-snapshot mechanism — intent kept, bash mechanism gone,
+#     SCAFFOLDING). A lease whose expiry has passed is FREE: the next acquirer
+#     takes it, so a crashed runner's lease self-heals after LEASE_TTL.
+#
+#   • §4.4 GENERATION fencing: every grant bumps a strictly-monotonic integer
+#     `generation`. A renew/release carrying a STALE generation is REJECTED —
+#     this is what closes the BC-04 two-runners-one-orphan RESIDUAL race: a
+#     zombie runner whose lease expired and was taken over (generation bumped)
+#     can no longer renew or release the lease the NEW owner now holds.
+#
+#   • §6.2 UNREACHABLE POSTURE (AD2.2 LEASE half): the lease check fails
+#     DEGRADED-CLOSED. Coordinator-unreachable ⇒ NO fresh lease can be granted
+#     (deny). The exact MIRROR of co_ask_capacity's reachable|unreachable
+#     shape but the OPPOSITE posture, deliberately frozen here so neither half
+#     is left to implementation: the higher-blast-radius plane fails CLOSED
+#     (no new unsynchronised claim ⇒ no BC-04 regression) while capacity fails
+#     OPEN. LEASE_TTL (900 s) ≫ CONTROL_POLL_INTERVAL + expected blip, so a
+#     brief outage does not strand in-flight work yet a crashed runner's lease
+#     still expires for orphan recovery.
+#
+# ANTI-DRIFT: this arbitrates the §4.4 Lease record ONLY. It does NOT touch
+#   the T4.1 store/auth/capability skeleton (co__store_*, co_authenticate,
+#   co__poll, co_capabilities stay untouched — co__poll remains the pure
+#   liveness-free TRANSPORT that merely SURFACES a stored lease; it fences
+#   nothing; co_capabilities stays EXACTLY four §2 lines), capacity
+#   aggregation (T4.4), reconcile/liveness/work-snapshot (T4.3 — which only
+#   READS a Lease to surface it), forensic (T4.5) or the Dossier (T5). The
+#   lease-* ops cross the SAME §2.3/§9.1 front door like the capacity/
+#   forensic/reconcile siblings — they are NOT a fifth §2 capability. The
+#   §6.2 BOUNDED LOCAL FALLBACK ("continue ONLY a task whose still-valid lease
+#   the runner already holds") is the Local Agent's (T3
+#   la_lease_fallback_allows, enforced from the locally-cached lease) — T4.2
+#   OWNS the arbitration contract that fallback CONSUMES, it does NOT
+#   implement the fallback (§6.2 local = T3, MUST-NOT-TOUCH). Consumes T3's
+#   §6.2 reachable|unreachable upward shape VERBATIM; no local divergence.
+#
+# A Lease IS a §4 record (co__schema_version lease ⇒ 1; it lives in records/).
+# It is NOT round-tripped through co__store_put: acquire/renew/release are a
+# read-decide-write CRITICAL SECTION that MUST be atomic to close BC-04, so it
+# is taken under ONE co__with_lock "lease.<task_ref>" (the §2.1 single-writer-
+# per-key primitive) across the read AND the write. co__store_put would re-take
+# that same key ⇒ self-contention; instead — exactly mirroring the established
+# co__capacity_report → co__with_lock → co__capacity_write sibling pattern —
+# the record is built Coordinator-AUTHORED with schema_version:1 + the §9.1
+# RESOLVED principal stamped, then written via the low-level lock-free
+# co__store_write. The Coordinator is the Lease's SOLE writer (§2.1), so
+# authoring it directly with the bound version+principal is equivalent to and
+# the only atomic realisation of the §4 store contract here.
+
+# §0.5 LEASE_TTL (900 s) — lease lifetime; ≫ blip + poll (AD2.2). T4.1
+# deliberately did NOT define this lookup (a dead lookup there would falsely
+# imply the skeleton arbitrates a lease — see the §0.5 block at the head of
+# this file). T4.2 is the REAL use site, so — mirroring co__FORENSIC_BLOB_TTL /
+# co__STALE_AFTER discipline — it is defined HERE. Single normative definition
+# is INTERFACE.md §0.5; this is an env-overridable lookup whose literal default
+# EQUALS the frozen table value, NEVER a competing normative value.
+co__LEASE_TTL() { echo "${LEASE_TTL:-900}"; }   # §0.5 LEASE_TTL
+
+co__epoch_now() { date -u +%s 2>/dev/null || echo 0; }
+
+# co__epoch_to_rfc3339 <epoch> — render epoch seconds as an RFC-3339 UTC
+# string (§0.4 `...Z`). Portable across GNU date (-d @) and BSD/macOS (-r);
+# empty on failure (the epoch fields remain the load-bearing TTL datum, the
+# rfc3339 fields are the §4.4 human-facing schema surface).
+co__epoch_to_rfc3339() {
+  local e="${1:-0}" r
+  r=$(date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) && { printf '%s' "$r"; return 0; }
+  r=$(date -u -r "$e"  +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) && { printf '%s' "$r"; return 0; }
+  printf ''
+}
+
+# co__lease_acquire_locked <principal> <task_ref> <owner>
+#   The §6.1 acquire decision + the §4.4 record write, run as ONE atomic
+#   critical section (the caller holds co__with_lock "lease.<task_ref>" — the
+#   §2.1 single-writer-per-key primitive — which is what makes the BC-04
+#   concurrent-claim race resolvable to EXACTLY ONE winner).
+co__lease_acquire_locked() {
+  local principal="$1" task="$2" owner="$3" prev now ttl
+  now="$(co__epoch_now)"; ttl="$(co__LEASE_TTL)"
+  prev="$(co__store_get lease "$task" 2>/dev/null)" || prev=""
+  local gen_prev=0 cur_owner="" exp_prev=0
+  if printf '%s' "$prev" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    gen_prev=$(printf '%s' "$prev" | jq -r '.generation // 0'     2>/dev/null); [[ "$gen_prev" =~ ^[0-9]+$ ]] || gen_prev=0
+    cur_owner=$(printf '%s' "$prev" | jq -r '.owner // ""'        2>/dev/null) || cur_owner=""
+    exp_prev=$(printf '%s' "$prev" | jq -r '.expires_epoch // 0'  2>/dev/null); [[ "$exp_prev" =~ ^[0-9]+$ ]] || exp_prev=0
+  fi
+  # An UNEXPIRED lease held by a DIFFERENT owner ⇒ DENY (BC-04: exactly one
+  # owner per task_ref; the loser is denied — observable, nonzero). `now <
+  # expires` ⇒ still valid; `now ≥ expires` ⇒ EXPIRED ⇒ orphan recovery, the
+  # bead is free to be re-leased (this REPLACES the bash startup-snapshot).
+  if [[ -n "$cur_owner" && "$cur_owner" != "$owner" && "$now" -lt "$exp_prev" ]]; then
+    echo "co: LEASE acquire $task denied-held-by-other (owner=$cur_owner, gen=$gen_prev; BC-04: exactly one owner)" >&2
+    return 1
+  fi
+  # FREE / EXPIRED(orphan recovery) / SAME-owner re-acquire ⇒ GRANT. The
+  # generation is STRICTLY MONOTONIC: prev+1 ALWAYS (incl. a same-owner
+  # re-acquire), so any party still holding gen_prev is fenced on its next
+  # renew/release (§4.4 — the BC-04 two-runners-one-orphan residual close).
+  local gen=$(( gen_prev + 1 )) exp=$(( now + ttl )) acq_rfc exp_rfc rec
+  acq_rfc="$(co__epoch_to_rfc3339 "$now")"
+  exp_rfc="$(co__epoch_to_rfc3339 "$exp")"
+  rec=$(jq -cn \
+     --argjson sv 1 --arg p "$principal" --arg tr "$task" --arg ow "$owner" \
+     --arg aat "$acq_rfc" --arg eat "$exp_rfc" --argjson ttl "$ttl" \
+     --argjson ce "$now" --argjson ee "$exp" --argjson g "$gen" \
+     '{task_ref:$tr, schema_version:$sv, principal:$p, owner:$ow,
+       acquired_at:$aat, ttl_seconds:$ttl, expires_at:$eat,
+       renewed_at:$aat, generation:$g,
+       acquired_epoch:$ce, renewed_epoch:$ce, expires_epoch:$ee}' 2>/dev/null) \
+    || { echo "co: lease-acquire — could not build §4.4 Lease record" >&2; return 3; }
+  co__store_write lease "$task" "$rec" \
+    || { echo "co: lease-acquire — store write failed" >&2; return 4; }
+  printf '%s' "$rec"
+  return 0
+}
+
+# co__lease_renew_locked <principal> <task_ref> <owner> <req_gen>
+#   §4.4 renew. REJECTED (nonzero, no write) iff: no lease to renew; owner
+#   mismatch; the carried `generation` is STALE (≠ stored — the fencing
+#   token); or the lease has already EXPIRED (now ≥ expires ⇒ orphan recovery
+#   owns it now, re-acquire is required). On success bumps renewed_at +
+#   expires (now + LEASE_TTL), KEEPING owner + generation + acquired_at.
+co__lease_renew_locked() {
+  local principal="$1" task="$2" owner="$3" req_gen="$4" prev now ttl
+  now="$(co__epoch_now)"; ttl="$(co__LEASE_TTL)"
+  prev="$(co__store_get lease "$task" 2>/dev/null)" || prev=""
+  printf '%s' "$prev" | jq -e 'type=="object"' >/dev/null 2>&1 \
+    || { echo "co: LEASE renew $task rejected-no-lease" >&2; return 1; }
+  local s_owner s_gen s_exp s_acq
+  s_owner=$(printf '%s' "$prev" | jq -r '.owner // ""'         2>/dev/null) || s_owner=""
+  s_gen=$(printf  '%s' "$prev" | jq -r '.generation // -1'     2>/dev/null); [[ "$s_gen"  =~ ^[0-9]+$ ]] || s_gen=-1
+  s_exp=$(printf  '%s' "$prev" | jq -r '.expires_epoch // 0'   2>/dev/null); [[ "$s_exp"  =~ ^[0-9]+$ ]] || s_exp=0
+  s_acq=$(printf  '%s' "$prev" | jq -r '.acquired_at // ""'    2>/dev/null) || s_acq=""
+  if [[ "$s_owner" != "$owner" ]]; then
+    echo "co: LEASE renew $task rejected-owner-mismatch (held by $s_owner)" >&2; return 1
+  fi
+  if [[ "$req_gen" != "$s_gen" ]]; then
+    echo "co: LEASE renew $task rejected-stale-generation (carried=$req_gen, current=$s_gen; §4.4 fencing)" >&2; return 1
+  fi
+  if [[ "$now" -ge "$s_exp" ]]; then
+    echo "co: LEASE renew $task rejected-expired (orphan recovery owns it; re-acquire required)" >&2; return 1
+  fi
+  local exp=$(( now + ttl )) rn_rfc exp_rfc rec
+  rn_rfc="$(co__epoch_to_rfc3339 "$now")"; exp_rfc="$(co__epoch_to_rfc3339 "$exp")"
+  rec=$(printf '%s' "$prev" | jq -c \
+     --arg p "$principal" --arg rn "$rn_rfc" --arg eat "$exp_rfc" \
+     --argjson re "$now" --argjson ee "$exp" \
+     '. + {principal:$p, renewed_at:$rn, expires_at:$eat,
+           renewed_epoch:$re, expires_epoch:$ee}' 2>/dev/null) \
+    || { echo "co: lease-renew — could not rebuild Lease record" >&2; return 3; }
+  co__store_write lease "$task" "$rec" \
+    || { echo "co: lease-renew — store write failed" >&2; return 4; }
+  printf '%s' "$rec"; return 0
+}
+
+# co__lease_release_locked <principal> <task_ref> <owner> <req_gen>
+#   §6.1 release ⇒ the bead maps back to --status=open at the WORK plane (that
+#   transition is the runner's; here we relinquish the EXCLUSIVITY claim).
+#   IRRECOVERABLE record removal — NOT a tombstone (mirrors §10.3 destroy):
+#   the next acquirer sees a free slot. REJECTED iff owner mismatch OR a STALE
+#   generation (§4.4 fencing: a zombie that lost the lease MUST NOT release
+#   the lease the new owner now holds). IDEMPOTENT: releasing an absent /
+#   already-expired-and-gone lease is success (expiry already mapped it open).
+co__lease_release_locked() {
+  local principal="$1" task="$2" owner="$3" req_gen="$4" prev
+  prev="$(co__store_get lease "$task" 2>/dev/null)" || prev=""
+  if ! printf '%s' "$prev" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    return 0   # nothing held ⇒ release is a no-op (already open at work plane)
+  fi
+  local s_owner s_gen
+  s_owner=$(printf '%s' "$prev" | jq -r '.owner // ""'     2>/dev/null) || s_owner=""
+  s_gen=$(printf  '%s' "$prev" | jq -r '.generation // -1' 2>/dev/null); [[ "$s_gen" =~ ^[0-9]+$ ]] || s_gen=-1
+  if [[ "$s_owner" != "$owner" ]]; then
+    echo "co: LEASE release $task rejected-owner-mismatch (held by $s_owner)" >&2; return 1
+  fi
+  if [[ "$req_gen" != "$s_gen" ]]; then
+    echo "co: LEASE release $task rejected-stale-generation (carried=$req_gen, current=$s_gen; §4.4 fencing)" >&2; return 1
+  fi
+  rm -f "$(co__rec_path lease "$task")" 2>/dev/null || true   # NO tombstone
+  [[ ! -f "$(co__rec_path lease "$task")" ]]
+}
+
+# Public entrypoints (input hygiene + the §2.1 single-writer lock). Stdout is
+# the granted/renewed §4.4 record (so the caller learns its generation); a
+# denial is nonzero with a stderr marker. Dispatched from co_request — they
+# pass the §9.1 RESOLVED principal and sit behind the ONE auth chokepoint
+# (no/invalid token ⇒ rejected BEFORE this is reached; no second auth path).
+co__lease_acquire() {
+  local principal="$1" task="$2" owner="$3"
+  [[ -n "$task" && -n "$owner" ]] || { echo "co: lease-acquire needs <task_ref> <owner>" >&2; return 2; }
+  co__safe_key "$task" || { echo "co: reject — unsafe lease task_ref '$task' (store-owner input hygiene)" >&2; return 2; }
+  co__with_lock "lease.$task" co__lease_acquire_locked "$principal" "$task" "$owner"
+}
+co__lease_renew() {
+  local principal="$1" task="$2" owner="$3" gen="$4"
+  [[ -n "$task" && -n "$owner" && -n "$gen" ]] || { echo "co: lease-renew needs <task_ref> <owner> <generation>" >&2; return 2; }
+  co__safe_key "$task" || { echo "co: reject — unsafe lease task_ref '$task'" >&2; return 2; }
+  co__with_lock "lease.$task" co__lease_renew_locked "$principal" "$task" "$owner" "$gen"
+}
+co__lease_release() {
+  local principal="$1" task="$2" owner="$3" gen="$4"
+  [[ -n "$task" && -n "$owner" && -n "$gen" ]] || { echo "co: lease-release needs <task_ref> <owner> <generation>" >&2; return 2; }
+  co__safe_key "$task" || { echo "co: reject — unsafe lease task_ref '$task'" >&2; return 2; }
+  co__with_lock "lease.$task" co__lease_release_locked "$principal" "$task" "$owner" "$gen"
+}
+
+# co_lease_acquire <bearer> <task_ref> <owner> [reachable|unreachable]
+#   The §6.2 lease gate as the runner sees it (AD2.2 LEASE HALF). The exact
+#   MIRROR of co_ask_capacity's reachable|unreachable shape — the OPPOSITE
+#   posture, deliberately (§6.2 freezes BOTH halves so neither is left to
+#   implementation):
+#     unreachable ⇒ DEGRADED-CLOSED: deny — no Coordinator ⇒ NO fresh lease.
+#                   The bounded local fallback (continue ONLY a task whose
+#                   still-valid lease the runner ALREADY holds) is the Local
+#                   Agent's (T3 la_lease_fallback_allows), NOT decided here
+#                   (anti-drift: §6.2 local = T3). This is what keeps a brief
+#                   outage from reintroducing BC-04 (no new unsynchronised
+#                   claim) — the higher-blast-radius plane fails CLOSED.
+#     reachable   ⇒ arbitrate through the ONE §2.3/§9.1 authed front door.
+#   (Contrast the CAPACITY half — co_ask_capacity — which fails OPEN.)
+co_lease_acquire() {
+  local bearer="${1:-}" task="${2:-}" owner="${3:-}" reach="${4:-reachable}"
+  if [[ "$reach" == "unreachable" ]]; then
+    echo "co: LEASE acquire ${task:-?} denied-unreachable (§6.2/AD2.2 DEGRADED-CLOSED — no fresh lease; held-lease continuation is the Local Agent's bounded fallback, T3)" >&2
+    return 1
+  fi
+  co_request "$bearer" lease-acquire "$task" "$owner"
+}
+
 # ── EXIT-criterion-1 introspection: the four §2 capabilities are reachable ────
 # Prints the four §2 capability surfaces and the function realising each, so
 # "the shell stands up and the four capabilities are reachable surfaces" is
@@ -1301,6 +1564,10 @@ EOF
 #                       non-contractual reliability safe
 #   §2.3/§9.1 choke   → a Worker middleware (one authenticate→principal)
 #   §2.4 poll         → the DO reconnect handler returning desired + lease
+#   §6.1/§4.4 lease   → the singleton Coordinator DO's single-threaded turn IS
+#                       the global lease mutex (the co__with_lock "lease.<task>"
+#                       critical section's hosted analogue); generation is a
+#                       monotonic DO-state counter — the BC-04 fencing token
 #   record store      → DO state / D1 rows (one DO per dossier-Item is AD1/AD7,
 #                       realised in T5 — NOT here)
 #   §10.3 forensic    → an encrypted object store (R2/D1) for the ciphertext +
