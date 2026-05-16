@@ -68,7 +68,7 @@ All templates are in `${CLAUDE_PLUGIN_ROOT}/templates/`:
 |----------|------|
 | Gitignore | `gitignore/{ios,android,backend}.gitignore` |
 | Settings | `settings/{ios,android,backend}.json` |
-| Agents | `agents/{code-reviewer,privacy-reviewer}.md` |
+| Agents | `agents/{code-reviewer,privacy-reviewer,security-reviewer}.md` |
 | Skills | `skills/{shared,ios,android,backend}/` (includes `wrapup/` per platform) |
 | Architecture | `architecture/{IOS,ANDROID}_APP_ARCHITECTURE_GUIDE.md` |
 | CLAUDE.md | `CLAUDE.md.template` |

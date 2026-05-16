@@ -19,6 +19,15 @@ When the reviewer returns feedback:
 
 If the reviewer reports "No issues found", continue.
 
+## Step 1b: Security Review (conditional)
+
+Decide whether this change has meaningful **security surface**: authentication or authorization, sessions/tokens, crypto, parsing or deserialization of untrusted input, file or network I/O, secrets handling, SQL/command construction, deep links / IPC, or anything reachable by an untrusted caller.
+
+- **If it does:** spawn the `security-reviewer` agent with a one-sentence summary of the change. Do **not** run the built-in `/security-review` skill — it injects the full diff into *this* conversation, which both bloats the working context and makes the review non-independent. The `security-reviewer` agent reviews in an isolated context (like `code-reviewer`) and is the correct tool here.
+- **If it doesn't** (docs, tests, pure refactor, config with no secret/permission impact): state "no security surface — skipped" and continue.
+
+Evaluate returned findings exactly as in Step 1: fix valid ones (re-run Step 2 after), briefly note rejected ones with a reason. Treat a HIGH finding as a commit blocker — do not commit until it is resolved or explicitly accepted by the user.
+
 ## Step 2: Test Verification
 
 Detect the stack and run the right test command. Check the project's config (`package.json`, `pyproject.toml`, `Makefile`, etc.) before guessing:

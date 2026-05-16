@@ -54,11 +54,12 @@ cp ${CLAUDE_PLUGIN_ROOT}/templates/settings/backend.json .claude/settings.json
 
 ### Copy Agents
 
-Copy both agents for all project types:
+Copy all three agents for all project types:
 
 ```bash
 cp ${CLAUDE_PLUGIN_ROOT}/templates/agents/code-reviewer.md .claude/agents/
 cp ${CLAUDE_PLUGIN_ROOT}/templates/agents/privacy-reviewer.md .claude/agents/
+cp ${CLAUDE_PLUGIN_ROOT}/templates/agents/security-reviewer.md .claude/agents/
 ```
 
 After copying `code-reviewer.md`, replace `{{ARCHITECTURE_GUIDE}}` placeholder:
@@ -159,6 +160,7 @@ The `context/` directory contains documentation that helps Claude understand spe
 
 - `code-reviewer` - Detailed code review for architecture compliance
 - `privacy-reviewer` - Check for unintentional data collection/sharing
+- `security-reviewer` - Isolated security review (use instead of built-in /security-review)
 ```
 
 ## Step 6: iOS-Specific Setup
@@ -242,6 +244,7 @@ Created:
 - .claude/settings.json (with sensible defaults)
 - .claude/agents/code-reviewer.md
 - .claude/agents/privacy-reviewer.md
+- .claude/agents/security-reviewer.md
 - .claude/skills/code-reviewer/
 - .claude/skills/wrapup/ (platform-specific)
 [iOS only:]
