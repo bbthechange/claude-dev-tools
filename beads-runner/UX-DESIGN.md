@@ -13,6 +13,110 @@ is flagged as deferred — not solved.
 
 ---
 
+## 0. Requirement provenance — read this first
+
+This separates **what Brian asked for** from **what the design agent added**.
+It is the authoritative source for that distinction; the rest of the document
+elaborates but does not change it.
+
+**Instruction to downstream agents:** do the extra defensive work — guarding a
+requirement against compromise, hardening it, treating it as a fixed constraint
+— **only for items in §0.A and §0.B**. Everything in §0.C is a proposal:
+implement it if it serves an A/B requirement, trade it off or drop it freely
+otherwise, and do not spend effort protecting it for its own sake.
+
+### 0.A — Direct requirements (from Brian; protect rigorously)
+
+Stated explicitly in the original brief or follow-ups:
+
+- **End-to-end lifecycle tracking:** idea → UX → design → (scaffold *only* if a
+  new project, not for a feature on an existing one) → implementation → docs →
+  tests, where tests = unit + integration + e2e-that-future-agents-can-run +
+  manual-e2e. Reflected in the tool the way Brian already works.
+- **Remote start/stop of the runner**, per project, so he can choose which
+  projects pick up tasks — controllable both **by him** and **by agents in a
+  workspace** (an agent can start/stop for its own env).
+- **One central runner per computer** that checks Claude capacity; the runner
+  in each environment checks with that central one before working.
+- **Capacity is visible in the UI.**
+- **The central runner is the sync + remote control/viewing backbone** (Brian's
+  own hypothesis, stated as a likely role).
+- **Remote idea intake:** he types what he wants from a beads task and sends it;
+  a local agent reads it, pulls in the correct documents (existing design for
+  it, project context docs, etc.), and creates a beads task that then gets
+  picked up.
+- **Strong human-interaction support**, specifically all of:
+  - Reads tags on issues for when a human decision is needed, blocks on that,
+    possibly sends a notification.
+  - A **multi-step document-generation process** for human decisions: (1) first
+    pass against project goals/designs to filter out anything already answered
+    and to identify what extra context this adds; (2) a readability pass —
+    concise, all context, well organized, skimmable but with drill-down detail
+    (summaries → headings → diagrams → detail), states why it needs his action;
+    minimal jargon/acronyms.
+  - Easy to respond to: inline editing, and approval checkboxes.
+  - When marked human-review-needed, a script triggers the workflow, creates
+    the document, sends it to him; when he responds, the right workflow is
+    triggered to unblock / create new beads tasks.
+  - Also trigger this proactively to give him an understanding of how things
+    are designed and fit together.
+- **Runner keeps running when out of tasks** and picks tasks up once added.
+- **Spare-cycles mode** with the exact weekly ramp: 100% / 7 days = 14.2%/day;
+  day 1 use up to 14.2%, day 2 up to 28.4%, etc. Low-priority tasks run only
+  when there are spare cycles.
+- **Kanban/board per workspace**, viewable locally and remotely, tracked in the
+  idea → ux → design → impl → test lifecycle.
+- **Failure details viewable locally and remotely** when a beads task fails.
+
+Asked for, but Brian himself flagged as probably not possible — treat as a
+**goal to satisfy by other means, not a hard requirement**:
+
+- The runner starts a *non-headless* Claude Code instance in a project with
+  remote control. (See §6 D7 / §7 for the reframe.)
+
+### 0.B — Direct decisions (from Brian; same status as 0.A)
+
+Chosen by Brian when asked:
+
+- **Response surface = mobile-friendly web app** hosting both Inbox and Board.
+- **Intake gate = human-tapped entry-intent preset at capture**, extensible
+  preset list. (Brian's refinement of the original "hybrid by size" choice.)
+- **Silence behavior = tiered**: real decisions hard-block, FYIs auto-proceed.
+- **Decision consequences = pre-declared per option; an interpreting agent runs
+  only for freeform/edited responses.**
+- **`timed-fyi` window = 24h global default** (builder may shorten).
+- **Remote forensic failure view = redacted, on-demand, never persisted** is
+  sufficient for now.
+- **UX requirement (design deferred):** the web app must be reachable
+  off-network and while the laptop is asleep.
+
+### 0.C — Design-agent elaborations (proposals; trade off freely)
+
+Not asked for; added by the design agent as UX structure. Useful, but not to
+be defended for their own sake:
+
+- The "attention router" reframe and the **two-surfaces-only** constraint
+  (Inbox + Board as named, exclusive surfaces).
+- Naming the decision/idea queue "the Inbox" as a distinct product concept.
+- The lifecycle **gate map** (which transitions auto-advance vs. `GATE (you)`)
+  and using the lifecycle as a dependency template — Brian asked for the
+  *tracking*, not this specific gating model.
+- **Notification batching** ("3 pending → 1 digest") and the formal three-tier
+  model (`blocking` / `timed-fyi` / `digest`) — the tiering of *silence* is
+  0.B; this packaging of *notifications* is elaboration.
+- Formalizing the document process into named **Pass 1–4** (Brian specified the
+  passes' intent; the structure/labels are elaboration).
+- "Worker stops clean / no burning cycles," **honest desired-vs-actual state**
+  rendering, the **single-usage-authority** model, and the agent/human **trust
+  boundary** (agents may downgrade own env; only Brian promotes to `full`).
+- The **failure → Inbox tier mapping** table and the "surface silent failures
+  loudest" principle.
+- Treating **collaborative stage** ("go over the UI with an agent") as a
+  distinct first-class interaction mode.
+- The cross-cutting principles list (§5) as a whole.
+
+---
+
 ## 1. The reframe: an attention router
 
 Today's script optimizes machine throughput (fresh context per task, retries,
