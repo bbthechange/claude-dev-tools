@@ -352,7 +352,17 @@ co_authenticate() {
 #                                        capacity report (T3 shape, verbatim)
 #     ask-capacity <cost_class>        → §6.3 aggregated verdict ok|over
 #                                        (rc 0=ok, 1=over)
-#   The forensic-* and capacity ops cross the §2.3 authed channel like every
+#     heartbeat <report_json>          → §1.1/§4.2 ingest the upward
+#                                        actual-state+liveness heartbeat (T3
+#                                        §1.1 outbox shape, consumed VERBATIM)
+#     reconcile <proj> [lease_id]      → §2.4 deliver-desired-state-on-reconnect
+#                                        SEMANTICS + §4.2 liveness DERIVED at
+#                                        read time (NOT a durable command queue)
+#     work-snapshot [proj] [beads_json]→ §4.5 read-only projection PRODUCER
+#                                        (liveness derived; T6a RENDERS it) —
+#                                        structurally NO reader write path
+#   The forensic-*, capacity, heartbeat/reconcile/work-snapshot ops cross the
+#   §2.3 authed channel like every
 #   other op (§10.3 / §1.1 "transport is the §2.3 authed channel"); they are
 #   NOT one of the four §2 capabilities (those stay exactly four —
 #   co_capabilities, T4.1). §6.2's Coordinator-unreachable FAIL-OPEN posture
@@ -382,7 +392,10 @@ co_request() {
     forensic-audit)   co__forensic_audit_tail "${1:-}" ;;
     report-capacity)  co__capacity_report "$principal" "${1:-}" ;;
     ask-capacity)     co__ask_capacity "${1:-}" ;;
-    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity)" >&2; return 2 ;;
+    heartbeat)        co__heartbeat "$principal" "${1:-}" ;;
+    reconcile)        co__reconcile "$principal" "${1:-}" "${2:-}" ;;
+    work-snapshot)    co__work_snapshot "$principal" "${1:-}" "${2:-}" ;;
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot)" >&2; return 2 ;;
   esac
 }
 
@@ -898,6 +911,372 @@ co_ask_capacity() {
     echo ok; return 0                       # §6.2 / AD2.2 capacity-half fail-OPEN
   fi
   co_request "$bearer" ask-capacity "$cc"
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# §4.2 / §2.4 / §4.5 — RunnerState reconcile + S-1 liveness + the read-only
+#   work-snapshot projection store        (T4.3, claude-tools-l9o)
+# ════════════════════════════════════════════════════════════════════════════
+# OWNS INTERFACE.md v1 §4.2 (RunnerState actual-ingest + the S-1 liveness
+# DATUM, derived at READ time), §2.4 (the deliver-desired-state-on-reconnect
+# SEMANTICS — the TRANSPORT is T4.1's co__poll), and §4.5 (the read-only
+# work-snapshot PROJECTION store the Board reads; T6a RENDERS it).
+#
+# WHY (DESIGN S-1, C6, §2.4): the Coordinator owns desired-state and is the
+# honest-state authority. desired≠actual is LEGAL and MUST be rendered
+# honestly, never masked (INTERFACE §4.2 principle 4). Liveness is DATA, not
+# polish (C6 / S-1): it is DERIVED at read time from last_heartbeat_at, NEVER
+# stored — a stored 'live' would lie the instant the heartbeat stops.
+#
+#   • §1.1 item-3 INGEST (heartbeat): the ONLY thing that flows UP for §4.2 is
+#     the runner-reported actual-state + the last_heartbeat_at liveness datum
+#     (+ current_task_ref). Consumed VERBATIM in T3's §1.1 coordinator-outbox
+#     line convention (the same {report:"<kind>",schema_version,principal,
+#     runner_id,…,observed_at} shape la_report_capacity / la_report_terminal_
+#     reason emit; T3's debrief documents the outbox as the §1.1 realisation
+#     seam the Coordinator drains on reconnect). `observed_at` IS the
+#     last_heartbeat_at S-1 datum; `actual` ∈ the §4.2 actual enum. §0.3
+#     reject-unknown-higher + §9.1 principal-stamp are enforced exactly as the
+#     §4 store does. The ingest MERGES onto the RunnerState envelope and MUST
+#     NOT touch the COORDINATOR-OWNED `desired`/`last_desired_actor` (§1.1: the
+#     runner never originates desired) — it is the §4 store's legitimate
+#     up→down write path, NOT a reader write.
+#
+#   • §2.4 RECONCILE SEMANTICS (reconcile): on ANY runner/Local-Agent poll or
+#     reconnect, return the CURRENT RunnerState.desired + that runner's lease
+#     state, with `liveness` DERIVED at read time and `actual` surfaced
+#     honestly (desired≠actual NOT masked). This is reconciliation — the
+#     current desired-state is delivered on reconnect — NOT a durable command
+#     queue (nothing is enqueued; whatever desired is stored NOW is what the
+#     waking runner gets, EXIT crit 1's simulated sleep/reconnect). It LAYERS
+#     on T4.1's co__poll TRANSPORT (which stays liveness-free, anti-drift); the
+#     SEMANTICS — derive liveness, surface the mismatch — are added here.
+#
+#   • §4.5 READ-ONLY PROJECTION (work-snapshot): the join of the Work plane
+#     (beads/Dolt — STAYS work-truth, no plane split) + Coordinator state. It
+#     carries, per project: the RunnerState (desired + actual + liveness
+#     DERIVED); the capacity strip (SURFACED from T4.4's aggregated verdict —
+#     this tier does NOT compute it); the lifecycle columns keyed by each
+#     bead's `stage:` label; the WAITING-ON-YOU lane = Dossiers with ≥1
+#     still-open item for this principal (a READ of T5's records — item-state
+#     COUNTS only); per-bead failure metadata (Flow G tiers 1–2; the forensic
+#     stream is NEVER in the projection — §10). T4.3 PRODUCES this + the
+#     liveness derivation; T6a RENDERS it. **NO write path from any reader**:
+#     co__work_snapshot ONLY reads stored records + the passed-in work-truth
+#     and emits JSON — it calls NO co__store_* / co__*_write primitive, so the
+#     no-reader-write-path invariant holds BY CONSTRUCTION (EXIT crit 3).
+#
+# ANTI-DRIFT (MUST-NOT-TOUCH sibling surfaces, INTERFACE.md v1):
+#   • store/auth/capability skeleton — T4.1: co__store_*, co_authenticate,
+#     co__poll, co_capabilities are NOT modified here (co__poll stays the pure
+#     liveness-free transport its own T4.1 test asserts; reconcile is a
+#     SEPARATE function layered on it). New ops cross the SAME §2.3/§9.1 front
+#     door like the capacity/forensic siblings — they are NOT a fifth §2
+#     capability (co_capabilities stays EXACTLY four, untouched).
+#   • lease arbitration / generation fencing — T4.2: this tier only READS a
+#     Lease record to SURFACE it; it arbitrates none, fences none.
+#   • capacity aggregation — T4.4: the capacity strip is SURFACED from
+#     co__ask_capacity's already-aggregated coarse verdict; no measurement,
+#     no 5h/7d numbers (those never cross UP — §1.1; the strip is the coarse
+#     verdict the Coordinator actually has).
+#   • forensic — T4.5: structurally absent from the projection (separate
+#     namespace; never read here).
+#   • §4.5 projection RENDERING / staleness UI — T6a: this tier emits the
+#     DATA (the derived liveness + honest desired/actual); it renders nothing.
+#   • Dossier §5 content — T5: only item-state COUNTS are read for the
+#     WAITING-ON-YOU lane; no Dossier body/items are produced or interpreted.
+#   Consumes T3's §1.1 UPWARD heartbeat/actual-state contract VERBATIM (the
+#   §4.2 field names/semantics + the T3 outbox line convention; no local field
+#   invention). An interface gap would be the §11 BLOCKING escalation — none
+#   was needed: §4.2 fully defines actual + last_heartbeat_at + current_task_
+#   ref and §1.1 item 3 names the heartbeat; the outbox is T3's documented seam.
+
+# §0.5 STALE_AFTER (180 s) — the S-1 liveness boundary: the Board renders
+# `stale (last seen …)` once `now − last_heartbeat_at` exceeds this. T4.3 is
+# the FIRST real use site (T4.1 deliberately did NOT define it — a dead lookup
+# there would falsely imply the skeleton derives liveness; anti-drift). Single
+# normative definition is INTERFACE.md §0.5; this is an env-overridable lookup
+# whose literal default EQUALS the frozen §0.5 table value, NEVER a competing
+# normative value (mirrors co__FORENSIC_BLOB_TTL / co__USAGE_THRESHOLD).
+co__STALE_AFTER() { echo "${STALE_AFTER:-180}"; }   # §0.5 STALE_AFTER
+
+# The §4.2 `actual` enum is CLOSED (INTERFACE.md §4.2): runner-reported state
+# ∈ {starting,running,idle,stopping,stopped,crashed}. An out-of-enum actual is
+# rejected at the §1.1 ingest door (a contract value, not free text).
+co__actual_ok() {
+  case "${1:-}" in
+    starting|running|idle|stopping|stopped|crashed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# co__rfc3339_to_epoch <rfc3339> — parse an RFC-3339 UTC string (…Z, §0.4) to
+# epoch seconds. Portable across GNU date (-d) and BSD/macOS date (-j -f); on
+# any parse failure echoes nothing and returns 1 (the caller treats an
+# unparseable / absent heartbeat as 'stale' — honest, never masked).
+co__rfc3339_to_epoch() {
+  local ts="${1:-}" e
+  [[ -n "$ts" ]] || return 1
+  e=$(date -u -d "$ts" +%s 2>/dev/null) && { printf '%s' "$e"; return 0; }
+  e=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null) && { printf '%s' "$e"; return 0; }
+  return 1
+}
+
+# co__derive_liveness <last_heartbeat_at> [now_epoch] — THE S-1 derivation
+# (INTERFACE §4.2): 'live' iff now − last_heartbeat_at ≤ STALE_AFTER, else
+# 'stale'. DERIVED AT READ TIME, NEVER stored (C6: a stored 'live' lies the
+# instant the heartbeat stops). HONEST degradation (S-1/C6 — liveness is data,
+# never a masking lie): a missing/unparseable last_heartbeat_at ⇒ 'stale' (a
+# runner never heard from is honestly stale); an UNREADABLE local clock ⇒
+# 'stale' too (recency is unestablishable — defaulting now=0 would falsely
+# derive 'live' for any real heartbeat, exactly the lie this datum forbids).
+co__derive_liveness() {
+  local hb="${1:-}" now="${2:-}" hbe stale
+  if [[ -z "$now" ]]; then
+    now=$(date -u +%s 2>/dev/null) || { echo stale; return 0; }
+  fi
+  hbe="$(co__rfc3339_to_epoch "$hb")" || { echo stale; return 0; }
+  stale="$(co__STALE_AFTER)"
+  if [[ "$(( now - hbe ))" -le "$stale" ]]; then echo live; else echo stale; fi
+}
+
+# co__heartbeat <principal> <report_json>
+#   §1.1 item-3 INGEST of the upward actual-state+liveness heartbeat. Consumes
+#   T3's §1.1 outbox line VERBATIM (report=="heartbeat"). Enforces, in order:
+#     1. valid JSON object with report=="heartbeat";
+#     2. §0.3 — integer schema_version; unknown HIGHER ⇒ REJECT (never
+#        best-effort-parse), exactly as the §4 store does; binds v1;
+#     3. closed §4.2 `actual` enum; non-empty safe project_ref (§1.1 stamp /
+#        store-owner input hygiene);
+#     4. §9.1 — STAMP the RESOLVED principal (overwrite the report's literal).
+#   `observed_at` (the wire timestamp) IS last_heartbeat_at — THE S-1 datum;
+#   absent ⇒ stamped now. MERGES onto the prior RunnerState envelope setting
+#   ONLY actual / last_heartbeat_at / current_task_ref / updated_at — the
+#   COORDINATOR-OWNED desired / last_desired_actor are PRESERVED untouched
+#   (§1.1: the runner never originates desired). Persisted through the §4
+#   store owner (co__store_put) — the legitimate up→down write, NOT a reader
+#   write. Returns nonzero / writes NOTHING on any rejection.
+co__heartbeat() {
+  local principal="$1" json="$2"
+  [[ -n "$json" ]] || { echo "co: heartbeat needs <report_json>" >&2; return 2; }
+  local parsed
+  parsed=$(printf '%s' "$json" | jq -c '
+        if type=="object" and .report=="heartbeat" then . else empty end' 2>/dev/null) \
+    || parsed=""
+  if [[ -z "$parsed" ]]; then
+    echo "co: reject — not a §1.1 heartbeat report (report!=\"heartbeat\" / invalid JSON)" >&2
+    return 3
+  fi
+  local sv
+  sv=$(printf '%s' "$parsed" | jq -r '
+        if (.schema_version|type)=="number"
+           and (.schema_version == (.schema_version|floor))
+        then .schema_version else empty end' 2>/dev/null) || sv=""
+  if [[ -z "$sv" || ! "$sv" =~ ^[0-9]+$ ]]; then
+    echo "co: reject — heartbeat missing integer schema_version (§1.1/§0.3)" >&2; return 3
+  fi
+  if [[ "$sv" -gt 1 ]]; then
+    echo "co: reject — heartbeat schema_version $sv is an unknown higher version (bound=1; §0.3 reject, never best-effort-parse)" >&2
+    return 3
+  fi
+  if [[ "$sv" -ne 1 ]]; then
+    echo "co: reject — heartbeat schema_version $sv unsupported (binds v1 only; §0.3)" >&2; return 3
+  fi
+  local proj act cur hb
+  proj=$(printf '%s' "$parsed" | jq -r '.project_ref // ""'      2>/dev/null) || proj=""
+  act=$(printf  '%s' "$parsed" | jq -r '.actual // ""'           2>/dev/null) || act=""
+  cur=$(printf  '%s' "$parsed" | jq -r '.current_task_ref // ""' 2>/dev/null) || cur=""
+  hb=$(printf   '%s' "$parsed" | jq -r '.observed_at // ""'      2>/dev/null) || hb=""
+  if [[ -z "$proj" ]] || ! co__safe_key "$proj"; then
+    echo "co: reject — heartbeat project_ref '$proj' missing/unsafe (§1.1 stamp; store-owner input hygiene)" >&2; return 3
+  fi
+  if ! co__actual_ok "$act"; then
+    echo "co: reject — heartbeat actual '$act' not in §4.2 enum {starting,running,idle,stopping,stopped,crashed}" >&2; return 3
+  fi
+  [[ -n "$hb" ]] || hb=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  local now prev
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  prev="$(co__store_get runner_state "$proj" 2>/dev/null)" || prev=""
+  # The runner-reported half is the only thing flowing up; a corrupt/absent
+  # prior envelope MUST NOT wedge it (mirrors co__set_desired's degrade) — fall
+  # back to a fresh base. desired/last_desired_actor are COORDINATOR-OWNED: a
+  # fresh base simply has none yet (set-desired sets them), and a merge onto an
+  # existing record leaves whatever desired the Coordinator already set intact.
+  if ! printf '%s' "$prev" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    prev='{}'
+  fi
+  local base
+  base=$(printf '%s' "$prev" | jq -c \
+            --argjson sv 1 \
+            --arg proj "$proj" \
+            --arg act "$act" \
+            --arg hb  "$hb" \
+            --arg cur "$cur" \
+            --arg at  "$now" \
+            '. + {project_ref:$proj, schema_version:$sv, actual:$act,
+                  last_heartbeat_at:$hb, updated_at:$at}
+               + (if $cur=="" then {} else {current_task_ref:$cur} end)' 2>/dev/null) \
+    || { echo "co: heartbeat — could not build RunnerState envelope" >&2; return 3; }
+  co__store_put "$principal" runner_state "$proj" "$base"
+}
+
+# co__reconcile <principal> <project_ref> [lease_id]
+#   §2.4 deliver-desired-state-on-reconnect SEMANTICS. Returns the CURRENT
+#   desired + that runner's lease state, ENRICHED with the §4.2 liveness
+#   DERIVED at read time and `actual` surfaced honestly. Reconciliation (the
+#   current desired-state delivered on reconnect), NOT a durable command queue:
+#   it returns what is stored NOW (a runner that slept through a desired change
+#   gets the new desired on its next reconcile — EXIT crit 1). Layers on
+#   T4.1's co__poll TRANSPORT (which stays liveness-free — anti-drift); the
+#   liveness derivation + the honest desired≠actual mismatch flag are the
+#   SEMANTICS this tier adds. Reads the Lease record ONLY to surface it
+#   (no arbitration — T4.2).
+co__reconcile() {
+  local principal="$1" proj="$2" lease_id="${3:-}" base rs hb live
+  base="$(co__poll "$principal" "$proj" "$lease_id" 2>/dev/null)" || base=""
+  [[ -n "$base" ]] || base='{}'
+  rs="$(printf '%s' "$base" | jq -c '.runner_state // {}' 2>/dev/null)" || rs='{}'
+  hb=$(printf '%s' "$rs" | jq -r '.last_heartbeat_at // ""' 2>/dev/null) || hb=""
+  live="$(co__derive_liveness "$hb")"
+  printf '%s' "$base" | jq -c \
+     --arg proj "$proj" \
+     --arg live "$live" \
+     '{principal:.principal,
+       project_ref:$proj,
+       desired:(.desired // null),
+       actual:(.runner_state.actual // null),
+       liveness:$live,
+       last_heartbeat_at:(.runner_state.last_heartbeat_at // null),
+       current_task_ref:(.runner_state.current_task_ref // null),
+       updated_at:(.runner_state.updated_at // null),
+       lease:(.lease // null),
+       desired_actual_mismatch:
+         ((.desired // null) != null
+          and (.runner_state.actual // null) != null
+          and (.desired != (.runner_state.actual)))}' 2>/dev/null \
+    || printf '{"principal":"%s","project_ref":"%s","desired":null,"actual":null,"liveness":"stale","lease":null}' "$principal" "$proj"
+}
+
+# co__work_snapshot <principal> [project_ref] [beads_worktruth_json]
+#   §4.5 the READ-ONLY projection PRODUCER (T6a RENDERS what this emits). It
+#   JOINS the Work plane (beads/Dolt — passed in as the work-truth read; the
+#   Coordinator NEVER duplicates/owns beads, so Dolt stays work-truth, no
+#   plane split) with Coordinator state. <beads_worktruth_json>, when given, is
+#   a JSON array of bead cards
+#     [{bead_ref,title,stage,priority,age,
+#       failure:{class,retry_state,runner_notes[]}}…]
+#   — the §3-job-5 published work-truth read T6a/the publisher supplies; absent
+#   ⇒ an empty Work-plane side (the Coordinator-side projection is still
+#   honestly produced). Per project it carries: the RunnerState (desired +
+#   actual + liveness DERIVED via co__reconcile); the capacity strip SURFACED
+#   from T4.4's aggregated coarse verdict (NOT computed here); the lifecycle
+#   columns (idea│ux│design│impl│docs│tests│done) keyed by each bead's
+#   `stage:` label; the WAITING-ON-YOU lane = stored Dossiers (this principal)
+#   with ≥1 still-open item — item-state COUNTS only, no Dossier content
+#   produced/interpreted (T5); per-bead failure metadata from the work-truth
+#   join (the §10 forensic stream is NEVER here).
+#
+#   NO WRITE PATH FROM ANY READER (EXIT crit 3): this function reads stored
+#   records + the passed work-truth and emits JSON ONLY. It invokes NO
+#   co__store_put / co__store_write / co__*_write / co__set_desired /
+#   co__heartbeat — the no-reader-write-path invariant holds BY CONSTRUCTION,
+#   not by a runtime check. `work_snapshot` IS a §4 type (T4.1 registry) for
+#   the publisher's stored envelope; this READ-side producer is a DIFFERENT
+#   path and never persists.
+co__work_snapshot() {
+  local principal="$1" proj="${2:-}" beads="${3:-}"
+  # Work-truth read (beads/Dolt). Default empty array if absent/invalid — the
+  # Coordinator never fabricates work-truth (Dolt is the source; this is a
+  # read-join, not a second store).
+  if [[ -z "$beads" ]] || ! printf '%s' "$beads" | jq -e 'type=="array"' >/dev/null 2>&1; then
+    beads='[]'
+  fi
+  # The lifecycle columns are the C1-seam stage ladder, keyed by each bead's
+  # `stage:` label (INTERFACE §4.5). Frozen column order; a bead with no/an
+  # unknown stage is bucketed under "" (honest: un-staged, not silently impl).
+  local stages='["idea","ux","design","impl","docs","tests","done"]'
+  # Which RunnerState projects to surface: the one asked, else every stored
+  # runner_state record (the Board's per-project strip).
+  local projs=()
+  if [[ -n "$proj" ]]; then
+    projs=("$proj")
+  else
+    local f b
+    for f in "$(co_store_dir)/records"/runner_state.*.json; do
+      [[ -e "$f" ]] || continue
+      b="$(basename "$f")"; b="${b#runner_state.}"; b="${b%.json}"
+      [[ -n "$b" ]] && projs+=("$b")
+    done
+  fi
+  # Per-project RunnerState (desired+actual+liveness DERIVED) + capacity strip
+  # (SURFACED from T4.4's aggregated verdict — NOT computed here).
+  local proj_json='[]' pr rec cap
+  for pr in "${projs[@]:-}"; do
+    [[ -n "$pr" ]] || continue
+    rec="$(co__reconcile "$principal" "$pr" 2>/dev/null)" || rec='{}'
+    [[ -n "$rec" ]] || rec='{}'
+    cap="$(co__ask_capacity standard 2>/dev/null || true)"; [[ -n "$cap" ]] || cap="unknown"
+    proj_json=$(printf '%s' "$proj_json" | jq -c \
+        --argjson r "$rec" --arg cap "$cap" \
+        '. + [{project_ref:$r.project_ref,
+               runner_state:{desired:$r.desired, actual:$r.actual,
+                             liveness:$r.liveness,
+                             last_heartbeat_at:$r.last_heartbeat_at,
+                             current_task_ref:$r.current_task_ref,
+                             desired_actual_mismatch:$r.desired_actual_mismatch},
+               lease:$r.lease,
+               capacity_strip:{cost_class:"standard", verdict:$cap,
+                               source:"§6.3 aggregated coarse verdict (T4.4)"}}]' \
+        2>/dev/null) || proj_json='[]'
+  done
+  # WAITING-ON-YOU lane: stored Dossiers for THIS principal with ≥1 still-open
+  # item. §4.1 — an item is non-terminal unless its state ∈ {applied,expired};
+  # a dossier is open while ≥1 item is non-terminal. T4.3 reads COUNTS ONLY —
+  # it never produces or interprets Dossier body/items (T5).
+  local woy='[]' df dj open_items
+  for df in "$(co_store_dir)/records"/dossier.*.json; do
+    [[ -e "$df" ]] || continue
+    dj="$(cat "$df" 2>/dev/null)" || continue
+    printf '%s' "$dj" | jq -e --arg p "$principal" \
+       'type=="object" and (.principal==$p)' >/dev/null 2>&1 || continue
+    open_items=$(printf '%s' "$dj" | jq -r \
+       '[(.items // [])[] | select((.state // "open")
+          | (. != "applied" and . != "expired"))] | length' 2>/dev/null) || open_items=0
+    if [[ "${open_items:-0}" =~ ^[0-9]+$ ]] && [[ "${open_items:-0}" -ge 1 ]]; then
+      woy=$(printf '%s' "$woy" | jq -c --argjson d "$dj" --argjson n "$open_items" \
+         '. + [{dossier_ref:($d.id // ""), bead_ref:($d.bead_ref // ""),
+                tier:($d.tier // ""), open_item_count:$n}]' 2>/dev/null) || woy='[]'
+    fi
+  done
+  # The join + the lifecycle columns. Each card: title·stage·priority·runner
+  # state·age·the one thing it waits on (INTERFACE §4.5). Failure metadata is
+  # carried from the work-truth read (Flow G tiers 1–2); the §10 forensic
+  # stream is structurally absent (never read here).
+  jq -cn \
+     --argjson sv 1 \
+     --arg principal "$principal" \
+     --argjson stages "$stages" \
+     --argjson projects "$proj_json" \
+     --argjson beads "$beads" \
+     --argjson waiting_on_you "$woy" \
+     '{schema_version:$sv,
+       principal:$principal,
+       read_only:true,
+       projects:$projects,
+       lifecycle_columns:
+         ( reduce $stages[] as $s ({}; . + {($s): [ $beads[]
+             | select((.stage // "") == $s)
+             | {bead_ref, title, stage:(.stage // ""), priority,
+                age, waiting_on:(.waiting_on // null),
+                failure:(.failure // null)} ]})
+           + { "": [ $beads[]
+             | select(((.stage // "") as $st
+                 | ($stages|index($st)) == null))
+             | {bead_ref, title, stage:(.stage // ""), priority,
+                age, waiting_on:(.waiting_on // null),
+                failure:(.failure // null)} ] } ),
+       waiting_on_you:$waiting_on_you}' 2>/dev/null \
+    || printf '{"schema_version":1,"principal":"%s","read_only":true,"projects":[],"lifecycle_columns":{},"waiting_on_you":[]}' "$principal"
 }
 
 # ── EXIT-criterion-1 introspection: the four §2 capabilities are reachable ────
