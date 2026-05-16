@@ -1,0 +1,60 @@
+#!/bin/bash
+# Conformance harness — `lease` control-plane shim (T1b, claude-tools-crq).
+#
+# The current single-process run-beads-tasks.sh has NO lease/Coordinator
+# concept, so it never invokes this binary — that is exactly why the AD2.1/
+# AD2.2 rigs are forward GATEs (GATE-PENDING pre-rewrite). It is the OBSERVABLE
+# SEAM the rewrite's Local Agent (T4) is expected to route lease arbitration
+# through, mirroring how `bd`/`security`/`curl` are shimmed. It does NOT
+# prescribe transport — it encodes the INTERFACE.md v1 §6.1/§6.2 contract as
+# the literal close-criterion T4 must make GREEN.
+#
+# Surface (only what the contract needs observable):
+#   lease acquire <task>   §6.1 acquire BEFORE `bd update --status=in_progress`
+#   lease renew   <task>   §3 job 3 (heartbeat renew)
+#   lease release <task>   §6.1 release/expiry ⇒ bead back to --status=open
+#
+# Ordering is made checkable by appending LEASE rows to the SAME append-only
+# $BD_AUDIT stream the bd stub writes `<id> in_progress` to — so a single-file
+# line-order check proves "acquire precedes in_progress" (§6.1) without racy
+# cross-file timestamp comparison.
+#
+# AD2.2 split posture (Coordinator-unreachable, $HARNESS_COORDINATOR=unreachable):
+#   - LEASE plane = degraded-closed with bounded local fallback: a runner MAY
+#     `acquire` ONLY a task whose still-valid lease it ALREADY holds locally
+#     (cache file present); it MUST NOT acquire a NEW lease ⇒ deny + nonzero.
+#   - reachable (default): acquire always granted.
+set -u
+
+AUDIT="${BD_AUDIT:-/dev/null}"
+CACHE_DIR="${HARNESS_OUT:-/tmp}/lease-cache"
+mkdir -p "$CACHE_DIR" 2>/dev/null || true
+
+op="${1:-}"; task="${2:-}"
+
+case "$op" in
+  acquire)
+    if [[ "${HARNESS_COORDINATOR:-reachable}" == "unreachable" ]]; then
+      if [[ -f "$CACHE_DIR/$task" ]]; then
+        # Degraded-closed bounded fallback: continue a task whose valid lease
+        # we already hold (§6.2). No NEW claim.
+        echo "LEASE acquire $task ok-cached" >> "$AUDIT"
+        exit 0
+      fi
+      echo "LEASE acquire $task denied-unreachable" >> "$AUDIT"
+      exit 1
+    fi
+    : > "$CACHE_DIR/$task"
+    echo "LEASE acquire $task ok" >> "$AUDIT"
+    exit 0 ;;
+  renew)
+    echo "LEASE renew $task" >> "$AUDIT"
+    exit 0 ;;
+  release)
+    rm -f "$CACHE_DIR/$task" 2>/dev/null || true
+    echo "LEASE release $task" >> "$AUDIT"
+    exit 0 ;;
+  *)
+    # Fail-open under any `|| true` guard, like the other shims.
+    exit 0 ;;
+esac

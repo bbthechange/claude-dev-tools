@@ -161,6 +161,71 @@ case "$behavior" in
     emit '{"type":"result","result":"I need a human decision; blocked.","is_error":false,"stop_reason":"end_turn"}'
     exit "${WORKER_STUCK_EXIT:-7}" ;;
 
+  # ── T1b additions (claude-tools-crq) ─────────────────────────────────────────
+
+  subagent_err_then_success)
+    # BC-25 / BC-28: a tool_result is_error:true matching the subagent-not-found
+    # pattern, but the agent recovers and CLOSES the bead (exit 0 ⇒ SUCCESS).
+    # scan_tool_errors must STILL surface a TOOL_ERROR incident+note (side-effect
+    # only, classification unchanged); SUCCESS preserves NO stream (BC-28).
+    emit '{"type":"tool_result","is_error":true,"content":"Error: Agent type '\''code-reviewer-x'\'' not found"}'
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"recovered inline; done","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  benign_err_then_success)
+    # BC-25 negative (pattern-NOT-count): a tool_result is_error:true that is a
+    # ROUTINE probe (Read-on-missing-file) — matches NONE of the three signature
+    # patterns. Raw-count logic would flag it; pattern logic must NOT. Bead
+    # closed ⇒ SUCCESS, and zero TOOL_ERROR incidents/notes.
+    emit '{"type":"tool_result","is_error":true,"content":"File does not exist: /tmp/nope.txt"}'
+    emit '{"type":"tool_result","is_error":true,"content":"No matches found"}'
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"done (benign probes only)","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  server_then_hang)
+    # BC-28 edge: the watchdog kills the process (writes WATCHDOG_KILL=1 + a
+    # PROC_SNAPSHOT) but an earlier, more-decisive SERVER_ERROR signal wins
+    # classification (§7.1 order: SERVER_ERROR before WATCHDOG_KILL). The proc
+    # snapshot keys on *classification* == WATCHDOG_KILL, so it must be DELETED;
+    # the stream IS preserved (SERVER_ERROR is a serious class).
+    emit '{"type":"system","subtype":"api_retry","error":"server_error","error_status":500,"attempt":1,"max_retries":5}'
+    exec sleep "${HARNESS_HANG_SECONDS:-86400}" ;;
+
+  success_touch_old)
+    # BC-30 driver: on its FIRST invocation, create an artifact UNDER LOG_DIR
+    # with an ancient mtime, mid-run (after the single startup prune). If
+    # rotation were per-iteration it would delete this before the next task;
+    # since rotation is once-per-invocation it must SURVIVE to run end. Path is
+    # relative to the runner's cwd (LOG_DIR=.beads/runner-logs).
+    if [[ "$n" -eq 1 ]]; then
+      mkdir -p .beads/runner-logs 2>/dev/null || true
+      : > ".beads/runner-logs/${HARNESS_TOUCH_OLD:-midrun-OLD.jsonl}" 2>/dev/null || true
+      touch -t 200001010000 ".beads/runner-logs/${HARNESS_TOUCH_OLD:-midrun-OLD.jsonl}" 2>/dev/null || true
+    fi
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"done","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  stuck_backstop_pd)
+    # §7.2 backstop A (zero model trust): the worker slipped — it did NOT close
+    # the bead and exits 0/is_error:false (a FALSE success) but the final result
+    # carries permission_denials[] for AskUserQuestion. Post-rewrite the runner
+    # backstop MUST classify STUCK_NEEDS_HUMAN (overriding the false exit-0) and
+    # itself drive the bead to blocked + bd human (§7.3). Current script never
+    # scans permission_denials ⇒ TASK_NOT_CLOSED (the forward gap).
+    emit '{"type":"result","result":"I should ask the user.","is_error":false,"stop_reason":"end_turn","permission_denials":[{"tool":"AskUserQuestion"}]}'
+    exit 0 ;;
+
+  stuck_backstop_plan)
+    # §7.2 backstop B: the EnterPlanMode silent-no-op residual gap — a
+    # "Entered plan mode." tool_result in the stream, false exit-0, bead not
+    # closed. Post-rewrite ⇒ STUCK_NEEDS_HUMAN + bead blocked + bd human.
+    emit '{"type":"tool_result","content":"Entered plan mode. Waiting for approval."}'
+    emit '{"type":"result","result":"plan ready for approval","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
   *)
     emit '{"type":"result","result":"unrecognized plan behavior","is_error":true,"stop_reason":"end_turn"}'
     exit 1 ;;

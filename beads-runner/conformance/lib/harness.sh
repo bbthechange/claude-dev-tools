@@ -196,6 +196,25 @@ _emit() {
   fi
 }
 
+# ── T1b observers (claude-tools-crq) ─────────────────────────────────────────
+# bd_human_log — tasks the runner flagged via `bd human` (the §7.3 backstop /
+# STUCK observable; bd stub appends one id per line to $HARNESS_OUT/bd-human.log).
+bd_human_log()   { cat "$HARNESS_OUT/bd-human.log" 2>/dev/null || true; }
+# lease_seed_valid <task> — pre-plant a still-valid locally-held lease so the
+# AD2.2 degraded-closed bounded-fallback path ("continue a task whose lease we
+# already hold") is exercisable. Must be called AFTER H_init_test.
+lease_seed_valid(){ mkdir -p "$HARNESS_OUT/lease-cache" 2>/dev/null || true; : > "$HARNESS_OUT/lease-cache/$1"; }
+# line_before <fileA-regex> <fileB-regex> <file> — true iff the FIRST line
+# matching A precedes the FIRST line matching B in <file> (single append-only
+# stream ⇒ true wall order, no cross-file race). Used for §6.1 acquire-before-
+# in_progress ordering.
+line_before() {
+  local a b
+  a=$(grep -nE -- "$1" "$3" 2>/dev/null | head -1 | cut -d: -f1)
+  b=$(grep -nE -- "$2" "$3" 2>/dev/null | head -1 | cut -d: -f1)
+  [[ -n "$a" && -n "$b" && "$a" -lt "$b" ]]
+}
+
 # convenience predicates (return 0/1)
 contains()    { grep -qF -- "$2" <<< "$1"; }
 notcontains() { ! grep -qF -- "$2" <<< "$1"; }

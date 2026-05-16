@@ -40,11 +40,48 @@ and the **runner/local-side** SCAR assertions:
 | `bc-35-interrupt-cleanup` | BC-35 | §8.1, §6.1 |
 | `bc-38-worker-prompt` | BC-38 | §7.6 |
 
-**T1b (`claude-tools-crq`) owns** — and MUST reuse this framework, not
-re-implement it — the coordinator/observability/security SCARs: BC-23, BC-24,
-BC-25, BC-27, BC-28, BC-30, BC-31, plus the STUCK_NEEDS_HUMAN cross-tier e2e
-and AD2.1/AD2.2 lease/posture behavior. New T1b rigs drop into `assertions/`
-as `bc-NN-*.sh`, `source ../lib/harness.sh`, and emit the same `RESULT|` lines.
+**T1b (`claude-tools-crq`) owns** — and reuses this framework, not
+re-implements it — the coordinator/observability/security SCARs. Delivered
+rigs (all `source ../lib/harness.sh`, same `RESULT|` protocol):
+
+| Rig | BCs / surface | INTERFACE binding | Kind |
+|---|---|---|---|
+| `bc-23-greppable-notes` | BC-23 | §8.2 | regression (PASS) |
+| `bc-24-incidents-log` | BC-24 | §8.2 | regression (PASS) |
+| `bc-25-scan-tool-errors` | BC-25 | §8.2 | regression (PASS) |
+| `bc-27-logdir-security` | BC-27 | **§10** | regression (PASS) |
+| `bc-28-selective-preservation` | BC-28 | §8.2 | regression (PASS) |
+| `bc-30-rotation-once` | BC-30 | §8.2 | regression (PASS) |
+| `bc-31-preflight-nonaborting` | BC-31 | §8.2 | regression (PASS) |
+| `bc-stuck-cross-tier` | STUCK_NEEDS_HUMAN e2e | **§7.2 / §7.3** | forward GATE (gates **T5**/T2) |
+| `bc-ad2-lease-posture` | AD2.1 / AD2.2 | **§6.1 / §6.2** | forward GATE (gates **T4**) |
+
+ANTI-OVERLAP (binding, honored): T1b does **not** re-implement any T1a
+runner-local assertion. Where a class is touched by both, the surfaces are
+disjoint and the rig header states it — e.g. T1a/bc-09 asserts the note
+*exists* for `TASK_NOT_CLOSED`; **bc-23** asserts the *uniform shape across
+classes* + the `— log:` ↔ `— no stream preserved` dichotomy. T1a/bc-22
+asserts the watchdog *mechanism*; **bc-28** asserts the *preservation policy
+by class* (incl. the watchdog-fired-but-`SERVER_ERROR`-wins ⇒ proc-snapshot-
+deleted edge). T1a/bc-10-11 (§7.1 slot) and bc-13-14 (§7.5 exemption) own the
+STUCK *classification string*; **bc-stuck-cross-tier** owns the cross-tier
+*outcome* (§7.2 two triggers + §7.3 the backstop itself drives the bead to
+blocked-for-human) — it does not re-assert §7.1/§7.5.
+
+**`lib/fake-bin/lease`** is the new observable control-plane seam for the
+AD2.1/AD2.2 forward gates. The current single-process script has no
+lease/Coordinator concept and never invokes it, so those gates are correctly
+`GATE-PENDING` pre-rewrite — the literal close-criteria **T4** must flip to
+`GATE-MET` (it does not prescribe transport, exactly as T1a's gates do not
+prescribe the classifier internals).
+
+Harness-mechanism fix during T1b bring-up (NOT an expected-behavior change —
+same latitude as T1a's three documented driver fixes, no §11 escalation):
+`bc-28-selective-preservation` assigned `ld="$WORKDIR/.beads/runner-logs"`
+once but referenced it from later sub-rigs whose `H_init_test` had created a
+*new* `WORKDIR` — a stale-path driver bug (not a SCAR regression: T1a/bc-22
+independently proves watchdog stream/proc preservation). Fixed by computing
+`ld` per sub-rig. Every `_expect`/`_need` line is byte-identical.
 
 **BC-36 / BC-40 — empirically reproduced here; formal assertion is T1b's.**
 The current `run-beads-tasks.sh` leaks one `tail -f`+parser subshell **per
@@ -62,6 +99,17 @@ deliberately left to T1b** (it owns the observability/scaffolding SCARs);
 scoping it here would violate the non-overlap contract. The containment
 mechanism + this note ARE the captured repro the task notes asked for
 "where feasible".
+
+**Update (T1b, `claude-tools-crq`):** the *frozen* T1b description's OWNS list
+does **not** enumerate BC-36/BC-40 (it owns BC-23/24/25/27/28/30/31 + STUCK
+cross-tier + AD2.1/AD2.2). Per epic ANTI-DRIFT rule 3 (ownership is
+non-overlapping; each task names the **exact** BCs it owns) T1b did **not**
+unilaterally expand its owned surface to absorb them — that would itself be a
+drift. The formal BC-36/BC-40 rig + the T1a-vs-T1b ownership-gap escalation
+is tracked in **`claude-tools-sdj`** (recommended: a forward GATE
+characterizing the current hazard, mirroring the T1a/T1b gate model, with the
+no-process-pileup constraint from the incident notes). The captured repro
+above is unchanged and remains the input for that follow-up.
 
 ## The four result statuses
 
