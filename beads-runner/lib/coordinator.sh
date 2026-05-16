@@ -70,6 +70,13 @@
 # ── §0.5 frozen constants (single normative definition is INTERFACE.md §0.5;
 #    these are env-overridable lookups defaulting to the frozen value) ─────────
 co__PRINCIPAL_V1() { echo "${PRINCIPAL_V1:-brian}"; }   # §0.5 PRINCIPAL_V1
+# §0.5 FORENSIC_BLOB_TTL (3600 s) — the §10.3 redacted-blob hard-delete
+# deadline. Env-overridable lookup whose literal default EQUALS the frozen
+# §0.5 table value (single normative definition is INTERFACE.md §0.5; this is
+# NOT a competing normative value). T4.5 uses this surface, so — unlike
+# LEASE_TTL — it is defined here, mirroring local-agent.sh's "define the
+# §0.5 lookup for the surfaces you actually use" anti-drift discipline.
+co__FORENSIC_BLOB_TTL() { echo "${FORENSIC_BLOB_TTL:-3600}"; }   # §0.5
 # (§0.5 LEASE_TTL is deliberately NOT defined here: this skeleton persists a
 #  Lease *record* but never arbitrates one, so it has no LEASE_TTL use site.
 #  T4.2 — claude-tools-am8 — owns lease arbitration and defines its own
@@ -87,7 +94,10 @@ co_store_dir() { printf '%s' "${CO_STORE:-${TMPDIR:-/tmp}/claude-beads-coordinat
 
 co__ensure_store() {
   local d; d="$(co_store_dir)"
-  mkdir -p "$d/records" "$d/timers" 2>/dev/null || true
+  # `forensic/` is a SEPARATE namespace from `records/` (§4 store) and
+  # `timers/` (§2.2): the §10.3 redacted blob is a transient encrypted object,
+  # NOT a §4 record — it is never in the §4.5 projection (anti-drift, T4.3/T6a).
+  mkdir -p "$d/records" "$d/timers" "$d/forensic" 2>/dev/null || true
   printf '%s' "$d"
 }
 
@@ -314,6 +324,17 @@ co_authenticate() {
 #     timer-arm <id> <fire_at>         → §2.2 arm one-shot
 #     timer-due [now]                  → §2.2 S-6 poll-fallback
 #     timer-ack <id>                   → §2.2 mark consumed
+#     forensic-put <id> <dossier> <redacted_json>
+#                                      → §10.3 store the redacted blob
+#                                        ENCRYPTED (ciphertext only)
+#     forensic-fetch <id>              → §10.3 explicit authed on-demand pull
+#                                        (the ONE controlled sync crossing)
+#     forensic-dismiss <id>            → §10.3 "done with forensic" ⇒ hard-delete
+#     forensic-sweep [now_epoch]       → §10.3 TTL poll-fallback hard-delete
+#     forensic-audit [n]               → §10.3 content-free deletion audit log
+#   The forensic-* ops cross the §2.3 authed channel like every other op
+#   (§10.3 "transport is the §2.3 authed channel"); they are NOT one of the
+#   four §2 capabilities (those stay exactly four — co_capabilities, T4.1).
 co_request() {
   local bearer="${1:-}" op="${2:-}"; shift 2 2>/dev/null || true
   local principal
@@ -332,7 +353,12 @@ co_request() {
     timer-arm)   co__timer_arm "${1:-}" "${2:-}" ;;
     timer-due)   co__timer_due "${1:-}" ;;
     timer-ack)   co__timer_ack "${1:-}" ;;
-    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack)" >&2; return 2 ;;
+    forensic-put)     co__forensic_put "$principal" "${1:-}" "${2:-}" "${3:-}" ;;
+    forensic-fetch)   co__forensic_fetch "$principal" "${1:-}" ;;
+    forensic-dismiss) co__forensic_dismiss "$principal" "${1:-}" ;;
+    forensic-sweep)   co__forensic_sweep "$principal" "${1:-}" ;;
+    forensic-audit)   co__forensic_audit_tail "${1:-}" ;;
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit)" >&2; return 2 ;;
   esac
 }
 
@@ -409,6 +435,215 @@ co__poll() {
     || printf '{"principal":"%s","desired":null,"runner_state":null,"lease":null}' "$principal"
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# §10.3 — Coordinator-side forensic transient store  (T4.5, claude-tools-guq)
+# ════════════════════════════════════════════════════════════════════════════
+# OWNS INTERFACE.md v1 §10.3 — coordinator-side handling of the §10.2
+# runner-redacted blob. Flow G tier-3's ONE controlled crossing of the sync
+# boundary, under AD4's concrete numbers (the contract's job, not "briefly"):
+#
+#   • ENCRYPTED AT REST, server-managed key (AES-256). The storage layer holds
+#     CIPHERTEXT ONLY; the key is a server secret NEVER returned to any
+#     Board/client surface; transport is the §2.3 authed channel (every
+#     forensic-* op dispatches through co_request, behind the ONE §9.1
+#     chokepoint — there is no second auth path).
+#   • TTL hard-delete at the EARLIER of created_at + FORENSIC_BLOB_TTL
+#     (§0.5, 3600 s) OR an explicit user "dismiss / done with forensic".
+#   • DELETE = IRRECOVERABLE destruction of the ciphertext object — NOT a
+#     tombstone / soft-delete. A deletion emits a control-plane AUDIT EVENT
+#     with NO forensic content (ids + timestamps + reason only).
+#   • FETCH = explicit, authed, on-demand pull (§9). NEVER auto-fetched,
+#     NEVER in the §4.5 projection, NEVER in a digest/notify body.
+#
+# §10.1 BC-27 PRESERVED VERBATIM: this is a SEPARATE transient encrypted
+#   object under the machine-scratch CO_STORE — it does NOT touch and does NOT
+#   weaken the on-disk `.beads/runner-logs/` `*`+`!.gitignore` boundary
+#   (that boundary lives in run-beads-tasks.sh; asserted by T1b bc-27).
+#
+# ANTI-DRIFT: T4.5 RECEIVES the already-§10.2-redacted blob and stores it
+#   VERBATIM. It MUST NOT re-derive redaction (no la_redaction_placeholder, no
+#   stream-json parsing — raw stream-json never leaves the machine; that is
+#   T2/T3). The blob is NOT a §4 record type (absent from co__schema_version),
+#   never round-trips co__store_put, and is never read by co__poll / a
+#   work_snapshot — so it is structurally absent from the §4.5 projection
+#   (T4.3/T6a) and from §4.3 Notification bodies.
+
+co__forensic_dir()      { printf '%s/forensic' "$(co__ensure_store)"; }
+# The server-managed key is a SERVER SECRET. It lives OUTSIDE the `forensic/`
+# ciphertext namespace (so "the storage layer holds ciphertext only" is true of
+# that namespace), mode 600, and is NEVER echoed through any surface. In the
+# Appendix-A hosted realisation this is a Worker/KMS secret, never the
+# encrypted object store; here it is a 0600 scratch file.
+co__forensic_keyfile()  { printf '%s/.forensic-master.key' "$(co__ensure_store)"; }
+co__forensic_auditlog() { printf '%s/forensic-audit.jsonl' "$(co__ensure_store)"; }
+co__forensic_enc_path() { printf '%s/%s.enc'  "$(co__forensic_dir)" "$1"; }
+co__forensic_meta_path(){ printf '%s/%s.meta' "$(co__forensic_dir)" "$1"; }
+
+# Encryption is a HARD security boundary: if no AES-256 primitive is available
+# the store FAILS CLOSED (put returns nonzero, writes nothing) — it MUST NEVER
+# silently degrade to plaintext at rest. (Contrast BC-34's deliberate
+# fail-OPEN for the usage gate: a different domain, a different posture.)
+co__forensic_have_crypto() { command -v openssl >/dev/null 2>&1; }
+
+# Generate the 256-bit server master key once, mode 600, if absent. Never
+# printed, never returned by any op. umask keeps the create-race tight.
+co__forensic_ensure_key() {
+  local kf; kf="$(co__forensic_keyfile)"
+  [[ -s "$kf" ]] && return 0
+  co__forensic_have_crypto || return 1
+  ( umask 077
+    openssl rand -hex 32 > "$kf" 2>/dev/null ) || { rm -f "$kf" 2>/dev/null; return 1; }
+  chmod 600 "$kf" 2>/dev/null || true
+  [[ -s "$kf" ]]
+}
+
+# AES-256-CBC + PBKDF2 (random salt) under the server key read from a FILE
+# (never the cmdline ⇒ never in `ps`). base64-armoured so the at-rest object
+# is unambiguously ciphertext text. stdin = plaintext, stdout = ciphertext.
+co__forensic_encrypt() {
+  local kf; kf="$(co__forensic_keyfile)"
+  openssl enc -aes-256-cbc -pbkdf2 -salt -a -pass "file:$kf" 2>/dev/null
+}
+co__forensic_decrypt() {
+  local kf; kf="$(co__forensic_keyfile)"
+  openssl enc -d -aes-256-cbc -pbkdf2 -a -pass "file:$kf" -in "$1" 2>/dev/null
+}
+
+# A content-free control-plane audit line: ids + timestamps + reason + the
+# §9.1 resolved principal ONLY. NO forensic content, NO ciphertext, NO key.
+# Append-only (§10.3).
+co__forensic_audit() {
+  local event="$1" blob_id="$2" dossier_ref="$3" created_at="$4" reason="$5" principal="$6"
+  local now line log; log="$(co__forensic_auditlog)"
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  line=$(jq -cn \
+      --arg ev "$event" --arg bid "$blob_id" --arg dref "$dossier_ref" \
+      --arg ca "$created_at" --arg da "$now" --arg rs "$reason" --arg p "$principal" \
+      '{event:$ev, blob_id:$bid, dossier_ref:$dref,
+        created_at:$ca, deleted_at:$da, reason:$rs, principal:$p}' 2>/dev/null) \
+    || line="{\"event\":\"$event\",\"blob_id\":\"$blob_id\",\"deleted_at\":\"$now\"}"
+  printf '%s\n' "$line" >> "$log" 2>/dev/null || true
+}
+
+# IRRECOVERABLE destruction (§10.3): unlink the ciphertext AND its meta — NO
+# tombstone, NO soft-delete marker left behind — then emit the content-free
+# audit event from the meta's ids/timestamps (read BEFORE unlink). Idempotent:
+# already-gone is success (a TTL sweep and a dismiss may race; the contract is
+# "destroyed", not "destroyed exactly once by me").
+co__forensic_destroy() {
+  local blob_id="$1" reason="$2" principal="$3" mp ep dref ca
+  co__safe_key "$blob_id" || return 2
+  mp="$(co__forensic_meta_path "$blob_id")"; ep="$(co__forensic_enc_path "$blob_id")"
+  [[ -f "$ep" || -f "$mp" ]] || return 0          # already irrecoverable ⇒ ok
+  dref=$(jq -r '.dossier_ref // ""' "$mp" 2>/dev/null || echo "")
+  ca=$(jq -r '.created_at // ""'   "$mp" 2>/dev/null || echo "")
+  rm -f "$ep" "$mp" 2>/dev/null || true           # NO tombstone written
+  co__forensic_audit "forensic_blob_deleted" "$blob_id" "$dref" "$ca" "$reason" "$principal"
+  [[ ! -f "$ep" && ! -f "$mp" ]]
+}
+
+# co__forensic_put <principal> <blob_id> <dossier_ref> <redacted_json>
+#   Store the ALREADY-§10.2-redacted blob ENCRYPTED. Ciphertext-only at rest;
+#   a content-free meta (ids + timestamps) sits alongside for TTL math + audit.
+#   NO redaction is performed or re-derived here (anti-drift — verbatim
+#   consume of the §10.2 shape; the bytes are opaque to this tier).
+co__forensic_put() {
+  local principal="$1" blob_id="$2" dossier_ref="$3" redacted="$4"
+  [[ -n "$blob_id" && -n "$redacted" ]] || { echo "co: forensic-put needs <id> <dossier> <redacted_json>" >&2; return 2; }
+  co__safe_key "$blob_id" || { echo "co: reject — unsafe forensic blob id '$blob_id'" >&2; return 2; }
+  if ! co__forensic_have_crypto || ! co__forensic_ensure_key; then
+    echo "co: forensic-put FAIL-CLOSED — no AES-256 primitive; refusing plaintext at rest (§10.3)" >&2
+    return 5
+  fi
+  local dir ep mp etmp mtmp now epoch ttl exp
+  dir="$(co__forensic_dir)"; mkdir -p "$dir" 2>/dev/null || true
+  ep="$(co__forensic_enc_path "$blob_id")"; mp="$(co__forensic_meta_path "$blob_id")"
+  etmp="$ep.$$.tmp"
+  printf '%s' "$redacted" | co__forensic_encrypt > "$etmp" 2>/dev/null || {
+    rm -f "$etmp" 2>/dev/null
+    echo "co: forensic-put — encryption failed; nothing written (fail-closed)" >&2; return 5; }
+  [[ -s "$etmp" ]] || { rm -f "$etmp" 2>/dev/null; echo "co: forensic-put — empty ciphertext; refused" >&2; return 5; }
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  epoch=$(date +%s 2>/dev/null || echo 0)
+  ttl="$(co__FORENSIC_BLOB_TTL)"
+  exp=$(( epoch + ttl ))
+  mtmp="$mp.$$.tmp"
+  jq -cn --arg bid "$blob_id" --arg dref "$dossier_ref" --arg ca "$now" \
+         --arg p "$principal" --argjson ce "$epoch" --argjson ee "$exp" \
+     '{blob_id:$bid, dossier_ref:$dref, created_at:$ca,
+       created_epoch:$ce, expires_epoch:$ee, principal:$p}' \
+     > "$mtmp" 2>/dev/null \
+     || { rm -f "$etmp" "$mtmp" 2>/dev/null; echo "co: forensic-put — meta build failed" >&2; return 5; }
+  mv -f "$etmp" "$ep" 2>/dev/null && mv -f "$mtmp" "$mp" 2>/dev/null || {
+    rm -f "$etmp" "$mtmp" "$ep" "$mp" 2>/dev/null; return 5; }
+  printf '%s' "$blob_id"
+  return 0
+}
+
+# co__forensic_fetch <principal> <blob_id>
+#   §9 explicit authed on-demand pull — the ONE controlled crossing. Returns
+#   the decrypted §10.2 redacted blob (NEVER the key). A blob that is gone OR
+#   past its TTL returns NOTHING and nonzero: a destroyed blob is irrecoverable
+#   and there is no fetchable tombstone. Reaching the TTL on a fetch hard-
+#   deletes lazily (the EARLIER-of bound holds even with no sweep — analogous
+#   to the §2.2 S-6 poll-fallback).
+co__forensic_fetch() {
+  local principal="$1" blob_id="$2" ep mp exp now
+  [[ -n "$blob_id" ]] || { echo "co: forensic-fetch needs <id>" >&2; return 2; }
+  co__safe_key "$blob_id" || { echo "co: reject — unsafe forensic blob id '$blob_id'" >&2; return 2; }
+  ep="$(co__forensic_enc_path "$blob_id")"; mp="$(co__forensic_meta_path "$blob_id")"
+  [[ -f "$ep" && -f "$mp" ]] || return 1          # gone ⇒ irrecoverable, no tombstone
+  exp=$(jq -r '.expires_epoch // 0' "$mp" 2>/dev/null || echo 0)
+  now=$(date +%s 2>/dev/null || echo 0)
+  if [[ "$now" -ge "$exp" ]]; then
+    co__forensic_destroy "$blob_id" "ttl" "$principal" >/dev/null 2>&1 || true
+    return 1                                       # TTL reached ⇒ treated as deleted
+  fi
+  co__forensic_decrypt "$ep" || return 1
+}
+
+# co__forensic_dismiss <principal> <blob_id>
+#   The explicit user "dismiss / done with forensic" action ⇒ hard-delete now
+#   (the other arm of the EARLIER-of). Idempotent: dismissing an absent /
+#   already-gone blob is success ("done with forensic" is satisfied).
+co__forensic_dismiss() {
+  local principal="$1" blob_id="$2"
+  [[ -n "$blob_id" ]] || { echo "co: forensic-dismiss needs <id>" >&2; return 2; }
+  co__safe_key "$blob_id" || { echo "co: reject — unsafe forensic blob id '$blob_id'" >&2; return 2; }
+  co__forensic_destroy "$blob_id" "dismiss" "$principal"
+}
+
+# co__forensic_sweep <principal> [now_epoch]
+#   TTL poll-fallback (mirrors co__timer_due): hard-delete every blob whose
+#   expires_epoch ≤ now and print its id. Deterministic, no daemon — a missed
+#   sweep never strands a blob past TTL (next sweep OR next fetch destroys it).
+co__forensic_sweep() {
+  local principal="$1" now="${2:-}" d f bid exp
+  [[ -n "$now" ]] || now=$(date +%s 2>/dev/null || echo 0)
+  d="$(co__forensic_dir)"; [[ -d "$d" ]] || return 0
+  for f in "$d"/*.meta; do
+    [[ -e "$f" ]] || continue
+    bid=$(jq -r '.blob_id // ""'      "$f" 2>/dev/null || echo "")
+    exp=$(jq -r '.expires_epoch // 0' "$f" 2>/dev/null || echo 0)
+    [[ -n "$bid" ]] || continue
+    if [[ "$now" -ge "$exp" ]]; then
+      co__forensic_destroy "$bid" "ttl" "$principal" >/dev/null 2>&1 && printf '%s\n' "$bid"
+    fi
+  done
+}
+
+# co__forensic_audit_tail [n] — the content-free deletion audit (observability;
+# ids + timestamps + reason, by construction NO forensic content / ciphertext).
+co__forensic_audit_tail() {
+  local n="${1:-}" log; log="$(co__forensic_auditlog)"
+  [[ -f "$log" ]] || return 0
+  if [[ -n "$n" && "$n" =~ ^[0-9]+$ ]]; then
+    tail -n "$n" "$log" 2>/dev/null || true
+  else
+    cat "$log" 2>/dev/null || true
+  fi
+}
+
 # ── EXIT-criterion-1 introspection: the four §2 capabilities are reachable ────
 # Prints the four §2 capability surfaces and the function realising each, so
 # "the shell stands up and the four capabilities are reachable surfaces" is
@@ -424,7 +659,7 @@ EOF
 
 # ── APPENDIX A — non-normative Cloudflare realisation map (INTERFACE §0.2) ────
 # Informational ONLY; part of NO contract. A provider swap changes ONLY the
-# co__store_* / co__timer_* internals — never a signature above:
+# co__store_* / co__timer_* / co__forensic_* internals — never a signature:
 #   §2.1 store        → a Durable Object's transactional state + D1
 #   §2.2 timer        → a DO setAlarm(); the co__timer_due poll-fallback is the
 #                       S-6 backstop that makes the free-tier alarm's
@@ -433,5 +668,10 @@ EOF
 #   §2.4 poll         → the DO reconnect handler returning desired + lease
 #   record store      → DO state / D1 rows (one DO per dossier-Item is AD1/AD7,
 #                       realised in T5 — NOT here)
+#   §10.3 forensic    → an encrypted object store (R2/D1) for the ciphertext +
+#                       a Worker/KMS-held server key (NEVER the object store);
+#                       co__forensic_sweep is the TTL backstop, mirroring the
+#                       §2.2 poll-fallback so a missed sweep never strands a
+#                       blob past FORENSIC_BLOB_TTL
 # The SPOF of the singleton Coordinator DO is acknowledged (AD1) and mitigated
 # by §6.2 (unreachable posture — T3/T4.2) + §2.2 S-6 backstop, not waved away.
