@@ -6,26 +6,14 @@
 <title>Beads Runner — Attention Router · UX Mocks</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --ink:#080a0e;
-    --ink-2:#0b0e14;
-    --panel:#10141c;
-    --panel-2:#161b25;
-    --panel-3:#1c2230;
-    --line:rgba(255,255,255,.07);
-    --line-2:rgba(255,255,255,.12);
-    --text:#e8ebf1;
-    --dim:#8b94a6;
-    --faint:#535b6b;        /* machinery — never look at this */
-    --amber:#ffb454;        /* YOU. the only warm thing. */
-    --amber-soft:#ffcd86;
-    --amber-glow:rgba(255,180,84,.22);
-    --mint:#4fd6a0;         /* healthy / auto-advancing */
-    --coral:#ff6b6b;        /* blocking / dead */
-    --sky:#74a8ff;          /* timed-fyi / informational */
-    --slate:#5b6577;        /* machine */
+    --ink:#080a0e; --ink-2:#0b0e14; --panel:#10141c; --panel-2:#161b25; --panel-3:#1c2230;
+    --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.12);
+    --text:#e8ebf1; --dim:#8b94a6; --faint:#535b6b;
+    --amber:#ffb454; --amber-soft:#ffcd86; --amber-glow:rgba(255,180,84,.22);
+    --mint:#4fd6a0; --coral:#ff6b6b; --sky:#74a8ff; --slate:#5b6577;
     --font-display:'Fraunces',Georgia,serif;
     --font-read:'Newsreader',Georgia,serif;
     --mono:'IBM Plex Mono',ui-monospace,monospace;
@@ -33,32 +21,25 @@
   *{margin:0;padding:0;box-sizing:border-box}
   html{-webkit-text-size-adjust:100%}
   body{
-    background:var(--ink);
-    color:var(--text);
-    font-family:var(--mono);
-    min-height:100vh;
-    overflow-x:hidden;
-    -webkit-font-smoothing:antialiased;
+    background:var(--ink);color:var(--text);font-family:var(--mono);min-height:100vh;
+    overflow-x:hidden;-webkit-font-smoothing:antialiased;
     background-image:
       radial-gradient(900px 600px at 78% -5%, rgba(116,168,255,.06), transparent 60%),
       radial-gradient(800px 700px at 8% 105%, rgba(79,214,160,.05), transparent 55%);
   }
-  /* film grain */
   body::after{
-    content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.4;
-    mix-blend-mode:overlay;
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.4;mix-blend-mode:overlay;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
   }
   ::selection{background:var(--amber);color:#1a1206}
 
-  /* ---------- gallery shell ---------- */
   .wrap{max-width:1380px;margin:0 auto;padding:64px 28px 120px}
   .masthead{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:28px;padding-bottom:34px;border-bottom:1px solid var(--line)}
   .brand .kicker{font-size:11px;letter-spacing:.42em;text-transform:uppercase;color:var(--slate);margin-bottom:18px;display:flex;align-items:center;gap:12px}
   .brand .kicker::before{content:"";width:34px;height:1px;background:var(--slate)}
   .brand h1{font-family:var(--font-display);font-weight:300;font-size:clamp(38px,6vw,76px);line-height:.95;letter-spacing:-.02em}
   .brand h1 em{font-style:italic;color:var(--amber);font-weight:400}
-  .brand .sub{margin-top:18px;color:var(--dim);font-size:13px;max-width:46ch;line-height:1.7}
+  .brand .sub{margin-top:18px;color:var(--dim);font-size:13px;max-width:48ch;line-height:1.7}
   .legend{display:flex;flex-direction:column;gap:9px;font-size:11px;color:var(--dim)}
   .legend .row{display:flex;align-items:center;gap:10px;letter-spacing:.05em}
   .legend .sw{width:20px;height:9px;border-radius:2px;flex:none}
@@ -66,29 +47,22 @@
   .stage{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:50px;margin-top:60px;align-items:start}
   @media(max-width:1080px){.stage{grid-template-columns:1fr;gap:42px}}
 
-  /* ---------- phone ---------- */
   .phone-col{display:flex;justify-content:center}
-  .device{
-    width:390px;height:830px;border-radius:54px;flex:none;position:relative;
-    background:linear-gradient(150deg,#23262d,#0c0d11 55%,#1a1c22);
-    padding:13px;
-    box-shadow:0 0 0 1px rgba(255,255,255,.05),0 50px 100px -30px rgba(0,0,0,.85),0 0 80px -40px rgba(116,168,255,.3);
-  }
-  .device::before{content:"";position:absolute;top:0;left:0;right:0;bottom:0;border-radius:54px;border:1px solid rgba(255,255,255,.04);pointer-events:none}
+  .device{width:390px;height:830px;border-radius:54px;flex:none;position:relative;
+    background:linear-gradient(150deg,#23262d,#0c0d11 55%,#1a1c22);padding:13px;
+    box-shadow:0 0 0 1px rgba(255,255,255,.05),0 50px 100px -30px rgba(0,0,0,.85),0 0 80px -40px rgba(116,168,255,.3)}
+  .device::before{content:"";position:absolute;inset:0;border-radius:54px;border:1px solid rgba(255,255,255,.04);pointer-events:none}
   .screen{position:relative;width:100%;height:100%;border-radius:42px;overflow:hidden;background:var(--ink);isolation:isolate}
   .island{position:absolute;top:13px;left:50%;transform:translateX(-50%);width:104px;height:30px;background:#000;border-radius:18px;z-index:60}
   .island::after{content:"";position:absolute;right:13px;top:50%;transform:translateY(-50%);width:8px;height:8px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#2a3550,#0a0d14)}
 
-  /* view system */
   .view{position:absolute;inset:0;display:flex;flex-direction:column;opacity:0;visibility:hidden;transform:translateX(22px);transition:opacity .42s ease,transform .42s cubic-bezier(.2,.7,.2,1),visibility .42s}
   .view.active{opacity:1;visibility:visible;transform:none}
   .scroll{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none}
   .scroll::-webkit-scrollbar{display:none}
   .statusbar{height:54px;display:flex;align-items:flex-end;justify-content:space-between;padding:0 30px 7px;font-size:12px;color:var(--text);font-weight:500;flex:none}
-  .statusbar .sig{display:flex;gap:6px;align-items:center}
   .statusbar .sig svg{width:16px;height:11px}
 
-  /* app header */
   .apphead{padding:6px 22px 16px;display:flex;align-items:center;justify-content:space-between;flex:none}
   .apphead .t{font-family:var(--font-display);font-size:25px;font-weight:400;letter-spacing:-.01em;display:flex;align-items:center;gap:11px}
   .apphead .t .dot{width:7px;height:7px;border-radius:50%;background:var(--mint);box-shadow:0 0 9px var(--mint)}
@@ -99,7 +73,7 @@
   .back:hover{color:var(--amber)}
   .back svg{width:15px;height:15px}
 
-  /* ===== STATUS STRIP (board) ===== */
+  /* status strip */
   .strip{margin:0 14px 16px;border:1px solid var(--line);background:linear-gradient(180deg,var(--panel),var(--ink-2));border-radius:16px;padding:14px 15px;cursor:pointer;flex:none;position:relative;overflow:hidden}
   .strip::before{content:"";position:absolute;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px);background-size:100% 13px;opacity:.4;pointer-events:none}
   .strip-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;position:relative}
@@ -110,7 +84,7 @@
   .gauges{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:13px;position:relative}
   .g{background:rgba(255,255,255,.022);border:1px solid var(--line);border-radius:11px;padding:10px 12px}
   .g .gl{font-size:9px;letter-spacing:.22em;color:var(--slate);display:flex;justify-content:space-between;margin-bottom:9px}
-  .g .gv{font-family:var(--font-display);font-size:22px;font-weight:400;letter-spacing:-.01em}
+  .g .gv{font-family:var(--font-display);font-size:22px;font-weight:400}
   .g .gv small{font-size:10px;color:var(--dim);font-family:var(--mono);margin-left:3px}
   .track{height:5px;border-radius:3px;background:rgba(255,255,255,.07);margin-top:8px;position:relative;overflow:hidden}
   .track i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;width:0;transition:width 1.4s cubic-bezier(.2,.8,.2,1)}
@@ -121,17 +95,15 @@
   .tg.warn{border-color:rgba(255,180,84,.35);color:var(--amber-soft);background:var(--amber-glow)}
   .tg.bad{border-color:rgba(255,107,107,.35);color:var(--coral);background:rgba(255,107,107,.1)}
 
-  /* ===== WAITING ON YOU lane ===== */
+  /* waiting lane */
   .lane-hd{display:flex;align-items:center;gap:11px;margin:6px 20px 11px;font-size:10px;letter-spacing:.32em;color:var(--amber);text-transform:uppercase;flex:none}
   .lane-hd .pulse{width:8px;height:8px;border-radius:50%;background:var(--amber);position:relative}
   .lane-hd .pulse::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:1px solid var(--amber);animation:ring 2s infinite}
   @keyframes ring{0%{transform:scale(.6);opacity:.9}100%{transform:scale(1.7);opacity:0}}
   .lane-hd .ln{flex:1;height:1px;background:linear-gradient(90deg,var(--amber-glow),transparent)}
   .waitcard{margin:0 14px 10px;border-radius:18px;padding:17px;cursor:pointer;flex:none;position:relative;overflow:hidden;
-    background:linear-gradient(155deg,rgba(255,180,84,.16),rgba(255,180,84,.03));
-    border:1px solid rgba(255,180,84,.34);
-    box-shadow:0 0 0 1px rgba(255,180,84,.06),0 18px 40px -22px rgba(255,180,84,.5);
-    animation:breathe 4.6s ease-in-out infinite}
+    background:linear-gradient(155deg,rgba(255,180,84,.16),rgba(255,180,84,.03));border:1px solid rgba(255,180,84,.34);
+    box-shadow:0 0 0 1px rgba(255,180,84,.06),0 18px 40px -22px rgba(255,180,84,.5);animation:breathe 4.6s ease-in-out infinite}
   @keyframes breathe{0%,100%{box-shadow:0 0 0 1px rgba(255,180,84,.06),0 18px 40px -22px rgba(255,180,84,.42)}50%{box-shadow:0 0 0 1px rgba(255,180,84,.14),0 22px 52px -20px rgba(255,180,84,.62)}}
   .waitcard .meta{display:flex;align-items:center;gap:9px;font-size:10px;letter-spacing:.1em;color:var(--amber-soft);margin-bottom:10px}
   .waitcard .meta .p{padding:2px 7px;border:1px solid rgba(255,180,84,.4);border-radius:5px}
@@ -141,7 +113,7 @@
   .waitcard .go{margin-top:14px;display:flex;align-items:center;justify-content:space-between;font-size:11px;letter-spacing:.16em;color:var(--amber)}
   .waitcard .go svg{width:16px;height:16px}
 
-  /* ===== lifecycle columns ===== */
+  /* lifecycle columns */
   .spine{margin:8px 0 0;padding:14px 0 16px;border-top:1px solid var(--line);flex:none}
   .spine .sl{font-size:10px;letter-spacing:.32em;color:var(--slate);padding:0 20px 13px}
   .cols{display:flex;gap:9px;overflow-x:auto;padding:0 14px 4px;scrollbar-width:none}
@@ -149,8 +121,7 @@
   .col{flex:none;width:118px}
   .col-h{display:flex;align-items:center;justify-content:space-between;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);padding:0 3px 9px;border-bottom:1px solid var(--line);margin-bottom:9px}
   .col-h .c{color:var(--faint)}
-  .col[data-gate="you"] .col-h{color:var(--amber)}
-  .col[data-gate="you"] .col-h .c{color:var(--amber)}
+  .col[data-gate="you"] .col-h,.col[data-gate="you"] .col-h .c{color:var(--amber)}
   .bead{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 10px;margin-bottom:7px;cursor:pointer;transition:.18s}
   .bead:hover{border-color:var(--line-2);transform:translateY(-1px)}
   .bead .bt{font-size:11px;line-height:1.35;color:var(--text);margin-bottom:7px;font-family:var(--font-read)}
@@ -162,7 +133,6 @@
   .bead.failbead{border-color:rgba(255,107,107,.32);background:linear-gradient(160deg,rgba(255,107,107,.1),var(--panel))}
   .bead.failbead .warn{color:var(--coral);font-size:9px;letter-spacing:.1em;margin-top:6px;display:flex;align-items:center;gap:5px}
 
-  /* ===== bottom nav ===== */
   .nav{flex:none;height:88px;border-top:1px solid var(--line);background:linear-gradient(180deg,rgba(16,20,28,.4),var(--ink));backdrop-filter:blur(20px);display:flex;align-items:flex-start;justify-content:space-around;padding:13px 26px 0;position:relative}
   .navitem{display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--faint);cursor:pointer;font-size:9px;letter-spacing:.22em;text-transform:uppercase;background:none;border:none;font-family:var(--mono);transition:.2s;width:74px}
   .navitem svg{width:22px;height:22px;stroke-width:1.6}
@@ -173,7 +143,7 @@
   .fab:hover{transform:translateY(-3px) rotate(90deg)}
   .fab svg{width:25px;height:25px;stroke-width:2}
 
-  /* ===== INBOX ===== */
+  /* inbox */
   .inbox-sub{padding:0 22px 16px;font-family:var(--font-read);font-size:14px;color:var(--dim);line-height:1.55;flex:none}
   .inbox-sub b{color:var(--text);font-weight:500}
   .digestbar{margin:0 14px 14px;border:1px dashed var(--line-2);border-radius:13px;padding:11px 14px;display:flex;align-items:center;gap:11px;font-size:11px;color:var(--dim);flex:none}
@@ -193,81 +163,165 @@
   .inrow .tier .age{margin-left:auto;color:var(--faint);letter-spacing:.08em}
   .inrow .h{font-family:var(--font-display);font-size:18px;font-weight:400;line-height:1.25;color:var(--text);letter-spacing:-.01em}
   .inrow .d{margin-top:8px;font-family:var(--font-read);font-size:13.5px;color:var(--dim);line-height:1.5}
-  .inrow .foot{margin-top:13px;display:flex;align-items:center;gap:8px;font-size:10px;color:var(--faint);letter-spacing:.06em}
+  .inrow .foot{margin-top:13px;display:flex;align-items:center;gap:8px;font-size:10px;color:var(--faint);letter-spacing:.06em;flex-wrap:wrap}
   .inrow .foot .chip{border:1px solid var(--line);padding:3px 8px;border-radius:6px}
 
-  /* ===== DOSSIER ===== */
-  .dscroll{padding:0 0 130px}
-  .deyebrow{padding:2px 24px 16px;display:flex;gap:9px;font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--slate);align-items:center;flex-wrap:wrap}
-  .deyebrow .pin{color:var(--amber);border:1px solid rgba(255,180,84,.4);padding:3px 8px;border-radius:6px;background:var(--amber-glow)}
-  .dask{padding:0 24px 18px;font-family:var(--font-display);font-size:30px;font-weight:400;line-height:1.16;letter-spacing:-.02em;color:#fff}
-  .tldr{margin:0 18px 20px;border-left:2px solid var(--amber);background:linear-gradient(90deg,var(--amber-glow),transparent);border-radius:0 12px 12px 0;padding:15px 17px}
-  .tldr .l{font-size:9px;letter-spacing:.3em;color:var(--amber);margin-bottom:9px}
-  .tldr p{font-family:var(--font-read);font-size:16px;line-height:1.5;color:var(--text)}
-  .sec{padding:0 24px;margin-bottom:24px}
-  .sec-h{font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--slate);margin-bottom:14px;display:flex;align-items:center;gap:11px}
-  .sec-h::after{content:"";flex:1;height:1px;background:var(--line)}
-  .opt{border:1px solid var(--line);background:var(--panel);border-radius:15px;padding:16px;margin-bottom:11px;cursor:pointer;transition:.24s;position:relative}
-  .opt:hover{border-color:var(--line-2)}
-  .opt.sel{border-color:var(--amber);background:linear-gradient(160deg,var(--amber-glow),var(--panel));box-shadow:0 16px 36px -22px rgba(255,180,84,.5)}
-  .opt-top{display:flex;align-items:flex-start;gap:13px}
-  .radio{width:20px;height:20px;border-radius:50%;border:1.5px solid var(--slate);flex:none;margin-top:2px;display:flex;align-items:center;justify-content:center;transition:.2s}
-  .opt.sel .radio{border-color:var(--amber)}
-  .opt.sel .radio::after{content:"";width:10px;height:10px;border-radius:50%;background:var(--amber);box-shadow:0 0 10px var(--amber)}
-  .opt-body .ot{font-family:var(--font-display);font-size:18px;font-weight:500;color:var(--text);display:flex;align-items:center;gap:9px;flex-wrap:wrap}
-  .rec{font-size:9px;letter-spacing:.16em;color:var(--mint);border:1px solid rgba(79,214,160,.4);padding:2px 7px;border-radius:5px;background:rgba(79,214,160,.1)}
-  .opt-body .od{font-family:var(--font-read);font-size:14px;color:var(--dim);margin-top:7px;line-height:1.5}
-  .conseq{max-height:0;overflow:hidden;transition:max-height .42s ease,margin .42s ease,opacity .3s;opacity:0;margin-top:0}
-  .opt.sel .conseq{max-height:320px;opacity:1;margin-top:15px}
-  .conseq-in{border-top:1px dashed var(--line-2);padding-top:14px}
-  .conseq .cl{font-size:9px;letter-spacing:.24em;color:var(--amber);margin-bottom:11px;display:flex;align-items:center;gap:7px}
-  .cline{display:flex;gap:10px;font-size:12px;color:var(--dim);margin-bottom:8px;font-family:var(--mono);line-height:1.4}
-  .cline .v{font-weight:600;flex:none;width:74px;letter-spacing:.04em}
-  .cline.add .v{color:var(--mint)}
-  .cline.unb .v{color:var(--sky)}
-  .cline.fore .v{color:var(--coral)}
-  .cline .x{color:var(--text)}
-  .conseq .det{margin-top:11px;font-size:10px;color:var(--faint);letter-spacing:.04em}
-  .conseq .det b{color:var(--mint)}
+  /* ===================== DOSSIER (the core) ===================== */
+  .dscroll{padding:0 0 96px}
+  .d-modebar{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,var(--ink),rgba(8,10,14,.86));backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:10px 18px 12px}
+  .d-modebar .row1{display:flex;align-items:center;gap:8px;font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate);margin-bottom:10px;flex-wrap:wrap}
+  .d-modebar .badge-blk{color:var(--amber);border:1px solid rgba(255,180,84,.4);padding:3px 8px;border-radius:6px;background:var(--amber-glow)}
+  .d-modebar .badge-fyi{color:var(--sky);border:1px solid rgba(116,168,255,.4);padding:3px 8px;border-radius:6px;background:rgba(116,168,255,.08);display:none}
+  .m-overview .badge-blk{display:none}
+  .m-overview .badge-fyi{display:inline-block}
+  .d-modebar .src{color:var(--faint)}
+  .d-progress{display:flex;align-items:center;gap:10px}
+  .d-progress .bar{flex:1;height:6px;border-radius:4px;background:rgba(255,255,255,.07);overflow:hidden;position:relative}
+  .d-progress .bar i{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:4px;background:linear-gradient(90deg,var(--mint),#3bbf8a);transition:width .4s cubic-bezier(.2,.8,.2,1)}
+  .d-progress .pc{font-size:10px;color:var(--dim);letter-spacing:.06em;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .d-progress .pc b{color:var(--mint)}
+  .denstoggle{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:9px;letter-spacing:.14em}
+  .denstoggle button{background:none;border:none;color:var(--faint);padding:6px 10px;cursor:pointer;font-family:var(--mono);letter-spacing:.14em;transition:.16s}
+  .denstoggle button.on{background:var(--amber);color:#160f02}
 
-  .blast{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-  .bx{border:1px solid var(--line);border-radius:11px;padding:13px;background:rgba(255,255,255,.02)}
-  .bx .bl{font-size:9px;letter-spacing:.16em;color:var(--slate);margin-bottom:8px}
-  .bx .bv{font-family:var(--font-read);font-size:13px;color:var(--text);line-height:1.45}
-  .bx.ok{border-color:rgba(79,214,160,.22)}
-  .bx.ok .bv{color:var(--mint)}
+  .fyi-banner{display:none;margin:14px 14px 4px;border:1px solid rgba(116,168,255,.3);background:rgba(116,168,255,.08);border-radius:12px;padding:12px 14px;font-family:var(--font-read);font-size:12.5px;color:var(--sky);line-height:1.5}
+  .m-overview .fyi-banner{display:block}
+  .fyi-banner b{color:#9cc0ff}
 
-  .editbox{border:1px solid var(--line);border-radius:13px;background:var(--panel);overflow:hidden}
-  .editbox .eh{padding:11px 14px;font-size:9px;letter-spacing:.2em;color:var(--slate);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
-  .editbox .eh .pen{color:var(--amber);text-transform:none;letter-spacing:.04em;font-size:10px}
-  .recline{padding:15px;font-family:var(--font-read);font-size:14.5px;color:var(--text);line-height:1.55;outline:none}
-  .recline:focus{background:rgba(255,180,84,.05)}
-  .recline mark{background:rgba(255,180,84,.22);color:var(--amber-soft);padding:1px 3px;border-radius:3px}
-  .note{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:14px;color:var(--text);font-family:var(--font-read);font-size:14px;resize:none;outline:none;line-height:1.5;margin-top:11px}
-  .note:focus{border-color:var(--line-2)}
-  .note::placeholder{color:var(--faint)}
+  .dhead{padding:16px 22px 6px}
+  .dhead .eyer{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate);margin-bottom:12px}
+  .dhead h1{font-family:var(--font-display);font-size:29px;font-weight:400;line-height:1.14;letter-spacing:-.02em;color:#fff}
 
-  .dock{position:absolute;left:0;right:0;bottom:0;padding:16px 18px 26px;background:linear-gradient(180deg,transparent,var(--ink) 26%);display:flex;gap:11px}
-  .btn{flex:1;border:none;border-radius:15px;padding:17px;font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;gap:9px}
-  .btn svg{width:16px;height:16px}
-  .btn.ghost{flex:0 0 90px;background:var(--panel);border:1px solid var(--line);color:var(--dim)}
-  .btn.ghost:hover{color:var(--text);border-color:var(--line-2)}
-  .btn.prime{background:linear-gradient(150deg,var(--amber),#e08c2c);color:#160f02;font-weight:600;box-shadow:0 16px 34px -12px rgba(255,180,84,.6)}
-  .btn.prime:hover{transform:translateY(-2px)}
+  .tldr{margin:14px 16px 6px;border-left:2px solid var(--amber);background:linear-gradient(90deg,var(--amber-glow),transparent);border-radius:0 13px 13px 0;padding:15px 17px}
+  .tldr .l{font-size:9px;letter-spacing:.3em;color:var(--amber);margin-bottom:11px}
+  .tldr dl{display:grid;grid-template-columns:auto 1fr;gap:7px 12px;font-family:var(--font-read)}
+  .tldr dt{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber-soft);padding-top:4px}
+  .tldr dd{font-size:14.5px;line-height:1.5;color:var(--text)}
+  .tldr .more{margin-top:13px;font-size:11px;letter-spacing:.1em;color:var(--amber);cursor:pointer;display:flex;align-items:center;gap:7px;font-family:var(--mono)}
+  .tldr .more svg{width:13px;height:13px;transition:.25s}
+  .tldr .framing{max-height:0;overflow:hidden;opacity:0;transition:max-height .45s ease,opacity .35s,margin .35s}
+  .tldr.open .framing{max-height:320px;opacity:1;margin-top:13px}
+  .tldr.open .more svg{transform:rotate(180deg)}
+  .tldr .framing p{font-family:var(--font-read);font-size:13.5px;color:var(--dim);line-height:1.65;margin-bottom:9px}
 
-  /* ===== CONFIRM ===== */
-  .confirm{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 36px;text-align:center}
-  .seal{width:96px;height:96px;border-radius:50%;border:1.5px solid var(--mint);display:flex;align-items:center;justify-content:center;margin-bottom:34px;position:relative;color:var(--mint)}
+  /* skim index */
+  .skimdex{margin:18px 14px 8px;border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden}
+  .skimdex .sx-h{padding:12px 15px;font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--slate);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  .skimdex .sx-h .approveall{color:var(--mint);cursor:pointer;letter-spacing:.08em;border:1px solid rgba(79,214,160,.3);padding:5px 9px;border-radius:6px;transition:.16s}
+  .skimdex .sx-h .approveall:hover{background:rgba(79,214,160,.12)}
+  .skimdex a{display:flex;align-items:center;gap:11px;padding:12px 15px;border-bottom:1px solid var(--line);cursor:pointer;text-decoration:none;color:var(--text);transition:.16s}
+  .skimdex a:last-child{border-bottom:none}
+  .skimdex a:hover{background:rgba(255,255,255,.025)}
+  .skimdex .n{font-family:var(--mono);font-size:10px;color:var(--faint);width:16px}
+  .skimdex .nm{flex:1;font-family:var(--font-read);font-size:14px}
+  .skimdex .ct{font-size:9px;letter-spacing:.06em;color:var(--dim);border:1px solid var(--line);padding:3px 7px;border-radius:20px;font-variant-numeric:tabular-nums}
+  .skimdex .ct.done{color:var(--mint);border-color:rgba(79,214,160,.3)}
+
+  /* diagram */
+  .diagram{margin:14px 14px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,var(--panel),var(--ink-2));padding:16px 14px;position:relative;overflow:hidden}
+  .diagram::before{content:"";position:absolute;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:22px 22px;opacity:.25;pointer-events:none}
+  .diagram .dgl{font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--slate);margin-bottom:14px;position:relative}
+  .diagram svg{width:100%;height:auto;display:block;position:relative}
+  .dg-node{fill:var(--panel-2);stroke:var(--line-2)}
+  .dg-node.you{fill:rgba(255,180,84,.14);stroke:var(--amber)}
+  .dg-node.auto{fill:rgba(79,214,160,.1);stroke:rgba(79,214,160,.4)}
+  .dg-t{fill:var(--text);font:500 11px var(--mono)}
+  .dg-t.sm{fill:var(--dim);font:400 9px var(--mono)}
+  .dg-t.you{fill:var(--amber-soft)}
+  .dg-edge{stroke:var(--slate);stroke-width:1.5;fill:none;marker-end:url(#arw)}
+  .dg-edge.hot{stroke:var(--amber)}
+
+  /* section */
+  .dsec{padding:6px 0 4px}
+  .dsec-h{padding:18px 22px 4px;display:flex;align-items:baseline;gap:11px}
+  .dsec-h .sn{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.1em}
+  .dsec-h h2{font-family:var(--font-display);font-size:21px;font-weight:500;letter-spacing:-.01em;color:#fff;flex:1}
+  .dsec-h .sct{font-size:9px;color:var(--dim);border:1px solid var(--line);padding:3px 7px;border-radius:20px;letter-spacing:.04em;white-space:nowrap}
+  .dsec-skim{padding:6px 22px 0;font-family:var(--font-read);font-size:14.5px;color:var(--dim);line-height:1.55}
+  .fullpic{max-height:0;overflow:hidden;opacity:0;transition:max-height .5s ease,opacity .4s,margin .4s;margin:0 22px}
+  .d-full .fullpic{max-height:600px;opacity:1;margin:13px 22px 0}
+  .fullpic .fp-tag{font-size:8px;letter-spacing:.2em;color:var(--faint);text-transform:uppercase;margin-bottom:8px}
+  .fullpic p{font-family:var(--font-read);font-size:13.5px;color:var(--dim);line-height:1.7;margin-bottom:10px}
+  .fullpic p b{color:var(--text);font-weight:500}
+  .secact{margin:14px 22px 4px}
+  .secact button{width:100%;background:none;border:1px dashed var(--line-2);color:var(--dim);border-radius:9px;padding:9px;font-family:var(--mono);font-size:10px;letter-spacing:.12em;cursor:pointer;transition:.16s}
+  .secact button:hover{border-color:rgba(79,214,160,.4);color:var(--mint)}
+
+  /* decision unit — the atom */
+  .du{margin:11px 14px;border:1px solid var(--line);background:var(--panel);border-radius:14px;overflow:hidden;transition:.25s;position:relative}
+  .du::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--slate);transition:.25s}
+  .du[data-state="open"]::before{background:var(--amber);box-shadow:0 0 12px var(--amber)}
+  .du[data-state="approved"]::before{background:var(--mint)}
+  .du[data-state="picked"]::before{background:var(--sky)}
+  .du[data-state="edited"]::before{background:var(--amber-soft)}
+  .du[data-state="reacted"]::before{background:var(--amber-soft)}
+  .du-q{padding:15px 16px 13px}
+  .du-tag{font-size:8px;letter-spacing:.2em;text-transform:uppercase;color:var(--slate);margin-bottom:9px}
+  .du-ttl{font-family:var(--font-display);font-size:16.5px;font-weight:500;color:var(--text);line-height:1.3;margin-bottom:10px}
+  .du-rec{font-family:var(--font-read);font-size:13.5px;color:var(--dim);line-height:1.5;display:flex;gap:9px}
+  .du-rec .rl{flex:none;font-family:var(--mono);font-size:8px;letter-spacing:.14em;color:var(--mint);border:1px solid rgba(79,214,160,.35);padding:3px 6px;border-radius:5px;height:fit-content;margin-top:1px}
+  .du-rec .rt b{color:var(--text)}
+  .du-acts{display:flex;gap:1px;background:var(--line);border-top:1px solid var(--line)}
+  .du-acts button{flex:1;background:var(--panel);border:none;color:var(--dim);padding:11px 4px;font-family:var(--mono);font-size:10px;letter-spacing:.04em;cursor:pointer;transition:.16s;display:flex;align-items:center;justify-content:center;gap:5px}
+  .du-acts button:hover{background:var(--panel-2);color:var(--text)}
+  .du-acts button.k svg{width:13px;height:13px}
+  .du-acts .b-app:hover{color:var(--mint)}
+  .du-expand{max-height:0;overflow:hidden;transition:max-height .4s ease,opacity .3s;opacity:0}
+  .du.x-open .du-expand{max-height:340px;opacity:1}
+  .du-expand-in{padding:14px 16px;border-top:1px solid var(--line);background:var(--ink-2)}
+  .du-sub{display:none}
+  .du.show-opts .du-opts,.du.show-edit .du-editwrap,.du.show-react .du-note-wrap{display:block}
+  .du-opts .ol{font-size:9px;letter-spacing:.16em;color:var(--slate);margin-bottom:10px}
+  .opt-chip{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:9px;padding:11px 12px;margin-bottom:7px;cursor:pointer;transition:.16s}
+  .opt-chip:hover{border-color:var(--line-2)}
+  .opt-chip.sel{border-color:var(--sky);background:rgba(116,168,255,.08)}
+  .opt-chip .rd{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--slate);flex:none;display:flex;align-items:center;justify-content:center}
+  .opt-chip.sel .rd{border-color:var(--sky)}
+  .opt-chip.sel .rd::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--sky)}
+  .opt-chip .oc{font-family:var(--font-read);font-size:13px;color:var(--text);line-height:1.4}
+  .opt-chip .oc small{display:block;color:var(--faint);font-size:11px;margin-top:2px}
+  .opt-chip .recbadge{margin-left:auto;font-size:8px;color:var(--mint);border:1px solid rgba(79,214,160,.3);padding:2px 6px;border-radius:4px;letter-spacing:.08em;flex:none}
+  .du-editwrap .el{font-size:9px;letter-spacing:.16em;color:var(--slate);margin-bottom:9px}
+  .du-edit{border:1px solid var(--line-2);border-radius:10px;background:var(--panel);padding:13px;font-family:var(--font-read);font-size:13.5px;color:var(--text);line-height:1.55;outline:none}
+  .du-edit:focus{border-color:var(--amber);background:rgba(255,180,84,.05)}
+  .du-edit mark{background:rgba(255,180,84,.22);color:var(--amber-soft);padding:1px 3px;border-radius:3px}
+  .du-note{width:100%;border:1px solid var(--line-2);border-radius:10px;background:var(--panel);padding:13px;color:var(--text);font-family:var(--font-read);font-size:13.5px;resize:none;outline:none;line-height:1.5}
+  .du-note:focus{border-color:var(--amber-soft)}
+  .du-note::placeholder{color:var(--faint)}
+  .du-resolved{display:none;align-items:center;gap:9px;padding:11px 16px;background:var(--ink-2);border-top:1px solid var(--line);font-size:11px;font-family:var(--mono)}
+  .du[data-state]:not([data-state="open"]) .du-resolved{display:flex}
+  .du[data-state]:not([data-state="open"]) .du-acts{display:none}
+  .du-resolved .rico{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none;font-size:11px}
+  .du[data-state="approved"] .rico{background:rgba(79,214,160,.16);color:var(--mint)}
+  .du[data-state="picked"] .rico{background:rgba(116,168,255,.16);color:var(--sky)}
+  .du[data-state="edited"] .rico,.du[data-state="reacted"] .rico{background:rgba(255,180,84,.16);color:var(--amber-soft)}
+  .du-resolved .rmsg{flex:1;color:var(--dim);letter-spacing:.02em}
+  .du-resolved .rmsg b{color:var(--text)}
+  .du-resolved .change{color:var(--faint);cursor:pointer;letter-spacing:.1em;text-transform:uppercase;font-size:9px;border:1px solid var(--line);padding:5px 9px;border-radius:6px}
+  .du-resolved .change:hover{color:var(--text);border-color:var(--line-2)}
+
+  .ddock{position:absolute;left:0;right:0;bottom:0;padding:14px 16px 24px;background:linear-gradient(180deg,transparent,var(--ink) 30%);display:flex;gap:11px;align-items:center}
+  .ddock .sum{flex:1;font-size:10px;color:var(--dim);letter-spacing:.02em;line-height:1.5;font-variant-numeric:tabular-nums}
+  .ddock .sum b{color:var(--text)}
+  .ddock .sum .hold{color:var(--amber)}
+  .ddock .submit{flex:none;border:none;border-radius:14px;padding:15px 20px;background:linear-gradient(150deg,var(--amber),#e08c2c);color:#160f02;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;cursor:pointer;transition:.2s;display:flex;align-items:center;gap:9px}
+  .ddock .submit svg{width:15px;height:15px}
+  .ddock .submit:hover{transform:translateY(-2px)}
+
+  /* confirm */
+  .confirm{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:36px 32px;text-align:center}
+  .seal{width:90px;height:90px;border-radius:50%;border:1.5px solid var(--mint);display:flex;align-items:center;justify-content:center;margin-bottom:30px;position:relative;color:var(--mint)}
   .seal::before{content:"";position:absolute;inset:-12px;border-radius:50%;border:1px solid rgba(79,214,160,.25);animation:ring 2.6s infinite}
-  .seal svg{width:42px;height:42px;stroke-width:1.6}
-  .confirm h2{font-family:var(--font-display);font-size:28px;font-weight:400;margin-bottom:18px}
-  .confirm .ack{font-family:var(--font-read);font-size:15px;color:var(--dim);line-height:1.7;max-width:30ch}
+  .seal svg{width:40px;height:40px;stroke-width:1.6}
+  .confirm h2{font-family:var(--font-display);font-size:26px;font-weight:400;margin-bottom:16px}
+  .confirm .ack{font-family:var(--font-read);font-size:14.5px;color:var(--dim);line-height:1.7;max-width:32ch}
   .confirm .ack b{color:var(--mint);font-weight:500}
-  .confirm .receipt{margin-top:30px;border:1px solid var(--line);border-radius:13px;padding:15px 18px;font-size:11px;color:var(--faint);letter-spacing:.05em;text-align:left;width:100%;line-height:2}
+  .confirm .receipt{margin-top:26px;border:1px solid var(--line);border-radius:13px;padding:15px 18px;font-size:11px;color:var(--faint);letter-spacing:.04em;text-align:left;width:100%;line-height:2}
   .confirm .receipt .ok{color:var(--mint)}
-  .confirm .auto{margin-top:26px;font-size:10px;letter-spacing:.22em;color:var(--slate);display:flex;align-items:center;gap:9px}
+  .confirm .receipt .am{color:var(--amber)}
+  .confirm .auto{margin-top:24px;font-size:10px;letter-spacing:.22em;color:var(--slate);display:flex;align-items:center;gap:9px}
 
-  /* ===== CAPTURE ===== */
+  /* capture */
   .cap{flex:1;display:flex;flex-direction:column;padding:4px 22px 26px}
   .cap .ch{font-family:var(--font-display);font-size:26px;font-weight:400;line-height:1.2;margin-bottom:6px}
   .cap .cs{font-family:var(--font-read);font-size:13.5px;color:var(--dim);margin-bottom:22px;line-height:1.5}
@@ -298,12 +352,11 @@
   .sendbtn:hover{transform:translateY(-2px)}
   .sendbtn svg{width:16px;height:16px}
 
-  /* ===== CAPACITY ===== */
+  /* capacity */
   .capa{padding:2px 22px 30px}
   .arcs{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px}
   .arc{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:18px 14px;text-align:center}
-  .ring{width:118px;height:118px;border-radius:50%;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;position:relative;
-    background:conic-gradient(var(--cl,var(--mint)) var(--a,0deg), rgba(255,255,255,.06) 0)}
+  .ring{width:118px;height:118px;border-radius:50%;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;position:relative;background:conic-gradient(var(--cl,var(--mint)) var(--a,0deg), rgba(255,255,255,.06) 0)}
   .ring::before{content:"";position:absolute;inset:11px;border-radius:50%;background:var(--panel)}
   .ring .rv{position:relative;font-family:var(--font-display);font-size:27px;font-weight:400}
   .ring .rv small{font-size:11px;color:var(--dim);font-family:var(--mono);display:block;letter-spacing:.1em;margin-top:2px}
@@ -332,7 +385,7 @@
   .trustnote svg{width:16px;height:16px;color:var(--amber);flex:none;margin-top:2px}
   .trustnote b{color:var(--text)}
 
-  /* ===== FAILURE ===== */
+  /* failure */
   .fl{padding:2px 22px 30px}
   .fclass{display:flex;align-items:center;gap:13px;border:1px solid rgba(255,107,107,.3);background:linear-gradient(150deg,rgba(255,107,107,.12),var(--panel));border-radius:16px;padding:17px;margin-bottom:8px}
   .fclass .fi{width:42px;height:42px;border-radius:12px;background:rgba(255,107,107,.16);color:var(--coral);display:flex;align-items:center;justify-content:center;flex:none}
@@ -366,21 +419,22 @@
   .redacted .er{color:var(--coral)}
   .redacted .strip-b{background:var(--panel-3);color:var(--faint);padding:1px 5px;border-radius:3px;letter-spacing:.04em}
 
-  /* ---------- caption rail ---------- */
+  /* caption rail */
   .rail{position:sticky;top:40px;display:flex;flex-direction:column;gap:18px}
   .rail .rt{font-family:var(--font-display);font-size:13px;color:var(--slate);letter-spacing:.24em;text-transform:uppercase;padding-bottom:16px;border-bottom:1px solid var(--line)}
-  .flowstack{position:relative;min-height:340px}
-  .flowcard{position:absolute;inset:0;border:1px solid var(--line);border-radius:16px;padding:22px;background:linear-gradient(170deg,var(--panel),var(--ink-2));opacity:0;visibility:hidden;transform:translateY(10px);transition:opacity .4s ease,transform .4s ease,visibility .4s}
-  .flowcard.active{opacity:1;visibility:visible;transform:none}
+  .flowstack{position:relative}
+  .flowcard{display:none;border:1px solid var(--line);border-radius:16px;padding:22px;background:linear-gradient(170deg,var(--panel),var(--ink-2))}
+  .flowcard.active{display:block;animation:fcIn .42s ease}
+  @keyframes fcIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
   .flowcard .fc-tag{display:inline-flex;align-items:center;gap:9px;font-size:10px;letter-spacing:.2em;color:var(--amber);text-transform:uppercase;margin-bottom:16px;border:1px solid rgba(255,180,84,.3);padding:6px 11px;border-radius:7px}
-  .flowcard h3{font-family:var(--font-display);font-size:24px;font-weight:400;line-height:1.18;margin-bottom:14px;letter-spacing:-.01em}
-  .flowcard p{font-family:var(--font-read);font-size:14.5px;color:var(--dim);line-height:1.65;margin-bottom:14px}
+  .flowcard h3{font-family:var(--font-display);font-size:23px;font-weight:400;line-height:1.18;margin-bottom:14px;letter-spacing:-.01em}
+  .flowcard p{font-family:var(--font-read);font-size:14px;color:var(--dim);line-height:1.62;margin-bottom:13px}
   .flowcard p:last-child{margin-bottom:0}
   .flowcard .pr{color:var(--text);border-left:2px solid var(--amber);padding-left:13px;font-style:italic}
   .navhint{font-size:11px;color:var(--faint);line-height:1.7;letter-spacing:.02em}
   .navhint b{color:var(--mint)}
 
-  /* ---------- desktop board ---------- */
+  /* desktop board */
   .deck{margin-top:110px;border-top:1px solid var(--line);padding-top:60px}
   .deck-h{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:34px;flex-wrap:wrap}
   .deck-h h2{font-family:var(--font-display);font-size:clamp(26px,3.6vw,42px);font-weight:300;letter-spacing:-.02em}
@@ -441,19 +495,18 @@
     <div class="brand">
       <div class="kicker">Beads Runner · UX Mocks · Flows A–G</div>
       <h1>The machine is dim.<br><em>You</em> are the light.</h1>
-      <p class="sub">An attention router for an autonomous idea→test pipeline. Every machine process renders as cold slate telemetry. The only warm thing in the entire interface is the moment that genuinely needs you — resolvable in ~60&nbsp;seconds, from your phone, batched.</p>
+      <p class="sub">An attention router for an autonomous idea→test pipeline. Machine state renders as cold slate telemetry; amber is reserved for what needs you. The dossier is the core: a skimmable technical document you can resolve a whole stage from in one pass.</p>
     </div>
     <div class="legend">
-      <div class="row"><span class="sw" style="background:var(--amber)"></span> waiting on you · the ask</div>
-      <div class="row"><span class="sw" style="background:var(--mint)"></span> healthy · auto-advancing</div>
-      <div class="row"><span class="sw" style="background:var(--sky)"></span> timed-fyi · informational</div>
-      <div class="row"><span class="sw" style="background:var(--coral)"></span> blocking failure · runner dead</div>
+      <div class="row"><span class="sw" style="background:var(--amber)"></span> waiting on you · open call</div>
+      <div class="row"><span class="sw" style="background:var(--mint)"></span> approved · healthy · auto</div>
+      <div class="row"><span class="sw" style="background:var(--sky)"></span> picked alternative · fyi</div>
+      <div class="row"><span class="sw" style="background:var(--coral)"></span> blocking failure</div>
       <div class="row"><span class="sw" style="background:var(--slate)"></span> machinery — never look here</div>
     </div>
   </header>
 
   <div class="stage">
-    <!-- ============ PHONE ============ -->
     <div class="phone-col">
       <div class="device">
         <div class="island"></div>
@@ -461,81 +514,57 @@
 
           <!-- ===================== BOARD ===================== -->
           <section class="view active" id="v-board">
-            <div class="statusbar">
-              <span>9:41</span>
-              <span class="sig">
-                <svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg>
-              </span>
-            </div>
+            <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
             <div class="apphead">
               <div class="t"><span class="dot"></span>Board</div>
-              <button class="iconbtn" onclick="toast('Read model over beads — local &amp; remote are the same view')" aria-label="info">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01" stroke-linecap="round"/></svg>
-              </button>
+              <button class="iconbtn" onclick="toast('Read model over beads — local &amp; remote are the same view')" aria-label="info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01" stroke-linecap="round"/></svg></button>
             </div>
             <div class="scroll">
               <div class="strip" onclick="go('capacity')">
-                <div class="strip-top">
-                  <span class="lbl">SYSTEM · CAPACITY</span>
-                  <span class="hb">ALL NOMINAL</span>
-                </div>
+                <div class="strip-top"><span class="lbl">SYSTEM · CAPACITY</span><span class="hb">ALL NOMINAL</span></div>
                 <div class="gauges">
-                  <div class="g">
-                    <div class="gl"><span>5H WINDOW</span><span>31%</span></div>
-                    <div class="gv">31<small>%</small></div>
-                    <div class="track"><i data-w="31" style="background:var(--mint)"></i></div>
-                  </div>
-                  <div class="g">
-                    <div class="gl"><span>7D BUDGET</span><span>44%</span></div>
-                    <div class="gv">44<small>%</small></div>
-                    <div class="track"><i data-w="44" style="background:var(--mint)"></i><span class="spare" style="left:51%"></span></div>
-                  </div>
+                  <div class="g"><div class="gl"><span>5H WINDOW</span><span>31%</span></div><div class="gv">31<small>%</small></div><div class="track"><i data-w="31" style="background:var(--mint)"></i></div></div>
+                  <div class="g"><div class="gl"><span>7D BUDGET</span><span>44%</span></div><div class="gv">44<small>%</small></div><div class="track"><i data-w="44" style="background:var(--mint)"></i><span class="spare" style="left:51%"></span></div></div>
                 </div>
-                <div class="strip-tags">
-                  <span class="tg"><b>3</b> runners up</span>
-                  <span class="tg warn">⚠ <b>2</b> decisions</span>
-                  <span class="tg bad">⚠ <b>1</b> silent fail</span>
-                </div>
+                <div class="strip-tags"><span class="tg"><b>3</b> runners up</span><span class="tg warn">⚠ <b>2</b> decisions</span><span class="tg bad">⚠ <b>1</b> silent fail</span></div>
               </div>
 
               <div class="lane-hd"><span class="pulse"></span> Waiting on you <span class="ln"></span> 2</div>
-              <div class="waitcard" onclick="go('dossier')">
-                <div class="meta"><span class="p">P1</span><span>bead-204 · stage:design</span><span class="sp">2h</span></div>
-                <div class="ask">Auth: cookie session or signed token?</div>
-                <div class="tldr">Worker hit a fork it can’t resolve — both paths touch the API surface. One tap unblocks 3 impl tasks.</div>
-                <div class="go"><span>OPEN DOSSIER · ~45s</span>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                </div>
+              <div class="waitcard" onclick="openDossier('decide')">
+                <div class="meta"><span class="p">GATE</span><span>bead-188 · ux→design</span><span class="sp">18m</span></div>
+                <div class="ask">Onboarding UX: 3 flows, 14 calls to make</div>
+                <div class="tldr">The ux-stage agent finished. It built the new-user path for the web app and needs you to sign off the flows + answer 14 scoped calls. Batch it in one pass.</div>
+                <div class="go"><span>OPEN DOSSIER · skim ~90s</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
               </div>
-              <div class="waitcard" style="animation:none;background:linear-gradient(155deg,rgba(255,180,84,.09),rgba(255,180,84,.02));box-shadow:none" onclick="go('dossier')">
-                <div class="meta"><span class="p">PAIR</span><span>bead-188 · stage:ux</span><span class="sp">5h</span></div>
-                <div class="ask" style="font-size:18px">Ready to pair on: onboarding UX</div>
-                <div class="tldr" style="font-size:12.5px">Collaborative session — you wanted to be <i>in</i> this stage, not just approve it.</div>
+              <div class="waitcard" style="animation:none;background:linear-gradient(155deg,rgba(255,180,84,.09),rgba(255,180,84,.02));box-shadow:none" onclick="openDossier('decide')">
+                <div class="meta"><span class="p">P1</span><span>bead-204 · stage:design</span><span class="sp">2h</span></div>
+                <div class="ask" style="font-size:18px">Auth: cookie vs signed token</div>
+                <div class="tldr" style="font-size:12.5px">A single fork inside the design dossier above — unblocks 3 impl tasks.</div>
               </div>
 
               <div class="spine">
                 <div class="sl">LIFECYCLE SPINE · idea → done</div>
-                <div class="cols" id="cols">
+                <div class="cols">
                   <div class="col"><div class="col-h">idea<span class="c">3</span></div>
                     <div class="bead" onclick="toast('idea · auto-advances to ux')"><div class="bt">Export beads to PDF digest</div><div class="bf"><span>P3</span><span class="rs idle"></span></div></div>
                     <div class="bead" onclick="toast('idea · auto-advances to ux')"><div class="bt">Slack notifier channel</div><div class="bf"><span>P2</span><span class="rs idle"></span></div></div>
                   </div>
                   <div class="col" data-gate="you"><div class="col-h">ux<span class="c">GATE</span></div>
-                    <div class="bead" onclick="go('dossier')"><div class="bt">Onboarding UX — pair session</div><div class="bf"><span>P2</span><span class="rs idle"></span></div></div>
+                    <div class="bead" onclick="openDossier('decide')"><div class="bt">Onboarding UX — agent dossier ready</div><div class="bf"><span>14 calls</span><span class="rs idle"></span></div></div>
                   </div>
                   <div class="col" data-gate="you"><div class="col-h">design<span class="c">GATE</span></div>
-                    <div class="bead" onclick="go('dossier')"><div class="bt">Auth: cookie vs token?</div><div class="bf"><span>P1</span><span class="rs idle"></span></div></div>
+                    <div class="bead" onclick="openDossier('decide')"><div class="bt">Auth: cookie vs token?</div><div class="bf"><span>P1</span><span class="rs idle"></span></div></div>
                   </div>
                   <div class="col"><div class="col-h">impl<span class="c">3</span></div>
-                    <div class="bead" onclick="toast('runner active on this bead')"><div class="bt">Coordinator usage-authority RPC</div><div class="bf"><span>P1</span><span class="rs run"></span></div></div>
-                    <div class="bead" onclick="toast('runner active on this bead')"><div class="bt">Spare-cycles ramp math</div><div class="bf"><span>P2</span><span class="rs run"></span></div></div>
-                    <div class="bead failbead" onclick="go('failure')"><div class="bt">Dossier reconciler agent</div><div class="bf"><span>P2</span><span class="rs fail"></span></div><div class="warn">⚠ WATCHDOG_KILL · retry 2/3</div></div>
+                    <div class="bead" onclick="toast('runner active')"><div class="bt">Coordinator usage-authority RPC</div><div class="bf"><span>P1</span><span class="rs run"></span></div></div>
+                    <div class="bead" onclick="toast('runner active')"><div class="bt">Spare-cycles ramp math</div><div class="bf"><span>P2</span><span class="rs run"></span></div></div>
+                    <div class="bead failbead" onclick="go('failure')"><div class="bt">Dossier reconciler agent</div><div class="bf"><span>P2</span><span class="rs fail"></span></div><div class="warn">⚠ WATCHDOG_KILL · 2/3</div></div>
                   </div>
                   <div class="col"><div class="col-h">docs<span class="c">1</span></div>
-                    <div class="bead" onclick="toast('docs · auto-advances to tests')"><div class="bt">Capacity API reference</div><div class="bf"><span>P2</span><span class="rs run"></span></div></div>
+                    <div class="bead" onclick="toast('docs · auto-advances')"><div class="bt">Capacity API reference</div><div class="bf"><span>P2</span><span class="rs run"></span></div></div>
                   </div>
                   <div class="col" data-gate="you"><div class="col-h">tests<span class="c">e2e↩</span></div>
-                    <div class="bead" onclick="toast('manual-e2e routes to your Inbox like a decision')"><div class="bt">Manual e2e: remote intake</div><div class="bf"><span>P1</span><span class="rs idle"></span></div></div>
+                    <div class="bead" onclick="toast('manual-e2e routes to Inbox')"><div class="bt">Manual e2e: remote intake</div><div class="bf"><span>P1</span><span class="rs idle"></span></div></div>
                   </div>
                   <div class="col"><div class="col-h">done<span class="c">12</span></div>
                     <div class="bead" style="opacity:.5" onclick="toast('shipped')"><div class="bt">bd init + Dolt sync</div><div class="bf"><span>✓</span><span class="rs idle"></span></div></div>
@@ -544,17 +573,9 @@
               </div>
             </div>
             <nav class="nav">
-              <button class="navitem" onclick="go('inbox')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7l9 6 9-6M4 6h16a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1z" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                <span>Inbox</span><span class="badge">2</span>
-              </button>
-              <button class="fab" onclick="go('capture')" aria-label="capture idea">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
-              </button>
-              <button class="navitem on">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="16" rx="1"/></svg>
-                <span>Board</span>
-              </button>
+              <button class="navitem" onclick="go('inbox')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7l9 6 9-6M4 6h16a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1z" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Inbox</span><span class="badge">2</span></button>
+              <button class="fab" onclick="go('capture')" aria-label="capture"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg></button>
+              <button class="navitem on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="16" rx="1"/></svg><span>Board</span></button>
             </nav>
           </section>
 
@@ -563,42 +584,38 @@
             <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
             <div class="apphead">
               <div class="t"><span class="dot" style="background:var(--amber);box-shadow:0 0 9px var(--amber)"></span>Inbox</div>
-              <button class="iconbtn" onclick="toast('Ranked · batched · one queue. Never pinged twice.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M7 12h10M10 18h4" stroke-linecap="round"/></svg></button>
+              <button class="iconbtn" onclick="toast('Ranked · batched · one queue')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M7 12h10M10 18h4" stroke-linecap="round"/></svg></button>
             </div>
-            <div class="inbox-sub">The product. <b>2 things</b> genuinely need you. Everything else is flowing.</div>
+            <div class="inbox-sub">The product. <b>2 things</b> need you; <b>1</b> is a proactive read. Everything else is flowing.</div>
             <div class="scroll">
-              <div class="digestbar">
-                <svg viewBox="0 0 24 24" width="15" fill="none" stroke="var(--sky)" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3" stroke-linecap="round"/></svg>
-                3 low-stakes items batched into the 6pm digest — not pinged
-                <span class="dn">view →</span>
+              <div class="digestbar"><svg viewBox="0 0 24 24" width="15" fill="none" stroke="var(--sky)" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3" stroke-linecap="round"/></svg>3 low-stakes items batched into the 6pm digest<span class="dn">view →</span></div>
+
+              <div class="inrow t-block" onclick="openDossier('decide')">
+                <div class="tier"><span>● Blocking · stage gate · 14 calls</span><span class="age">18m ago</span></div>
+                <div class="h">Onboarding UX — flows &amp; calls</div>
+                <div class="d">The ux-stage agent produced 3 flows and 14 recommendations. Approve the ones you like, react or correct the rest — one pass, then it gates to design.</div>
+                <div class="foot"><span class="chip">bead-188</span><span class="chip">ux→design</span><span class="chip">5 deps downstream</span></div>
               </div>
 
-              <div class="inrow t-block" onclick="go('dossier')">
-                <div class="tier"><span>● Blocking · decide</span><span class="age">2h ago · P1</span></div>
-                <div class="h">Auth: cookie session or signed token?</div>
-                <div class="d">Hard-blocks until answered. A worker forked here and stopped clean — no burning cycles.</div>
-                <div class="foot"><span class="chip">bead-204</span><span class="chip">stage:design</span><span class="chip">unblocks 3</span></div>
+              <div class="inrow t-fyi" onclick="openDossier('overview')">
+                <div class="tier"><span>● Timed-FYI · proactive overview</span><span class="age">40m ago</span></div>
+                <div class="h">How auth + onboarding fit together</div>
+                <div class="d">Not a decision — a get-up-to-speed brief on the system as designed so far. Skim the diagram, read deeper if you want. Auto-proceeds in 23h 20m.</div>
+                <div class="foot"><span class="chip">overview</span><span class="chip">read-mostly</span><span class="chip">⏱ 23h 20m</span></div>
               </div>
 
-              <div class="inrow t-pair" onclick="go('dossier')">
+              <div class="inrow t-pair" onclick="toast('Collaborative working session — opens a live pairing view')">
                 <div class="tier"><span>● Pair · scheduled session</span><span class="age">5h ago · P2</span></div>
-                <div class="h">Ready to pair on: onboarding UX</div>
-                <div class="d">You asked to be <i>in</i> this stage. A working session, not an approval — open when you have ~15 min.</div>
-                <div class="foot"><span class="chip">bead-188</span><span class="chip">stage:ux</span><span class="chip">collaborative</span></div>
-              </div>
-
-              <div class="inrow t-fyi" onclick="toast('timed-fyi · object within 24h or it proceeds (reversible)')">
-                <div class="tier"><span>● Timed-FYI · auto-proceeds 24h</span><span class="age">40m ago</span></div>
-                <div class="h">How auth is going to fit together</div>
-                <div class="d">Proactive design dossier. Skim it or ignore it — proceeds in 23h 20m unless you object. Reversible.</div>
-                <div class="foot"><span class="chip">bead-204</span><span class="chip">post-design</span><span class="chip">⏱ 23h 20m</span></div>
+                <div class="h">Ready to pair on: command palette</div>
+                <div class="d">You asked to be <i>in</i> this stage. A working session, not an approval.</div>
+                <div class="foot"><span class="chip">bead-176</span><span class="chip">collaborative</span></div>
               </div>
 
               <div class="inrow t-fyi" onclick="go('failure')">
                 <div class="tier"><span>● Timed-FYI · silent failure</span><span class="age">1h ago</span></div>
                 <div class="h">A task looked green but isn’t</div>
-                <div class="d">TOOL_ERROR scan hit: a subagent was missing. Silent failures get surfaced <i>louder</i> than loud ones.</div>
-                <div class="foot"><span class="chip">bead-191</span><span class="chip">tool_error</span><span class="chip">⏱ 22h</span></div>
+                <div class="d">TOOL_ERROR scan hit: a subagent was missing. Silent failures surfaced <i>louder</i> than loud ones.</div>
+                <div class="foot"><span class="chip">bead-191</span><span class="chip">tool_error</span></div>
               </div>
 
               <div class="inrow t-dig" onclick="toast('Daily roll-up · informational only')">
@@ -608,97 +625,452 @@
               </div>
             </div>
             <nav class="nav">
-              <button class="navitem on">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7l9 6 9-6M4 6h16a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1z" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                <span>Inbox</span>
-              </button>
+              <button class="navitem on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7l9 6 9-6M4 6h16a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1z" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Inbox</span></button>
               <button class="fab" onclick="go('capture')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg></button>
-              <button class="navitem" onclick="go('board')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="16" rx="1"/></svg>
-                <span>Board</span>
-              </button>
+              <button class="navitem" onclick="go('board')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="16" rx="1"/></svg><span>Board</span></button>
             </nav>
           </section>
 
-          <!-- ===================== DOSSIER ===================== -->
-          <section class="view" id="v-dossier">
+          <!-- ===================== DOSSIER (THE CORE) ===================== -->
+          <section class="view m-decide d-skim" id="v-dossier">
             <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
             <div class="apphead">
-              <button class="back" onclick="go('inbox')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Inbox
-              </button>
-              <button class="iconbtn" onclick="toast('Pass 1 dedup · Pass 2 framing · Pass 3 readability · Pass 4 respondability')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v4H4zM4 12h16v4H4zM4 20h10" stroke-linecap="round"/></svg></button>
+              <button class="back" onclick="go('inbox')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Inbox</button>
+              <button class="iconbtn" onclick="toast('Built by 4 passes: dedup · framing · readability · respondability')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v4H4zM4 12h16v4H4zM4 20h10" stroke-linecap="round"/></svg></button>
             </div>
-            <div class="scroll dscroll">
-              <div class="deyebrow"><span class="pin">● Blocking</span><span>bead-204</span><span>·</span><span>stage:design</span><span>·</span><span>2h</span></div>
-              <h1 class="dask">Auth: cookie session or signed token?</h1>
-              <div class="tldr">
-                <div class="l">TL;DR — THE ASK</div>
-                <p>The worker reached the auth boundary and both paths fork the API surface. Pick one — it unblocks 3 implementation tasks. Reversible for 24h.</p>
+            <div class="scroll dscroll" id="dscroll">
+
+              <div class="d-modebar">
+                <div class="row1">
+                  <span class="badge-blk">● Blocking · gate</span>
+                  <span class="badge-fyi">◆ Proactive overview · timed-fyi</span>
+                  <span>bead-188 · ux→design</span>
+                  <span class="src">· from ux-stage-agent · 18m</span>
+                  <span style="margin-left:auto"></span>
+                  <span class="denstoggle"><button class="on" id="den-skim" onclick="density('skim')">SKIM</button><button id="den-full" onclick="density('full')">FULL</button></span>
+                </div>
+                <div class="d-progress">
+                  <span class="bar"><i id="progFill"></i></span>
+                  <span class="pc"><b id="progN">0</b> / 14 resolved</span>
+                </div>
               </div>
 
-              <div class="sec">
-                <div class="sec-h">The options · consequences pre-declared</div>
-                <div class="opt" data-opt="A" onclick="pick(this)">
-                  <div class="opt-top">
-                    <div class="radio"></div>
-                    <div class="opt-body">
-                      <div class="ot">A · Cookie session</div>
-                      <div class="od">Server-side session, HttpOnly cookie. Simpler revocation, ties clients to the API origin.</div>
-                      <div class="conseq"><div class="conseq-in">
-                        <div class="cl">▸ IF YOU PICK A — DETERMINISTIC, APPLIED INSTANTLY</div>
-                        <div class="cline add"><span class="v">creates</span><span class="x">2 impl beads · session store + middleware</span></div>
-                        <div class="cline unb"><span class="v">unblocks</span><span class="x">bead-204 · runner picks up immediately</span></div>
-                        <div class="cline fore"><span class="v">forecloses</span><span class="x">stateless multi-origin clients (native app later)</span></div>
-                        <div class="det">Reversible window: <b>24h</b> · pure checkbox → no agent interprets</div>
-                      </div></div>
-                    </div>
+              <div class="fyi-banner">This is a <b>read-mostly brief</b> to get you up to speed — not a blocker. Skim the diagram and headers; expand any section for the full picture. If you do nothing it <b>auto-proceeds in 23h 20m</b> (reversible). Flag a concern on anything that looks wrong.</div>
+
+              <div class="dhead">
+                <div class="eyer">UX STAGE · DECISION DOSSIER</div>
+                <h1>Onboarding UX — 3 flows &amp; 14 calls</h1>
+              </div>
+
+              <div class="tldr" id="tldr">
+                <div class="l">TL;DR — WHAT · WHERE IT FITS · WHAT I NEED</div>
+                <dl>
+                  <dt>What</dt><dd>The first-run + return path for Beads Runner’s mobile web app — the surface you’ll actually live in.</dd>
+                  <dt>Where</dt><dd>Gates the <b>ux→design</b> handoff for the onboarding epic (bead-188). <b>5 design/impl beads</b> depend on this; nothing downstream moves until it clears.</dd>
+                  <dt>Need</dt><dd>Skim the 3 flows + diagram, batch-approve the calls you like, react or correct the rest. <b>Nothing here is irreversible.</b></dd>
+                </dl>
+                <div class="more" onclick="document.getElementById('tldr').classList.toggle('open')">Read the full framing <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+                <div class="framing">
+                  <p>This dossier exists because the ux-stage agent reached the end of its autonomous mandate: it can <b>propose</b> the onboarding experience but the shape of a user’s first five minutes is a judgment call with downstream cost, so it gates to you rather than guessing.</p>
+                  <p>It already ran Pass&nbsp;1 against the project goals and existing design docs — anything those answered was dropped, so every call below is genuinely <b>new information</b> needing your taste, not restated context.</p>
+                </div>
+              </div>
+
+              <div class="skimdex">
+                <div class="sx-h"><span>SKIM INDEX · jump anywhere</span><span class="approveall" onclick="approveAll()">✓ approve all 14 recommended</span></div>
+                <a onclick="jump('s1')"><span class="n">01</span><span class="nm">First-run flow</span><span class="ct" id="ct-s1">0/4</span></a>
+                <a onclick="jump('s2')"><span class="n">02</span><span class="nm">Returning to a full Inbox</span><span class="ct" id="ct-s2">0/3</span></a>
+                <a onclick="jump('s3')"><span class="n">03</span><span class="nm">Empty / healthy state</span><span class="ct" id="ct-s3">0/2</span></a>
+                <a onclick="jump('s4')"><span class="n">04</span><span class="nm">Cross-cutting calls</span><span class="ct" id="ct-s4">0/5</span></a>
+              </div>
+
+              <div class="diagram">
+                <div class="dgl">WHERE THIS SITS — you are at the ux gate</div>
+                <svg viewBox="0 0 340 56" role="img" aria-label="lifecycle locator">
+                  <defs><marker id="arw" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="var(--slate)"/></marker></defs>
+                  <g font-family="var(--mono)">
+                    <rect class="dg-node auto" x="2" y="18" width="42" height="22" rx="5"/><text class="dg-t sm" x="23" y="33" text-anchor="middle">idea</text>
+                    <line class="dg-edge" x1="46" y1="29" x2="58" y2="29"/>
+                    <rect class="dg-node you" x="60" y="14" width="50" height="30" rx="6"/><text class="dg-t you" x="85" y="32" text-anchor="middle">ux ◀</text>
+                    <line class="dg-edge" x1="112" y1="29" x2="124" y2="29"/>
+                    <rect class="dg-node" x="126" y="18" width="50" height="22" rx="5"/><text class="dg-t sm" x="151" y="33" text-anchor="middle">design</text>
+                    <line class="dg-edge" x1="178" y1="29" x2="190" y2="29"/>
+                    <rect class="dg-node" x="192" y="18" width="42" height="22" rx="5"/><text class="dg-t sm" x="213" y="33" text-anchor="middle">impl</text>
+                    <line class="dg-edge" x1="236" y1="29" x2="248" y2="29"/>
+                    <rect class="dg-node" x="250" y="18" width="42" height="22" rx="5"/><text class="dg-t sm" x="271" y="33" text-anchor="middle">docs</text>
+                    <line class="dg-edge" x1="294" y1="29" x2="304" y2="29"/>
+                    <rect class="dg-node" x="306" y="18" width="32" height="22" rx="5"/><text class="dg-t sm" x="322" y="33" text-anchor="middle">…</text>
+                    <text class="dg-t sm" x="85" y="10" text-anchor="middle" fill="var(--amber)">you · 5 deps blocked downstream</text>
+                  </g>
+                </svg>
+              </div>
+
+              <!-- SECTION 1 -->
+              <div class="dsec" id="s1">
+                <div class="dsec-h"><span class="sn">01</span><h2>First-run flow</h2><span class="sct" id="hd-s1">0 / 4</span></div>
+                <div class="dsec-skim">A cold open. Land → connect the coordinator → capture one idea → watch it become a dossier. The thesis: prove the loop in under two minutes, no account walls.</div>
+                <div class="fullpic"><div class="fp-tag">▸ full picture — if the headers + diagram weren’t enough</div>
+                  <p>The risk in first-run isn’t confusion, it’s <b>disbelief</b> — the value prop ("you’ll barely touch this") is unintuitive until seen. So the flow is built to manufacture one real end-to-end moment fast: a seeded sample idea that visibly flows to a dossier, rather than a feature tour.</p>
+                  <p>Coordinator pairing is the only hard step; everything else is skippable. We deliberately defer voice capture and project pickers to keep the cold path to four screens, since returning users get the rich capture screen anyway.</p>
+                </div>
+                <div class="diagram">
+                  <div class="dgl">PROPOSED FIRST-RUN — 4 steps</div>
+                  <svg viewBox="0 0 340 50" role="img" aria-label="first run flow">
+                    <g>
+                      <rect class="dg-node" x="2" y="14" width="70" height="24" rx="6"/><text class="dg-t sm" x="37" y="29" text-anchor="middle">land</text>
+                      <line class="dg-edge hot" x1="74" y1="26" x2="86" y2="26"/>
+                      <rect class="dg-node you" x="88" y="12" width="78" height="28" rx="6"/><text class="dg-t you" x="127" y="29" text-anchor="middle">pair coord.</text>
+                      <line class="dg-edge hot" x1="168" y1="26" x2="180" y2="26"/>
+                      <rect class="dg-node" x="182" y="14" width="72" height="24" rx="6"/><text class="dg-t sm" x="218" y="29" text-anchor="middle">1st idea</text>
+                      <line class="dg-edge hot" x1="256" y1="26" x2="268" y2="26"/>
+                      <rect class="dg-node auto" x="270" y="14" width="68" height="24" rx="6"/><text class="dg-t sm" x="304" y="29" text-anchor="middle">dossier!</text>
+                    </g>
+                  </svg>
+                </div>
+                <div class="secact"><button onclick="approveSection('s1')">✓ Approve all recommended in this section (4)</button></div>
+
+                <div class="du" data-state="open" data-sec="s1">
+                  <div class="du-q"><div class="du-tag">CALL · flow shape</div>
+                    <div class="du-ttl">First-run length: 4 steps or compress to 2?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Keep <b>4 discrete steps</b> — the pairing + the "it became a dossier" payoff each deserve their own screen; compressing hides the payoff.</span></div>
                   </div>
-                </div>
-                <div class="opt sel" data-opt="B" onclick="pick(this)">
-                  <div class="opt-top">
-                    <div class="radio"></div>
-                    <div class="opt-body">
-                      <div class="ot">B · Signed token <span class="rec">★ recommended</span></div>
-                      <div class="od">Stateless JWT, short TTL + refresh. Works for web, future native, and agent-workspace clients with no shared session store.</div>
-                      <div class="conseq"><div class="conseq-in">
-                        <div class="cl">▸ IF YOU PICK B — DETERMINISTIC, APPLIED INSTANTLY</div>
-                        <div class="cline add"><span class="v">creates</span><span class="x">3 impl beads · signer · refresh flow · revlist</span></div>
-                        <div class="cline unb"><span class="v">unblocks</span><span class="x">bead-204 + 2 downstream remote-intake beads</span></div>
-                        <div class="cline fore"><span class="v">forecloses</span><span class="x">trivial instant server-side revoke (mitigated)</span></div>
-                        <div class="det">Reversible window: <b>24h</b> · pure checkbox → no agent interprets</div>
-                      </div></div>
-                    </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
                   </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'4 steps')"><span class="rd"></span><span class="oc">4 discrete steps<small>full payoff, ~110s</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'2 steps')"><span class="rd"></span><span class="oc">Compress to 2<small>pair + combined capture/result, ~55s</small></span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'progressive')"><span class="rd"></span><span class="oc">Progressive (skip-anytime)<small>1 forced screen, rest optional</small></span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION — reconciler reads this</div>
+                      <div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Keep <mark>4 steps</mark> but make step 3→4 a single animated transition so it feels like <mark>2</mark>.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s1">
+                  <div class="du-q"><div class="du-tag">CALL · skip logic</div>
+                    <div class="du-ttl">Skip coordinator pairing if the env is already linked?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Yes — detect an existing coordinator token and <b>collapse to a one-line confirm</b>, don’t re-walk it.</span></div>
+                  </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'collapse')"><span class="rd"></span><span class="oc">Collapse to confirm<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'always')"><span class="rd"></span><span class="oc">Always walk it<small>safer, slower</small></span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Collapse, but show <mark>which</mark> coordinator it linked to.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s1">
+                  <div class="du-q"><div class="du-tag">CALL · scope cut</div>
+                    <div class="du-ttl">Voice capture in first-run?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt"><b>Defer</b> — text only in the cold path; voice is a returning-user affordance.</span></div>
+                  </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'defer')"><span class="rd"></span><span class="oc">Defer voice<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'include')"><span class="rd"></span><span class="oc">Include from day one</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Defer, but leave the mic icon visible &amp; disabled with a tooltip.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s1">
+                  <div class="du-q"><div class="du-tag">CALL · payoff</div>
+                    <div class="du-ttl">Seed a sample idea so the dossier payoff is guaranteed?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Yes — ship a canned "add a dark-mode toggle" idea that flows to a read-only sample dossier so step 4 never falls flat.</span></div>
+                  </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'seed')"><span class="rd"></span><span class="oc">Seed sample idea<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'real')"><span class="rd"></span><span class="oc">Use their real first idea<small>authentic but can fail</small></span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Seed it, but label it clearly as a <mark>demo</mark> so it isn’t mistaken for real work.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
                 </div>
               </div>
 
-              <div class="sec">
-                <div class="sec-h">Blast radius</div>
-                <div class="blast">
-                  <div class="bx ok"><div class="bl">UNBLOCKS</div><div class="bv">3 impl tasks + remote-intake epic</div></div>
-                  <div class="bx"><div class="bl">REVERSIBLE</div><div class="bv">Yes — within 24h, both paths</div></div>
-                  <div class="bx"><div class="bl">WHY RECOMMEND B</div><div class="bv">Agent-workspace clients need stateless auth</div></div>
-                  <div class="bx"><div class="bl">RISK</div><div class="bv">B adds a revocation list to maintain</div></div>
+              <!-- SECTION 2 -->
+              <div class="dsec" id="s2">
+                <div class="dsec-h"><span class="sn">02</span><h2>Returning to a full Inbox</h2><span class="sct" id="hd-s2">0 / 3</span></div>
+                <div class="dsec-skim">The 80% case: you open it cold with several things queued. Ordering and bulk-clear are the whole game here.</div>
+                <div class="fullpic"><div class="fp-tag">▸ full picture</div>
+                  <p>This is where the product earns trust or loses it. If the queue is sorted by anything other than <b>tier-then-stakes</b>, you’ll learn to distrust the order and re-scan everything — which destroys the 60-second promise.</p>
+                  <p>The bulk "approve all recommended" control is contentious: it’s the fastest path but also the one most likely to rubber-stamp. The recommendation keeps it but makes its summary explicit before commit.</p>
+                </div>
+                <div class="secact"><button onclick="approveSection('s2')">✓ Approve all recommended in this section (3)</button></div>
+
+                <div class="du" data-state="open" data-sec="s2">
+                  <div class="du-q"><div class="du-tag">CALL · ordering</div>
+                    <div class="du-ttl">Inbox sort: tier-first or age-first?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt"><b>Tier-first</b> (blocking → pair → fyi → digest), age as tiebreak. Predictable beats chronological.</span></div>
+                  </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'tier-first')"><span class="rd"></span><span class="oc">Tier-first<small>predictable</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'age-first')"><span class="rd"></span><span class="oc">Age-first<small>chronological</small></span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'smart')"><span class="rd"></span><span class="oc">Learned ranking<small>opaque, adaptive</small></span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Tier-first, but float anything <mark>aging past its window</mark> to the top of its tier.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s2">
+                  <div class="du-q"><div class="du-tag">CALL · bulk action</div>
+                    <div class="du-ttl">Keep a global "approve all recommended"?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Keep it (it’s in this very dossier) but require a one-line <b>summary confirm</b> so it can’t silently rubber-stamp.</span></div>
+                  </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'keep+confirm')"><span class="rd"></span><span class="oc">Keep + summary confirm<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'section-only')"><span class="rd"></span><span class="oc">Per-section only<small>no global</small></span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'remove')"><span class="rd"></span><span class="oc">Remove it entirely</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Keep it but exclude anything tagged <mark>irreversible</mark> from the bulk sweep.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s2">
+                  <div class="du-q"><div class="du-tag">CALL · default</div>
+                    <div class="du-ttl">Digest roll-up: collapsed or expanded by default?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt"><b>Collapsed</b> — it’s informational; one line, tap to expand.</span></div>
+                  </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'collapsed')"><span class="rd"></span><span class="oc">Collapsed<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'expanded')"><span class="rd"></span><span class="oc">Expanded</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Collapsed, unless it contains a <mark>reverted</mark> auto-decision.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
                 </div>
               </div>
 
-              <div class="sec">
-                <div class="sec-h">Edit the recommendation · the doc is the form</div>
-                <div class="editbox">
-                  <div class="eh"><span>RECONCILER READS YOUR EDITS</span><span class="pen">✎ tap to edit</span></div>
-                  <div class="recline" contenteditable="true" spellcheck="false">Go with <mark>B (signed token)</mark>, TTL <mark>15&nbsp;min</mark>, refresh rotation on. Defer the revocation list to a fast-follow bead.</div>
+              <!-- SECTION 3 -->
+              <div class="dsec" id="s3">
+                <div class="dsec-h"><span class="sn">03</span><h2>Empty / healthy state</h2><span class="sct" id="hd-s3">0 / 2</span></div>
+                <div class="dsec-skim">The reward state. An empty Inbox is the product working — it should feel earned, not broken.</div>
+                <div class="fullpic"><div class="fp-tag">▸ full picture</div>
+                  <p>Most apps treat empty as failure. Here it’s the <b>thesis made visible</b>: nothing needs you because the machine is handling it. The copy and a faint activity ticker do the emotional work.</p>
                 </div>
-                <textarea class="note" rows="2" placeholder="Freeform note (optional) — a reconciler agent interprets only if you edit or write here…"></textarea>
+                <div class="secact"><button onclick="approveSection('s3')">✓ Approve all recommended in this section (2)</button></div>
+
+                <div class="du" data-state="open" data-sec="s3">
+                  <div class="du-q"><div class="du-tag">CALL · copy · editable</div>
+                    <div class="du-ttl">Empty-Inbox line</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">"<b>Nothing needs you. The pipeline is flowing.</b>" — tap Edit to rewrite it in your voice.</span></div>
+                  </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'flowing')"><span class="rd"></span><span class="oc">"Nothing needs you. The pipeline is flowing."<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'clear')"><span class="rd"></span><span class="oc">"All clear."<small>terse</small></span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'none')"><span class="rd"></span><span class="oc">No copy, just a mark</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT — this becomes the live string</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Nothing needs you. <mark>Go do something else.</mark></div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s3">
+                  <div class="du-q"><div class="du-tag">CALL · empty content</div>
+                    <div class="du-ttl">Show a faint machine-activity ticker on empty?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Yes — one slate line ("impl · 2 running · docs auto-passed") so empty proves <i>activity</i>, not death.</span></div>
+                  </div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'ticker')"><span class="rd"></span><span class="oc">Faint activity ticker<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'nothing')"><span class="rd"></span><span class="oc">Truly empty<small>maximally calm</small></span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Ticker, but only show it if something ran in the <mark>last hour</mark>.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
               </div>
+
+              <!-- SECTION 4 -->
+              <div class="dsec" id="s4">
+                <div class="dsec-h"><span class="sn">04</span><h2>Cross-cutting calls</h2><span class="sct" id="hd-s4">0 / 5</span></div>
+                <div class="dsec-skim">Decisions that touch every screen — colour law, notification copy, entry points, failure surfacing, length cap.</div>
+                <div class="fullpic"><div class="fp-tag">▸ full picture</div>
+                  <p>These are the constraints the rest of the design hangs off. They’re bundled so you can ratify the system’s spine in one motion rather than re-litigating it per screen.</p>
+                </div>
+                <div class="secact"><button onclick="approveSection('s4')">✓ Approve all recommended in this section (5)</button></div>
+
+                <div class="du" data-state="open" data-sec="s4">
+                  <div class="du-q"><div class="du-tag">CALL · colour law</div><div class="du-ttl">Amber = "needs you", reserved everywhere</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Ratify it as a hard rule — amber never decorates, only signals you.</span></div></div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'hard rule')"><span class="rd"></span><span class="oc">Hard rule<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'guideline')"><span class="rd"></span><span class="oc">Strong guideline</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Hard rule, plus a lint check that <mark>fails CI</mark> on stray amber.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s4">
+                  <div class="du-q"><div class="du-tag">CALL · notifications</div><div class="du-ttl">Push copy = the one-line ask only</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Keep — notifications triage, never carry content. Body = TL;DR, deep-link in.</span></div></div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'ask-only')"><span class="rd"></span><span class="oc">Ask only<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'ask+actions')"><span class="rd"></span><span class="oc">Ask + inline actions</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Ask only, but allow a single <mark>"approve rec"</mark> action on blocking pushes.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s4">
+                  <div class="du-q"><div class="du-tag">CALL · entry point</div><div class="du-ttl">Where do pair-sessions get launched from?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Both the Inbox row and the Board card — never a third surface.</span></div></div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'both')"><span class="rd"></span><span class="oc">Inbox + Board<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'inbox-only')"><span class="rd"></span><span class="oc">Inbox only</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Both, and resumable if I <mark>drop mid-session</mark>.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s4">
+                  <div class="du-q"><div class="du-tag">CALL · failure surfacing</div><div class="du-ttl">Silent failures louder than loud ones?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Yes — loud failures self-heal; route silent (TOOL_ERROR) ones to timed-fyi, not digest.</span></div></div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'louder')"><span class="rd"></span><span class="oc">Silent → timed-fyi<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'same')"><span class="rd"></span><span class="oc">Treat all the same</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">Yes — and badge them on the Board strip with a <mark>distinct icon</mark>.</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+
+                <div class="du" data-state="open" data-sec="s4">
+                  <div class="du-q"><div class="du-tag">CALL · constraint</div><div class="du-ttl">Hard cap onboarding at ≤4 screens?</div>
+                    <div class="du-rec"><span class="rl">REC</span><span class="rt">Yes — a budget the agent must design within; anything bigger gates back to you.</span></div></div>
+                  <div class="du-acts">
+                    <button class="k b-app" onclick="duAct(this,'approve')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>Approve</button>
+                    <button class="k" onclick="duAct(this,'options')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8h13M7 12h13M7 16h13M3 8h.01M3 12h.01M3 16h.01" stroke-linecap="round"/></svg>Options</button>
+                    <button class="k" onclick="duAct(this,'edit')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 6l4 4M4 20l1-4 11-11 3 3-11 11-4 1z" stroke-linejoin="round"/></svg>Edit</button>
+                    <button class="k" onclick="duAct(this,'react')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 01-11.5 7.2L4 20l.8-5.5A8 8 0 1121 12z" stroke-linejoin="round"/></svg>React</button>
+                  </div>
+                  <div class="du-expand"><div class="du-expand-in">
+                    <div class="du-sub du-opts"><div class="ol">PICK A DIFFERENT OPTION</div>
+                      <div class="opt-chip" onclick="pickOpt(this,'4cap')"><span class="rd"></span><span class="oc">≤4 screens<small>recommended</small></span><span class="recbadge">REC</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'6cap')"><span class="rd"></span><span class="oc">≤6 screens</span></div>
+                      <div class="opt-chip" onclick="pickOpt(this,'nocap')"><span class="rd"></span><span class="oc">No cap</span></div>
+                    </div>
+                    <div class="du-sub du-editwrap"><div class="el">EDIT THE RECOMMENDATION</div><div class="du-edit" contenteditable="true" spellcheck="false" oninput="markEdited(this)">≤4, measured as <mark>screens you must act on</mark> (skippables don’t count).</div></div>
+                    <div class="du-sub du-note-wrap"><textarea class="du-note" rows="2" placeholder="Your reaction or correction…" oninput="markReacted(this)"></textarea></div>
+                  </div></div>
+                  <div class="du-resolved"><span class="rico"></span><span class="rmsg"></span><span class="change" onclick="duAct(this,'reopen')">change</span></div>
+                </div>
+              </div>
+
             </div>
-            <div class="dock">
-              <button class="btn ghost" onclick="toast('Your “no” is as cheap as your “yes” — never a penalty path')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
-              </button>
-              <button class="btn prime" id="approveBtn" onclick="go('confirm')">
+            <div class="ddock">
+              <div class="sum" id="dsum">Skim it, then resolve in any mix. <b>14 open</b> · untouched calls <span class="hold">hard-block</span> the gate.</div>
+              <button class="submit" id="dsubmit" onclick="go('confirm')">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                <span id="approveLbl">Approve B</span>
+                <span id="dsubmitLbl">Submit</span>
               </button>
             </div>
           </section>
@@ -707,16 +1079,14 @@
           <section class="view" id="v-confirm">
             <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
             <div class="confirm">
-              <div class="seal">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12l5 5L20 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </div>
-              <h2>It landed.</h2>
-              <p class="ack">You don’t need to go check. <b>Approved B · created 3 impl tasks · the runner already picked up the first.</b></p>
-              <div class="receipt">
-                <div><span class="ok">✓</span> consequence block applied — deterministic</div>
-                <div><span class="ok">✓</span> bead-204 → unblocked → stage:impl</div>
-                <div><span class="ok">✓</span> 3 impl beads created &amp; on the Board</div>
-                <div><span class="ok">✓</span> runner picked up signer-impl · running</div>
+              <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12l5 5L20 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <h2>One pass. Whole stage cleared.</h2>
+              <p class="ack">You don’t need to go check. <b>The ux gate is resolved and design is unblocked.</b></p>
+              <div class="receipt" id="confReceipt">
+                <div><span class="ok">✓</span> <span id="cf-app">11</span> recommendations approved — applied deterministically</div>
+                <div><span class="ok">✓</span> <span id="cf-pick">1</span> alternative picked · <span id="cf-edit">2</span> edited → reconciler</div>
+                <div><span class="ok">✓</span> bead-188 ux→design · 5 deps unblocked</div>
+                <div><span class="am">↻</span> edits routed to the reconciler · follow-up only if it opens a new Q</div>
               </div>
               <div class="auto"><span class="pd" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--mint)"></span> returning to Inbox · 1 left</div>
             </div>
@@ -725,14 +1095,10 @@
           <!-- ===================== CAPTURE ===================== -->
           <section class="view" id="v-capture">
             <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
-            <div class="apphead">
-              <button class="back" onclick="go('board')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Close
-              </button>
-            </div>
+            <div class="apphead"><button class="back" onclick="go('board')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Close</button></div>
             <div class="cap">
               <div class="ch">What do you want?</div>
-              <div class="cs">~5 seconds of effort. An enricher agent pulls the project context, dedups against existing beads, and scopes it.</div>
+              <div class="cs">~5 seconds of effort. An enricher agent pulls project context, dedups against existing beads, and scopes it.</div>
               <div class="ideabox">
                 <textarea placeholder="Type or speak a raw thought…&#10;e.g. “the dossier should remember which option I leaned toward last time”"></textarea>
                 <button class="mic" onclick="toast('voice → text · ~5s of effort')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3" stroke-linecap="round"/></svg></button>
@@ -748,38 +1114,22 @@
               <div class="presets">
                 <div class="pre on" onclick="pre(this)">
                   <div class="pi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-                  <div>
-                    <div class="pt">Send it down the pipeline</div>
-                    <div class="pd">Maximally autonomous. No gate until a worker genuinely can’t proceed — then a dossier.</div>
-                    <div class="dials"><span>entry: idea</span><span>gate: until-stuck</span></div>
-                  </div>
+                  <div><div class="pt">Send it down the pipeline</div><div class="pd">Maximally autonomous. No gate until a worker genuinely can’t proceed — then a dossier.</div><div class="dials"><span>entry: idea</span><span>gate: until-stuck</span></div></div>
                 </div>
                 <div class="pre" onclick="pre(this)">
                   <div class="pi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="9" r="3"/><circle cx="17" cy="15" r="3"/><path d="M3 20a6 6 0 0112 0M14 9h6" stroke-linecap="round"/></svg></div>
-                  <div>
-                    <div class="pt">I want to go over the UI with an agent</div>
-                    <div class="pd">Enters at <i>ux</i> as a collaborative session — scheduled into your Inbox as “ready to pair”.</div>
-                    <div class="dials"><span>entry: ux</span><span>gate: collaborative</span></div>
-                  </div>
+                  <div><div class="pt">I want to go over the UI with an agent</div><div class="pd">Enters at <i>ux</i> as a collaborative session — scheduled into your Inbox as “ready to pair”.</div><div class="dials"><span>entry: ux</span><span>gate: collaborative</span></div></div>
                 </div>
                 <div class="premore">+ more presets added as real usage reveals them</div>
               </div>
-              <button class="sendbtn" onclick="go('board');toast('Enricher scoping in claude-tools · bead drafting…')">
-                Send to enricher
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l16-7-7 16-2-7-7-2z" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </button>
+              <button class="sendbtn" onclick="go('board');toast('Enricher scoping in claude-tools · bead drafting…')">Send to enricher<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l16-7-7 16-2-7-7-2z" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
           </section>
 
           <!-- ===================== CAPACITY ===================== -->
           <section class="view" id="v-capacity">
             <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
-            <div class="apphead">
-              <button class="back" onclick="go('board')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Board
-              </button>
-              <div class="t" style="font-size:18px">Capacity</div>
-            </div>
+            <div class="apphead"><button class="back" onclick="go('board')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Board</button><div class="t" style="font-size:18px">Capacity</div></div>
             <div class="scroll">
               <div class="capa">
                 <div class="arcs">
@@ -788,27 +1138,15 @@
                 </div>
                 <div class="sparepanel">
                   <div class="sh">Spare-cycles envelope · day 4 of 7</div>
-                  <div class="sx">Linear daily ramp — 100% ÷ 7 = <b>14.2%/day</b>. Today’s line sits at <b>51%</b>; actual 7d use is 44%. Low-priority work backfills the gap without ever starving the weekly cap.</div>
+                  <div class="sx">Linear daily ramp — 100% ÷ 7 = <b>14.2%/day</b>. Today’s line sits at <b>51%</b>; actual 7d use is 44%. Low-priority work backfills the gap without starving the weekly cap.</div>
                   <div class="ramp"><div class="actual" data-w="44"></div><div class="line" style="left:51%"></div></div>
                   <div class="rampk"><span>day 1 · 14%</span><span>now · day 4</span><span>day 7 · 100%</span></div>
                 </div>
                 <div class="projhd">Per-project mode · you control · honest state</div>
-                <div class="proj">
-                  <div class="pn"><div class="nm">claude-tools</div><div class="st">running · 2 workers · hard-ceiling gated</div></div>
-                  <div class="modeswitch"><span class="on full" onclick="mode(this,'full')">full</span><span onclick="mode(this,'spare')">spare</span><span onclick="mode(this,'paused')">pause</span></div>
-                </div>
-                <div class="proj">
-                  <div class="pn"><div class="nm">beads-runner</div><div class="st">spare-only · backfilling under today’s line</div></div>
-                  <div class="modeswitch"><span onclick="mode(this,'full')">full</span><span class="on spare" onclick="mode(this,'spare')">spare</span><span onclick="mode(this,'paused')">pause</span></div>
-                </div>
-                <div class="proj">
-                  <div class="pn"><div class="nm">site</div><div class="st">stopping… → paused (agent downgraded · blocked on you)</div></div>
-                  <div class="modeswitch"><span onclick="mode(this,'full')">full</span><span onclick="mode(this,'spare')">spare</span><span class="on paused" onclick="mode(this,'paused')">pause</span></div>
-                </div>
-                <div class="trustnote">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z" stroke-linejoin="round"/></svg>
-                  <div><b>Trust boundary.</b> An agent may downgrade or pause its <i>own</i> environment to save cycles. Only <b>you</b> can promote a project back to <b>full</b>.</div>
-                </div>
+                <div class="proj"><div class="pn"><div class="nm">claude-tools</div><div class="st">running · 2 workers · hard-ceiling gated</div></div><div class="modeswitch"><span class="on full" onclick="mode(this,'full')">full</span><span onclick="mode(this,'spare')">spare</span><span onclick="mode(this,'paused')">pause</span></div></div>
+                <div class="proj"><div class="pn"><div class="nm">beads-runner</div><div class="st">spare-only · backfilling under today’s line</div></div><div class="modeswitch"><span onclick="mode(this,'full')">full</span><span class="on spare" onclick="mode(this,'spare')">spare</span><span onclick="mode(this,'paused')">pause</span></div></div>
+                <div class="proj"><div class="pn"><div class="nm">site</div><div class="st">stopping… → paused (agent downgraded · blocked on you)</div></div><div class="modeswitch"><span onclick="mode(this,'full')">full</span><span onclick="mode(this,'spare')">spare</span><span class="on paused" onclick="mode(this,'paused')">pause</span></div></div>
+                <div class="trustnote"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z" stroke-linejoin="round"/></svg><div><b>Trust boundary.</b> An agent may downgrade or pause its <i>own</i> environment to save cycles. Only <b>you</b> can promote a project back to <b>full</b>.</div></div>
               </div>
             </div>
           </section>
@@ -816,48 +1154,22 @@
           <!-- ===================== FAILURE ===================== -->
           <section class="view" id="v-failure">
             <div class="statusbar"><span>9:41</span><span class="sig"><svg viewBox="0 0 18 11" fill="currentColor"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1" opacity=".4"/></svg></span></div>
-            <div class="apphead">
-              <button class="back" onclick="go('board')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Board
-              </button>
-              <div class="t" style="font-size:18px;color:var(--coral)">Failure</div>
-            </div>
+            <div class="apphead"><button class="back" onclick="go('board')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg> Board</button><div class="t" style="font-size:18px;color:var(--coral)">Failure</div></div>
             <div class="scroll">
               <div class="fl">
-                <div class="fclass">
-                  <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5M12 17h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" stroke-linejoin="round"/></svg></div>
-                  <div><div class="ft">WATCHDOG_KILL</div><div class="fp">Stuck 10 min with no output. The runner killed it.</div></div>
-                </div>
+                <div class="fclass"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5M12 17h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" stroke-linejoin="round"/></svg></div><div><div class="ft">WATCHDOG_KILL</div><div class="fp">Stuck 10 min with no output. The runner killed it.</div></div></div>
                 <div class="ftier">▸ digest tier — self-heals via an analysis task. Synced metadata, always visible remote.</div>
-
-                <div class="sec-h" style="padding:0 2px;color:var(--slate)">Tier 2 · the human-worded summary</div>
+                <div class="sec-h" style="padding:0 2px;color:var(--slate);font-size:10px;letter-spacing:.3em;text-transform:uppercase">Tier 2 · human-worded summary</div>
                 <div style="padding:14px 2px 0">
-                  <div class="step done"><div class="stepn">1</div>
-                    <div class="stepcard"><div class="sct"><span>What happened</span><span class="t">attempt 2/3 · 1h ago</span></div>
-                      <div class="scb">Worker on <b>bead-191 · dossier reconciler</b> produced no stream output for 10 minutes. Watchdog tripped and killed the process clean.</div>
-                    </div>
-                  </div>
-                  <div class="step done"><div class="stepn">2</div>
-                    <div class="stepcard"><div class="sct"><span>What the runner did next</span><span class="t">auto</span></div>
-                      <div class="scb">Re-queued with fresh context, then spawned an analysis task — a blocking child bead. It already appears in the Board’s Waiting lane and opens as a normal dossier.</div>
-                      <div class="runnernote">Runner: watchdog kill @attempt2 → requeue<br>Runner: spawned <span>analysis bead-191a</span> (blocking child)</div>
-                    </div>
-                  </div>
-                  <div class="step"><div class="stepn">3</div>
-                    <div class="stepcard"><div class="sct"><span>Where it is now</span><span class="t">retry 3/3 queued</span></div>
-                      <div class="scb">Waiting on a spare cycle in <span class="t">beads-runner</span>. No action needed unless retry 3 also fails — then it escalates to a dossier.</div>
-                    </div>
-                  </div>
+                  <div class="step done"><div class="stepn">1</div><div class="stepcard"><div class="sct"><span>What happened</span><span class="t">attempt 2/3 · 1h ago</span></div><div class="scb">Worker on <b>bead-191 · dossier reconciler</b> produced no stream output for 10 minutes. Watchdog tripped and killed the process clean.</div></div></div>
+                  <div class="step done"><div class="stepn">2</div><div class="stepcard"><div class="sct"><span>What the runner did next</span><span class="t">auto</span></div><div class="scb">Re-queued with fresh context, then spawned an analysis task — a blocking child bead that appears in the Waiting lane.</div><div class="runnernote">Runner: watchdog kill @attempt2 → requeue<br>Runner: spawned <span>analysis bead-191a</span></div></div></div>
+                  <div class="step"><div class="stepn">3</div><div class="stepcard"><div class="sct"><span>Where it is now</span><span class="t">retry 3/3 queued</span></div><div class="scb">Waiting on a spare cycle. No action unless retry 3 also fails — then it escalates to a dossier.</div></div></div>
                 </div>
-
-                <div class="sec-h" style="padding:18px 2px 14px;color:var(--slate)">Tier 3 · forensic</div>
+                <div class="sec-h" style="padding:18px 2px 14px;color:var(--slate);font-size:10px;letter-spacing:.3em;text-transform:uppercase">Tier 3 · forensic</div>
                 <div class="forensic">
                   <div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3" stroke-linecap="round"/></svg> Across a security boundary</div>
                   <p>The raw <b>stream-json</b> holds file contents and model output — it never rides the beads sync. Pull it <b>on demand, redacted</b> (tool sequence + errors + last turn; file bodies stripped). Never persisted server-side.</p>
-                  <button class="fetchbtn" id="fetchBtn" onclick="fetchForensic()">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    <span id="fetchLbl">Fetch redacted forensic log</span>
-                  </button>
+                  <button class="fetchbtn" id="fetchBtn" onclick="fetchForensic()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="fetchLbl">Fetch redacted forensic log</span></button>
                   <div class="redacted" id="redout">
                     <div class="rh">— REDACTED · tool_use seq + errors + last assistant turn —</div>
                     <div class="cl">tool_use → Read(beads-runner/reconciler.ts)</div>
@@ -877,64 +1189,63 @@
       </div>
     </div>
 
-    <!-- ============ CAPTION RAIL ============ -->
     <aside class="rail">
       <div class="rt">Now showing</div>
       <div class="flowstack" id="flowstack">
         <div class="flowcard active" data-for="board">
           <span class="fc-tag">● Flow E</span>
           <h3>The Board — situational awareness</h3>
-          <p>Its #1 job isn’t task management. In 5 seconds it answers: <i>is anything waiting on me, and is the machine healthy?</i> Status strip, the pinned amber Waiting lane, then the lifecycle spine.</p>
-          <p class="pr">Built as a read model over beads — local and remote are the same view.</p>
+          <p>In 5 seconds: <i>is anything waiting on me, and is the machine healthy?</i> Status strip, the pinned amber Waiting lane, then the lifecycle spine.</p>
+          <p class="pr">Read model over beads — local and remote are the same view.</p>
         </div>
         <div class="flowcard" data-for="inbox">
           <span class="fc-tag">● Cross-cut #1</span>
           <h3>The Inbox is the product</h3>
-          <p>One ranked, batched queue — decisions and ideas, in and out. Amber blocks, mint is a pair session, sky is timed-fyi, slate is a digest roll-up. Never pinged twice for what could be one digest.</p>
+          <p>One ranked, batched queue. A blocking stage-gate dossier, a proactive overview to read, a pair session — each is one row, never a second ping.</p>
           <p class="pr">Your “no” must be as cheap as your “yes.”</p>
         </div>
         <div class="flowcard" data-for="dossier">
-          <span class="fc-tag">● Flow B — the heart</span>
-          <h3>Every ask is a standalone dossier</h3>
-          <p>Pass 1 dedup → Pass 2 framing → Pass 3 readability → Pass 4 respondability. TL;DR, options with pre-declared consequences, blast radius, an inline-editable recommendation. The doc <i>is</i> the form.</p>
-          <p class="pr">Pure checkbox → deterministic &amp; instant. Reconciler agent only for freeform.</p>
+          <span class="fc-tag">● Flow B + F — the core</span>
+          <h3>The dossier is the whole product</h3>
+          <p>Not a one-question popup — a <b>skimmable technical document</b> that resolves a whole stage. Contextual TL;DR (what · where it fits · what I need), a jump index with live counts, "where it sits" + per-flow diagrams, and a <b>Skim ⇄ Full</b> toggle so headers/diagrams suffice — or expand the full argument.</p>
+          <p>Every call carries a recommendation and four affordances: <b>Approve</b> (one tap), <b>pick an alternative</b>, <b>edit the recommendation</b>, or <b>react</b>. Mix freely across 14 calls, bulk-approve the rest, submit once. The same machinery, in <b>overview</b> mode, is the proactive "how it fits together" brief (Flow F).</p>
+          <p class="pr">Checkbox → deterministic &amp; instant. Reconciler only reads your edits.</p>
         </div>
         <div class="flowcard" data-for="confirm">
           <span class="fc-tag">● Flow B · step 6</span>
-          <h3>A receipt, so you trust it landed</h3>
-          <p>A lightweight ack so you never have to go back and check. The consequence block was applied deterministically; the runner already moved.</p>
+          <h3>One pass cleared the stage</h3>
+          <p>A receipt of the whole batch — approved / picked / edited counts, what unblocked, where edits went. You never go back to check.</p>
           <p class="pr">Confirm — so you trust it landed without checking.</p>
         </div>
         <div class="flowcard" data-for="capture">
           <span class="fc-tag">● Flow A — intake</span>
           <h3>Raw thought → pipelined work</h3>
-          <p>~5s of effort: one box, a project (or “let it pick”), and a tapped entry-intent preset. Each preset is a named bundle of two dials — entry stage + gate aggressiveness. An enricher agent dedups and scopes it.</p>
+          <p>~5s: one box, a project (or “let it pick”), a tapped entry-intent preset (entry stage + gate aggressiveness). An enricher dedups and scopes it.</p>
           <p class="pr">You declare entry intent. The system never guesses the size.</p>
         </div>
         <div class="flowcard" data-for="capacity">
           <span class="fc-tag">● Flow C — capacity</span>
           <h3>One usage authority, honest state</h3>
-          <p>5h ceiling, 7d budget, today’s spare line vs. actual. Per-project mode is glanceable and remotely flippable. “stopping…” renders honestly — never optimistic.</p>
+          <p>5h ceiling, 7d budget, today’s spare line vs. actual. Per-project mode is flippable; “stopping…” renders honestly — never optimistic.</p>
           <p class="pr">Agents downgrade their own env; only you promote to full.</p>
         </div>
         <div class="flowcard" data-for="failure">
           <span class="fc-tag">● Flow G — failure</span>
           <h3>Progressive disclosure across a boundary</h3>
-          <p>Glance → human-worded summary → forensic. Metadata rides the sync and is always visible. The raw stream-json never does — fetched on demand, redacted, never persisted.</p>
-          <p class="pr">Surface the silent failures loudest. Loud ones self-heal; silent ones rot.</p>
+          <p>Glance → human-worded summary → forensic. Metadata always syncs; the raw stream-json never does — fetched on demand, redacted, never persisted.</p>
+          <p class="pr">Surface the silent failures loudest. Loud ones self-heal.</p>
         </div>
       </div>
       <div class="navhint">
-        <b>Try it →</b> Tap the amber card to open the dossier. Use the bottom nav to switch the two surfaces. The <b>＋</b> captures an idea. The status strip opens capacity; the red bead opens a failure.
+        <b>Try the dossier →</b> open the amber card, hit <b>SKIM/FULL</b>, tap a section in the index. On any call: Approve, Options, Edit, React. Use <b>“approve all”</b> then change a few, watch the counter and submit summary. The 2nd Inbox row opens it in proactive <b>overview</b> mode.
       </div>
     </aside>
   </div>
 
-  <!-- ============ DESKTOP BOARD ============ -->
   <div class="deck">
     <div class="deck-h">
       <h2>Same read model, <em>wider glass</em></h2>
-      <p class="note">“Remote” isn’t a new datastore — it’s the same beads sync rendered at desk width. The amber lane stays pinned to the top no matter the viewport.</p>
+      <p class="note">“Remote” isn’t a new datastore — the same beads sync at desk width. The amber lane stays pinned no matter the viewport.</p>
     </div>
     <div class="dboard">
       <div class="dstrip">
@@ -943,22 +1254,16 @@
         <div class="grp"><span class="k">7D</span><b>44%</b><span class="mini"><i style="width:44%;background:var(--mint)"></i><span style="position:absolute;left:51%;top:-2px;bottom:-2px;width:2px;background:var(--amber)"></span></span><span style="color:var(--amber);font-size:10px">spare 51%</span></div>
         <div class="sep"></div>
         <div class="grp"><span class="k">RUNNERS</span><b>3</b><span style="color:var(--mint);font-size:11px">up</span></div>
-        <div class="alert">
-          <span class="a amber">⚠ 2 decisions</span>
-          <span class="a silent">⚠ 1 silent fail</span>
-        </div>
+        <div class="alert"><span class="a amber">⚠ 2 decisions</span><span class="a silent">⚠ 1 silent fail</span></div>
       </div>
       <div class="dwait">
         <div class="wlbl"><span class="pulse"></span> Waiting on you</div>
-        <div class="witem" onclick="document.getElementById('screen').scrollIntoView({behavior:'smooth',block:'center'});go('dossier')">
-          <span class="qn">Auth: cookie session or signed token?</span>
-          <span class="mt">bead-204 · P1</span>
-          <span class="sp">2h · stops 3 impl tasks</span>
+        <div class="witem" onclick="document.getElementById('screen').scrollIntoView({behavior:'smooth',block:'center'});openDossier('decide')">
+          <span class="qn">Onboarding UX — 3 flows, 14 calls</span>
+          <span class="mt">bead-188 · ux→design</span>
+          <span class="sp">18m · 5 deps blocked</span>
         </div>
-        <div class="resolve" onclick="document.getElementById('screen').scrollIntoView({behavior:'smooth',block:'center'});go('dossier')">
-          Resolve · ~45s
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </div>
+        <div class="resolve" onclick="document.getElementById('screen').scrollIntoView({behavior:'smooth',block:'center'});openDossier('decide')">Resolve · skim ~90s<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       </div>
       <div class="dcols">
         <div class="dcol"><div class="dch">idea<span>3</span></div>
@@ -968,11 +1273,11 @@
           <span class="gatetag auto">↳ auto → ux</span>
         </div>
         <div class="dcol" data-gate><div class="dch">ux<span>1</span></div>
-          <div class="dbead" onclick="go('dossier')"><div class="dbt">Onboarding UX — pair session</div><div class="dbf"><span class="l">P2</span><span>5h</span></div></div>
-          <span class="gatetag">GATE · you (pair)</span>
+          <div class="dbead" onclick="openDossier('decide')"><div class="dbt">Onboarding UX — 14-call dossier</div><div class="dbf"><span class="l" style="color:var(--amber)">⏸ gate</span><span>18m</span></div></div>
+          <span class="gatetag">GATE · you (14 calls)</span>
         </div>
         <div class="dcol" data-gate><div class="dch">design<span>1</span></div>
-          <div class="dbead" onclick="go('dossier')"><div class="dbt">Auth: cookie vs token?</div><div class="dbf"><span class="l" style="color:var(--amber)">⏸ P1</span><span>2h</span></div></div>
+          <div class="dbead" onclick="openDossier('decide')"><div class="dbt">Auth: cookie vs token?</div><div class="dbf"><span class="l" style="color:var(--amber)">⏸ P1</span><span>2h</span></div></div>
           <span class="gatetag">GATE · you (big)</span>
         </div>
         <div class="dcol"><div class="dch">impl<span>3</span></div>
@@ -1000,7 +1305,7 @@
 
   <footer>
     <span><b>Beads Runner</b> · attention-router UX · mocks for beads-runner/UX-DESIGN.md</span>
-    <span>Fraunces · Newsreader · IBM&nbsp;Plex&nbsp;Mono · <b>two surfaces only</b></span>
+    <span>Fraunces · Newsreader · IBM&nbsp;Plex&nbsp;Mono · the dossier is the product</span>
   </footer>
 </div>
 
@@ -1018,14 +1323,123 @@
     document.querySelectorAll('.flowcard').forEach(f=>f.classList.toggle('active', f.dataset.for===id));
     if(id==='capacity') setTimeout(animateGauges,140);
     if(id==='board') setTimeout(animateTracks,150);
-    if(id==='confirm') setTimeout(()=>{ if(cur==='confirm') go('inbox'); },4400);
+    if(id==='confirm'){ writeReceipt(); setTimeout(()=>{ if(cur==='confirm') go('inbox'); },4800); }
   }
 
-  function pick(el){
-    el.parentElement.querySelectorAll('.opt').forEach(o=>o.classList.remove('sel'));
-    el.classList.add('sel');
-    document.getElementById('approveLbl').textContent='Approve '+el.dataset.opt;
+  function openDossier(mode){
+    const d=document.getElementById('v-dossier');
+    d.classList.toggle('m-overview', mode==='overview');
+    d.classList.toggle('m-decide', mode!=='overview');
+    if(mode==='overview'){ d.classList.remove('d-skim'); d.classList.add('d-full'); setDens('full'); }
+    else { d.classList.remove('d-full'); d.classList.add('d-skim'); setDens('skim'); }
+    go('dossier');
+    recount();
   }
+
+  /* ---- density ---- */
+  function setDens(m){
+    document.getElementById('den-skim').classList.toggle('on',m==='skim');
+    document.getElementById('den-full').classList.toggle('on',m==='full');
+  }
+  function density(m){
+    const d=document.getElementById('v-dossier');
+    d.classList.toggle('d-full',m==='full');
+    d.classList.toggle('d-skim',m==='skim');
+    setDens(m);
+  }
+  function jump(id){
+    const el=document.getElementById(id);
+    if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+
+  /* ---- decision unit state machine ---- */
+  function setState(du,state,msg){
+    du.dataset.state=state;
+    du.classList.remove('x-open','show-opts','show-edit','show-react');
+    const r=du.querySelector('.du-resolved');
+    const ico=r.querySelector('.rico'), m=r.querySelector('.rmsg');
+    const map={approved:['✓','Approved the recommendation'],picked:['◆','Chose: '],edited:['✎','Edited — reconciler will read it'],reacted:['✎','Reaction recorded']};
+    if(state!=='open'){
+      ico.textContent=map[state][0];
+      m.textContent= msg || map[state][1];
+    }
+    recount();
+  }
+  function duAct(btn,action){
+    const du=btn.closest('.du');
+    if(action==='approve'){ setState(du,'approved'); return; }
+    if(action==='reopen'){ du.dataset.state='open'; du.classList.remove('x-open','show-opts','show-edit','show-react'); recount(); return; }
+    du.classList.add('x-open');
+    du.classList.remove('show-opts','show-edit','show-react');
+    if(action==='options') du.classList.add('show-opts');
+    if(action==='edit'){ du.classList.add('show-edit'); markEdited(du.querySelector('.du-edit')); }
+    if(action==='react') du.classList.add('show-react');
+  }
+  function pickOpt(chip,label){
+    const wrap=chip.closest('.du-opts');
+    wrap.querySelectorAll('.opt-chip').forEach(c=>c.classList.remove('sel'));
+    chip.classList.add('sel');
+    const du=chip.closest('.du');
+    setState(du,'picked','Chose: '+label);
+  }
+  function markEdited(node){ const du=node.closest('.du'); if(du.dataset.state!=='edited') setState(du,'edited'); }
+  function markReacted(node){ const du=node.closest('.du'); if(du.dataset.state!=='reacted'&&du.dataset.state!=='edited') setState(du,'reacted'); }
+
+  function approveAll(){
+    document.querySelectorAll('#v-dossier .du[data-state="open"]').forEach(du=>setState(du,'approved'));
+    toast('Approved all open recommendations — review the summary before submit');
+  }
+  function approveSection(secId){
+    document.querySelectorAll('#'+secId+' .du[data-state="open"]').forEach(du=>setState(du,'approved'));
+  }
+
+  function recount(){
+    const all=[...document.querySelectorAll('#v-dossier .du')];
+    const total=all.length;
+    let app=0,pick=0,edit=0,react=0,open=0;
+    all.forEach(du=>{const s=du.dataset.state; if(s==='approved')app++;else if(s==='picked')pick++;else if(s==='edited')edit++;else if(s==='reacted')react++;else open++;});
+    const resolved=total-open;
+    const fill=document.getElementById('progFill');
+    if(fill) fill.style.width=(resolved/total*100)+'%';
+    const pn=document.getElementById('progN'); if(pn) pn.textContent=resolved;
+    // per-section counts
+    ['s1','s2','s3','s4'].forEach(sid=>{
+      const us=[...document.querySelectorAll('#'+sid+' .du')];
+      const done=us.filter(d=>d.dataset.state!=='open').length;
+      const ct=document.getElementById('ct-'+sid), hd=document.getElementById('hd-'+sid);
+      const txt=done+'/'+us.length;
+      if(ct){ ct.textContent=txt; ct.classList.toggle('done',done===us.length); }
+      if(hd) hd.textContent=done+' / '+us.length;
+    });
+    // dock summary
+    const sum=document.getElementById('dsum');
+    const isOv=document.getElementById('v-dossier').classList.contains('m-overview');
+    if(resolved===0){
+      sum.textContent= isOv
+        ? 'Read-mostly. Touch only what looks wrong — silence auto-proceeds in 23h 20m.'
+        : 'Skim it, then resolve in any mix. 14 open · untouched calls hard-block the gate.';
+    } else {
+      const parts=[];
+      if(app) parts.push(app+' approved');
+      if(pick) parts.push(pick+' picked');
+      if(edit) parts.push(edit+' edited');
+      if(react) parts.push(react+' reacted');
+      sum.textContent = parts.join(' · ') + (open? ('  ·  '+open+' still '+(isOv?'unread':'open')) : '  ·  all '+total+' resolved');
+    }
+    const lbl=document.getElementById('dsubmitLbl');
+    if(lbl) lbl.textContent = isOv ? (open? 'Acknowledge' : 'Done') : (open? ('Submit '+resolved+'/'+total) : 'Submit all '+total);
+  }
+
+  function writeReceipt(){
+    const all=[...document.querySelectorAll('#v-dossier .du')];
+    let app=0,pick=0,edit=0;
+    all.forEach(du=>{const s=du.dataset.state; if(s==='approved')app++;else if(s==='picked')pick++;else if(s==='edited'||s==='reacted')edit++;});
+    if(app+pick+edit===0){ app=11; pick=1; edit=2; } // demo default if submitted untouched
+    document.getElementById('cf-app').textContent=app;
+    document.getElementById('cf-pick').textContent=pick;
+    document.getElementById('cf-edit').textContent=edit;
+  }
+
   function pchip(el){ el.parentElement.querySelectorAll('.pchip').forEach(c=>c.classList.remove('on')); el.classList.add('on'); }
   function pre(el){ el.parentElement.querySelectorAll('.pre').forEach(p=>p.classList.remove('on')); el.classList.add('on'); }
   function mode(el,m){
@@ -1042,11 +1456,7 @@
   function fetchForensic(){
     const lbl=document.getElementById('fetchLbl');
     lbl.textContent='Pulling over authed channel…';
-    setTimeout(()=>{
-      document.getElementById('redout').classList.add('show');
-      lbl.textContent='✓ Redacted log fetched · not persisted';
-      document.getElementById('fetchBtn').style.opacity='.6';
-    },950);
+    setTimeout(()=>{ document.getElementById('redout').classList.add('show'); lbl.textContent='✓ Redacted log fetched · not persisted'; document.getElementById('fetchBtn').style.opacity='.6'; },950);
   }
 
   let toastT;
@@ -1059,10 +1469,7 @@
   }
 
   function animateTracks(){
-    document.querySelectorAll('#v-board .track i').forEach(i=>{
-      i.style.width='0';
-      requestAnimationFrame(()=>requestAnimationFrame(()=>{ i.style.width=i.dataset.w+'%'; }));
-    });
+    document.querySelectorAll('#v-board .track i').forEach(i=>{ i.style.width='0'; requestAnimationFrame(()=>requestAnimationFrame(()=>{ i.style.width=i.dataset.w+'%'; })); });
   }
   function sweep(r){
     const target=+r.dataset.deg; let d=0;
@@ -1076,7 +1483,7 @@
   }
 
   window.addEventListener('load',()=>{
-    animateTracks();
+    animateTracks(); recount();
     ['.strip','.lane-hd','.waitcard','.spine'].forEach((s,i)=>{
       document.querySelectorAll('#v-board '+s).forEach(el=>{
         el.style.opacity=0; el.style.transform='translateY(14px)';
