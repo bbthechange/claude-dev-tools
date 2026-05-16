@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Beads Runner — Inbox</title>
+<!--
+  T6b (claude-tools-xre) — the Inbox + Flow-G: the DECISION surface
+  (UX Flow B/G). Cloudflare Pages app shell, reusing the T6a visual language
+  (NOT reimplementing the Board or the shell — anti-drift). Renders the §5
+  Dossier (body⊃items[]) — "the doc IS the form" (Flow B step 4) — with
+  per-Item approve/reject/pick/edit/freeform, partial resolution (AD7), the
+  step-6 ack, and Flow-G tier-1/2 failure visibility + §10.3 forensic fetch.
+  Reads ONLY the §4.5 projection + the §4 Dossier it points at; the per-Item
+  response is the one write (T5 owns apply/latch/S-2 reconcile, not the UI).
+  Visual direction: beads-runner/ux-mocks.html v1; the FROZEN INTERFACE.md v1
+  §5/§4.5/§10.3 DATA contract wins on any disagreement.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./inbox.css">
+</head>
+<body>
+  <main class="app" id="app" aria-live="polite">
+    <header class="apphead">
+      <button class="back" id="back" hidden aria-label="Back to Inbox">
+        ‹ Inbox
+      </button>
+      <div class="t"><span class="dot" id="dot"></span><span id="title">Inbox</span></div>
+      <div class="who" id="who" title="§9.1 constant principal (AD6; C7 later)">—</div>
+    </header>
+
+    <div class="scroll" id="scroll">
+      <p class="loading" id="loading">Reading the projection…</p>
+
+      <!-- ===================== INBOX LIST ===================== -->
+      <section id="v-list" hidden>
+        <p class="sub" id="list-sub"></p>
+        <div id="rows"></div>
+        <p class="empty" id="list-empty" hidden>Nothing needs you. The pipeline is flowing.</p>
+
+        <div class="flowg" id="flowg" hidden>
+          <div class="sl">FLOW G · failure visibility <span class="ln"></span></div>
+          <div id="fails"></div>
+        </div>
+      </section>
+
+      <!-- ===================== DOSSIER ===================== -->
+      <section id="v-dossier" hidden>
+        <div class="dmodebar">
+          <span class="badge" id="d-tier">—</span>
+          <span class="d-meta" id="d-meta"></span>
+          <span class="density">
+            <button id="den-skim" class="on" type="button">SKIM</button>
+            <button id="den-full" type="button">FULL</button>
+          </span>
+        </div>
+        <div class="d-progress"><span class="bar"><i id="prog"></i></span>
+          <span class="pc"><b id="progN">0</b> / <span id="progT">0</span> resolved</span></div>
+        <div class="fyi-banner" id="fyi-banner" hidden></div>
+
+        <div class="dhead">
+          <div class="eyer" id="d-eyer">DOSSIER</div>
+          <h1 id="d-title">—</h1>
+        </div>
+        <div class="tldr"><div class="l">TL;DR</div><p id="d-tldr"></p></div>
+
+        <div id="d-sections"></div>
+        <div id="d-diagrams"></div>
+        <details class="fulldetail"><summary>Full picture — if skim + diagrams weren't enough</summary>
+          <p id="d-full"></p></details>
+
+        <div class="items-hd">CALLS · resolve in any mix · your “no” is one tap</div>
+        <div id="d-items"></div>
+      </section>
+
+      <!-- ===================== CONFIRM / ACK ===================== -->
+      <section id="v-confirm" hidden>
+        <div class="seal">✓</div>
+        <h2 id="cf-h">One pass.</h2>
+        <p class="ack" id="cf-ack"></p>
+        <div class="receipt" id="cf-receipt"></div>
+        <button class="btn primary" id="cf-back" type="button">Back to Inbox</button>
+      </section>
+
+      <!-- ===================== FLOW G FAILURE ===================== -->
+      <section id="v-failure" hidden>
+        <div class="fclass" id="f-class"></div>
+        <div class="ftier" id="f-tier"></div>
+        <div class="f-sec">TIER 2 · human-worded summary · synced metadata</div>
+        <div id="f-notes"></div>
+        <div class="f-sec">TIER 3 · forensic · across a security boundary</div>
+        <div class="forensic">
+          <p id="f-forensic-note"></p>
+          <button class="btn" id="f-fetch" type="button">Fetch redacted forensic log</button>
+          <button class="btn ghost" id="f-dismiss" type="button" hidden>Dismiss (hard-delete now)</button>
+          <pre class="redout" id="f-redout" hidden></pre>
+        </div>
+      </section>
+
+      <section class="errbox" id="errbox" hidden>
+        <div class="err-h" id="err-h">Cannot render</div>
+        <p class="err-b" id="err-b"></p>
+      </section>
+    </div>
+
+    <footer class="foot">
+      <span id="foot-status">reads the projection · per-item response is the only write</span>
+      <span class="sep">·</span><span id="foot-updated">—</span>
+    </footer>
+  </main>
+
+  <!-- sticky submit dock (dossier only) -->
+  <div class="ddock" id="ddock" hidden>
+    <div class="sum" id="dsum"></div>
+    <button class="btn primary" id="dsubmit" type="button">Submit</button>
+  </div>
+
+  <div class="pop" id="pop"><span id="popmsg"></span></div>
+
+  <script src="./inbox-view.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
