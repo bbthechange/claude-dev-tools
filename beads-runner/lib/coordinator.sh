@@ -1,0 +1,437 @@
+# shellcheck shell=bash
+# beads-runner/lib/coordinator.sh — the hosted Coordinator SKELETON
+# (T4.1, claude-tools-ick). The foundation child of T4 (claude-tools-cbv);
+# every other T4 child binds onto the substrate this file stands up.
+#
+# WHAT THIS IS (DESIGN §2 "Coordinator" row; AD1; epic claude-tools-glk):
+#   The global serialization & decision authority (hosted, strong). This file
+#   is the SUBSTRATE ONLY: the hosted shell + the four §2 capabilities reachable
+#   as surfaces + the ONE §9.1 auth→principal chokepoint + the §4 record store.
+#   It deliberately contains NO arbitration, NO aggregation, NO reconcile
+#   semantics, NO dossier production — those are siblings (see ANTI-DRIFT).
+#
+# BINDS — INTERFACE.md v1 (FROZEN), the sections this file OWNS per §11:
+#   §2.1  — small strongly-consistent store: persist the §4 records with
+#           strong consistency for Lease + per-Item single-writer (the store
+#           serialises every write per (type,id) key).
+#   §2.2  — durable one-shot timer CAPABILITY SURFACE ONLY: fire(id)@T plus the
+#           S-6 'missed fire ⇒ degrade to fire-on-next-poll' contract. The
+#           Dossier-specific fire(dossier_id) wiring + the per-Item idempotency
+#           latch are T5 — NOT here (see ANTI-DRIFT).
+#   §2.3  — authed request endpoint, and §9.1 the ONE
+#           authenticate(request)→principal chokepoint: validate a bearer
+#           token's presence/validity, resolve the constant
+#           principal=PRINCIPAL_V1. No second auth path; no UI-vs-agent split
+#           (C4 seam). Every §4 write happens AFTER this step (no/invalid
+#           token ⇒ rejected BEFORE any write).
+#   §2.4  — deliver-desired-state-on-reconnect TRANSPORT: a poll returns the
+#           stored RunnerState.desired + any stored lease state. Reconciliation
+#           (desired-state mutation), not a durable command queue. The
+#           reconcile SEMANTICS + liveness derivation are T4.3, NOT here.
+#   §4    — STORE OWNER: schema persistence; §0.3 reject-unknown-higher
+#           schema_version; §9.1 principal-stamp on EVERY record (the resolved
+#           principal, never a hardcoded literal at the use site — C7).
+#   §9.1  — the chokepoint + the C4 seam captured-not-enforced: a
+#           RunnerState.desired change records last_desired_actor and is
+#           authorised through this ONE step with ALL actors treated equally.
+#           The §0.C-deferred downgrade/promote asymmetry is NOT enforced (no
+#           `if` on actor anywhere below).
+#
+# ANTI-DRIFT — MUST NOT TOUCH sibling surfaces (binds to INTERFACE.md v1):
+#   • lease ARBITRATION / generation fencing (§6.1/§4.4 acquire/renew/release
+#     precedence, the monotonic fencing token logic) — T4.2 (claude-tools-am8).
+#     This file only PERSISTS a Lease *record* like any other §4 record; it
+#     never arbitrates one.
+#   • capacity aggregation (§6.3/§6.2 capacity, ask-capacity) — T4.4.
+#   • RunnerState reconcile SEMANTICS + work-snapshot PROJECTION + S-1 liveness
+#     derivation (§4.2/§4.5/§2.4-semantics) — T4.3 (claude-tools-l9o). This
+#     file captures `desired`/`last_desired_actor` and round-trips the §4.5
+#     envelope; it derives NO `liveness`, runs NO desired↔actual reconcile.
+#   • forensic transient store (§10.3) — T4.5.
+#   • Dossier §5 body+items production + §2.2 fire(dossier_id) + per-Item latch
+#     (§4.1/§4.1.1/§5/§7.4) — T5. The store round-trips a Dossier *envelope*;
+#     it never GENERATES body/items and never implements the per-Item latch.
+#   • §4.5 projection RENDERING — T6a.
+#   Consumes T3's §1.1 UPWARD contract verbatim (the Local Agent reports up;
+#   this file is the down/serialisation side — it never reads a Keychain or a
+#   usage API, §1.1).
+#
+# PROVIDER-AGNOSTIC (§0.2, swappability guardrail). No Cloudflare primitive
+# appears in any surface below. The Cloudflare realisation is non-normative
+# (INTERFACE.md Appendix A) — see the APPENDIX-A map at the foot of this file.
+# The skeleton realises the store on the local filesystem; a provider swap
+# changes only the co__store_* / co__timer_* internals, never a signature.
+#
+# Safe to `source` under `set -euo pipefail`: only function/constant
+# definitions below; every fallible call is guarded. Frozen numeric constants
+# are env-overridable lookups whose literal default EQUALS the INTERFACE.md
+# §0.5 table value (never a competing normative value).
+
+# ── §0.5 frozen constants (single normative definition is INTERFACE.md §0.5;
+#    these are env-overridable lookups defaulting to the frozen value) ─────────
+co__PRINCIPAL_V1() { echo "${PRINCIPAL_V1:-brian}"; }   # §0.5 PRINCIPAL_V1
+# (§0.5 LEASE_TTL is deliberately NOT defined here: this skeleton persists a
+#  Lease *record* but never arbitrates one, so it has no LEASE_TTL use site.
+#  T4.2 — claude-tools-am8 — owns lease arbitration and defines its own
+#  env-overridable §0.5 LEASE_TTL lookup, the way local-agent.sh does for the
+#  surfaces it actually uses. A dead lookup here would falsely imply lease TTL
+#  is handled in this file — anti-drift.)
+
+# ── store location ───────────────────────────────────────────────────────────
+# The Coordinator is HOSTED (Appendix A: a Durable Object's state + D1). The
+# skeleton realises that strongly-consistent store on the local filesystem.
+# Default is a machine-scratch path — NEVER a committable repo path (the store
+# is hosted control-plane state, not work-truth: Dolt stays work-truth, no
+# plane-split). CO_STORE overrides it (the test points it at an mktemp dir).
+co_store_dir() { printf '%s' "${CO_STORE:-${TMPDIR:-/tmp}/claude-beads-coordinator}"; }
+
+co__ensure_store() {
+  local d; d="$(co_store_dir)"
+  mkdir -p "$d/records" "$d/timers" 2>/dev/null || true
+  printf '%s' "$d"
+}
+
+# ── §4 record-type registry & schema versions ────────────────────────────────
+# Every §4 record type binds to ONE schema_version (all `1` in INTERFACE.md
+# v1). A consumer binds to a schema version and MUST reject an unknown HIGHER
+# version rather than best-effort-parse it (§0.3). Adding a type or bumping a
+# version is the §0/§11 freeze-escalation protocol, never a local edit.
+co__schema_version() {
+  case "$1" in
+    dossier)       echo 1 ;;   # §4.1 Dossier envelope (body/items prod = T5)
+    runner_state)  echo 1 ;;   # §4.2 RunnerState
+    notification)  echo 1 ;;   # §4.3 Notification
+    lease)         echo 1 ;;   # §4.4 Lease (arbitration = T4.2)
+    work_snapshot) echo 1 ;;   # §4.5 work-snapshot (projection render = T6a)
+    *)             echo "" ;;  # unknown type
+  esac
+}
+
+# ── strong consistency primitive (§2.1) ──────────────────────────────────────
+# A per-key advisory lock so every write to a given (type,id) is serialised —
+# this is the single-writer-per-key semantics §2.1 requires for Lease and for
+# each Dossier Item's application. `mkdir` is the atomic test-and-set (portable;
+# no flock on macOS). Best-effort bounded spin; the skeleton is single-host.
+co__with_lock() {
+  local key="$1"; shift
+  local lockd; lockd="$(co__ensure_store)/.lock.$key"
+  local i=0
+  until mkdir "$lockd" 2>/dev/null; do
+    i=$((i+1)); [[ $i -ge 200 ]] && break    # ~bounded; never deadlock the skeleton
+    sleep 0.01 2>/dev/null || true
+  done
+  local rc=0
+  "$@" || rc=$?
+  rmdir "$lockd" 2>/dev/null || true
+  return "$rc"
+}
+
+# co__safe_key — a record/timer id (and the lock key derived from it) reaches
+# the store through the §2.3 front door. As the §2.1 store owner this file
+# rejects an id that is not a safe key BEFORE taking the lock or building a
+# path: no `/` (path traversal), no `..` segment, only [A-Za-z0-9._-]. The
+# hosted realisation (a DO/D1 key, Appendix A) has no filesystem shape, so this
+# is skeleton input hygiene, not a leaked provider concern.
+co__safe_key() {
+  local k="${1:-}"
+  [[ -n "$k" ]] || return 1
+  [[ "$k" == *".."* ]] && return 1
+  [[ "$k" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+co__rec_path() { printf '%s/records/%s.%s.json' "$(co__ensure_store)" "$1" "$2"; }
+
+# ── §2.1 / §4 STORE OWNER — put/get with §0.3 + §9.1 enforcement ──────────────
+# co__store_put <principal> <type> <id> <json>
+#   Persists a §4 record. Enforces, in order:
+#     1. known record type (§4 registry);
+#     2. §0.3 — the record's schema_version MUST equal the bound version; an
+#        unknown HIGHER version is REJECTED (never best-effort-parsed), and the
+#        skeleton knows only v1 so any other value is unsupported → reject;
+#     3. §9.1 — STAMP `principal` with the RESOLVED principal passed down from
+#        the chokepoint (the caller never supplies a literal that is trusted;
+#        whatever `principal` the json carried is overwritten). Every persisted
+#        §4 record therefore carries principal = the resolved principal.
+#   Writes atomically (temp + mv) under the per-key lock. Returns nonzero and
+#   writes NOTHING on any rejection.
+# NOTE (anti-drift): this round-trips whatever §4-shaped envelope it is given.
+#   It does NOT generate Dossier body/items (T5), derive liveness or run a
+#   reconcile (T4.3), arbitrate a Lease (T4.2), or aggregate capacity (T4.4).
+co__store_put() {
+  local principal="$1" type="$2" id="$3" json="$4"
+  local bound; bound="$(co__schema_version "$type")"
+  if [[ -z "$bound" ]]; then
+    echo "co: reject — unknown §4 record type '$type'" >&2; return 2
+  fi
+  if ! co__safe_key "$id"; then
+    echo "co: reject — unsafe record id '$id' (allowed [A-Za-z0-9._-], no '..'; store-owner input hygiene)" >&2
+    return 2
+  fi
+  # §4 mandates `schema_version : int`; §0.3 binds the consumer to that integer
+  # version. The type-check is done IN jq so a JSON *string* `"1"`, a float, or
+  # a bool is rejected (a `jq -r` of "1" would otherwise flatten to the bare
+  # text 1 and slip past a shell numeric test). Must be a number equal to its
+  # own floor — i.e. a true integer.
+  local sv
+  sv=$(printf '%s' "$json" | jq -r '
+        if type=="object"
+           and (.schema_version|type)=="number"
+           and (.schema_version == (.schema_version|floor))
+        then .schema_version else empty end' 2>/dev/null) || sv=""
+  if [[ -z "$sv" || ! "$sv" =~ ^[0-9]+$ ]]; then
+    echo "co: reject — $type record missing integer schema_version (§4 'int' / §0.3)" >&2; return 3
+  fi
+  if [[ "$sv" -gt "$bound" ]]; then
+    echo "co: reject — $type schema_version $sv is an unknown higher version (bound=$bound; §0.3 reject, never best-effort-parse)" >&2
+    return 3
+  fi
+  if [[ "$sv" -ne "$bound" ]]; then
+    echo "co: reject — $type schema_version $sv unsupported (skeleton binds v$bound only; §0.3)" >&2
+    return 3
+  fi
+  # §9.1 stamp: the RESOLVED principal, overwriting anything the caller put.
+  local stamped
+  stamped=$(printf '%s' "$json" | jq -c --arg p "$principal" '.principal=$p' 2>/dev/null) || {
+    echo "co: reject — $type record is not valid JSON" >&2; return 3
+  }
+  co__with_lock "$type.$id" co__store_write "$type" "$id" "$stamped"
+}
+
+co__store_write() {
+  local type="$1" id="$2" json="$3" path tmp
+  path="$(co__rec_path "$type" "$id")"
+  tmp="$path.$$.tmp"
+  printf '%s\n' "$json" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 4; }
+  mv -f "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 4; }
+  return 0
+}
+
+# co__store_get <type> <id> — echo the stored record JSON, or return 1.
+co__store_get() {
+  local type="$1" id="$2" path
+  path="$(co__rec_path "$type" "$id")"
+  [[ -f "$path" ]] || return 1
+  cat "$path" 2>/dev/null || return 1
+}
+
+# ── §2.2 durable one-shot timer — CAPABILITY SURFACE ONLY ─────────────────────
+# fire(id)@T plus the S-6 backstop: a missed fire MUST degrade to
+# fire-on-next-poll. The skeleton has no alarm daemon (capability surface
+# only); `co__timer_due` IS the poll-fallback — an armed timer whose time has
+# passed and that has not been acked is surfaced on every poll, so a missed
+# alarm never strands. `co__timer_ack` lets a consumer record consumption.
+#
+# ANTI-DRIFT: `timer_id` is OPAQUE here. The Dossier-specific fire(dossier_id)
+# wiring AND the per-Item idempotency latch that makes alarm-fire vs
+# poll-fallback apply a consequence EXACTLY ONCE are T5 (§4.1/§5/§7.4). This
+# file provides only the generic surface (arm / due / ack); it implements no
+# dossier semantics and no exactly-once latch.
+co__timer_path() { printf '%s/timers/%s.json' "$(co__ensure_store)" "$1"; }
+
+# co__timer_arm <timer_id> <fire_at_rfc3339>
+co__timer_arm() {
+  local tid="$1" fire_at="$2" p tmp now
+  [[ -n "$tid" && -n "$fire_at" ]] || { echo "co: timer_arm needs <id> <fire_at>" >&2; return 2; }
+  co__safe_key "$tid" || { echo "co: reject — unsafe timer id '$tid' (allowed [A-Za-z0-9._-], no '..')" >&2; return 2; }
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  p="$(co__timer_path "$tid")"; tmp="$p.$$.tmp"
+  jq -cn --arg id "$tid" --arg fa "$fire_at" --arg at "$now" \
+     '{timer_id:$id,fire_at:$fa,armed_at:$at,acked:false}' > "$tmp" 2>/dev/null \
+     || { rm -f "$tmp" 2>/dev/null; return 3; }
+  mv -f "$tmp" "$p" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 3; }
+  return 0
+}
+
+# co__timer_due [now_rfc3339] — print the timer_id of every armed, un-acked
+# timer whose fire_at ≤ now. This is the S-6 poll-fallback: it surfaces a
+# missed fire on the NEXT poll, deterministically, with no alarm daemon.
+co__timer_due() {
+  local now="${1:-}" d
+  [[ -n "$now" ]] || now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  d="$(co__ensure_store)/timers"
+  [[ -d "$d" ]] || return 0
+  local f
+  for f in "$d"/*.json; do
+    [[ -e "$f" ]] || continue
+    jq -r --arg now "$now" \
+       'if (.acked|not) and (.fire_at <= $now) then .timer_id else empty end' \
+       "$f" 2>/dev/null || true
+  done
+}
+
+# co__timer_ack <timer_id> — mark consumed so the poll-fallback stops
+# re-surfacing it. (The exactly-once *latch* keyed on the Item id is T5; this
+# is only the ack surface a consumer builds that latch on.)
+co__timer_ack() {
+  local tid="$1" p tmp
+  [[ -n "$tid" ]] || return 2
+  co__safe_key "$tid" || { echo "co: reject — unsafe timer id '$tid'" >&2; return 2; }
+  p="$(co__timer_path "$tid")"; [[ -f "$p" ]] || return 1
+  tmp="$p.$$.tmp"
+  jq -c '.acked=true' "$p" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 3; }
+  mv -f "$tmp" "$p" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 3; }
+  return 0
+}
+
+# ── §9.1 THE ONE authenticate(request) → principal chokepoint ────────────────
+# Every inbound control-plane request passes through EXACTLY this one step
+# (UI or agent — NO split, C4). v1 validates a bearer token's
+# presence/validity and resolves the CONSTANT principal = PRINCIPAL_V1
+# (AD6 single-user; C7: later = mint real tokens + stop returning the constant,
+# no schema change). "Validity" in v1: the token must be present (non-empty);
+# if CO_EXPECTED_TOKEN is set, it must equal it (lets a caller/test drive the
+# invalid-token path). The per-runner bearer SECRET itself lives in the Local
+# Agent's Keychain (§9.2 — that is T3, not this file).
+#
+# On success: echoes the resolved principal, returns 0.
+# On missing/invalid: echoes NOTHING, returns 1 — the caller MUST reject the
+# request BEFORE any §4 write (enforced structurally by co_request below).
+co_authenticate() {
+  local bearer="${1:-}"
+  [[ -n "$bearer" ]] || { return 1; }
+  if [[ -n "${CO_EXPECTED_TOKEN:-}" && "$bearer" != "${CO_EXPECTED_TOKEN}" ]]; then
+    return 1
+  fi
+  printf '%s' "$(co__PRINCIPAL_V1)"
+  return 0
+}
+
+# ── §2.3 the authed request endpoint (the single front door) ─────────────────
+# co_request <bearer_token> <op> [args...]
+#   THE control-plane entrypoint. It calls the §9.1 chokepoint EXACTLY ONCE at
+#   the top; on auth failure it returns 1 having performed NO §4 write (EXIT
+#   crit 2 — rejected BEFORE any write). On success it dispatches the op with
+#   the RESOLVED principal threaded down to the store stamp (§9.1 — downstream
+#   binds to the resolved principal, never a literal at the use site).
+#   There is NO second auth path and NO UI-vs-agent branch (C4 seam).
+#
+#   ops:
+#     put  <type> <id> <json>          → §2.1/§4 persist a §4 record
+#     get  <type> <id>                 → §2.1/§4 read a §4 record
+#     set-desired <proj> <state> <actor>
+#                                      → §9.1 C4 seam: capture a desired change
+#     poll <proj> [lease_id]           → §2.4 deliver desired + lease state
+#     timer-arm <id> <fire_at>         → §2.2 arm one-shot
+#     timer-due [now]                  → §2.2 S-6 poll-fallback
+#     timer-ack <id>                   → §2.2 mark consumed
+co_request() {
+  local bearer="${1:-}" op="${2:-}"; shift 2 2>/dev/null || true
+  local principal
+  if ! principal="$(co_authenticate "$bearer")" || [[ -z "$principal" ]]; then
+    echo "co: 401 — bearer token missing/invalid; request rejected (NO §4 write; §9.1/§2.3)" >&2
+    return 1
+  fi
+  # Defaulted expansions: this file is sourced under `set -euo pipefail`, so a
+  # caller that omits a trailing arg must NOT trip `set -u` here — the op
+  # handler validates arity and returns its own diagnostic instead.
+  case "$op" in
+    put)         co__store_put "$principal" "${1:-}" "${2:-}" "${3:-}" ;;
+    get)         co__store_get "${1:-}" "${2:-}" ;;
+    set-desired) co__set_desired "$principal" "${1:-}" "${2:-}" "${3:-}" ;;
+    poll)        co__poll "$principal" "${1:-}" "${2:-}" ;;
+    timer-arm)   co__timer_arm "${1:-}" "${2:-}" ;;
+    timer-due)   co__timer_due "${1:-}" ;;
+    timer-ack)   co__timer_ack "${1:-}" ;;
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack)" >&2; return 2 ;;
+  esac
+}
+
+# ── §9.1 C4 seam: captured-not-enforced desired-state actor capture ──────────
+# co__set_desired <principal> <project_ref> <desired> <actor>
+#   Records a RunnerState.desired change. Per DESIGN C4 / INTERFACE §4.2 &
+#   §9.1, v1 MUST capture the actor (`last_desired_actor`) and authorise EVERY
+#   actor EQUALLY through the one chokepoint. Observe: there is deliberately NO
+#   `if` on `actor` and NO UI-vs-agent code path anywhere here — the
+#   downgrade-only-for-agents / promote-only-for-human asymmetry is
+#   §0.C-DEFERRED and MUST NOT be enforced in v1 (later = one `if` at the
+#   chokepoint, no schema change).
+#
+# ANTI-DRIFT: this captures `desired` + `last_desired_actor` + `updated_at`
+#   ONLY. It does NOT set/derive `actual` or `liveness` and runs NO
+#   desired↔actual reconcile — those SEMANTICS are T4.3. It merely persists
+#   the §4.2 envelope as the store owner + records the C4-seam actor.
+co__set_desired() {
+  local principal="$1" proj="$2" desired="$3" actor="$4" now prev base
+  [[ -n "$proj" && -n "$desired" ]] || { echo "co: set-desired needs <proj> <state> <actor>" >&2; return 2; }
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  prev="$(co__store_get runner_state "$proj" 2>/dev/null)" || prev=""
+  # desired-state is Coordinator-owned (§4.2); the merge onto a prior envelope
+  # is best-effort, NOT load-bearing. A corrupt/absent prior record MUST NOT
+  # wedge the desired-state control path (pause/stop) — fall back to a fresh
+  # base so last_desired_actor is still captured (EXIT crit 4), mirroring
+  # co__poll's graceful degradation rather than hard-failing.
+  if ! printf '%s' "$prev" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    prev='{}'
+  fi
+  # Merge onto the (sanitised) prior envelope; set ONLY the C4-seam + desired
+  # fields. Note there is NO branch on $actor — all actors authorised equally.
+  base=$(printf '%s' "$prev" | jq -c \
+            --argjson sv 1 \
+            --arg proj "$proj" \
+            --arg d "$desired" \
+            --arg a "$actor" \
+            --arg at "$now" \
+            '. + {project_ref:$proj, schema_version:$sv, desired:$d,
+                  last_desired_actor:$a, updated_at:$at}' 2>/dev/null) \
+    || { echo "co: set-desired — could not build RunnerState envelope" >&2; return 3; }
+  co__store_put "$principal" runner_state "$proj" "$base"
+}
+
+# ── §2.4 deliver-desired-state-on-reconnect — TRANSPORT ONLY ─────────────────
+# co__poll <principal> <project_ref> [lease_id]
+#   On a runner/Local-Agent poll/reconnect, return the current
+#   RunnerState.desired and any stored lease state. This is reconciliation
+#   (desired-state mutation surfaced), NOT a durable command queue: it returns
+#   what is STORED, it enqueues nothing.
+#
+# ANTI-DRIFT: pure transport. It returns the stored `desired` and the raw
+#   stored Lease record (if a lease_id is given). It runs NO reconcile, derives
+#   NO `liveness`, and arbitrates NO lease — §2.4 SEMANTICS are T4.3, lease
+#   arbitration is T4.2.
+co__poll() {
+  local principal="$1" proj="$2" lease_id="${3:-}" rs lease
+  rs="$(co__store_get runner_state "$proj" 2>/dev/null || echo 'null')"
+  [[ -n "$rs" ]] || rs='null'
+  if [[ -n "$lease_id" ]]; then
+    lease="$(co__store_get lease "$lease_id" 2>/dev/null || echo 'null')"
+  else
+    lease='null'
+  fi
+  [[ -n "$lease" ]] || lease='null'
+  jq -cn \
+     --argjson rs "$rs" \
+     --argjson ls "$lease" \
+     --arg p "$principal" \
+     '{principal:$p,
+       desired:(if ($rs|type)=="object" then ($rs.desired // null) else null end),
+       runner_state:$rs,
+       lease:$ls}' 2>/dev/null \
+    || printf '{"principal":"%s","desired":null,"runner_state":null,"lease":null}' "$principal"
+}
+
+# ── EXIT-criterion-1 introspection: the four §2 capabilities are reachable ────
+# Prints the four §2 capability surfaces and the function realising each, so
+# "the shell stands up and the four capabilities are reachable surfaces" is
+# observable/testable.
+co_capabilities() {
+  cat <<'EOF'
+§2.1 store                       : co_request <tok> put|get   (co__store_put / co__store_get)
+§2.2 durable one-shot timer      : co_request <tok> timer-arm|timer-due|timer-ack
+§2.3 authed endpoint (§9.1 choke): co_request  (the ONE co_authenticate→principal step)
+§2.4 deliver-desired-state       : co_request <tok> poll      (transport; set-desired captures C4 actor)
+EOF
+}
+
+# ── APPENDIX A — non-normative Cloudflare realisation map (INTERFACE §0.2) ────
+# Informational ONLY; part of NO contract. A provider swap changes ONLY the
+# co__store_* / co__timer_* internals — never a signature above:
+#   §2.1 store        → a Durable Object's transactional state + D1
+#   §2.2 timer        → a DO setAlarm(); the co__timer_due poll-fallback is the
+#                       S-6 backstop that makes the free-tier alarm's
+#                       non-contractual reliability safe
+#   §2.3/§9.1 choke   → a Worker middleware (one authenticate→principal)
+#   §2.4 poll         → the DO reconnect handler returning desired + lease
+#   record store      → DO state / D1 rows (one DO per dossier-Item is AD1/AD7,
+#                       realised in T5 — NOT here)
+# The SPOF of the singleton Coordinator DO is acknowledged (AD1) and mitigated
+# by §6.2 (unreachable posture — T3/T4.2) + §2.2 S-6 backstop, not waved away.
