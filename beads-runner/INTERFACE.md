@@ -5,6 +5,15 @@ Owner: Brian · Produced: 2026-05-16 · Sourced from: `DESIGN.md` v2 (architectu
 decisions), `UX-DESIGN.md` (§0 requirement provenance), `BEHAVIORAL-CONTRACT.md`
 (SCAR regression gate), `research/headless-stuck-signal.md` (AD3 basis).
 
+**Pre-freeze amendment (2026-05-16, before any freeze/close):** §4.1/§4.1.1,
+§5 (§5.1–§5.3), §7.4 re-synced to **DESIGN.md AD7** (the Dossier model — committed `71d08f5`,
+*after* the v2 draft this contract was first written against) per the
+SCHEMA-CORRECTION note on claude-tools-65z; §9.1/§4.2 corrected to **not**
+over-bind the DESIGN-C4-deferred trust asymmetry. The keystone is still
+`in_progress` (never frozen); this is a clean source-resync, not a re-freeze.
+This is the anti-drift process working as intended: the authoritative source
+moved, so the keystone re-synced *before* the freeze gate, not after.
+
 > **This document is the single versioned source of truth for every cross-tier
 > contract in the beads-runner overhaul (epic claude-tools-glk).** Every
 > downstream task (T1a/T1b/T2/T3/T4/T5/T6a/T6b) BINDS to the section numbers
@@ -39,8 +48,11 @@ unknown higher version rather than best-effort-parse it. Bumping any
 `schema_version` requires the §0 freeze/escalation protocol.
 
 **§0.4 Identifiers & time.** `bead_ref`/`task_ref` = the beads issue id string
-(e.g. `claude-tools-65z`) — it is also the Decision idempotency key (§7.4). All
-timestamps are RFC-3339 UTC strings (`...Z`). All durations are integer seconds.
+(e.g. `claude-tools-65z`). Idempotency is **two-layer (AD3.4):** the
+**dossier-level double-trigger dedup key = `task_ref`** (one fork ⇒ one
+dossier, §7.4); the **per-Item application idempotency key = the Item `id`**
+(one item response ⇒ applied once, §4.1/§5/§7.4). All timestamps are RFC-3339
+UTC strings (`...Z`). All durations are integer seconds.
 
 **§0.5 Frozen constants.** Every numeric value in this contract lives once in
 the table below as its single normative definition. A clause referencing a
@@ -55,7 +67,7 @@ value; a parenthetical gloss of the value for readability (e.g. "`LEASE_TTL`
 | `RECLAIM_POLL_INTERVAL` | `60` s | Local Agent re-checks for new ready work after a clean drain | UX §0.A |
 | `LEASE_TTL` | `900` s | lease lifetime; ≫ blip + poll (AD2.2) | AD2.2 |
 | `STALE_AFTER` | `180` s | Board renders `stale (last seen…)` past this since `last_heartbeat_at` | S-1, C6 |
-| `TIMED_FYI_DEFAULT` | `86400` s | default `timed-fyi` auto-proceed window; per-decision override ∈ (0, 86400] | D5, §0.B |
+| `TIMED_FYI_DEFAULT` | `86400` s | default `timed-fyi` auto-proceed window; per-dossier override ∈ (0, 86400] | D5, §0.B |
 | `FORENSIC_BLOB_TTL` | `3600` s | redacted forensic blob hard-delete deadline | AD4 |
 | `USAGE_THRESHOLD` | `70` (%) | hard 5h/7d ceiling gate; `0` disables | BC-34 |
 | `USAGE_CACHE_SECONDS` | `300` s | Local Agent usage-poll TTL cache | BC-34 |
@@ -116,16 +128,19 @@ only the *contract*: exit-0-on-drain ≠ stop the project.
 The Coordinator MUST expose exactly these four capabilities; nothing else in
 this contract assumes any other coordinator primitive.
 
-**§2.1 — Small strongly-consistent store.** Holds the §4 records (Decision,
-RunnerState, Notification, Lease, work-snapshot). Strong consistency is required
-for Lease and Decision (single-writer semantics underpin §6 exclusivity and
-§7.4 idempotency).
+**§2.1 — Small strongly-consistent store.** Holds the §4 records
+(**Dossier{body, items[]}** per AD7, RunnerState, Notification, Lease,
+work-snapshot). Strong consistency is required for Lease and for each
+Dossier **Item's** application (single-writer-per-Item semantics underpin §6
+exclusivity and the §7.4 per-Item idempotency latch).
 
-**§2.2 — Durable one-shot timer.** `fire(decision_id) at T`. Used for the
+**§2.2 — Durable one-shot timer.** `fire(dossier_id) at T`. Used for the
 `timed-fyi` auto-proceed window. **S-6 backstop (normative):** the timer is
-best-effort; a missed fire MUST degrade to *fire-on-next-poll*. The §7.4
-idempotency latch makes alarm-fire and poll-fallback apply the consequence
-**exactly once**. A `timed-fyi` decision MUST NOT be able to stall forever.
+best-effort; a missed fire MUST degrade to *fire-on-next-poll*. The **per-Item**
+idempotency latch (§4.1/§7.4) makes alarm-fire and poll-fallback apply each
+auto-proceeding item's consequence **exactly once**. A `timed-fyi` dossier MUST
+NOT be able to stall forever; non-auto-proceeding items simply stay open without
+blocking siblings or the pipeline (AD7 partial resolution).
 
 **§2.3 — Authed request endpoint with one `authenticate(request) → principal`
 chokepoint.** Every inbound control-plane request passes through exactly one
@@ -171,33 +186,46 @@ A tier MUST NOT add a seventh cross-tier job without a §0 escalation.
 
 ## §4. Store schemas
 
-*(Satisfies: task OWNS bullet 1; DESIGN §7, C2/C3/C4/C6 seams, AD2.1, S-1.
-Bound by: T4 (owns the store), T2/T3 (writers), T5 (Decision/Notification),
+*(Satisfies: task OWNS bullet 1; DESIGN §7, AD7, C2/C3/C4/C6 seams, AD2.1, S-1.
+Bound by: T4 (owns the store), T2/T3 (writers), T5 (Dossier/Notification),
 T6a/T6b (readers, projection only).)*
 
 Notation is a **schema** (field · type · semantics), not source code. Unknown
 higher `schema_version` ⇒ reject (§0.3). Every record carries
 `principal: PRINCIPAL_V1` (§9).
 
-### §4.1 Decision  (`schema_version: 1`)
+### §4.1 Dossier  (`schema_version: 1`) — AD7
+
+**The Inbox unit is a Dossier, not "a Decision" (AD7).** A depth-tiered `body`
+⊃ N **independently-respondable** `items[]`. Partial/iterative resolution is
+first-class: a dossier may be left partly answered (approve 6, edit 3, feedback
+2, return later) **without blocking unanswered items or the pipeline**. The
+`body`/`items[]` *shape* is defined in §5 (carries `dossier_schema_version`);
+this is the stored envelope.
 
 | Field | Type | Semantics |
 |---|---|---|
-| `id` | string | **= `bead_ref`** (the idempotency key — §7.4). One bead ⇒ one Decision. |
+| `id` | string | Dossier id. |
 | `schema_version` | int | `1`. |
 | `principal` | string | `PRINCIPAL_V1`. |
-| `kind` | enum **(open)** | `"decide"` implemented v1. `"pair"` **reserved, not implemented** (C2 seam — the discriminator exists; the shape is open, not closed). |
+| `kind` | enum **(open, C2 seam)** | Interaction mode: `"decide"` implemented v1; `"pair"` **reserved, not implemented**. Open discriminator (not a closed shape). Distinct from per-Item `kind` (§5). |
 | `trigger` | enum | `human_flag` \| `worker_stuck` \| `stage_gate` \| `proactive_checkpoint` (Flow B/F triggers). |
-| `bead_ref` | string | The bead this decision blocks. |
-| `tier` | enum | `blocking` \| `timed-fyi` \| `digest` (§0.B; Flow F). |
-| `state` | enum | `open` → `answered` → `applied`; or `open` → `expired` (timed-fyi auto-proceed). |
+| `bead_ref` | string | The anchor bead whose lifecycle this dossier belongs to (the forked bead for `worker_stuck`; the stage/epic bead for a review/overview). |
+| `tier` | enum | `blocking` \| `timed-fyi` \| `digest` (§0.B; Flow F). Drives the **single** Notification (C3) and whether a §2.2 timer is set. |
 | `created_at` | ts | — |
-| `timer_fire_at` | ts \| null | For `timed-fyi`: `created_at + window` (window default `TIMED_FYI_DEFAULT`, per-decision override ∈ (0, `TIMED_FYI_DEFAULT`]). The §2.2 timer target. `null` for `blocking`. |
-| `dossier` | object | The §5 dossier (carries its own `dossier_schema_version`). |
-| `chosen_option_id` | string \| null | Set on answer; indexes into `dossier.framing.options[]`. |
-| `response` | object \| null | `{ mode: "checkbox"\|"edit"\|"freeform", selected_option_id?, edited_recommendation?, freeform_text?, responded_at, principal }`. |
-| `consequence_applied` | bool | **Idempotency latch** (§7.4 / S-6). Single-writer-set; flips false→true exactly once. |
-| `applied_at` | ts \| null | — |
+| `timer_fire_at` | ts \| null | For `timed-fyi`: `created_at + window` (window default `TIMED_FYI_DEFAULT`, per-dossier override ∈ (0, `TIMED_FYI_DEFAULT`]). The §2.2 `fire(dossier_id)` target. `null` when no auto-proceed window. |
+| `body` | object | The §5 progressive-disclosure body (`tldr` · `sections[]` · `diagrams[]` · `full_detail` — **all mandatory**, AD7). |
+| `items[]` | `Item[]` | The §5 Items. **Each carries its own `state`, `response`, and `consequence_applied` latch** — application + idempotency are **per-Item** (AD1/AD3.4 DO-per-Item). |
+| `state` | **derived** | Rollup only, **informational, never a pipeline gate**: `open` while ≥1 item is non-terminal; `resolved` when every item is terminal (`applied`/`expired`). Unanswered items never block siblings or the pipeline (AD7). |
+
+### §4.1.1 Item (per-Item state — defined in §5, stored within `items[]`)
+
+Each Item independently carries: `state ∈ { open → answered → applied | open →
+expired }`; `response | null`; **`consequence_applied: bool`** — the **per-Item
+idempotency latch** (AD3.4 DO-per-Item; §7.4 / S-6), single-writer-set, flips
+false→true exactly once; `applied_at: ts | null`. One item's resolution applies
+**that item's** `consequence_block` and no other (partial application clean by
+construction — AD1 per-Item DO).
 
 ### §4.2 RunnerState  (`schema_version: 1`)
 
@@ -211,7 +239,7 @@ higher `schema_version` ⇒ reject (§0.3). Every record carries
 | `last_heartbeat_at` | ts | **The S-1 liveness datum** (C6: liveness is *data*, in v1). |
 | `liveness` | derived | `live` if `now − last_heartbeat_at ≤ STALE_AFTER`, else `stale`. The Board renders `stale (last seen Nh ago)` distinctly from `actual: running` (§4.5, T6a). Derived at read time; not stored. |
 | `current_task_ref` | string \| null | — |
-| `last_desired_actor` | string | The actor of the last `desired` change (C4 seam — actor captured, authorized uniformly via §9; agents may downgrade/pause own env, only Brian promotes to `running`/`full`). |
+| `last_desired_actor` | string | The actor of the last `desired` change. **C4 seam, captured-not-enforced:** v1 records the actor and authorizes **every** actor **equally** through the one §9 chokepoint (DESIGN C4: "v1 MUST capture actor, authorize all equally"). The downgrade-only-for-agents / promote-only-for-human **asymmetry is DESIGN-C4-DEFERRED (§0.C)** and **MUST NOT** be enforced in v1 — later = one `if` at the chokepoint, no schema change. |
 | `updated_at` | ts | — |
 
 ### §4.3 Notification  (`schema_version: 1`)
@@ -221,7 +249,7 @@ higher `schema_version` ⇒ reject (§0.3). Every record carries
 | `id` | string | — |
 | `schema_version` | int | `1`. |
 | `principal` | string | `PRINCIPAL_V1`. |
-| `decision_ref` | string | The Decision it announces. **One Notification per Decision** (C3). |
+| `dossier_ref` | string | The Dossier it announces. **One Notification per Dossier** (C3; AD7 — terse notification, the dossier *body* carries the content, principle 2). Not one-per-Item. |
 | `tier` | enum | `blocking` \| `timed-fyi` \| `digest`. |
 | `created_at` | ts | **Creation ≠ dispatch** (C3 seam): a row exists before any send. |
 | `dispatched` | bool | Set true on send. Fire-and-forget is forbidden. |
@@ -250,7 +278,9 @@ plane-split). Per-project, it carries: the `RunnerState` (`desired` + `actual`
 + `liveness` derived); the capacity strip (`5h%`, `7d%`, `today_spare_line%`
 vs `actual_7d%`, per-project mode — §6.3/Flow C); the lifecycle columns
 (`idea│ux│design│impl│docs│tests│done`) keyed by each bead's `stage:` label
-(C1 seam); the **WAITING-ON-YOU** lane = open `Decision`s for this principal;
+(C1 seam); the **WAITING-ON-YOU** lane = `Dossier`s with ≥1 still-open item for this
+principal (a partly-answered dossier still shows until its last item resolves —
+AD7);
 per-bead failure metadata for Flow G tiers 1–2 (class + retry-state +
 `Runner:` note timeline — synced metadata, always remote-available; the
 forensic stream is **not** in the projection — §10). Each card: `title ·
@@ -258,28 +288,80 @@ stage · priority · runner state · age · the one thing it waits on`.
 
 ---
 
-## §5. Dossier output schema (C5 — versioned)
+## §5. Dossier schema — body ⊃ items[] (AD7 — versioned, §0.A, NOT tradeable)
 
-*(Satisfies: task OWNS bullet 2; DESIGN C5, AD3.1; UX Flow B/F. Bound by: T5
-(sole producer), T6b (sole renderer). Consumers bind to **this schema**, never
-"the passes" — the 4-pass orchestration is SIMPLIFIED to one structured
-generation; the producer is swappable behind this frozen shape.)*
+*(Satisfies: task OWNS bullet 2; DESIGN AD7 + §5 C5, AD3.1; UX §0.A
+"strong human-interaction support / multi-step doc-gen / inline-edit +
+approval-checkboxes / proactive understanding", Flow B/F, principle 3.
+Bound by: T5 (sole producer), T6b (sole renderer). Consumers — applier, Inbox
+UI, reconciler — bind to **this schema and its item-granularity**, never
+"the passes." The number of generation passes is the tradeable §0.C
+mechanism; **the schema and its item-granularity are §0.A and MUST NOT be
+shrunk to a decision-singular shape** — that cannot express a 15-item mixed
+review or a standalone design overview, the regression AD7 fixes.)*
 
-`dossier` object, `dossier_schema_version: 1`:
+`Dossier`, `dossier_schema_version: 1` = a depth-tiered **`body`** ⊃ N
+independently-respondable **`items[]`**.
+
+### §5.1 `body` — progressive disclosure, **all tiers mandatory** (AD7)
+
+The generator MUST produce **every** tier; none is optional. This is the
+"easy to skim *and* easy to get the full picture" §0.A requirement.
 
 | Field | Type | Semantics |
 |---|---|---|
 | `dossier_schema_version` | int | `1`. |
-| `filtered_context` | object | `{ tldr: string (≤1 sentence + the ask), delta: string (only the *new* info after dedup vs goals/design docs), references: string[] }`. (Pass-1 intent: canon dedup.) |
-| `framing` | object | `{ ask: string, options: Option[], recommendation: { option_id, why: string }, reversible: string }`. (Pass-2 intent.) |
-| `framing.options[]` | `Option` | `{ option_id: string, label: string, blast_radius: string (what it unblocks/forecloses), consequence_block: ConsequenceBlock }`. |
-| `readability` | object | `{ headings: Heading[], diagram?: string, acronyms_expanded: bool }` — skimmable headings → drill-down; acronyms expanded on first use. (Pass-3 intent.) |
-| `response_affordances` | object | `{ per_option_approve: bool, recommendation_editable: bool, freeform_allowed: bool }` — **the doc IS the form** (Flow B step 4). T6b renders these as inline approve/reject + editable recommendation + freeform note. |
+| `tldr` | string | One sentence + what is being asked, overall. The skim entry point (notification body draws from this; the notification stays terse — content lives here, principle 2). |
+| `sections[]` | array | `{ heading: string, prose: string }` — skimmable headers with enough text under each to convey the point without the full detail. |
+| `diagrams[]` | array | `{ caption: string, content: string }` — structural diagrams; MUST be present when the matter is structural (empty array only when genuinely non-structural). |
+| `full_detail` | string | Stand-alone prose: enough that when skimming the headers + glancing at diagrams is insufficient, this alone conveys the full picture. **Not optional.** |
 
-### §5.1 ConsequenceBlock  (`cb_schema_version: 1`) — machine-applyable
+### §5.2 `items[]` — N independently-respondable Items (AD7)
 
-Pre-declared per option (§0.B / principle 5) so the pure-checkbox path is
-**deterministic** (Flow B step 5; applied idempotently by T5 per §7.4):
+Each Item is resolved **on its own**; resolving one neither blocks nor depends
+on another (partial/iterative resolution — AD7; "your no as cheap as your
+yes" — principle 3: approve-the-good / feedback-the-rest in one pass).
+
+| Field | Type | Semantics |
+|---|---|---|
+| `id` | string | Per-Item idempotency key (§0.4; AD3.4 DO-per-Item). |
+| `kind` | enum | `approve-reject` \| `pick-option` \| `approve-recommendation` \| `freeform-edit` \| `fyi-objectable`. **The Item's `kind` IS its response affordance** — "the doc IS the form" (Flow B step 4); T6b renders the control from `kind`. |
+| `framing` | object | The per-item ask + why, self-contained. |
+| `context_anchor` | object | **MANDATORY — self-contained-context invariant (AD7).** `{ where: string (where this sits in the lifecycle/design), link?: string, expansion: string }`. An item whose ask is not understandable without external context (e.g. *"reached the auth boundary, pick one"*) is a **contract violation**, not a wording nit. T5 MUST emit it; T6b MUST render it inline. |
+| `options` | `Option[]` \| absent | For `pick-option`: `{ option_id, label, blast_radius (what it unblocks/forecloses), consequence_block }`. |
+| `recommendation` | object \| absent | For `pick-option`/`approve-recommendation`: `{ value, why }`; editable inline (T6b). |
+| `consequence_block` | `ConsequenceBlock` | Pre-declared, machine-applyable (§5.3). For `pick-option` the chosen option's block is used. |
+| `reversible` | string | What this item's choice forecloses / how reversible. |
+| `state` | enum | `open` → `answered` → `applied`; or `open` → `expired` (auto-proceed). **Per-Item.** |
+| `response` | object \| null | `{ decision: "approve"\|"reject"\|"pick"\|"edit"\|"freeform"\|"object", selected_option_id?, edited_value?, freeform_text?, responded_at, principal }`. |
+| `consequence_applied` | bool | **Per-Item idempotency latch** (§4.1.1 / §7.4 / S-6). |
+| `applied_at` | ts \| null | — |
+
+**§5.2.1 Profiles (AD7 — emergent from body+item-mix; all first-class).**
+A *decision dossier* = deep-enough body + decision item(s) (e.g. a
+`worker_stuck` fork = one `pick-option`). A *UX/design review* = body + many
+mixed items (the 15-question scenario: `approve-reject` per flow +
+`pick-option`/`approve-recommendation` per question + `freeform-edit`). The
+proactive **Flow F "understand how it fits" overview = a deep `body` + zero or
+all-`fyi-objectable` items** — a **first-class profile, core, not a tier
+variant** (UX §0.A "trigger proactively to give him an understanding"). No
+schema branch per profile — same `body`⊃`items[]`, different population.
+
+**§5.2.2 Deterministic vs reconciler is PER-ITEM (Flow B step 5).** A
+pure `approve-reject` / `pick-option` / `approve-recommendation` (un-edited)
+response ⇒ **deterministically apply that item's `consequence_block`**,
+idempotently (§7.4). A `freeform-edit` / edited / `object` response ⇒ a
+reconciler interprets **that item** vs. its options and MAY emit a follow-up
+dossier — scoped to the item, never re-opening resolved siblings.
+`fyi-objectable` items auto-proceed on the §2.2 timer unless objected
+(idempotent per-Item, S-6); non-auto-proceeding items left open never block
+siblings or the pipeline (AD7).
+
+### §5.3 ConsequenceBlock  (`cb_schema_version: 1`) — per-Item, machine-applyable
+
+Pre-declared per Item/option (§0.B / principle 5) so the common path is
+**deterministic and instantly trustworthy**; applied idempotently per-Item by
+T5 (§7.4):
 
 | Field | Type | Semantics |
 |---|---|---|
@@ -289,9 +371,9 @@ Pre-declared per option (§0.B / principle 5) so the pure-checkbox path is
 | `labels` | array | `{ bead_ref, add[], remove[] }`. |
 | `status_changes` | array | `{ bead_ref, to_status }`. |
 
-Freeform/edited responses do **not** auto-apply a ConsequenceBlock: a
-reconciler interprets them vs. the options and MAY emit a follow-up dossier
-(Flow B step 5). Only the pre-declared block is the deterministic path.
+Application is **per-Item**: resolving item *X* applies only *X*'s block and
+flips only *X*'s `consequence_applied` latch (AD1 DO-per-Item ⇒ partial
+application clean by construction).
 
 ---
 
@@ -348,7 +430,7 @@ frozen here, not left to implementation.
 
 *(Satisfies: task OWNS bullet 5; AD3.1–3.5; BC-10, BC-11, BC-13, BC-14; UX
 Flow B; research Q4/Q5. Bound by: T2 (worker prompt + backstop + classifier),
-T5 (Decision DO routing/dedup), T1a/T1b (assertions).)*
+T5 (Dossier DO — per-Item routing/dedup), T1a/T1b (assertions).)*
 
 **§7.1 Frozen classification precedence (extends BC-10).** The classifier
 scans accumulated signal markers and returns the **first match** in this
@@ -392,12 +474,20 @@ blocked-for-human (status=blocked + `bd human`); otherwise the fork rots
 does **not** write Dolt as the source of truth, so Dolt lag is invisible to
 the human-latency path (the §1 promise; the Board never lies — S-2).
 
-**§7.4 Idempotency — double-trigger dedup (AD3.4).** Worker-self-signal and
-backstop on the **same fork** dedupe via the per-Decision single-writer record
-**keyed on `task_ref`** (= `Decision.id`, §4.1). The `consequence_applied`
-latch (§4.1) flips false→true exactly once. **One fork ⇒ one dossier ⇒ one
-consequence application**, regardless of: double trigger (AD3.4), double-tap by
-the human, or `timer-fire` racing `poll-fallback` (S-6 / §2.2).
+**§7.4 Idempotency — two layers (AD3.4).** AD3.4 mandates dedup at **both**
+granularities; both are normative:
+- **Dossier level (the STUCK double-trigger — preserved SCAR-intent AD3.1):**
+  worker-self-signal **+** backstop on the **same fork** dedupe via a
+  single-writer record **keyed on `task_ref`** ⇒ **one fork ⇒ one Dossier**
+  (a `worker_stuck` dossier typically carries one `pick-option` item). Two
+  triggers never make two dossiers.
+- **Per-Item level (AD7 / AD1 DO-per-Item):** each Item's
+  `consequence_applied` latch (§4.1.1) flips false→true **exactly once**,
+  keyed on the **Item `id`** ⇒ **one item response ⇒ applied once**, robust
+  to double-tap by the human or `timer-fire` racing `poll-fallback` (S-6 /
+  §2.2). Partial application is clean by construction: resolving 6 of 15
+  items applies exactly those 6 blocks, each once; the other 9 stay open and
+  block nothing (AD7 partial resolution).
 
 **§7.5 Breaker- and retry-exempt (AD3.2; BC-13/14).** `STUCK_NEEDS_HUMAN` is
 **retry-exempt** (like `CONTEXT_OVERFLOW` vs BC-13 — no retry; it is not an
@@ -459,13 +549,16 @@ v1 resolves a **constant** `principal = PRINCIPAL_V1` after validating a
 bearer token's presence/validity. Every §4 record is stamped with the
 resolved principal; all downstream binds to the resolved principal, never a
 hardcoded literal at the use site (C7: later = mint real tokens + stop
-returning the constant; **no migration**, no schema change). The
-**actor-authorization asymmetry** is normative and lives in §4.2
-(`last_desired_actor`): every `RunnerState.desired` change is authorized
-through this one chokepoint; an agent MAY downgrade/pause **its own** env,
-but only the `PRINCIPAL_V1` human MAY promote to `running` (the C4/Flow-D
-trust boundary — uniform code path, one authorization point, not a UI-vs-agent
-split).
+returning the constant; **no migration**, no schema change). **C4 seam
+(captured, not enforced):** every `RunnerState.desired` change records its
+actor (§4.2 `last_desired_actor`) and is authorized through this **one**
+chokepoint with **all actors treated equally in v1** (DESIGN C4: "v1 MUST
+capture actor, authorize all equally; MUST NOT split UI vs agent code
+paths"). The downgrade-only-for-agents / promote-only-for-human asymmetry is
+**DESIGN-C4-DEFERRED (§0.C)** and **MUST NOT** be baked into this frozen
+contract — it is later = one `if` at this chokepoint, no schema or interface
+change. (Corrected pre-freeze: an earlier draft over-bound this §0.C-deferred
+behavior as v1-normative.)
 
 **§9.2 Token lifecycle & storage location (not deferred — AD6).** v1 uses
 long-lived static per-runner bearer secrets. Rotation/revocation is deferred;
@@ -534,9 +627,9 @@ contents, large `tool_result` bodies) is replaced by a placeholder carrying
 | T2 (34h) | §2.5, §3 (caller), §7.1/7.2/7.5/7.6, §8.1 — runner state machine; stubs match §2–§6 signatures |
 | T3 (3al) | §1.1 (up), §6.2 (local fallback), §6.3 (measurement), §8.2, §9.2, §10.2 — Local Agent |
 | T4 (cbv) | §2.1–2.4, §4 (store owner), §6.1 (arbitration), §9.1, §10.3 — Coordinator |
-| T5 (40c) | §2.2, §4.1/§4.3, §5 (sole producer), §7.3/7.4 — Decision/dossier DO |
+| T5 (40c) | §2.2, §4.1/§4.1.1/§4.3, §5 (body+§5.2 items+§5.3 ConsequenceBlock; sole producer), §7.3/7.4 — **Dossier DO, per-Item** |
 | T6a (p2m) | §4.2 (`liveness`), §4.5 (projection, read-only) — Board |
-| T6b (xre) | §5 (sole renderer), §4.5, §10.3 (fetch UI) — Inbox + Flow G |
+| T6b (xre) | §5 (sole renderer; §5.1 body tiers + §5.2 per-Item affordances + §5.2.1 profiles), §4.5, §10.3 (fetch UI) — Inbox + Flow G |
 
 **Change protocol (anti-drift, normative).** This document is **immutable
 once claude-tools-65z is closed under its gated checkpoint**. Any tier that
@@ -553,8 +646,10 @@ new version. A local divergence is a contract violation, not a shortcut.
 Informational only; **not part of any contract** (§0.2). §2.1 store →
 Durable Object state + D1; §2.2 timer → a DO `setAlarm()`, with the S-6
 poll-fallback making the free-tier alarm's non-contractual reliability safe;
-§4.1 Decision → **one DO per Decision** (single-threaded ⇒ §7.4 idempotency
-*by construction*); §2.3 chokepoint → a Worker middleware; §4.5 projection /
+§4.1 Dossier → **one DO per dossier-Item** (AD1/AD7; single-threaded ⇒ §7.4
+per-Item idempotency + partial application *by construction*); the §2.2 timer
+→ a DO `setAlarm()` keyed `fire(dossier_id)`, dedup'd per-Item against the
+S-6 poll-fallback; §2.3 chokepoint → a Worker middleware; §4.5 projection /
 §10 transient blob → D1 / encrypted object store; web app → Pages. The
 **SPOF of the singleton Coordinator DO is acknowledged** (AD1) and mitigated
 by §6.2 (unreachable posture) + §2.2 (S-6 backstop), not waved away. A
@@ -576,3 +671,16 @@ BC-27 verbatim and adds an orthogonal transient path (AD4 relaxation of D6,
 provenance recorded). No clause requires transcribing a SCAFFOLDING
 mechanism; every SCAFFOLDING reference (bash snapshot, signal-file IPC,
 sed-scrape, heredoc templating) is explicitly replaced, not ported.
+
+**Pre-freeze resync (no SCAR impact).** §4.1/§5/§7.4 now realize the **AD7
+Dossier model** (DESIGN `71d08f5`): body⊃items[], per-Item state +
+per-Item idempotency latch, mandatory `context_anchor` self-contained-context
+invariant, partial/iterative resolution, the Flow F overview profile. This
+touches no BC (the dossier/decision layer is new surface, not characterized
+in BEHAVIORAL-CONTRACT) and **preserves the AD3.1/AD3.4 STUCK SCAR-intent**:
+"one fork ⇒ one dossier" survives as the §7.4 *dossier-level* double-trigger
+dedup; the per-Item latch is the *added* AD3.4 second layer, not a
+replacement. §9.1/§4.2 corrected to keep the C4 **seam** (actor captured,
+single chokepoint) while **not** enforcing the C4-DEFERRED trust asymmetry in
+v1 (DESIGN C4: "authorize all equally; later = one `if`") — removing an
+earlier over-binding of a §0.C-deferred behavior into the frozen contract.
