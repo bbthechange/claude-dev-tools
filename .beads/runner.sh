@@ -46,3 +46,17 @@ PERMISSION_FLAGS=(
 )
 
 EXTRA_CLAUDE_FLAGS=(--no-chrome)
+
+# ── Watchdog grace (BC-22) ───────────────────────────────────────────────────
+# Overhaul tasks legitimately run quiet for a while (harness spawning claude -p,
+# npm ci, wrangler, blocking review subagents). Default 600s (10m) killed a
+# healthy harness agent. 1200s (20m) gives long ops room WITHOUT meaningfully
+# weakening true-hang detection (per-task MAX_RETRIES + the consecutive-failure
+# breaker still bound a real hang; a genuine hang just wastes one 20m timeout,
+# not the fleet). NOT the real fix — see the T2 note: the rewritten watchdog
+# must key "stuck" on agent+child-process-tree liveness, not parent-stream
+# silence alone (BC-22's own caveat). This is the v1 stopgap.
+IDLE_TIMEOUT=1200
+
+# ── Project-wide worker guidance (appended to every task prompt; BC-37) ───────
+PROMPT_EXTRA='Watchdog / long operations: a watchdog stops you if your visible activity is silent past the idle timeout. Delegating to subagents (the Task tool) is ENCOURAGED for context isolation and for objective review with a clean context, and is watchdog-safe while the subagent is actively working — do NOT inline context-heavy work into your own thread just to avoid delegating (that causes context overflow, which is worse). The ONLY pattern that trips the watchdog is detaching a long shell command (run_in_background, or a long blocking Bash) and then sitting idle: if you must background a long Bash op, poll it and print a one-line progress note every few minutes so activity stays visible. Prefer foreground for short commands, a subagent for anything heavy or needing objectivity, and background-shell only when necessary with periodic visible progress.'
