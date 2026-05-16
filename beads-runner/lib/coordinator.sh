@@ -77,6 +77,22 @@ co__PRINCIPAL_V1() { echo "${PRINCIPAL_V1:-brian}"; }   # §0.5 PRINCIPAL_V1
 # LEASE_TTL — it is defined here, mirroring local-agent.sh's "define the
 # §0.5 lookup for the surfaces you actually use" anti-drift discipline.
 co__FORENSIC_BLOB_TTL() { echo "${FORENSIC_BLOB_TTL:-3600}"; }   # §0.5
+# §0.5 USAGE_THRESHOLD (70 %, `0` disables) — the hard 5h/7d ceiling gate.
+# T4.4 (claude-tools-d7x) owns §6.3 coordinator-side `ask-capacity`, whose
+# EXIT criterion 2 requires USAGE_THRESHOLD=0 to disable the ceiling GLOBALLY
+# (the same gate-disable semantic the Local Agent applies, §6.3 / la_capacity_
+# check threshold-0 early return — NOT a re-measurement). A REAL use site (not
+# a dead lookup) ⇒ defined here, mirroring co__FORENSIC_BLOB_TTL's discipline.
+# Single normative definition is INTERFACE.md §0.5; this is an env-overridable
+# lookup whose literal default EQUALS the frozen table value, NEVER a competing
+# normative value.
+# (§0.5 USAGE_CACHE_SECONDS and SPARE_RAMP_PER_DAY are deliberately NOT defined
+#  here: the usage-poll TTL cache AND the spare-cycles MEASUREMENT are the
+#  Local Agent's — T3, §6.3 local. This tier ONLY aggregates the reported
+#  coarse verdict, NEVER measures (task MUST-NOT-TOUCH), so it has no use site
+#  for either; a dead lookup would falsely imply this file measures the ramp —
+#  anti-drift.)
+co__USAGE_THRESHOLD() { echo "${USAGE_THRESHOLD:-70}"; }   # §0.5 (0 disables)
 # (§0.5 LEASE_TTL is deliberately NOT defined here: this skeleton persists a
 #  Lease *record* but never arbitrates one, so it has no LEASE_TTL use site.
 #  T4.2 — claude-tools-am8 — owns lease arbitration and defines its own
@@ -332,9 +348,15 @@ co_authenticate() {
 #     forensic-dismiss <id>            → §10.3 "done with forensic" ⇒ hard-delete
 #     forensic-sweep [now_epoch]       → §10.3 TTL poll-fallback hard-delete
 #     forensic-audit [n]               → §10.3 content-free deletion audit log
-#   The forensic-* ops cross the §2.3 authed channel like every other op
-#   (§10.3 "transport is the §2.3 authed channel"); they are NOT one of the
-#   four §2 capabilities (those stay exactly four — co_capabilities, T4.1).
+#     report-capacity <report_json>    → §1.1 ingest the upward coarse
+#                                        capacity report (T3 shape, verbatim)
+#     ask-capacity <cost_class>        → §6.3 aggregated verdict ok|over
+#                                        (rc 0=ok, 1=over)
+#   The forensic-* and capacity ops cross the §2.3 authed channel like every
+#   other op (§10.3 / §1.1 "transport is the §2.3 authed channel"); they are
+#   NOT one of the four §2 capabilities (those stay exactly four —
+#   co_capabilities, T4.1). §6.2's Coordinator-unreachable FAIL-OPEN posture
+#   is the co_ask_capacity wrapper (no front door exists when unreachable).
 co_request() {
   local bearer="${1:-}" op="${2:-}"; shift 2 2>/dev/null || true
   local principal
@@ -358,7 +380,9 @@ co_request() {
     forensic-dismiss) co__forensic_dismiss "$principal" "${1:-}" ;;
     forensic-sweep)   co__forensic_sweep "$principal" "${1:-}" ;;
     forensic-audit)   co__forensic_audit_tail "${1:-}" ;;
-    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit)" >&2; return 2 ;;
+    report-capacity)  co__capacity_report "$principal" "${1:-}" ;;
+    ask-capacity)     co__ask_capacity "${1:-}" ;;
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity)" >&2; return 2 ;;
   esac
 }
 
@@ -642,6 +666,238 @@ co__forensic_audit_tail() {
   else
     cat "$log" 2>/dev/null || true
   fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# §6.3 / §6.2 — coordinator-side COARSE capacity aggregation  (T4.4, d7x)
+# ════════════════════════════════════════════════════════════════════════════
+# OWNS INTERFACE.md v1 §6.3 (coordinator-side coarse-capacity aggregation) +
+# §6.2 (the AD2.2 capacity-half unreachable posture). The Coordinator must
+# answer "may I start a task of cost-class C?" GLOBALLY — but it NEVER reads a
+# Keychain or an Anthropic usage API (§1.1). It AGGREGATES the coarse cost-class
+# verdicts the Local Agents report UP (§1.1 item 1; produced by T3's
+# la_report_capacity, consumed here VERBATIM).
+#
+#   • §1.1 INGEST (report-capacity): receive the upward coarse capacity report
+#     through the ONE §2.3/§9.1 authed front door. The §1.1 report shape is the
+#     T3 contract VERBATIM:
+#        {report:"capacity", schema_version:1, principal, runner_id,
+#         cost_class ∈ {standard,low_priority}, verdict ∈ {ok,over},
+#         observed_at}
+#     §0.3 is enforced exactly as the §4 store does (an unknown HIGHER
+#     schema_version is REJECTED, never best-effort-parsed); §9.1 stamps the
+#     RESOLVED principal over whatever the report carried. The LATEST report
+#     per (runner_id, cost_class) wins (a recovered runner that re-reports `ok`
+#     supersedes its earlier `over` — newest observed_at).
+#
+#   • §6.3 AGGREGATE (ask-capacity <cost_class>): verdict ∈ {ok,over}.
+#       - USAGE_THRESHOLD=0 ⇒ the hard ceiling is DISABLED globally ⇒ always
+#         `ok` (EXIT crit 2; the same gate-disable semantic the Local Agent
+#         applies — §6.3; NOT a re-measurement; shared §0.5 constant).
+#       - `standard` is gated ONLY by the hard ceiling: `over` iff ANY current
+#         Local-Agent `standard` report is `over`. The 5h-OR-7d integer-
+#         truncated utilisation ≥ USAGE_THRESHOLD test was MEASURED by the
+#         Local Agent (T3, BC-34 verbatim) and is already encoded in the
+#         reported coarse verdict — this tier AGGREGATES it, it does NOT
+#         re-measure (task MUST-NOT-TOUCH; §1.1 "aggregates what LAs report").
+#       - `low_priority` is ADDITIONALLY gated by the spare-cycles line: `over`
+#         iff ANY `low_priority` report is `over` (the LA already encoded the
+#         day-N ≤ N×SPARE_RAMP_PER_DAY soft line into that verdict) OR
+#         `standard` aggregates to `over` (backfill-only: low-priority work
+#         NEVER starves the weekly cap — a hit hard ceiling on standard means
+#         no spare capacity at all, so low_priority is certainly over).
+#       - No report for the class (and the gate enabled) ⇒ `ok`: nothing has
+#         been reported `over`; the real guard is the LA's hard ceiling, which
+#         WOULD have reported `over` (AD2.3 honest rationale: the 14.2%/day
+#         line is a soft ramp, the 5h/7d ceiling is the real guard).
+#
+#   • §6.2 UNREACHABLE POSTURE (AD2.2 capacity half): the capacity check FAILS
+#     OPEN. Coordinator-unreachable ⇒ PROCEED (verdict `ok`). A one-task
+#     overshoot is noise; the BC-34 intent is preserved AT THE LOCAL AGENT
+#     (T3) — this is the exact mirror of la_lease_fallback_allows' reachable|
+#     unreachable shape for the LEASE half (which fails DEGRADED-CLOSED — a
+#     deliberately DIFFERENT posture for the higher-blast-radius plane).
+#
+# ANTI-DRIFT: this tier ONLY aggregates the reported coarse verdict; it NEVER
+#   measures (no Keychain, no usage API, no 5h/7d numbers, no spare-ramp math
+#   — all of that is T3 §6.3-local, MUST-NOT-TOUCH). A capacity report is a
+#   §1.1 UP report, NOT a §4 store record: it lives in a SEPARATE `capacity/`
+#   namespace (mirroring `forensic/`), is ABSENT from co__schema_version, never
+#   round-trips co__store_put, and is never read by co__poll / a work_snapshot
+#   — so it is structurally absent from the §4.5 projection (T4.3/T6a). It is
+#   NOT one of the four §2 capabilities (those stay exactly four —
+#   co_capabilities, untouched); it crosses the §2.3 authed channel like every
+#   other op, behind the ONE §9.1 chokepoint (no second auth path).
+
+co__capacity_dir() { printf '%s/capacity' "$(co__ensure_store)"; }
+
+# The §6.3 cost_class is a CLOSED enum (INTERFACE.md §6.3): exactly
+# {standard, low_priority}. An unknown class is rejected at the door (it is a
+# contract value, not free text) — never silently treated as `standard`.
+co__capacity_class_ok() { [[ "$1" == "standard" || "$1" == "low_priority" ]]; }
+
+# capacity/<cost_class>/<runner_id>.json — one file per (runner_id,cost_class):
+# the cost_class is a fixed enum (a safe subdir name); the runner_id is the
+# only variable component and is co__safe_key-validated, so no key collision
+# and no path traversal is possible.
+co__capacity_path() {
+  local cc="$1" rid="$2"
+  printf '%s/%s/%s.json' "$(co__capacity_dir)" "$cc" "$rid"
+}
+
+# co__capacity_report <principal> <report_json>
+#   §1.1 INGEST of one upward coarse capacity report (T3's la_report_capacity
+#   shape, consumed VERBATIM). Enforces, in order:
+#     1. valid JSON object with report=="capacity";
+#     2. §0.3 — integer schema_version; an unknown HIGHER version is REJECTED
+#        (never best-effort-parsed), exactly as the §4 store does. The §1.1
+#        capacity report binds to schema_version 1;
+#     3. closed-enum cost_class ∈ {standard,low_priority} and verdict ∈
+#        {ok,over}; non-empty runner_id (the §1.1 stamp);
+#     4. §9.1 — STAMP `principal` with the RESOLVED principal (overwrite
+#        whatever the report carried — never trust the use-site literal, C7).
+#   The LATEST report per (runner_id,cost_class) wins: a stored report with a
+#   strictly-newer observed_at is NOT clobbered by an older straggler (the
+#   §1.1 UP queue drains in order, but compare defensively). Writes atomically
+#   (temp + mv) under the per-key lock. Returns nonzero, writes NOTHING, on any
+#   rejection. NOTE (anti-drift): no measurement here — it stores the verdict
+#   the Local Agent already computed; it never derives one.
+co__capacity_report() {
+  local principal="$1" json="$2"
+  [[ -n "$json" ]] || { echo "co: report-capacity needs <report_json>" >&2; return 2; }
+  local parsed
+  parsed=$(printf '%s' "$json" | jq -c '
+        if type=="object" and .report=="capacity" then . else empty end' 2>/dev/null) \
+    || parsed=""
+  if [[ -z "$parsed" ]]; then
+    echo "co: reject — not a §1.1 capacity report (report!=\"capacity\" / invalid JSON)" >&2
+    return 3
+  fi
+  # §0.3 — integer schema_version; unknown HIGHER ⇒ reject, never best-effort.
+  local sv
+  sv=$(printf '%s' "$parsed" | jq -r '
+        if (.schema_version|type)=="number"
+           and (.schema_version == (.schema_version|floor))
+        then .schema_version else empty end' 2>/dev/null) || sv=""
+  if [[ -z "$sv" || ! "$sv" =~ ^[0-9]+$ ]]; then
+    echo "co: reject — capacity report missing integer schema_version (§1.1/§0.3)" >&2; return 3
+  fi
+  if [[ "$sv" -gt 1 ]]; then
+    echo "co: reject — capacity report schema_version $sv is an unknown higher version (bound=1; §0.3 reject, never best-effort-parse)" >&2
+    return 3
+  fi
+  if [[ "$sv" -ne 1 ]]; then
+    echo "co: reject — capacity report schema_version $sv unsupported (binds v1 only; §0.3)" >&2; return 3
+  fi
+  local cc vd rid
+  cc=$(printf '%s'  "$parsed" | jq -r '.cost_class // ""' 2>/dev/null) || cc=""
+  vd=$(printf '%s'  "$parsed" | jq -r '.verdict   // ""' 2>/dev/null) || vd=""
+  rid=$(printf '%s' "$parsed" | jq -r '.runner_id // ""' 2>/dev/null) || rid=""
+  if ! co__capacity_class_ok "$cc"; then
+    echo "co: reject — capacity report cost_class '$cc' not in {standard,low_priority} (§6.3 closed enum)" >&2; return 3
+  fi
+  if [[ "$vd" != "ok" && "$vd" != "over" ]]; then
+    echo "co: reject — capacity report verdict '$vd' not in {ok,over} (§6.3)" >&2; return 3
+  fi
+  if [[ -z "$rid" ]] || ! co__safe_key "$rid"; then
+    echo "co: reject — capacity report runner_id '$rid' missing/unsafe (§1.1 stamp; store-owner input hygiene)" >&2; return 3
+  fi
+  # §9.1 stamp: the RESOLVED principal, overwriting anything the report put.
+  local stamped
+  stamped=$(printf '%s' "$parsed" | jq -c --arg p "$principal" '.principal=$p' 2>/dev/null) || {
+    echo "co: reject — capacity report is not valid JSON (post-parse)" >&2; return 3; }
+  co__with_lock "capacity.$cc.$rid" co__capacity_write "$cc" "$rid" "$stamped"
+}
+
+co__capacity_write() {
+  local cc="$1" rid="$2" json="$3" dir path tmp prev pobs nobs
+  dir="$(co__capacity_dir)/$cc"
+  mkdir -p "$dir" 2>/dev/null || true
+  path="$(co__capacity_path "$cc" "$rid")"
+  # Latest-wins: keep the report with the newer observed_at. RFC-3339 UTC
+  # strings sort lexicographically, so a string compare is the time compare.
+  if [[ -f "$path" ]]; then
+    nobs=$(printf '%s' "$json" | jq -r '.observed_at // ""' 2>/dev/null) || nobs=""
+    pobs=$(jq -r '.observed_at // ""' "$path" 2>/dev/null) || pobs=""
+    if [[ -n "$pobs" && -n "$nobs" && "$nobs" < "$pobs" ]]; then
+      return 0     # an older straggler ⇒ keep the newer stored report
+    fi
+  fi
+  tmp="$path.$$.tmp"
+  printf '%s\n' "$json" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 4; }
+  mv -f "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 4; }
+  return 0
+}
+
+# co__capacity_any_over <cost_class> — 0 (true) iff ANY current Local-Agent
+# report for <cost_class> carries verdict "over". Pure aggregation over the
+# stored coarse verdicts (no measurement).
+co__capacity_any_over() {
+  local cc="$1" dir f vd
+  dir="$(co__capacity_dir)/$cc"
+  [[ -d "$dir" ]] || return 1
+  for f in "$dir"/*.json; do
+    [[ -e "$f" ]] || continue
+    vd=$(jq -r '.verdict // ""' "$f" 2>/dev/null) || vd=""
+    [[ "$vd" == "over" ]] && return 0
+  done
+  return 1
+}
+
+# co__ask_capacity <cost_class> — the §6.3 AGGREGATED verdict.
+#   Echoes "ok" | "over"; returns 0 for ok, 1 for over (the same proceed/halt
+#   convention as the Local Agent's la_capacity_check, so a caller can branch
+#   on the rc as well as the stdout token).
+co__ask_capacity() {
+  local cc="${1:-standard}"
+  if ! co__capacity_class_ok "$cc"; then
+    echo "co: ask-capacity cost_class '$cc' not in {standard,low_priority} (§6.3 closed enum)" >&2
+    return 2
+  fi
+  # §6.3 / EXIT crit 2 — USAGE_THRESHOLD=0 disables the hard ceiling GLOBALLY
+  # ⇒ capacity is always ok (the same gate-disable the Local Agent applies;
+  # not a re-measurement — the shared §0.5 constant). When disabled the LA
+  # also emits NO reports, so this short-circuit is the consistent global view.
+  local threshold; threshold="$(co__USAGE_THRESHOLD)"
+  if [[ "$threshold" =~ ^[0-9]+$ ]] && [[ "$threshold" -eq 0 ]]; then
+    echo ok; return 0
+  fi
+  # `standard` is gated ONLY by the hard ceiling (aggregated coarse verdict).
+  if co__capacity_any_over standard; then
+    if [[ "$cc" == "standard" ]]; then echo over; return 1; fi
+    # `low_priority` ADDITIONALLY: a hit hard ceiling on standard ⇒ no spare
+    # capacity at all ⇒ low_priority is certainly over (backfill-only; it
+    # never starves the weekly cap).
+    echo over; return 1
+  fi
+  if [[ "$cc" == "low_priority" ]] && co__capacity_any_over low_priority; then
+    # The LA already encoded the day-N ≤ N×SPARE_RAMP_PER_DAY soft line into
+    # this coarse verdict — aggregated here, never re-measured.
+    echo over; return 1
+  fi
+  echo ok; return 0
+}
+
+# co_ask_capacity <bearer> <cost_class> [reachable|unreachable]
+#   The §6.2 capacity gate as the runner sees it (AD2.2 CAPACITY HALF). This
+#   is the exact mirror of local-agent.sh's la_lease_fallback_allows
+#   reachable|unreachable shape — but the OPPOSITE posture, deliberately:
+#     unreachable ⇒ FAIL OPEN: echo "ok", return 0 (PROCEED). A one-task
+#                   overshoot is noise; the BC-34 hard-ceiling intent is
+#                   preserved AT THE LOCAL AGENT (T3). There is no Coordinator
+#                   to authenticate against when it is unreachable — the
+#                   posture IS "proceed", not "ask".
+#     reachable   ⇒ ask through the ONE §2.3/§9.1 authed front door
+#                   (co_request → co__ask_capacity); the aggregated verdict.
+#   (Contrast the LEASE half — la_lease_fallback_allows — which fails
+#    DEGRADED-CLOSED: a different, higher-blast-radius plane, a different
+#    posture. §6.2 freezes BOTH halves so neither is left to implementation.)
+co_ask_capacity() {
+  local bearer="${1:-}" cc="${2:-standard}" reach="${3:-reachable}"
+  if [[ "$reach" == "unreachable" ]]; then
+    echo ok; return 0                       # §6.2 / AD2.2 capacity-half fail-OPEN
+  fi
+  co_request "$bearer" ask-capacity "$cc"
 }
 
 # ── EXIT-criterion-1 introspection: the four §2 capabilities are reachable ────
