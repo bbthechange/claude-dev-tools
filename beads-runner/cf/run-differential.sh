@@ -46,7 +46,7 @@ echo "── CF.1 differential part 2/2: §0.C source discipline (no actor branc
 # open). It lives in its own file to keep this harness free of brittle
 # nested-quoting.
 viol=0
-for f in src/coordinator.js src/index.js src/schema.js src/notification.js src/forensic.js src/reconcile.js src/stuck.js; do
+for f in src/coordinator.js src/index.js src/schema.js src/notification.js src/forensic.js src/reconcile.js src/stuck.js src/timer.js; do
   stripped="$(node test/strip-comments.mjs "$f")" || { echo "  ✗ $f — comment-stripper failed (fail-closed §0.C VIOLATION)"; viol=1; continue; }
   [[ -n "$stripped" ]] || { echo "  ✗ $f — empty after strip (fail-closed §0.C VIOLATION)"; viol=1; continue; }
   if printf '%s' "$stripped" | grep -Eiq 'if[^a-z].*\bactor\b|case[^a-z].*\bactor\b|switch[[:space:]]*\([^)]*actor|\bactor\b[[:space:]]*(===|==|!==|!=|\?|&&|\|\|)'; then

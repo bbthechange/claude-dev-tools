@@ -66,6 +66,16 @@ import { RECONCILE_OPS, handleReconcileOp } from "./reconcile.js";
 // (the §4 registry is CF.1's, unchanged). Its ops are dispatched in a
 // dedicated guard so this substrate stays untouched.
 import { STUCK_OPS, handleStuckOp } from "./stuck.js";
+// CF.7 (claude-tools-7g0.7) — §2.2 fire(dossier_id) timer WIRING + the S-6
+// fire-on-next-poll backstop + timed-fyi auto-proceed, layered ON this
+// substrate (a SEPARATE module, mirroring bash timed-fyi.sh sourcing
+// consequence.sh + consuming the §2.2 timer surface). It consumes this DO's
+// EXPOSED §2.2 capability (opTimerArm/opTimerDue/opTimerAck — byte-unchanged
+// below; the `timers` namespace shape is untouched) and CF.6's PUBLIC
+// `handleDossierOp` (`item-apply`); it adds NO §4 record type and NO DDL. Its
+// ops are dispatched in a dedicated guard so this substrate stays untouched;
+// `alarmFire` wires the §2.2 setAlarm() callback CF.1 left as a no-op marker.
+import { TIMER_OPS, handleTimerOp, alarmFire } from "./timer.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -230,6 +240,20 @@ export class Coordinator {
     // auth path (C4).
     if (STUCK_OPS.has(op)) {
       return await handleStuckOp(this, op, args, principal);
+    }
+
+    // ── CF.7 (claude-tools-7g0.7) §2.2 timer / S-6 / timed-fyi op guard ──────
+    // fire(dossier_id) WIRING + the S-6 fire-on-next-poll backstop + timed-fyi
+    // auto-proceed, dispatched by its dedicated module so the CF.1 substrate
+    // switch below stays byte-identical. No §4 record type / no DDL: it
+    // consumes this DO's EXPOSED §2.2 surface (opTimerArm/opTimerDue/
+    // opTimerAck) + CF.6's public `handleDossierOp` (`item-apply` — the §7.4
+    // per-Item latch is CF.6's, never re-implemented). The §9.1 chokepoint
+    // (the Worker) has ALREADY authenticated + threaded `principal` — no
+    // second auth path (C4).
+    if (TIMER_OPS.has(op)) {
+      await this._ensureDossierSchema();
+      return await handleTimerOp(this, op, args, principal);
     }
 
     try {
@@ -471,12 +495,21 @@ export class Coordinator {
     return json({ ok: changed > 0, changed });
   }
 
-  // §2.2 alarm() handler — present so setAlarm() is a real capability surface.
-  // Intentionally a no-op: the Dossier-specific fire(dossier_id) consequence
-  // and the per-Item exactly-once latch are CF.6/CF.7 (MUST-NOT-TOUCH). The
-  // S-6 contract is satisfied by the timer-due poll-fallback, not by this.
+  // §2.2 setAlarm() callback — CF.1 left this a no-op MARKER explicitly for
+  // CF.7. CF.7 wires fire(dossier_id) here: it fires every DUE timed-fyi
+  // dossier through the SAME shared auto-proceed handler the S-6 timer-due
+  // poll-fallback runs, so alarm-fire vs poll-fallback applies each item's
+  // consequence EXACTLY ONCE via CF.6's §7.4 per-Item latch. Correctness does
+  // NOT depend on this firing (the alarm is best-effort BY CONTRACT — the
+  // deterministic backstop is the timer-due poll-fallback, S-6). The lazy
+  // idempotent DDL is ensured here too (fetch() is not the entrypoint on this
+  // path — the runtime invokes the DO directly, with no request/principal;
+  // alarmFire resolves the §0.5 v1 principal internally, keeping this
+  // substrate free of a PRINCIPAL_V1 import / second auth path — C4).
   async alarm() {
-    /* no dossier semantics here — CF.6/CF.7 own fire(dossier_id) + the latch */
+    await this.ensureSchema();
+    await this._ensureDossierSchema();
+    await alarmFire(this);
   }
 }
 
