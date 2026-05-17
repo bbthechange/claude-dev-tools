@@ -79,6 +79,17 @@ WATCHDOG_SOFT_WARN=180                                 # BC-22 SCAR — HARDCODE
 DEFAULT_MODEL="${DEFAULT_MODEL:-opus[1m]}"
 PERMISSION_FLAGS=(--permission-mode acceptEdits)
 EXTRA_CLAUDE_FLAGS=(--no-chrome)
+# ── §7.6 GUARDRAIL (AD3.5; T2.5, claude-tools-kqn) ────────────────────────────
+# Workers run with the interactive human-in-the-loop tools removed from the
+# advertised set, and KEEP `--output-format stream-json` (line 940; `text`
+# hides `result.permission_denials[]` and the `"Entered plan mode."`
+# tool_result — the §7.2(b) backstop NEEDS the structured stream). The
+# guardrail is DEFENSE-IN-DEPTH, NOT a substitute: a bare prohibition is
+# empirically insufficient (research Q5) and EnterPlanMode is a version-pinned
+# silent-no-op (O-1 / claude-tools-0vt, GREEN on claude 2.1.142). Both the
+# §7.2(a) instructed primary path (the worker prompt) AND the §7.2(b) runner
+# backstop remain required — neither replaces this, this replaces neither.
+GUARDRAIL_FLAGS=(--disallowedTools AskUserQuestion EnterPlanMode ExitPlanMode)
 PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"     # §4.2 project_ref (controllable unit); Coordinator owns desired-state
 STOP_FILE="${STOP_FILE:-.stop-beads}"
 
@@ -191,16 +202,96 @@ job_reconcile_desired()   { co_deliver_desired_state "$PROJECT_REF"; }          
 job_publish_snapshot()    { la_publish_work_snapshot "$PROJECT_REF"; }           # §3 j5 / §4.5 — read-only projection
 job_report_terminal()     { la_report_terminal_reason "$1" "${2:-}" "${3:-}" "$PROJECT_REF"; } # §3 j6 / §8.2
 
-# ── SEAM (T2.5 owns): the worker prompt + AD3.5 guardrail + STUCK primary/
-#    backstop. The skeleton emits the MINIMAL contract-shaped prompt so the
-#    end-to-end loop is demonstrable (the fake/real worker keys the bead id off
-#    the `beads issue <ID>:` line). BC-38's full prompt (non-interactive
-#    prohibition, debrief-then-close) and §7.6 `--disallowedTools` are T2.5 —
-#    NOT here. ──────────────────────────────────────────────────────────────
+# ── BC-38 / §7.2(a) — the worker prompt (T2.5, claude-tools-kqn) ──────────────
+# Re-implements v1's prompt INTENT idiomatically (scaffolding not transcribed):
+#   • states the run is NON-INTERACTIVE and explicitly forbids EnterPlanMode /
+#     ExitPlanMode / AskUserQuestion ("no human to approve/answer") — "just
+#     execute directly"; this is the instructed prohibition the §7.6
+#     `--disallowedTools` guardrail backs (defense-in-depth, not either/or);
+#   • the §7.2(a) PRIMARY worker-driven STUCK path: on a fork it must NOT
+#     resolve, the worker MUST, IN ORDER — `bd update <id> --status=blocked`
+#     → write the structured ask (TL;DR · ask · options · recommendation+why ·
+#     reversible) into the bead (`--append-notes`/`--design`) → `bd human <id>`
+#     → exit WORKER_STUCK_EXIT — never an interactive tool. That structured ask
+#     is the raw material the §5 dossier builder consumes;
+#   • a mandatory honest debrief via `bd update <id> --append-notes=` BEFORE
+#     `bd close <id>`; follow the task description exactly.
+# BC-38: id/title/description are substituted by LITERAL string replacement
+# (the BEADS_* tokens), so a title/desc that itself contains a token-like
+# substring is data, never re-expanded, and no BEADS_* token survives into the
+# emitted prompt. The `beads issue <ID>:` line is also the worker's bead-id
+# anchor (the fake/real worker keys off it) — keep it first.
 build_worker_prompt() {
-  local id="$1" title="$2" desc="$3"
-  printf 'You are working on beads issue %s: "%s"\n\n%s\n\nWhen the work is complete, close the issue: bd close %s\n' \
-    "$id" "$title" "$desc" "$id"
+  local id="$1" title="$2" desc="$3" prompt
+  read -r -d '' prompt <<'PROMPT_DELIM' || true
+You are working on beads issue BEADS_ID: "BEADS_TITLE"
+
+Task description:
+BEADS_DESC
+
+IMPORTANT: You are running non-interactively. Do NOT use EnterPlanMode or ExitPlanMode -- there is no human to approve plans. Do NOT use AskUserQuestion -- there is no human to answer. Just execute the work directly.
+
+Follow the instructions in the task description above exactly. The description contains the full workflow for this task type.
+
+If you reach a genuine fork you must NOT resolve yourself -- an irreversible or judgement-call decision the task description does not settle, where guessing could be wrong and costly -- do NOT pick for the human, do NOT use an interactive tool, and do NOT stop silently. Instead, in THIS exact order:
+  1. bd update BEADS_ID --status=blocked
+  2. Write the structured ask into the bead:
+       bd update BEADS_ID --append-notes="<the ask>"   (or --design="...")
+     It MUST clearly contain, labelled: TL;DR; the ask (the single decision needed); the options; your recommendation and why; and how reversible each option is.
+  3. bd human BEADS_ID
+  4. Exit with status code BEADS_STUCK_EXIT and do NOT close the issue.
+This is the only correct way to surface a human decision.
+
+Before closing the issue, add a brief debrief note summarizing how it went:
+  bd update BEADS_ID --append-notes="<your debrief>"
+Include: what you did, any difficulties or unexpected behavior, how long things took if notable, anything you were not sure about, and any follow-up suggestions. Be honest -- this is for the human reviewing your work later.
+
+When you have completed all steps, close the issue: bd close BEADS_ID
+PROMPT_DELIM
+  # Literal replacement, id/title/stuck-exit BEFORE desc so free-form desc text
+  # can never shadow a still-unsubstituted earlier token (v1 order + the
+  # WORKER_STUCK_EXIT sentinel, kept in sync with the §8.1 constant).
+  prompt="${prompt//BEADS_ID/$id}"
+  prompt="${prompt//BEADS_TITLE/$title}"
+  prompt="${prompt//BEADS_STUCK_EXIT/$WORKER_STUCK_EXIT}"
+  prompt="${prompt//BEADS_DESC/$desc}"
+  # v1 PROMPT_EXTRA parity: project-specific instructions appended if configured.
+  if [[ -n "${PROMPT_EXTRA:-}" ]]; then
+    prompt="$prompt
+
+$PROMPT_EXTRA"
+  fi
+  printf '%s\n' "$prompt"
+}
+
+# ── §7.3 / S-2 (AD3.3; T2.5) — a fired backstop MUST itself drive the bead ────
+# Runs for the STUCK class regardless of WHICH §7.2 trigger fired, because it
+# is IDEMPOTENT: on the §7.2(a) primary path the instructed worker already did
+# status=blocked + the structured ask + `bd human`, so this is a harmless
+# re-assert; on a fired §7.2(b) backstop the worker SLIPPED and the bead is
+# NOT driven, so this is the load-bearing fork-must-not-rot drive (UX
+# principle 7). §7.3/S-2: the runner does NOT own blocked-for-human truth — it
+# writes the bead as an IMMEDIATE-honesty work-plane PROJECTION and hands the
+# §2 store the `worker_stuck` Dossier KEYED ON task_ref. "One fork ⇒ one
+# Dossier" is the Coordinator's §7.4 dossier-level latch (real in T5 /
+# claude-tools-40c; the §2 stub here is a no-op) — this child makes only the
+# KEYED CALL and never reimplements that dedup in the runner.
+_drive_blocked_for_human() {
+  local tref="$1" rec
+  # Work-plane projection — best-effort + idempotent (bd is fail-open here).
+  safe_capture BD_UNAVAILABLE "" -- bd update "$tref" --status=blocked >/dev/null
+  safe_capture BD_UNAVAILABLE "" -- bd human "$tref" >/dev/null
+  # Control-plane: a contract-shaped (§4.1) worker_stuck Dossier record keyed
+  # on task_ref (§0.4 dossier-level double-trigger dedup key). The Coordinator
+  # owns the create-once dedup + the control→work reconcile (S-2) — stubbed
+  # no-op here; the keyed call is what this child owns.
+  rec="$(jq -cn --arg tr "$tref" --arg p "$PRINCIPAL" \
+    '{schema_version:1,trigger:"worker_stuck",bead_ref:$tr,task_ref:$tr,principal:$p}' \
+    2>/dev/null)" || rec=""
+  if [[ -n "$rec" ]]; then
+    co_store_put dossier "$rec" >/dev/null 2>&1 \
+      || degrade DOSSIER_STORE "co_store_put dossier failed for $tref — §7.3 bead drive already done (fork will not rot); the Coordinator reconcile (S-2) is the truth"
+  fi
 }
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -272,6 +363,36 @@ parse_stream_signals() {
         if [[ "$ie" == "true" ]] && \
            printf '%s' "$res" | grep -qiE 'prompt is too long|context_length_exceeded' 2>/dev/null; then
           echo "CONTEXT_OVERFLOW=1" >> "$sig"
+        fi
+        # §7.2(b) BACKSTOP A (AD3.3, zero model trust): the worker slipped
+        # past the §7.6 guardrail and the FINAL result carries a
+        # permission_denial for AskUserQuestion/ExitPlanMode while FALSELY
+        # succeeding (exit-0/is_error:false, bead not closed). Emitting the
+        # STUCK marker lets classify_failure (§7.1) slot STUCK ABOVE the
+        # exit-0 TASK_NOT_CLOSED path — a real human-ask MUST NOT be masked as
+        # "agent forgot to close". Predicate is byte-aligned with the T5
+        # recognizer (sr_scan_backstop): precise, no false-positive on a
+        # benign result. NOT the classifier — only the typed input it reads.
+        if printf '%s' "$line" | jq -e '(.permission_denials != null) and
+              (any(.permission_denials[]?;
+                   (.tool=="AskUserQuestion") or (.tool=="ExitPlanMode")
+                or (.tool_name=="AskUserQuestion") or (.tool_name=="ExitPlanMode")))' \
+             >/dev/null 2>&1; then
+          echo "STUCK_NEEDS_HUMAN=permission_denials" >> "$sig"
+        fi
+        ;;
+      tool_result)
+        # §7.2(b) BACKSTOP B (AD3.3): the EnterPlanMode silent-no-op residual
+        # gap (O-1 / claude-tools-0vt) — claude exits 0/success with NO
+        # permission_denials, but a "Entered plan mode." tool_result is in the
+        # stream. `--disallowedTools` is the GUARDRAIL; THIS scan is the
+        # BACKSTOP (defense-in-depth — the guardrail alone is version-pinned
+        # and undocumented). Match is intentionally precise (the exact
+        # residual string), no false-positive on benign tool_result errors.
+        if printf '%s' "$line" | jq -e \
+              '((.content // "") | tostring | test("Entered plan mode\\."))' \
+             >/dev/null 2>&1; then
+          echo "STUCK_NEEDS_HUMAN=entered_plan_mode" >> "$sig"
         fi
         ;;
     esac
@@ -936,10 +1057,15 @@ st_run_task() {
 
   # BC-39: stdout+stderr → the one stream file (stderr carries SDK HTTP-retry
   # state; the watchdog's SIGINT-before-SIGKILL exists so it flushes here).
+  # §7.6: --output-format stream-json is KEPT (the §7.2(b) backstop reads
+  # result.permission_denials[] / the "Entered plan mode." tool_result — `text`
+  # hides both); GUARDRAIL_FLAGS removes the interactive tools from the
+  # advertised set (defense-in-depth behind the §7.2(a) instructed prompt).
   claude -p "$prompt" \
     --output-format stream-json \
     --verbose \
     --model "$DEFAULT_MODEL" \
+    "${GUARDRAIL_FLAGS[@]+"${GUARDRAIL_FLAGS[@]}"}" \
     "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
     "${PERMISSION_FLAGS[@]+"${PERMISSION_FLAGS[@]}"}" \
     > "$STREAM_FILE" 2>&1 &
@@ -1081,17 +1207,24 @@ st_post_task() {
       ;;
 
     STUCK_NEEDS_HUMAN)
-      # §7.5 (AD3.2): retry-EXEMPT and breaker-EXEMPT, adds NO runner exit
-      # code. The bead was ALREADY driven to blocked-for-human (the §7.2
-      # worker-driven primary did `bd update --status=blocked` + `bd human`;
-      # a fired §7.2 backstop — produced by T2.5 — drives it itself, §7.3). So
-      # the runner MUST NOT reset it to `open` (that would clobber the human
-      # flag — the v1 SCAR where exit 7 → UNKNOWN → generic reopen), MUST NOT
+      # §7.3 (AD3.3): drive the bead to blocked-for-human + route the fork
+      # into ONE Dossier keyed on task_ref. This is UNCONDITIONAL and
+      # IDEMPOTENT by design: on the §7.2(a) primary path the instructed
+      # worker already did status=blocked + the structured ask + `bd human`
+      # (a harmless re-assert); on a fired §7.2(b) backstop the worker SLIPPED
+      # and the bead is NOT driven — here the runner-side drive is the
+      # load-bearing fork-must-not-rot guarantee (the v1 SCAR was exit 7 →
+      # UNKNOWN → generic reopen, clobbering the human flag). §7.4 "one fork ⇒
+      # one Dossier" is the Coordinator's dossier-level latch (stub no-op
+      # here) — _drive_blocked_for_human makes only the task_ref-keyed call.
+      # §7.5 (AD3.2): STUCK is retry-EXEMPT and breaker-EXEMPT and adds NO
+      # runner exit code — it MUST NOT reset the bead to `open`, MUST NOT
       # advance the breaker (else N legitimate human-asks stop the fleet —
-      # turning the normal path into an outage), and MUST NOT retry. It just
-      # records the incident + greppable note and moves on — like a blocking
-      # analysis child. CONSECUTIVE_FAILURES / LAST_FAILED_ID untouched.
-      echo "  STUCK_NEEDS_HUMAN: $CANDIDATE_TITLE — bead stays blocked-for-human; runner continues (§7.5, no retry, no breaker, no exit code)"
+      # turning the normal path into an outage), MUST NOT retry. It records
+      # the incident + greppable note and moves on, like a blocking analysis
+      # child. CONSECUTIVE_FAILURES / LAST_FAILED_ID deliberately untouched.
+      _drive_blocked_for_human "$CURRENT_TASK_ID"
+      echo "  STUCK_NEEDS_HUMAN: $CANDIDATE_TITLE — bead driven to blocked-for-human (§7.3); runner continues (§7.5, no retry, no breaker, no exit code)"
       append_runner_note "$CURRENT_TASK_ID" "STUCK_NEEDS_HUMAN" "-"
       record_incident    "$CURRENT_TASK_ID" "STUCK_NEEDS_HUMAN" "-"
       ;;
