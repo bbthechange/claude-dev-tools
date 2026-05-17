@@ -92,5 +92,5 @@ The bash conformance baseline is itself unaffected by pointing the driver at
 the CF engine.
 
 <!-- CF11-VERDICT:BEGIN -->
-_Last rig run: **2026-05-17T10:03:26Z** — overall **GREEN**._
+_Last rig run: **2026-05-17T10:14:26Z** — overall **GREEN**._
 <!-- CF11-VERDICT:END -->
