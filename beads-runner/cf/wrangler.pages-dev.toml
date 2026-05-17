@@ -1,0 +1,47 @@
+# CF.10 (claude-tools-7g0.10) — LOCAL Pages-serve wiring config (ADDITIVE).
+#
+# This is NOT an edit of the FROZEN CF.1 wrangler.toml (MUST-NOT-TOUCH: the
+# engine surface). It is a SEPARATE, CF.10-owned `wrangler dev` config whose
+# ONLY differences from wrangler.toml are:
+#   • main → pages-dev/adapter.js  (the proxy-dialect re-frame in FRONT of the
+#     byte-unchanged ../src/index.js Worker, which adapter.js imports + the
+#     Coordinator DO class which it re-exports — same singleton, AD1 intact).
+#   • an isolated local D1 name/id so the CF.10 demo store is a clean,
+#     deterministic seed (the double-tap §7.4 latch proof needs a fresh store)
+#     and never collides with the CF.1 differential's local D1.
+#
+# LOCAL EMULATION ONLY (workerd+miniflare, NO Cloudflare account). Production
+# Pages deploy / off-network / asleep proof is the SEPARATE a53 DEPLOY GATE,
+# EXCLUDED from this parent. The DO applies its DDL lazily+idempotently, so no
+# manual `d1 migrations apply` is needed locally.
+
+name = "coordinator-cf-pagesdev"
+main = "pages-dev/adapter.js"
+compatibility_date = "2026-05-01"
+
+# The SAME singleton Coordinator Durable Object class (re-exported byte-
+# unchanged from ../src/index.js by adapter.js) => single-threaded =>
+# §2.1/§7.4 single-writer-per-key BY CONSTRUCTION (the AD1 payoff, untouched).
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Coordinator"]
+
+# Isolated local D1 (distinct name/id from wrangler.toml). miniflare backs
+# this with a local SQLite file under --persist-to; never contacts an account.
+[[d1_databases]]
+binding = "DB"
+database_name = "coordinator-records-pagesdev"
+database_id = "local-coordinator-records-cf10"
+migrations_dir = "migrations"
+
+# §9.1 v1 bearer validity hook left UNSET => "any non-empty bearer is valid"
+# — behaviour-identical to the bash oracle's CO_EXPECTED_TOKEN-unset default
+# that test-board.sh / test-inbox.sh run under (GOOD="bearer-runner-secret-xyz",
+# no CO_EXPECTED_TOKEN). The §9.1 reject path is still proved by a
+# credential-less /request hit (verify.sh) — 401 BEFORE any §4 write.
+[vars]
+# CO_EXPECTED_TOKEN = ""

@@ -3,3 +3,9 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Cloudflare local-emulation artifacts (wrangler dev / pages dev — LOCAL only,
+# no account). Regenerated on every serve; never committed. Mirrors the intent
+# of beads-runner/cf/.gitignore for the CF.10 pages-dev serve, which runs
+# `wrangler pages dev` inside the FROZEN web/board + web/inbox trees.
+.wrangler/
