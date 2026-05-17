@@ -56,6 +56,16 @@ import { FORENSIC_OPS, handleForensicOp } from "./forensic.js";
 // schema.js registry) and NO new DDL (reuses the `records` table). Its ops are
 // dispatched in a dedicated guard so this substrate stays untouched.
 import { RECONCILE_OPS, handleReconcileOp } from "./reconcile.js";
+// CF.8 (claude-tools-7g0.8) — §7.2/§7.3/§7.4(dossier-level) STUCK_NEEDS_HUMAN
+// cross-tier routing, layered ON this substrate (a SEPARATE module, mirroring
+// bash stuck-routing.sh sourcing dossier-gen.sh + consuming its public
+// surface). It composes the §5 generation / dossier-get / item-set-state
+// THROUGH CF.6's public `handleDossierOp` (never CF.6 internals); its
+// dossier-level `task_ref` dedup + the blocked-for-human control plane are its
+// OWN sibling D1 namespace (lazy + idempotent DDL there) — NOT §4 record types
+// (the §4 registry is CF.1's, unchanged). Its ops are dispatched in a
+// dedicated guard so this substrate stays untouched.
+import { STUCK_OPS, handleStuckOp } from "./stuck.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -205,6 +215,21 @@ export class Coordinator {
     // invariant holds BY CONSTRUCTION).
     if (RECONCILE_OPS.has(op)) {
       return await handleReconcileOp(this, op, args, principal);
+    }
+
+    // ── CF.8 (claude-tools-7g0.8) STUCK_NEEDS_HUMAN cross-tier routing guard ─
+    // §7.2/§7.3/§7.4(dossier-level): one-fork-one-Dossier dedup + the
+    // backstop-drives-the-bead + the S-2 control→work reconcile, dispatched by
+    // its dedicated module so the CF.1 substrate switch below stays
+    // byte-identical. No §4 record type added: the dossier-level `task_ref`
+    // dedup + the COORDINATOR-owned blocked-for-human are its OWN sibling
+    // namespace (the dossier-dedup / §10.3-forensic "NOT a §4 record"
+    // precedent); §5 generation / dossier-get / item-set-state are composed
+    // THROUGH CF.6's public `handleDossierOp`. The §9.1 chokepoint (the
+    // Worker) has ALREADY authenticated + threaded `principal` — no second
+    // auth path (C4).
+    if (STUCK_OPS.has(op)) {
+      return await handleStuckOp(this, op, args, principal);
     }
 
     try {
