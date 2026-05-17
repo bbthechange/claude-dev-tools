@@ -1,0 +1,57 @@
+# CF.1 (claude-tools-7g0.1) — Coordinator engine substrate, Cloudflare realization.
+#
+# LOCAL EMULATION ONLY. `wrangler dev` / vitest-pool-workers run this entirely
+# under workerd+miniflare with NO Cloudflare account. The real `wrangler deploy`
+# + hosted D1/DO provisioning is the SEPARATE a53 DEPLOY GATE — not this child.
+#
+# Appendix-A (non-normative) realization map this config encodes:
+#   §2.1 store        -> D1 (DB binding), writes serialised by the singleton
+#                        Coordinator Durable Object (single-threaded => the AD1
+#                        single-writer-per-(type,id) payoff, replacing the bash
+#                        co__with_lock advisory lock).
+#   §2.2 timer        -> the Coordinator DO's setAlarm() capability surface; the
+#                        timer-due poll-fallback is the S-6 backstop.
+#   §2.3/§9.1 choke   -> the Worker (src/index.js) middleware: the ONE
+#                        authenticate(request)->principal step.
+#   §2.4 poll         -> the DO reconnect handler returning desired + lease.
+# The SPOF of the singleton Coordinator DO is acknowledged (AD1); posture
+# mitigations are siblings (CF.2/CF.7), not this child.
+
+name = "coordinator-cf"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+
+# Singleton Coordinator Durable Object. One global instance
+# (idFromName("coordinator")) => every write is serialised through one
+# single-threaded actor => §2.1 / §7.4 single-writer-per-key BY CONSTRUCTION.
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
+
+# SQLite-backed DO class (modern default; required on the free tier, and what
+# local miniflare emulates). The DO uses ctx.storage only for the §2.2
+# setAlarm() capability; the §4 records live in D1 (the strong store).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Coordinator"]
+
+# §2.1 / §4 strongly-consistent record store. The database_id is a local
+# placeholder — `wrangler dev` / miniflare back this with a local SQLite file
+# and never contact a Cloudflare account. a53 swaps in the real id at deploy.
+[[d1_databases]]
+binding = "DB"
+database_name = "coordinator-records"
+database_id = "local-coordinator-records-cf1"
+migrations_dir = "migrations"
+
+# §9.1 v1 bearer validity hook. Unset by default => "any non-empty bearer is
+# valid" (matches coordinator.sh co_authenticate when CO_EXPECTED_TOKEN unset).
+# A test/caller may set this to drive the invalid-token path, exactly like the
+# bash CO_EXPECTED_TOKEN env knob.
+[vars]
+# CO_EXPECTED_TOKEN = ""
+
+# Pages skeleton presence (Appendix A: Worker + DO + D1 + Pages). The actual
+# Board/Inbox proxy wiring is CF.10 (MUST-NOT-TOUCH here) — this is only the
+# scaffold placeholder so the four-surface substrate has its Pages seam.
+# [Pages is served separately via `wrangler pages dev pages` — see README.]

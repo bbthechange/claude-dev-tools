@@ -1,0 +1,6 @@
+# CF.1 local-emulation artifacts — never committed (LOCAL only, no account).
+# package-lock.json IS committed (reproducible installs for the differential
+# oracle); node_modules/ + the miniflare local state are not.
+node_modules/
+.wrangler/
+*.log

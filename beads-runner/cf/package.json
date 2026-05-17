@@ -1,0 +1,19 @@
+{
+  "name": "coordinator-cf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CF.1 (claude-tools-7g0.1) — Coordinator engine substrate: Cloudflare Worker + Coordinator Durable Object + D1, LOCAL emulation only (wrangler dev / miniflare, NO Cloudflare account). Differential oracle: ../lib/coordinator.sh + ../lib/test-coordinator.sh.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.16.6",
+    "@vitest/runner": "^4.1.0",
+    "@vitest/snapshot": "^4.1.0",
+    "vitest": "^4.1.0",
+    "wrangler": "4.92.0"
+  }
+}
