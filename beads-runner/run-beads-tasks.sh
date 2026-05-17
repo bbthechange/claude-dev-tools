@@ -82,6 +82,22 @@ if [[ -f "$SR_LIB" ]]; then
   # shellcheck source=/dev/null
   source "$SR_LIB"
 fi
+
+# ── Hosted transport (I1, claude-tools-txj; epic claude-tools-8bm) ────────────
+# Sourced AFTER the SR/LA libs so the in-process bash co_request (pulled in by
+# the stuck-routing → dossier-gen → dossier → coordinator.sh guard chain) is
+# already defined; co-http-transport.sh then OVERRIDES it with authed HTTPS to
+# the deployed coordinator IFF a per-workspace COORDINATOR_URL is set. STRICT
+# NO-OP when COORDINATOR_URL is unset (the standalone / oracle / conformance
+# runs are byte-unaffected). This is the seam that makes a stuck/dossier flow
+# produce a dossier in the HOSTED engine instead of the local bash store —
+# the libs' co_request call sites do NOT change (the whole point of the
+# frozen §0.2-nonnormative transport boundary).
+CT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/co-http-transport.sh"
+if [[ -f "$CT_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$CT_LIB"
+fi
 # The controllable unit reported UP (§4.2 project_ref). Derived locally; the
 # Coordinator owns desired-state, never the LA (§1.1).
 PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"
@@ -1058,5 +1074,13 @@ print_incidents_summary
 # AUTH=3 (the whole point of the re-home, S-7).
 if command -v la_report_terminal_reason >/dev/null 2>&1; then
   la_report_terminal_reason CLEAN 0 "" "${PROJECT_REF:-}" || true
+fi
+# I1 (claude-tools-txj): §2.4 drain-on-reconnect, realised at clean shutdown —
+# push the machine-local §1.1 UP queue (capacity reports, …) to the DEPLOYED
+# coordinator over the authed HTTP transport before the process exits. Guarded:
+# defined ONLY when COORDINATOR_URL is set (else the queue persists locally for
+# a future hosted-wired run, exactly as before — never lost, at-least-once).
+if declare -F la_outbox_drain >/dev/null 2>&1; then
+  la_outbox_drain "${COORDINATOR_TOKEN:-}" || true
 fi
 echo "Run 'bd stats' or 'git log --oneline' to review."
