@@ -44,6 +44,18 @@ import { NOTIFICATION_OPS, handleNotificationOp } from "./notification.js";
 // untouched and `forensic` stays ABSENT from the §4 registry (structurally
 // "never in the §4.5 projection / a §4.3 Notification body").
 import { FORENSIC_OPS, handleForensicOp } from "./forensic.js";
+// CF.3 (claude-tools-7g0.3) — §4.2 RunnerState reconcile semantics + S-1
+// liveness derivation + the §4.5 read-only work-snapshot projection PRODUCER,
+// layered ON this substrate (a SEPARATE module, mirroring how bash
+// reconcile/work-snapshot logic lives in coordinator.sh alongside the store).
+// It LAYERS on this DO's `opPoll` §2.4 TRANSPORT (byte-unchanged, stays
+// liveness-free — the CF.1 differential asserts that opaque boundary) and
+// composes the §1.1 heartbeat WRITE through this DO's ONE write path
+// `_writeRecord` (§0.3 re-enforced + §9.1 principal stamped THERE — C7); it
+// adds NO §4 record type (`runner_state`/`work_snapshot` are ALREADY in the
+// schema.js registry) and NO new DDL (reuses the `records` table). Its ops are
+// dispatched in a dedicated guard so this substrate stays untouched.
+import { RECONCILE_OPS, handleReconcileOp } from "./reconcile.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -177,6 +189,22 @@ export class Coordinator {
     // rejected 401 at the Worker BEFORE this guard and before any decryption.
     if (FORENSIC_OPS.has(op)) {
       return await handleForensicOp(this, op, args, principal);
+    }
+
+    // ── CF.3 (claude-tools-7g0.3) reconcile / liveness / work-snapshot guard ─
+    // §4.2 reconcile SEMANTICS + S-1 liveness + the §4.5 read-only projection
+    // PRODUCER, dispatched by its dedicated module so the CF.1 substrate
+    // switch below stays byte-identical (its differential vs coordinator.sh +
+    // test-coordinator.sh must not regress — opPoll in particular stays the
+    // pure liveness-free transport). No DDL: runner_state lives in the
+    // existing `records` table (`runner_state`/`work_snapshot` are
+    // ALREADY-registered §4 types — CF.3 adds none). The §9.1 chokepoint (the
+    // Worker) has ALREADY authenticated + threaded `principal` — no second
+    // auth path (C4); the heartbeat WRITE composes through `_writeRecord`,
+    // reconcile/work-snapshot are READ-ONLY (the §4.5 no-reader-write-path
+    // invariant holds BY CONSTRUCTION).
+    if (RECONCILE_OPS.has(op)) {
+      return await handleReconcileOp(this, op, args, principal);
     }
 
     try {
