@@ -46,7 +46,7 @@ echo "── CF.1 differential part 2/2: §0.C source discipline (no actor branc
 # open). It lives in its own file to keep this harness free of brittle
 # nested-quoting.
 viol=0
-for f in src/coordinator.js src/index.js src/schema.js src/notification.js src/forensic.js src/reconcile.js src/stuck.js src/timer.js; do
+for f in src/coordinator.js src/index.js src/schema.js src/notification.js src/forensic.js src/reconcile.js src/stuck.js src/timer.js src/capacity.js; do
   stripped="$(node test/strip-comments.mjs "$f")" || { echo "  ✗ $f — comment-stripper failed (fail-closed §0.C VIOLATION)"; viol=1; continue; }
   [[ -n "$stripped" ]] || { echo "  ✗ $f — empty after strip (fail-closed §0.C VIOLATION)"; viol=1; continue; }
   if printf '%s' "$stripped" | grep -Eiq 'if[^a-z].*\bactor\b|case[^a-z].*\bactor\b|switch[[:space:]]*\([^)]*actor|\bactor\b[[:space:]]*(===|==|!==|!=|\?|&&|\|\|)'; then
@@ -57,6 +57,38 @@ for f in src/coordinator.js src/index.js src/schema.js src/notification.js src/f
   fi
 done
 [[ "$viol" -eq 0 ]] || rc=1
+
+echo ""
+echo "── CF.4 differential part 3/3: §6.3/§6.2 capacity NEVER measures ──"
+# The CF realization of test-coordinator-capacity.sh EXIT-4's source-discipline
+# clauses: the §6.3/§6.2 aggregation tier ONLY aggregates the reported coarse
+# verdict — it NEVER measures. It defines NO usage-cache / spare-ramp LOOKUP
+# and touches NO Keychain / usage API (all of that is the T3 Local-Agent
+# MUST-NOT-TOUCH side, which stays bash). Proven by STRUCTURE not a bare-token
+# grep: comments are stripped first (capacity.js's own anti-drift prose names
+# USAGE_CACHE_SECONDS / SPARE_RAMP_PER_DAY / the Keychain to explain why they
+# are deliberately NOT here — exactly the lesson test-coordinator-forensic.sh
+# / test-coordinator-capacity.sh call out: a correct comment must not defeat
+# the gate). Fail-closed: a stripper error / empty output is a VIOLATION,
+# never a silent green (a discipline gate must never fail open).
+capviol=0
+capstripped="$(node test/strip-comments.mjs src/capacity.js)" \
+  || { echo "  ✗ src/capacity.js — comment-stripper failed (fail-closed VIOLATION)"; capviol=1; }
+if [[ "$capviol" -eq 0 ]]; then
+  [[ -n "$capstripped" ]] \
+    || { echo "  ✗ src/capacity.js — empty after strip (fail-closed VIOLATION)"; capviol=1; }
+fi
+if [[ "$capviol" -eq 0 ]]; then
+  # No usage-cache / spare-ramp LOOKUP defined (function/arrow/const binding),
+  # and no Keychain / Anthropic usage API touched, in the CODE (post-strip).
+  if printf '%s' "$capstripped" | grep -Eq 'USAGE_CACHE_SECONDS|SPARE_RAMP_PER_DAY|find-generic-password|api\.anthropic\.com'; then
+    echo "  ✗ src/capacity.js measures (usage-cache / spare-ramp / Keychain / usage API in code — §6.3 MUST aggregate, never measure)"
+    capviol=1
+  else
+    echo "  ✓ src/capacity.js — aggregates only; no usage-cache / spare-ramp / Keychain / usage-API (never measures)"
+  fi
+fi
+[[ "$capviol" -eq 0 ]] || rc=1
 
 echo ""
 if [[ "$rc" -eq 0 ]]; then

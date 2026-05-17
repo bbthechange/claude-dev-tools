@@ -76,6 +76,22 @@ import { STUCK_OPS, handleStuckOp } from "./stuck.js";
 // ops are dispatched in a dedicated guard so this substrate stays untouched;
 // `alarmFire` wires the §2.2 setAlarm() callback CF.1 left as a no-op marker.
 import { TIMER_OPS, handleTimerOp, alarmFire } from "./timer.js";
+// CF.4 (claude-tools-7g0.4) — §6.3/§6.2 coordinator-side COARSE capacity
+// aggregation + the AD2.2 capacity-half fail-OPEN posture, layered ON this
+// substrate (a SEPARATE module, mirroring how the bash co__capacity_* /
+// co__ask_capacity / co_ask_capacity live in coordinator.sh alongside the
+// store but consume its public surface). It adds NO §4 record type: a §1.1
+// capacity report is NOT a §4 record — `capacity_reports` is the module's OWN
+// sibling D1 namespace (lazy + idempotent DDL there), the §10.3-forensic /
+// dossier-dedup "NOT a §4 record" precedent — so `capacity` stays ABSENT from
+// the schema.js §4 registry and is structurally never in the §4.5 projection.
+// Its ops are dispatched in a dedicated guard so this substrate stays
+// untouched. The §9.1 chokepoint (the Worker) has ALREADY authenticated +
+// threaded `principal` — no second auth path (C4). The §6.2 fail-OPEN
+// reachable|unreachable wrapper (askCapacityFailOpen) is RUNNER-side decision
+// logic, NOT a DO op (an "unreachable" op call is a contradiction) — exactly
+// as bash co_ask_capacity is NOT routed through co_request.
+import { CAPACITY_OPS, handleCapacityOp } from "./capacity.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -254,6 +270,21 @@ export class Coordinator {
     if (TIMER_OPS.has(op)) {
       await this._ensureDossierSchema();
       return await handleTimerOp(this, op, args, principal);
+    }
+
+    // ── CF.4 (claude-tools-7g0.4) §6.3/§6.2 capacity aggregation guard ───────
+    // The coarse cost-class verdict aggregation + the AD2.2 capacity-half
+    // fail-OPEN posture, dispatched by its dedicated module so the CF.1
+    // substrate switch below stays byte-identical. No §4 record type / no §4
+    // DDL: a §1.1 capacity report is NOT a §4 record — the module owns its OWN
+    // `capacity_reports` namespace (lazy + idempotent DDL there), so
+    // `capacity` stays ABSENT from the §4 registry/projection (the §10.3
+    // "not a §4 record" precedent). The §9.1 chokepoint (the Worker) has
+    // ALREADY authenticated + threaded `principal` — no second auth path
+    // (C4); a no/invalid-token capacity op is rejected 401 at the Worker
+    // BEFORE this guard, so it writes NOTHING.
+    if (CAPACITY_OPS.has(op)) {
+      return await handleCapacityOp(this, op, args, principal);
     }
 
     try {
