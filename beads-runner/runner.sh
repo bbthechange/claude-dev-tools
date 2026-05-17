@@ -82,6 +82,25 @@ EXTRA_CLAUDE_FLAGS=(--no-chrome)
 PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"     # §4.2 project_ref (controllable unit); Coordinator owns desired-state
 STOP_FILE="${STOP_FILE:-.stop-beads}"
 
+# ── T2.2 (claude-tools-8nn) — §7.1/§7.5/§8.1 classification constants ──────────
+# Per-class retry asymmetry (BC-13) + the consecutive-failure circuit breaker
+# (BC-14) are env-overridable (the conformance harness sets MAX_RETRIES=2 /
+# MAX_CONSECUTIVE_FAILURES=3); the literal defaults match v1.
+MAX_RETRIES="${MAX_RETRIES:-2}"                         # same-task retry budget before analysis-child (BC-13)
+MAX_CONSECUTIVE_FAILURES="${MAX_CONSECUTIVE_FAILURES:-3}" # distinct-task generic-failure breaker (BC-14 / §8.1 exit 2)
+# §8.1 (FROZEN): WORKER_STUCK_EXIT(7) is the *worker* (`claude -p`) sentinel —
+# an internal STUCK detection INPUT, chosen NOT to collide with the BC-21 runner
+# codes {0..4}. This child CONSUMES it into the §7.1 STUCK slot; it does NOT
+# add a runner exit code (§7.5) and T2.5 owns its PRODUCTION (the worker prompt).
+WORKER_STUCK_EXIT="${WORKER_STUCK_EXIT:-7}"
+# Post-mortem artifacts + incident ledger. The BC-29 per-iteration basename
+# scheme (`<TASK_ID>-<ITER_TS>`) and the LOG_DIR lifecycle are T2.4/T2.3's owned
+# surface (st_run_task already creates this dir + its BC-27 self-gitignore);
+# here LOG_DIR is only the anchor for the §8.2 incident ledger + selective
+# stream preservation this child's classification drives.
+LOG_DIR="${LOG_DIR:-.beads/runner-logs}"
+INCIDENTS_LOG="$LOG_DIR/incidents.log"
+
 # BC-35/BC-36 (T2.4, claude-tools-7hx): the project cleanup hook the teardown
 # invokes. Defined as a no-op BEFORE the project config source so a
 # `.beads/runner.sh` `runner_cleanup` override wins (the broader BC-37 config
@@ -142,15 +161,24 @@ CANDIDATE_DESC=""
 CURRENT_TASK_ID=""       # task whose lease+in_progress we hold (in flight)
 LEASE_GENERATION=""      # §4.4 fencing token for the held lease
 CLAUDE_PID=""            # in-flight worker process (BC-01: one fresh proc/task)
+CLAUDE_EXIT=0            # T2.2: the worker's exit code (NOT trusted as a verdict — BC-09 — but the §7.1 STUCK slot keys on WORKER_STUCK_EXIT and the marker scan is exit-code-guarded as in v1)
 WATCHDOG_PID=""          # T2.3 BC-22 watchdog subshell (one per task; in-band-reaped)
 STREAM_FILE=""           # T2.3: worker stream-json capture (watchdog output-progress signal)
 SIGNAL_FILE=""           # T2.3 BC-40 IPC seam: watchdog appends WATCHDOG_KILL=1; T2.2 classify consumes
-PROC_SNAPSHOT=""         # T2.3 BC-22 snapshot-before-signal artifact (retention policy = T2.2/BC-28 seam)
+PROC_SNAPSHOT=""         # T2.3 BC-22 snapshot-before-signal artifact (T2.2 keeps it ONLY for WATCHDOG_KILL)
 STOP_REQUESTED=""        # set when stop/desired∈{stopped} OBSERVED (§2.5); honored AFTER current task
 COMPLETED=0
 PROCESSED=0
 EXIT_CODE=0              # BC-21 process exit code (§8.1)
 TERMINAL_CLASS="CLEAN"   # §8.2 terminal-reason class for job 6
+# ── T2.2 classification/retry/breaker state (the ONLY such state — v1 scattered
+#    these across LAST_FAILED_ID / FAIL_COUNT / CONSECUTIVE_FAILURES globals).
+CLASSIFICATION=""        # §7.1 first-match class for the just-finished task
+PRESERVED_LOG=""         # selective stream-preservation path (or "-")
+LAST_FAILED_ID=""        # BC-13: the task the per-task retry counter is tracking
+FAIL_COUNT=0             # BC-13: same-task consecutive failures (→ analysis at MAX_RETRIES)
+CONSECUTIVE_FAILURES=0   # BC-14: DISTINCT-task generic failures (→ §8.1 breaker exit 2)
+INCIDENTS=()             # human-readable incident lines for the end-of-run summary
 
 # ── The six jobs — the runner is the CALLER (INTERFACE.md v1 §3) ─────────────
 # Thin wrappers so every call site is one line and the stub↔real swap is total.
@@ -175,28 +203,231 @@ build_worker_prompt() {
     "$id" "$title" "$desc" "$id"
 }
 
-# ── SEAM (T2.2 owns): failure classification precedence / per-class retry /
-#    circuit breaker / analysis-child (§7.1/§7.5/§8.1, BC-09/10/11/13/14/15).
-#    The skeleton needs only a COARSE outcome to keep the loop well-formed:
-#    SUCCESS iff the bead is closed (BC-09's "exit 0 ≠ success; truth is bd
-#    status" is the part the skeleton honors — it does NOT trust the exit
-#    code). A genuinely-still-open bead ⇒ NOT_CLOSED (handled by the §6.1
-#    lease-release pairing below — NOT by retry/breaker, those are T2.2). A
-#    DEGRADED bd read is a TYPED third outcome (BC-42): an infra blip is NOT a
-#    verdict and MUST NOT be folded into NOT_CLOSED (doing so would mutate
-#    work state on a hiccup — exactly the blanket-suppression anti-pattern
-#    this file's posture forbids). No class taxonomy/retry/breaker here. ──────
-classify_outcome() {
-  local id="$1" raw status
-  raw="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd show "$id" --json)"
-  if [[ "$raw" == "__DEGRADED__" ]]; then echo "DEGRADED"; return; fi
-  # No blanket `2>/dev/null` swallow: a jq parse failure is itself a typed
-  # DEGRADED signal, not a silent fold into NOT_CLOSED.
-  if ! status="$(printf '%s' "$raw" | jq -r '.[0].status // empty')"; then
-    degrade BD_PARSE "bd show $id JSON unparseable — typed DEGRADED, not a verdict"
-    echo "DEGRADED"; return
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ T2.2 (claude-tools-8nn) — §7.1 classification precedence + per-class       ║
+# ║ retry asymmetry (§7.5/BC-13) + the §8.1/BC-14 consecutive-failure breaker. ║
+# ║ This is THE highest-risk-when-silent runner logic: a misordered chain     ║
+# ║ retries a deterministic overflow forever, or trips the breaker on         ║
+# ║ legitimate human-decision tasks and stops the fleet. The v1 logic         ║
+# ║ (run-beads-tasks.sh classify_failure + the loop-top retry gate + the      ║
+# ║ per-class dispatch + the breaker) is reimplemented here idiomatically and ║
+# ║ behavior-faithfully, with the §7.1 STUCK_NEEDS_HUMAN slot INSERTED and    ║
+# ║ the §7.5 breaker/retry exemption added. The precedence order and the      ║
+# ║ BC-21 §8.1 exit-code table are FROZEN — a needed change is a §11 BLOCKING  ║
+# ║ escalation (reopen claude-tools-65z, re-freeze), NEVER a local reorder.   ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# ── Stream-json → typed signal markers (BC-39/40 re-implemented) ──────────────
+# v1 ran a `tail -f STREAM_FILE | while read` PARSER subshell concurrently with
+# the worker (the BC-39/40 leak: the `tail -f` reparents to PID 1 when the
+# parser dies, and the tempfile-as-IPC needs a `sleep 1` flush). The rewrite has
+# NO `tail -f` at all: the worker's stdout+stderr are already merged into ONE
+# file (st_run_task `> … 2>&1`) and the capture-then-classify happens-before is
+# STRUCTURAL — st_run_task `wait`s the worker, reaps+joins the watchdog, THEN
+# st_post_task calls this. So the parse is a single deterministic post-hoc pass
+# over the COMPLETE merged stream, not a racing tail. It only ACCUMULATES typed
+# markers into SIGNAL_FILE (the watchdog already appended WATCHDOG_KILL=1 there
+# if it fired — BC-22/BC-40 IPC seam); classify_failure (below) is the sole
+# place precedence is applied (BC-10: the order IS the logic).
+# BC-42: the WHOLE-file being unreadable is one typed `degrade:` line, never a
+# crash; a single non-JSON line yields an empty `.type` and is skipped — that
+# is correct (model output legitimately interleaves prose), not a blanket
+# `2>/dev/null` swallow of a real signal.
+parse_stream_signals() {
+  local stream="$1" sig="$2" line typ err est sr ie res
+  [[ -n "$stream" && -f "$stream" ]] || return 0
+  if [[ ! -r "$stream" ]]; then
+    degrade STREAM_UNREADABLE "$stream unreadable — classification proceeds on exit-code + watchdog markers only"
+    return 0
   fi
-  if [[ "$status" == "closed" ]]; then echo "SUCCESS"; else echo "NOT_CLOSED"; fi
+  : >> "$sig" 2>/dev/null || true
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    typ="$(printf '%s' "$line" | jq -r '.type // empty' 2>/dev/null)" || typ=""
+    case "$typ" in
+      system)
+        [[ "$(printf '%s' "$line" | jq -r '.subtype // empty' 2>/dev/null)" == "api_retry" ]] || continue
+        err="$(printf '%s' "$line" | jq -r '.error // empty'        2>/dev/null)"
+        est="$(printf '%s' "$line" | jq -r '.error_status // empty' 2>/dev/null)"
+        case "$err" in
+          rate_limit)            echo "RATE_LIMIT=${est:-429}"   >> "$sig" ;;
+          authentication_failed) echo "AUTH_FAILURE=${est:-401}" >> "$sig" ;;
+          billing_error)         echo "BILLING_ERROR=1"          >> "$sig" ;;
+          server_error)          echo "SERVER_ERROR=${est:-500}" >> "$sig" ;;
+          max_output_tokens)     echo "MAX_OUTPUT_TOKENS=1"      >> "$sig" ;;
+        esac
+        ;;
+      result)
+        ie="$(printf '%s' "$line"  | jq -r '.is_error // false' 2>/dev/null)"
+        sr="$(printf '%s' "$line"  | jq -r '.stop_reason // empty' 2>/dev/null)"
+        res="$(printf '%s' "$line" | jq -r '.result // empty' 2>/dev/null)"
+        echo "RESULT_IS_ERROR=$ie" >> "$sig"
+        [[ -n "$sr" ]] && echo "RESULT_STOP_REASON=$sr" >> "$sig"
+        # CONTEXT_OVERFLOW ("Prompt is too long") arrives as an ERRORED result
+        # with stop_reason=stop_sequence — it does NOT match the max_tokens /
+        # length stop reasons, so without this it falls through to
+        # UNKNOWN_FAILURE and is pointlessly retried (each retry re-overflows
+        # at the same point). is_error-GUARDED (BC-11): a benign summary that
+        # merely quotes the phrase is NOT an overflow.
+        if [[ "$ie" == "true" ]] && \
+           printf '%s' "$res" | grep -qiE 'prompt is too long|context_length_exceeded' 2>/dev/null; then
+          echo "CONTEXT_OVERFLOW=1" >> "$sig"
+        fi
+        ;;
+    esac
+  done < "$stream"
+  return 0
+}
+
+# ── §7.1 FROZEN classification precedence (BC-10's order, STUCK inserted) ──────
+# classify_failure <signal_file> <task_id> <exit_code>  → prints ONE class.
+#
+#   exit 0 : truth is `bd` status, NOT the OS code (BC-09).
+#            closed                       → SUCCESS
+#            bd-show OK but status empty  → SUCCESS, fail-OPEN + explicit
+#                                           stderr note (BC-09: an unverifiable
+#                                           status is noise, a phantom failure
+#                                           is the SCAR)
+#            bd-show command FAILED       → DEGRADED (BC-42: an infra blip is
+#                                           NOT a verdict — caller must NOT
+#                                           mutate work state on a hiccup)
+#            open + STUCK marker          → STUCK_NEEDS_HUMAN  (§7.1 slots STUCK
+#                                           ABOVE the exit-0 TASK_NOT_CLOSED
+#                                           path — a real human-ask MUST NOT be
+#                                           masked as "agent forgot to close")
+#            open, no marker              → TASK_NOT_CLOSED
+#   exit≠0 : first match in the FROZEN order over the ACCUMULATED markers —
+#            AUTH_FAILURE → BILLING_ERROR → STUCK_NEEDS_HUMAN → CONTEXT_OVERFLOW
+#            → MAX_OUTPUT_TOKENS → SERVER_ERROR → WATCHDOG_KILL → RATE_LIMIT →
+#            UNKNOWN_FAILURE. The two fleet-fatal classes win even when a
+#            transient co-occurs (BC-10); STUCK slots immediately below them
+#            and above every per-task content class (AD3.2). The STUCK input is
+#            EITHER the worker sentinel exit WORKER_STUCK_EXIT (§7.2 primary,
+#            this child's literal slot) OR a `STUCK_NEEDS_HUMAN=` marker (the
+#            §7.2 backstop, PRODUCED by T2.5 — consumed here).
+classify_failure() {
+  local sig="$1" id="$2" ec="$3" raw status
+  local stuck=0
+  [[ -f "$sig" ]] && grep -q '^STUCK_NEEDS_HUMAN=' "$sig" 2>/dev/null && stuck=1
+  [[ "$ec" == "$WORKER_STUCK_EXIT" ]] && stuck=1
+
+  if [[ "$ec" -eq 0 ]]; then
+    raw="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd show "$id" --json)"
+    if [[ "$raw" == "__DEGRADED__" ]]; then echo "DEGRADED"; return; fi
+    if ! status="$(printf '%s' "$raw" | jq -r '.[0].status // empty' 2>/dev/null)"; then
+      # bd-show returned but its JSON is unparseable: that is an infra/parse
+      # blip, NOT a verdict (BC-42) — typed DEGRADED, never a silent fold.
+      degrade BD_PARSE "bd show $id JSON unparseable — typed DEGRADED, not a verdict"
+      echo "DEGRADED"; return
+    fi
+    if [[ "$status" == "closed" ]]; then echo "SUCCESS"; return; fi
+    if [[ -z "$status" ]]; then
+      # bd-show SUCCEEDED but yielded no status (empty array): BC-09 fail-OPEN
+      # to SUCCESS with the explicit stderr note (distinct from a bd-show
+      # COMMAND failure above, which is DEGRADED — the BC-42 boundary).
+      echo "  (Could not verify task status — assuming success)" >&2
+      echo "SUCCESS"; return
+    fi
+    # exit-0, bead still open: STUCK (backstop) slots ABOVE TASK_NOT_CLOSED.
+    [[ $stuck -eq 1 ]] && { echo "STUCK_NEEDS_HUMAN"; return; }
+    echo "TASK_NOT_CLOSED"; return
+  fi
+
+  # Non-zero exit — ordered first-match over accumulated markers (BC-10).
+  if [[ -f "$sig" ]]; then
+    grep -q '^AUTH_FAILURE='   "$sig" 2>/dev/null && { echo "AUTH_FAILURE";   return; }
+    grep -q '^BILLING_ERROR='  "$sig" 2>/dev/null && { echo "BILLING_ERROR";  return; }
+  fi
+  [[ $stuck -eq 1 ]] && { echo "STUCK_NEEDS_HUMAN"; return; }
+  if [[ -f "$sig" ]]; then
+    # CONTEXT_OVERFLOW is the most decisive terminal (the session physically
+    # cannot continue; retrying the same task on the same model re-overflows
+    # deterministically) — checked BEFORE max_output_tokens (same family).
+    grep -q '^CONTEXT_OVERFLOW='            "$sig" 2>/dev/null && { echo "CONTEXT_OVERFLOW";  return; }
+    grep -q '^MAX_OUTPUT_TOKENS='           "$sig" 2>/dev/null && { echo "MAX_OUTPUT_TOKENS"; return; }
+    grep -q '^RESULT_STOP_REASON=max_tokens' "$sig" 2>/dev/null && { echo "MAX_OUTPUT_TOKENS"; return; }
+    grep -q '^RESULT_STOP_REASON=length'     "$sig" 2>/dev/null && { echo "MAX_OUTPUT_TOKENS"; return; }
+    grep -q '^SERVER_ERROR='                "$sig" 2>/dev/null && { echo "SERVER_ERROR";      return; }
+    grep -q '^WATCHDOG_KILL='               "$sig" 2>/dev/null && { echo "WATCHDOG_KILL";     return; }
+    grep -q '^RATE_LIMIT='                  "$sig" 2>/dev/null && { echo "RATE_LIMIT";        return; }
+  fi
+  echo "UNKNOWN_FAILURE"
+}
+
+# ── Analysis child (BC-13/BC-17): a fresh agent investigates a failure that
+#    must NOT be blindly retried; it BLOCKS the failed task so the runner does
+#    not re-pick it until the analysis closes. The BC-17 self-guard (an
+#    analysis task never spawns a grandchild) prevents infinite chains. ────────
+create_analysis_task() {
+  local task_id="$1" task_title="$2" reason="$3"
+  local labels
+  labels="$(safe_capture BD_UNAVAILABLE "[]" -- bd label list "$task_id" --json)"
+  if printf '%s' "$labels" | jq -e '.[] | select(. == "analysis")' >/dev/null 2>&1; then
+    echo "  (Skipping analysis task creation — this is already an analysis task)"
+    return 0
+  fi
+  local analysis_desc
+  analysis_desc="Task $task_id (\"$task_title\") failed with reason: $reason.
+
+Investigate what went wrong and determine next steps:
+- Check the state of any code changes the previous agent made (git log, git diff)
+- Determine if the task needs to be split into smaller sub-tasks
+- Determine if a design task should be created first to plan the approach
+- Determine if the agent just needs a fresh context window to retry
+- Create any necessary follow-up beads tasks with appropriate dependencies
+
+Before closing, ensure $task_id is blocked by any new tasks you create:
+  bd dep add $task_id <new-task-id>"
+  local create_output analysis_id
+  create_output="$(safe_capture BD_UNAVAILABLE "" -- bd create \
+    --title "Analyze failure: $task_title" -d "$analysis_desc" -p 1 \
+    --labels "model:opus,analysis")"
+  if [[ -z "$create_output" ]]; then
+    echo "  WARNING: Failed to create analysis task"; return 1
+  fi
+  analysis_id="$(printf '%s' "$create_output" | sed -n 's/.*issue: \([^ ]*\).*/\1/p' | head -1)"
+  if [[ -z "$analysis_id" ]]; then
+    echo "  WARNING: Could not parse analysis task ID from: $create_output"; return 1
+  fi
+  safe_capture BD_UNAVAILABLE "" -- bd dep add "$task_id" "$analysis_id" >/dev/null
+  echo "  Created analysis task: $analysis_id (blocks $task_id)"
+  safe_capture BD_UNAVAILABLE "" -- bd update "$task_id" \
+    --append-notes="Failed ($reason). Analysis task: $analysis_id" >/dev/null
+}
+
+# ── §8.2 visibility — incident ledger + uniform greppable bead note + selective
+#    post-mortem stream preservation. record_incident is called for EVERY
+#    non-success class (incl. exceeded_max_retries) so a silently-retried
+#    failure that later succeeds is never invisible. ────────────────────────────
+record_incident() {
+  local task_id="$1" classification="$2" log_path="${3:--}" ts
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '%s\t%s\t%s\t%s\n' "$ts" "$task_id" "$classification" "$log_path" \
+    >> "$INCIDENTS_LOG" 2>/dev/null || true
+  INCIDENTS+=("$ts  $task_id  $classification  $log_path")
+}
+append_runner_note() {
+  local task_id="$1" classification="$2" log_path="${3:--}" ts msg
+  ts="$(date -u +%H:%M:%SZ)"
+  msg="Runner: $classification at $ts"
+  if [[ "$log_path" != "-" ]]; then msg="$msg — log: $log_path"
+  else msg="$msg — no stream preserved"; fi
+  safe_capture BD_UNAVAILABLE "" -- bd update "$task_id" --append-notes="$msg" >/dev/null
+}
+preserve_stream() {
+  local src="$1" dest_base="$2" dest="$LOG_DIR/${2}.jsonl"
+  [[ -n "$src" && -f "$src" ]] || { echo ""; return; }
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  if cp "$src" "$dest" 2>/dev/null; then echo "$dest"; else echo ""; fi
+}
+print_incidents_summary() {
+  [[ ${#INCIDENTS[@]} -eq 0 ]] && return 0
+  echo ""
+  echo "Incidents this run (${#INCIDENTS[@]}):"
+  local line
+  for line in "${INCIDENTS[@]}"; do echo "  $line"; done
+  echo "Full log: $INCIDENTS_LOG"
 }
 
 # ── T2.4 (claude-tools-7hx): FULL process-tree teardown on EVERY exit path +
@@ -589,6 +820,32 @@ st_reconcile() {
 }
 
 st_claim() {
+  # ── BC-13 per-task retry gate (the v1 loop-top retry counter, reimplemented
+  #    as a state-machine entry guard). The candidate was just chosen by the
+  #    ONE reconcile point; if it is the SAME task the per-task counter is
+  #    tracking, this is a retry — bump it, and at MAX_RETRIES stop retrying:
+  #    reset to `open` (BC-15), record the incident + greppable note, and hand
+  #    it to a blocking analysis child instead of burning the budget forever.
+  #    Placed BEFORE the lease acquire (as in v1) so a skipped task never leaks
+  #    an unreleased lease. RATE_LIMIT/CONTEXT_OVERFLOW/MAX_OUTPUT_TOKENS/STUCK
+  #    deliberately do NOT set LAST_FAILED_ID, so they are invisible HERE — that
+  #    asymmetry IS §7.5/BC-13 (a rate-limit must not consume the retry budget;
+  #    an overflow/stuck must not be retried at all).
+  if [[ "$CANDIDATE_ID" == "$LAST_FAILED_ID" ]]; then
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    if [[ $FAIL_COUNT -ge $MAX_RETRIES ]]; then
+      echo "  Skipping after $MAX_RETRIES failures"
+      safe_capture BD_UNAVAILABLE "" -- bd update "$CANDIDATE_ID" --status=open >/dev/null
+      append_runner_note "$CANDIDATE_ID" "exceeded_max_retries" "-"
+      record_incident    "$CANDIDATE_ID" "exceeded_max_retries" "-"
+      create_analysis_task "$CANDIDATE_ID" "$CANDIDATE_TITLE" "exceeded_max_retries"
+      LAST_FAILED_ID=""; FAIL_COUNT=0
+      transition RECONCILE; return
+    fi
+  else
+    LAST_FAILED_ID=""; FAIL_COUNT=0
+  fi
+
   # Job 1 — claim-lease BEFORE `bd update --status=in_progress` (AD2.1/§6.1).
   # No lease ⇒ do NOT run it (§6.2 degraded-CLOSED is the stub's `1`).
   local gen rc
@@ -730,7 +987,12 @@ st_run_task() {
       job_heartbeat running "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null  # renews held lease (§3 j3)
     fi
   done
-  wait "$CLAUDE_PID" 2>/dev/null || true       # BC-01: exit code is NOT trusted (BC-09); see classify_outcome
+  # BC-09: the exit code is NOT trusted as a verdict (truth is `bd` status).
+  # But §7.1 still NEEDS it: the STUCK slot keys on the WORKER_STUCK_EXIT
+  # sentinel and the marker scan is exit-0-guarded exactly as v1's was, so the
+  # worker's code is CAPTURED here and consumed by classify_failure — never
+  # used as a standalone success/fail signal.
+  if wait "$CLAUDE_PID" 2>/dev/null; then CLAUDE_EXIT=0; else CLAUDE_EXIT=$?; fi
   CLAUDE_PID=""
 
   # In-band reap of the watchdog SUBTREE (its SHAPE/policy is T2.3's; the
@@ -752,32 +1014,182 @@ st_run_task() {
   transition POST_TASK
 }
 
+# A §8.1 FATAL terminal (AUTH=3, BILLING=4, breaker=2): reset the bead to open
+# (BC-15 — never strand it in_progress), pair the §6.1 lease release, clear the
+# in-flight marker (so the EXIT-trap net is a no-op — no double handling), set
+# the FROZEN BC-21 code + §8.2 class, and route to the ONE terminal funnel.
+_terminal_fatal() {
+  local cls="$1" code="$2"
+  safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
+  job_release_lease "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null
+  CURRENT_TASK_ID=""; LEASE_GENERATION=""
+  TERMINAL_CLASS="$cls"; EXIT_CODE="$code"
+  transition TERMINAL
+}
+
 st_post_task() {
   PROCESSED=$((PROCESSED + 1))
 
-  # Coarse outcome (SEAM — full §7.1 taxonomy/retry/breaker is T2.2).
-  local outcome
-  outcome="$(classify_outcome "$CURRENT_TASK_ID")"
-  case "$outcome" in
-    SUCCESS)
-      COMPLETED=$((COMPLETED + 1))
-      echo "  done: $CANDIDATE_TITLE" ;;
-    DEGRADED)
-      # BC-42: a degraded bd read is NOT a verdict — do NOT mutate the bead's
-      # work state on an infra blip. Release the lease (§6.1); a still-open
-      # bead is recovered via lease EXPIRY (§6.1 orphan recovery), never via a
-      # blip-driven status write. Typed, explicit, visible — not swallowed.
-      echo "  outcome undetermined ($CURRENT_TASK_ID — bd degraded): not mutating work state (BC-42; §6.1 expiry recovers it)" ;;
-    *)  # NOT_CLOSED
-      # §6.1 lease-release pairing: "lease release or expiry maps the bead
-      # back to --status=open". A bead the worker left in_progress is returned
-      # to the ready pool by THIS pairing — not by failure classification
-      # (per-class retry/breaker/analysis-child is entirely T2.2).
-      echo "  not closed: $CANDIDATE_TITLE — §6.1 lease-release returns it to open"
-      safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null ;;
+  # BC-39/40 happens-before is structural: the worker is `wait`ed and the
+  # watchdog reaped (st_run_task) BEFORE this runs, so the merged stream is
+  # COMPLETE and the WATCHDOG_KILL marker (if any) is already in SIGNAL_FILE.
+  # Accumulate the typed markers, then apply the FROZEN §7.1 precedence ONCE.
+  parse_stream_signals "$STREAM_FILE" "$SIGNAL_FILE"
+  CLASSIFICATION="$(classify_failure "$SIGNAL_FILE" "$CURRENT_TASK_ID" "$CLAUDE_EXIT")"
+
+  # Selective post-mortem stream preservation: keep the merged stream for the
+  # serious classes (so we can reconstruct what the agent was doing when it
+  # failed); routine/transient classes get an incident row + bead note only, no
+  # disk spam. (BC-28's nuanced retention-by-class is T1b's ASSERTION surface;
+  # this is the v1-faithful producer the classification drives.)
+  PRESERVED_LOG=""
+  local _b
+  case "$CLASSIFICATION" in
+    WATCHDOG_KILL|UNKNOWN_FAILURE|SERVER_ERROR|MAX_OUTPUT_TOKENS|CONTEXT_OVERFLOW)
+      _b="$(basename "$STREAM_FILE" 2>/dev/null)"; _b="${_b%.stream.jsonl}"
+      PRESERVED_LOG="$(preserve_stream "$STREAM_FILE" "$_b-$CLASSIFICATION")"
+      [[ -n "$PRESERVED_LOG" ]] && echo "  Stream preserved: $PRESERVED_LOG"
+      [[ "$CLASSIFICATION" == "WATCHDOG_KILL" && -n "${PROC_SNAPSHOT:-}" && -f "$PROC_SNAPSHOT" ]] && \
+        echo "  Process snapshot: $PROC_SNAPSHOT"
+      ;;
   esac
 
-  # Job 1 pairing — release the lease (§6.1; fenced by §4.4 generation).
+  # ── §7.1 first-match dispatch. The ORDER above (classify_failure) decided
+  #    the class; HERE each class gets its §7.5/BC-13/BC-14-correct handling.
+  #    Breaker invariant (BC-14): ONLY the generic branch, ONLY for a DISTINCT
+  #    failing task, advances CONSECUTIVE_FAILURES; ONLY SUCCESS resets it.
+  case "$CLASSIFICATION" in
+    SUCCESS)
+      echo "  Done: $CANDIDATE_TITLE"
+      COMPLETED=$((COMPLETED + 1))
+      CONSECUTIVE_FAILURES=0          # BC-14: breaker resets ONLY on success
+      LAST_FAILED_ID=""; FAIL_COUNT=0
+      ;;
+
+    AUTH_FAILURE)                     # §8.1 row 3 — fleet-fatal, terminal
+      echo "  FATAL: Authentication failed — stopping runner (BC-21 exit 3)."
+      append_runner_note "$CURRENT_TASK_ID" "AUTH_FAILURE" "-"
+      record_incident    "$CURRENT_TASK_ID" "AUTH_FAILURE" "-"
+      _terminal_fatal AUTH_FAILURE 3; return
+      ;;
+
+    BILLING_ERROR)                    # §8.1 row 4 — fleet-fatal, terminal
+      echo "  FATAL: Billing error — stopping runner (BC-21 exit 4)."
+      append_runner_note "$CURRENT_TASK_ID" "BILLING_ERROR" "-"
+      record_incident    "$CURRENT_TASK_ID" "BILLING_ERROR" "-"
+      _terminal_fatal BILLING_ERROR 4; return
+      ;;
+
+    STUCK_NEEDS_HUMAN)
+      # §7.5 (AD3.2): retry-EXEMPT and breaker-EXEMPT, adds NO runner exit
+      # code. The bead was ALREADY driven to blocked-for-human (the §7.2
+      # worker-driven primary did `bd update --status=blocked` + `bd human`;
+      # a fired §7.2 backstop — produced by T2.5 — drives it itself, §7.3). So
+      # the runner MUST NOT reset it to `open` (that would clobber the human
+      # flag — the v1 SCAR where exit 7 → UNKNOWN → generic reopen), MUST NOT
+      # advance the breaker (else N legitimate human-asks stop the fleet —
+      # turning the normal path into an outage), and MUST NOT retry. It just
+      # records the incident + greppable note and moves on — like a blocking
+      # analysis child. CONSECUTIVE_FAILURES / LAST_FAILED_ID untouched.
+      echo "  STUCK_NEEDS_HUMAN: $CANDIDATE_TITLE — bead stays blocked-for-human; runner continues (§7.5, no retry, no breaker, no exit code)"
+      append_runner_note "$CURRENT_TASK_ID" "STUCK_NEEDS_HUMAN" "-"
+      record_incident    "$CURRENT_TASK_ID" "STUCK_NEEDS_HUMAN" "-"
+      ;;
+
+    RATE_LIMIT)
+      # BC-13: INVISIBLE to the per-task retry counter (LAST_FAILED_ID NOT
+      # set) and BC-14 breaker-exempt — a rate-limit is routine, not an error
+      # to escalate; it must not burn the retry budget or trip the fleet.
+      echo "  Rate limited — will retry (invisible to the per-task retry counter)."
+      safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
+      append_runner_note "$CURRENT_TASK_ID" "RATE_LIMIT" "-"
+      record_incident    "$CURRENT_TASK_ID" "RATE_LIMIT" "-"
+      ;;
+
+    CONTEXT_OVERFLOW)
+      # BC-11/BC-13: deterministic — retrying as-is re-overflows at the same
+      # point, so SKIP retry and go straight to a blocking analysis child.
+      # Breaker-exempt (BC-14): an overflow STORM across distinct tasks must
+      # NOT trip the fleet breaker.
+      echo "  FAILED: $CANDIDATE_TITLE — context window overflowed (Prompt is too long)"
+      safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
+      append_runner_note "$CURRENT_TASK_ID" "CONTEXT_OVERFLOW" "${PRESERVED_LOG:--}"
+      record_incident    "$CURRENT_TASK_ID" "CONTEXT_OVERFLOW" "${PRESERVED_LOG:--}"
+      create_analysis_task "$CURRENT_TASK_ID" "$CANDIDATE_TITLE" \
+        "context_overflow — ran out of context mid-session. The previous agent likely completed early phases before overflowing: inspect git log / git diff for committed or staged work and re-scope this task to ONLY the remaining steps (do not redo completed work). If the task is inherently too large for one window, split it into smaller dependent tasks."
+      LAST_FAILED_ID=""; FAIL_COUNT=0
+      ;;
+
+    MAX_OUTPUT_TOKENS)                # BC-13: skip retry → analysis; breaker-exempt
+      echo "  FAILED: $CANDIDATE_TITLE — ran out of output/context window"
+      safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
+      append_runner_note "$CURRENT_TASK_ID" "MAX_OUTPUT_TOKENS" "${PRESERVED_LOG:--}"
+      record_incident    "$CURRENT_TASK_ID" "MAX_OUTPUT_TOKENS" "${PRESERVED_LOG:--}"
+      create_analysis_task "$CURRENT_TASK_ID" "$CANDIDATE_TITLE" "max_output_tokens"
+      LAST_FAILED_ID=""; FAIL_COUNT=0
+      ;;
+
+    TASK_NOT_CLOSED)
+      # BC-13: retry ONCE (the agent often just forgot `bd close`); the SECOND
+      # consecutive occurrence escalates to a blocking analysis child. Breaker-
+      # exempt (this is a content/agent issue, not a systemic one).
+      echo "  PARTIAL: $CANDIDATE_TITLE — exited 0 but task still open"
+      safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
+      append_runner_note "$CURRENT_TASK_ID" "TASK_NOT_CLOSED" "-"
+      record_incident    "$CURRENT_TASK_ID" "TASK_NOT_CLOSED" "-"
+      if [[ "$CURRENT_TASK_ID" == "$LAST_FAILED_ID" ]]; then
+        create_analysis_task "$CURRENT_TASK_ID" "$CANDIDATE_TITLE" "task_not_closed"
+        LAST_FAILED_ID=""; FAIL_COUNT=0
+      else
+        LAST_FAILED_ID="$CURRENT_TASK_ID"
+      fi
+      ;;
+
+    DEGRADED)
+      # BC-42: a degraded `bd` read is NOT a verdict — do NOT mutate work
+      # state on an infra blip; §6.1 lease expiry recovers a still-open bead.
+      # Not an incident (a hiccup is not a failure to escalate).
+      echo "  outcome undetermined ($CURRENT_TASK_ID — bd degraded): not mutating work state (BC-42; §6.1 expiry recovers it)"
+      ;;
+
+    SERVER_ERROR|WATCHDOG_KILL|UNKNOWN_FAILURE|*)
+      # The generic branch: the ONLY one that advances the BC-14 breaker, and
+      # ONLY for a DISTINCT failing task (a same-task repeat is the BC-13
+      # per-task retry path's concern, gated above in st_claim).
+      echo "  FAILED: $CANDIDATE_TITLE ($CLASSIFICATION, exit $CLAUDE_EXIT)"
+      safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
+      append_runner_note "$CURRENT_TASK_ID" "$CLASSIFICATION" "${PRESERVED_LOG:--}"
+      record_incident    "$CURRENT_TASK_ID" "$CLASSIFICATION" "${PRESERVED_LOG:--}"
+      if [[ "$CURRENT_TASK_ID" != "$LAST_FAILED_ID" ]]; then
+        CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+      fi
+      LAST_FAILED_ID="$CURRENT_TASK_ID"
+      ;;
+  esac
+
+  # Drop the proc snapshot unless WATCHDOG_KILL won classification (only the
+  # watchdog writes it, and only that class keeps it — the BC-28 edge where a
+  # more-decisive class wins even though the watchdog fired ⇒ snapshot deleted).
+  if [[ "$CLASSIFICATION" != "WATCHDOG_KILL" && -n "${PROC_SNAPSHOT:-}" && -f "$PROC_SNAPSHOT" ]]; then
+    rm -f "$PROC_SNAPSHOT" 2>/dev/null || true
+  fi
+
+  # §8.1 row 2 — consecutive-failure circuit breaker. Advanced ONLY by the
+  # generic branch above (BC-14); RATE_LIMIT/CONTEXT_OVERFLOW/MAX_OUTPUT_TOKENS/
+  # TASK_NOT_CLOSED/STUCK never touch CONSECUTIVE_FAILURES, so a storm of those
+  # (the normal path) NEVER stops the fleet — only genuine systemic failure on
+  # distinct tasks does. FROZEN exit 2.
+  if [[ $CONSECUTIVE_FAILURES -ge $MAX_CONSECUTIVE_FAILURES ]]; then
+    echo ""
+    echo "  $MAX_CONSECUTIVE_FAILURES consecutive failures — likely systemic error."
+    echo "  Stopping to avoid closing healthy tasks as skipped (BC-21 exit 2)."
+    _terminal_fatal CIRCUIT_BREAKER 2; return
+  fi
+
+  # Job 1 pairing — release the lease (§6.1; fenced by §4.4 generation). For
+  # every non-fatal class the bead is already at its correct status (open for
+  # the retried/failed classes; blocked-for-human for STUCK; closed for
+  # SUCCESS) — release pairs the acquire so the lease never outlives the work.
   job_release_lease "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null
   # Job 5 — publish the §4.5 read-only projection (Dolt stays work-truth).
   job_publish_snapshot >/dev/null
@@ -817,6 +1229,10 @@ st_terminal() {
   job_heartbeat stopped "" "" >/dev/null
   job_report_terminal "$TERMINAL_CLASS" "$EXIT_CODE" "" >/dev/null
   echo "runner: $COMPLETED completed / $PROCESSED processed — terminal=$TERMINAL_CLASS exit=$EXIT_CODE"
+  # §8.2 visibility: surface every incident this run (watchdog kills and other
+  # silently-retried failures that later succeeded) on the ONE terminal funnel —
+  # so a fatal 2/3/4 OR a clean 0 drain both leave the same auditable summary.
+  print_incidents_summary
   # T2.4 / BC-21 §8.1 (FROZEN): the terminal code is now DECIDED. Disarm the
   # signal trap BEFORE `exit` so a signal racing the exit→EXIT-trap handoff
   # cannot run _on_signal and downgrade a decided 0/2/3/4 to 1 (a coordinator
