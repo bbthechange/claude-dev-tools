@@ -21,6 +21,12 @@
 // the ONE §9.1 chokepoint (the Worker) resolved and threaded down — it never
 // re-derives it (no second auth path, C4).
 import { schemaVersion, safeKey, validateRecord } from "./schema.js";
+// CF.6 (claude-tools-7g0.6) — the Dossier/Item logic layered ON this
+// substrate. It is a SEPARATE module (mirroring how bash dossier.sh/
+// dossier-gen.sh/consequence.sh are separate libs that source coordinator.sh
+// and consume its public surface). The CF.1 ops below are byte-unchanged; CF.6
+// ops are dispatched in a dedicated guard so this substrate stays untouched.
+import { DOSSIER_OPS, handleDossierOp } from "./dossier.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -28,6 +34,10 @@ export class Coordinator {
     this.env = env;
     this.db = env.DB;
     this._schemaReady = null;
+    // CF.6: lazy DDL for the work-plane sink + the single-threaded-actor
+    // serialization tail (the AD1 payoff — see _serialize / dossier.js).
+    this._dossierSchemaReady = null;
+    this._dossierTail = Promise.resolve();
   }
 
   // §2.1 store realisation (Appendix A: "DO state + D1"). The §4 records live
@@ -54,6 +64,53 @@ export class Coordinator {
     return this._schemaReady;
   }
 
+  // ── CF.6 (claude-tools-7g0.6) work-plane sink DDL — lazy + idempotent ─────
+  // `work_plane_ops` is the §5.3 ConsequenceBlock control→work sink: one row
+  // per `bd <args>` line, the exact analogue of the bash tests' PATH-injected
+  // logging `bd` fake writing $BD_LOG. It is NOT a §4 record (a Worker cannot
+  // exec `bd`; this is the LOCAL realisation, documented in dossier.js) — a
+  // SEPARATE namespace from `records`/`timers`, mirroring the bash store split
+  // and the §10.3-forensic-blob "not a §4 record" precedent. The canonical
+  // migration ships in migrations/0002_dossier.sql for the a53 deploy path.
+  _ensureDossierSchema() {
+    if (!this._dossierSchemaReady) {
+      this._dossierSchemaReady = this.db
+        .prepare(
+          "CREATE TABLE IF NOT EXISTS work_plane_ops (id INTEGER PRIMARY KEY AUTOINCREMENT, line TEXT NOT NULL)"
+        )
+        .run();
+    }
+    return this._dossierSchemaReady;
+  }
+
+  // ── CF.6 THE AD1 PAYOFF — the single-threaded executor, made explicit ─────
+  // CF.1's singleton Coordinator DO is ONE actor. A per-Item op is a
+  // read→route→apply→latch→state→persist over the §4.1 envelope in D1; D1 is a
+  // binding (not ctx.storage), so its awaits are NOT input-gated. This chains
+  // every dossier critical section onto a single per-instance tail so the ONE
+  // actor runs exactly one at a time — realising the AD1 "single-threaded DO
+  // per dossier-Item" so per-Item idempotency + partial application are TRUE
+  // BY CONSTRUCTION. This is NOT the bash per-dossier `mkdir` advisory lock
+  // (no per-resource key, no test-and-set): it is the one actor's own
+  // single-threadedness, held across the D1-await boundary. The chain never
+  // breaks on a rejected/throwing section (the tail always resolves).
+  _serialize(fn) {
+    const prev = this._dossierTail;
+    let release;
+    this._dossierTail = new Promise((res) => {
+      release = res;
+    });
+    const run = prev.then(
+      () => fn(),
+      () => fn()
+    );
+    run.then(
+      () => release(),
+      () => release()
+    );
+    return run;
+  }
+
   // The DO front door. The Worker (§9.1 chokepoint) has ALREADY authenticated
   // and resolved the principal; it threads {op,args,principal} here. There is
   // NO second auth path (C4): the DO trusts the resolved principal the one
@@ -67,6 +124,19 @@ export class Coordinator {
       return json({ error: "bad request body" }, 400);
     }
     const { op, args = [], principal } = body || {};
+
+    // ── CF.6 (claude-tools-7g0.6) Dossier/Item op guard ──────────────────────
+    // CF.6 ops are handled by the dedicated dossier module so the CF.1
+    // substrate switch below stays byte-identical (its differential vs
+    // coordinator.sh + test-coordinator.sh must not regress). The §9.1
+    // chokepoint (the Worker) has ALREADY authenticated + threaded `principal`
+    // — no second auth path is added here (C4). The work-plane sink DDL is
+    // lazy + idempotent, exactly like the §4 store DDL.
+    if (DOSSIER_OPS.has(op)) {
+      await this._ensureDossierSchema();
+      return await handleDossierOp(this, op, args, principal);
+    }
+
     try {
       switch (op) {
         case "put":
