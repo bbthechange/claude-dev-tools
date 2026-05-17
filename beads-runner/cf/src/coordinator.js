@@ -92,6 +92,28 @@ import { TIMER_OPS, handleTimerOp, alarmFire } from "./timer.js";
 // logic, NOT a DO op (an "unreachable" op call is a contradiction) — exactly
 // as bash co_ask_capacity is NOT routed through co_request.
 import { CAPACITY_OPS, handleCapacityOp } from "./capacity.js";
+// CF.2 (claude-tools-7g0.2) — the §6.1/§6.2/§4.4 global exclusive TTL'd LEASE
+// arbitration + the §4.4 monotonic `generation` fencing token + the AD2.2
+// LEASE-half DEGRADED-CLOSED unreachable posture, layered ON this substrate
+// (a SEPARATE module, mirroring how the bash co__lease_* / co_lease_acquire
+// live in coordinator.sh alongside the store but consume its public surface).
+// `lease` is an ALREADY-registered §4 type (schema.js, v1) — CF.2 adds NO §4
+// record type and NO new DDL: a Lease lives in the existing `records` table,
+// so the grant/renew writes compose on this DO's ONE gated §4 write path
+// `_writeRecord` (§0.3 re-enforced + §9.1 principal stamped THERE — C7), and
+// release is an IRRECOVERABLE record DELETE (the bash `rm -f`, NOT a
+// tombstone). The acquire/renew/release read-decide-write CRITICAL SECTION
+// runs on this DO's single-threaded `_serialize` tail — the singleton DO IS
+// the global lease mutex, so N concurrent claimants resolve to EXACTLY ONE
+// winner BY CONSTRUCTION (the AD1 payoff replacing the bash co__with_lock
+// "lease.<task>" hand-rolled latch — the BC-04 close). Its ops are dispatched
+// in a dedicated guard so this substrate stays untouched. The §9.1 chokepoint
+// (the Worker) has ALREADY authenticated + threaded `principal` — no second
+// auth path (C4). The §6.2 DEGRADED-CLOSED reachable|unreachable wrapper
+// (leaseAcquireDegradedClosed) is RUNNER-side decision logic, NOT a DO op (an
+// "unreachable" op call is a contradiction) — exactly as bash co_lease_acquire
+// is NOT routed through co_request.
+import { LEASE_OPS, handleLeaseOp } from "./lease.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -285,6 +307,25 @@ export class Coordinator {
     // BEFORE this guard, so it writes NOTHING.
     if (CAPACITY_OPS.has(op)) {
       return await handleCapacityOp(this, op, args, principal);
+    }
+
+    // ── CF.2 (claude-tools-7g0.2) §6.1/§6.2/§4.4 LEASE arbitration guard ─────
+    // The global exclusive TTL'd lease + the §4.4 monotonic `generation`
+    // fencing token, dispatched by its dedicated module so the CF.1 substrate
+    // switch below stays byte-identical (its differential vs coordinator.sh +
+    // test-coordinator.sh must not regress). NO §4 record type / NO new DDL:
+    // `lease` is an ALREADY-registered §4 type living in the existing
+    // `records` table (ensureSchema above already DDL'd it), so the grant/
+    // renew writes compose on this DO's ONE gated `_writeRecord` path and
+    // release is an irrecoverable DELETE. The acquire/renew/release
+    // read-decide-write runs on `_serialize` (the AD1 payoff: the singleton
+    // single-threaded DO IS the global lease mutex — N concurrent claimants
+    // ⇒ EXACTLY ONE winner BY CONSTRUCTION, the BC-04 close). The §9.1
+    // chokepoint (the Worker) has ALREADY authenticated + threaded
+    // `principal` — no second auth path (C4); a no/invalid-token lease op is
+    // rejected 401 at the Worker BEFORE this guard, so it writes NOTHING.
+    if (LEASE_OPS.has(op)) {
+      return await handleLeaseOp(this, op, args, principal);
     }
 
     try {
