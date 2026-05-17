@@ -127,6 +127,21 @@ case "$behavior" in
     emit '{"type":"result","result":"died","is_error":true,"stop_reason":"end_turn"}'
     exit 1 ;;
 
+  server500_terminal) # claude-tools-ntn: SDK retries EXHAUSTED — the terminal
+    # failure is an ERRORED result with api_error_status:500 + "API Error: 500"
+    # text and NO preceding system/api_retry event (the exact 2026-05-16 shape).
+    # Pre-fix this falls through to UNKNOWN_FAILURE; post-fix ⇒ SERVER_ERROR.
+    emit '{"type":"result","result":"API Error: 500 Internal server error","is_error":true,"api_error_status":500,"stop_reason":"end_turn"}'
+    exit 1 ;;
+
+  server500_benign)   # claude-tools-ntn NEGATIVE (is_error guard): a SUCCESSFUL
+    # result that merely QUOTES "API Error: 500" in prose (is_error:false, bead
+    # closed). Must classify SUCCESS — the new 5xx rule must NOT manufacture a
+    # SERVER_ERROR from benign text (protects BC-25 / BC-11 is_error discipline).
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"Investigated the log: saw API Error: 500 yesterday, now resolved.","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
   rl_then_overflow)   # BC-10 multi-signal precedence: transient THEN terminal
     emit '{"type":"system","subtype":"api_retry","error":"rate_limit","error_status":429,"attempt":1,"max_retries":5}'
     emit '{"type":"result","result":"API Error: Prompt is too long","is_error":true,"stop_reason":"stop_sequence"}'

@@ -104,6 +104,17 @@ MAX_CONSECUTIVE_FAILURES="${MAX_CONSECUTIVE_FAILURES:-3}" # distinct-task generi
 # codes {0..4}. This child CONSUMES it into the §7.1 STUCK slot; it does NOT
 # add a runner exit code (§7.5) and T2.5 owns its PRODUCTION (the worker prompt).
 WORKER_STUCK_EXIT="${WORKER_STUCK_EXIT:-7}"
+# claude-tools-ntn — bounded exponential INTER-RETRY backoff. The v1 SCAR
+# (2026-05-16 incident): same-task SERVER_ERROR/UNKNOWN_FAILURE retries fire
+# back-to-back with ZERO delay, so a brief platform API outage exhausts the
+# whole MAX_RETRIES budget in seconds and spuriously marks healthy tasks
+# exceeded_max_retries. The delay is base*2^(n-1) (n = FAIL_COUNT) hard-capped
+# at MAX; env-overridable (the ntn conformance rig drives it small/fast). This
+# only SPACES same-task attempts — §7.5/§8.1 are unchanged (SERVER_ERROR /
+# UNKNOWN_FAILURE still consume the budget and still advance the distinct-task
+# breaker; RATE_LIMIT stays §7.5-invisible to this gate and is untouched).
+RETRY_BACKOFF_BASE="${RETRY_BACKOFF_BASE:-5}"          # 1st inter-retry delay (s); doubles per attempt
+RETRY_BACKOFF_MAX="${RETRY_BACKOFF_MAX:-60}"           # hard cap on the exponential inter-retry delay (s)
 # Post-mortem artifacts + incident ledger. The BC-29 per-iteration basename
 # scheme (`<TASK_ID>-<ITER_TS>`) and the LOG_DIR lifecycle are T2.4/T2.3's owned
 # surface (st_run_task already creates this dir + its BC-27 self-gitignore);
@@ -325,7 +336,7 @@ _drive_blocked_for_human() {
 # is correct (model output legitimately interleaves prose), not a blanket
 # `2>/dev/null` swallow of a real signal.
 parse_stream_signals() {
-  local stream="$1" sig="$2" line typ err est sr ie res
+  local stream="$1" sig="$2" line typ err est sr ie res aes
   [[ -n "$stream" && -f "$stream" ]] || return 0
   if [[ ! -r "$stream" ]]; then
     degrade STREAM_UNREADABLE "$stream unreadable — classification proceeds on exit-code + watchdog markers only"
@@ -363,6 +374,28 @@ parse_stream_signals() {
         if [[ "$ie" == "true" ]] && \
            printf '%s' "$res" | grep -qiE 'prompt is too long|context_length_exceeded' 2>/dev/null; then
           echo "CONTEXT_OVERFLOW=1" >> "$sig"
+        fi
+        # claude-tools-ntn: when the SDK's OWN retries are EXHAUSTED the
+        # terminal failure arrives as an ERRORED result carrying
+        # api_error_status 5xx (and/or result text "API Error: 5xx ..."),
+        # with NO preceding system/api_retry event — so the §7.1 SERVER_ERROR
+        # slot's only other producer (the api_retry branch above) never fires
+        # and a pure platform 500 wrongly falls through to UNKNOWN_FAILURE
+        # (then gets retried back-to-back, burning the budget — the
+        # 2026-05-16 outage). This is the MISSING second SERVER_ERROR trigger.
+        # It populates the EXISTING frozen §7.1 slot — classify_failure is
+        # unchanged: no slot is added, removed, or reordered (§7.2 already
+        # anticipates two independent triggers), so this is NOT a §11/§0
+        # escalation. is_error-GUARDED with the same discipline as the
+        # CONTEXT_OVERFLOW rule above (BC-11): a benign result that merely
+        # quotes "API Error: 5xx", or a tool that returns an api_error_status,
+        # is NOT a worker server failure and MUST NOT be manufactured into
+        # SERVER_ERROR (protects BC-25 / BC-11).
+        aes="$(printf '%s' "$line" | jq -r '.api_error_status // empty' 2>/dev/null)"
+        if [[ "$ie" == "true" ]] && \
+           { { [[ "$aes" =~ ^[0-9]+$ ]] && [[ "$aes" -ge 500 && "$aes" -le 599 ]]; } || \
+             printf '%s' "$res" | grep -qE 'API Error: 5[0-9][0-9]' 2>/dev/null; }; then
+          echo "SERVER_ERROR=${aes:-5xx}" >> "$sig"
         fi
         # §7.2(b) BACKSTOP A (AD3.3, zero model trust): the worker slipped
         # past the §7.6 guardrail and the FINAL result carries a
@@ -473,6 +506,23 @@ classify_failure() {
     grep -q '^RATE_LIMIT='                  "$sig" 2>/dev/null && { echo "RATE_LIMIT";        return; }
   fi
   echo "UNKNOWN_FAILURE"
+}
+
+# ── claude-tools-ntn — bounded exponential inter-retry backoff ───────────────
+# $1 = 1-based attempt index (the per-task FAIL_COUNT). Emits ONE greppable
+# line then sleeps base*2^(n-1) capped at MAX. Greppable by design: the ntn
+# conformance rig asserts a strictly-growing delay sequence WITHOUT a
+# wall-clock observer. Pure delay — it mutates no classification, no retry
+# budget, no breaker counter (§7.5/§8.1 invariants untouched); it only spaces
+# consecutive same-task attempts so a brief outage cannot burn the whole
+# budget back-to-back.
+_retry_backoff() {
+  local n="${1:-1}" base="$RETRY_BACKOFF_BASE" max="$RETRY_BACKOFF_MAX" d
+  [[ "$n" =~ ^[0-9]+$ ]] && [[ "$n" -ge 1 ]] || n=1
+  d=$(( base << (n - 1) ))                       # base * 2^(n-1)
+  { [[ "$d" -gt "$max" ]] || [[ "$d" -lt 0 ]]; } && d="$max"   # cap + huge-n overflow guard
+  echo "  runner: retry backoff ${d}s before attempt $((n + 1)) (transient failure — claude-tools-ntn)"
+  sleep "$d"
 }
 
 # ── Analysis child (BC-13/BC-17): a fresh agent investigates a failure that
@@ -963,6 +1013,16 @@ st_claim() {
       LAST_FAILED_ID=""; FAIL_COUNT=0
       transition RECONCILE; return
     fi
+    # claude-tools-ntn: we WILL retry this same task (budget not exhausted) —
+    # space it from the prior attempt with a growing, bounded delay so a brief
+    # platform outage (SERVER_ERROR / UNKNOWN_FAILURE — the classes that set
+    # LAST_FAILED_ID and so reach this gate) cannot burn the whole MAX_RETRIES
+    # budget in seconds. Placed HERE — the ONE per-task retry gate, BEFORE the
+    # lease acquire below — so the sleep holds NO lease and NO in_progress
+    # bead: a signal landing during it still resets clean (BC-35) and no lease
+    # outlives idle time. FAIL_COUNT / LAST_FAILED_ID / the breaker are
+    # unchanged — this only delays.
+    _retry_backoff "$FAIL_COUNT"
   else
     LAST_FAILED_ID=""; FAIL_COUNT=0
   fi
