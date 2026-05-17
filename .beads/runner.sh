@@ -38,8 +38,8 @@ PERMISSION_FLAGS=(
     "Bash(shellcheck:*)"    # wrapup sanity for the T2 shell rewrite
     # ── Cloudflare Coordinator / Decision DO / web app (T4/T5/T6) ────────────
     "Bash(node:*)" "Bash(npm:*)" "Bash(npx:*)" "Bash(pnpm:*)" "Bash(yarn:*)"
-    "Bash(wrangler:*)"      # Cloudflare Workers/DO/D1/Pages CLI
-    "Bash(tsc:*)" "Bash(vitest:*)" "Bash(vite:*)" "Bash(esbuild:*)" "Bash(make:*)"
+    "Bash(wrangler:*)" "Bash(miniflare:*)"  # Cloudflare Workers/DO/D1/Pages CLI + local emulator (direct invocation, not only via npx wrangler dev)
+    "Bash(tsc:*)" "Bash(tsx:*)" "Bash(vitest:*)" "Bash(vite:*)" "Bash(esbuild:*)" "Bash(make:*)"  # tsx: run a .ts file directly (bare bin, not just `npx tsx`)
     # ── non-Bash tools the task instructions explicitly require ──────────────
     "Task"                  # T0 review subagent; T2/T4/T5 self-decomposition validation
     "WebFetch" "WebSearch"  # Cloudflare Workers/DO docs (T4/T5); O-1 probe research pattern

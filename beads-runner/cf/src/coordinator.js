@@ -27,6 +27,23 @@ import { schemaVersion, safeKey, validateRecord } from "./schema.js";
 // and consume its public surface). The CF.1 ops below are byte-unchanged; CF.6
 // ops are dispatched in a dedicated guard so this substrate stays untouched.
 import { DOSSIER_OPS, handleDossierOp } from "./dossier.js";
+// CF.9 (claude-tools-7g0.9) — the §4.3 Notification, layered ON this
+// substrate (a SEPARATE module, mirroring bash notification.sh sourcing
+// coordinator.sh + consuming its public surface). It composes notification
+// creation/dispatch through this DO's ONE write path `_writeRecord`; it adds
+// NO §4 record type (`notification` is ALREADY in the schema.js registry) and
+// NO new DDL (it reuses the `records` table). Its ops are dispatched in a
+// dedicated guard so this substrate stays untouched.
+import { NOTIFICATION_OPS, handleNotificationOp } from "./notification.js";
+// CF.5 (claude-tools-7g0.5) — the §10.3 forensic transient store, layered ON
+// this substrate (a SEPARATE module). CRITICAL: it is NOT a §4 record — it is
+// deliberately NOT routed through `_writeRecord` / the `records` table /
+// `validateRecord` (the §10.3 transient encrypted namespace + content-free
+// audit + server master key are its OWN D1 tables, lazy-DDL'd in the module).
+// Its ops are dispatched in a dedicated guard so this substrate stays
+// untouched and `forensic` stays ABSENT from the §4 registry (structurally
+// "never in the §4.5 projection / a §4.3 Notification body").
+import { FORENSIC_OPS, handleForensicOp } from "./forensic.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -135,6 +152,31 @@ export class Coordinator {
     if (DOSSIER_OPS.has(op)) {
       await this._ensureDossierSchema();
       return await handleDossierOp(this, op, args, principal);
+    }
+
+    // ── CF.9 (claude-tools-7g0.9) Notification op guard ──────────────────────
+    // The §4.3 Notification, dispatched by its dedicated module so the CF.1
+    // substrate switch below stays byte-identical. No DDL: notification
+    // records live in the existing `records` table (`notification` is an
+    // ALREADY-registered §4 type — CF.9 adds none). The §9.1 chokepoint (the
+    // Worker) has ALREADY authenticated + threaded `principal` — no second
+    // auth path (C4); the module composes every write through `_writeRecord`.
+    if (NOTIFICATION_OPS.has(op)) {
+      return await handleNotificationOp(this, op, args, principal);
+    }
+
+    // ── CF.5 (claude-tools-7g0.5) §10.3 forensic transient-store op guard ────
+    // The forensic store is dispatched by its dedicated module so the CF.1
+    // substrate switch below stays byte-identical. It is NOT a §4 record: the
+    // module owns its OWN transient encrypted D1 namespace + content-free
+    // audit + server master key (lazy + idempotent DDL there), deliberately
+    // BYPASSING `_writeRecord`/`records`/`validateRecord` so the §10.3
+    // transient path is a SEPARATE add that does NOT weaken §10.1/BC-27. The
+    // §9.1 chokepoint (the Worker) has ALREADY authenticated + threaded
+    // `principal` — no second auth path (C4); a no/invalid-token forensic-* is
+    // rejected 401 at the Worker BEFORE this guard and before any decryption.
+    if (FORENSIC_OPS.has(op)) {
+      return await handleForensicOp(this, op, args, principal);
     }
 
     try {
