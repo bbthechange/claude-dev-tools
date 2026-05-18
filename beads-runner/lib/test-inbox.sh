@@ -23,8 +23,12 @@
 #      the CONTROL-PLANE record (the §7.4 latch), never a Dolt read (S-2).
 #   2. Reject / edit is ONE tap (principle 3) — symmetric with approve.
 #   3. Reads only the projection + the §4 Dossier it points at; binds §5
-#      exactly; unknown-HIGHER schema_version REFUSED; ONE write path.
-#   ANTI-DRIFT: a MANDATORY §5 field absent ⇒ a §11 escalation refusal.
+#      exactly; the ONLY render refusal is §0.3 unknown-HIGHER schema.
+#   CONTRACT (claude-tools-4xe): the §5.1-core conformance gate is at the
+#   engine WRITE path, not render-time. So an ACCEPTED dossier is ALWAYS
+#   readable AND answerable — a missing §5 field degrades to a clearly-
+#   LABELED best-effort fallback, NEVER a wall. The sole refusal is
+#   §0.3 unknown-HIGHER, shown as a plain human message (no §/§11 jargon).
 #
 # Self-contained: its own CO_STORE + fake-bin under mktemp.
 set -u
@@ -216,22 +220,32 @@ ck "ack deterministic_count is 0 for an objection (no lie)"    eq "$(jqr "$COB" 
 RG="$(iv buildItemResponse "$(jq -c '.items[]|select(.id=="e1")' <<<"$D2")" '{"action":"approve"}' 0)"
 ck "un-edited approve-recommendation STILL deterministic"     eq "$(jqr "$RG" .mode)" "deterministic"
 
-echo "── REVIEW-FIX: a non-positive schema_version is REFUSED (not best-effort) ──"
+echo "── claude-tools-4xe: an ACCEPTED dossier ALWAYS renders (only §0.3-higher refuses) ──"
+# A non-positive / odd envelope schema_version is NOT unknown-HIGHER (§0.3):
+# the renderer no longer walls it — it renders best-effort (the gate is at
+# WRITE now, never render-time). Only a STRICTLY-HIGHER version refuses.
 Z="$(jq -c '.schema_version=0' <<<"$(GET dRT)")"
-ck "dossier schema_version 0 ⇒ REFUSED (§0.3, not parsed)"    eq "$(jqr "$(iv deriveDossierView "$Z")" .ok)" "false"
-ck "refusal calls 0 a non-positive/invalid version"           has "non-positive" "$(jqr "$(iv deriveDossierView "$Z")" .error)"
+ck "dossier schema_version 0 ⇒ RENDERS (§0.3: 0 is not unknown-higher)" eq "$(jqr "$(iv deriveDossierView "$Z")" .ok)" "true"
+ck "renders the body it accepted (no wall)"                   nz "$(jqr "$(iv deriveDossierView "$Z")" '.body.tldr')"
+# Snapshot/Inbox-list (§4.5, a DIFFERENT record type) is unchanged: it still
+# binds §0.3 strictly (the dossier-render tolerance is claude-tools-4xe-scoped).
 ZS="$(jq -c '.schema_version=0' <<<"$SNAP")"
-ck "snapshot schema_version 0 ⇒ Inbox list REFUSED"           eq "$(jqr "$(iv deriveInboxList "$ZS")" .ok)" "false"
+ck "snapshot schema_version 0 ⇒ Inbox list REFUSED (§4.5 unchanged)" eq "$(jqr "$(iv deriveInboxList "$ZS")" .ok)" "false"
 ZB="$(jq -c '.body.dossier_schema_version=-1' <<<"$(GET dRT)")"
-ck "negative body dossier_schema_version ⇒ REFUSED (§5.1)"    eq "$(jqr "$(iv deriveDossierView "$ZB")" .ok)" "false"
+ck "negative body dossier_schema_version ⇒ RENDERS (not unknown-higher)" eq "$(jqr "$(iv deriveDossierView "$ZB")" .ok)" "true"
 
 echo "── EXIT-3: reads only the projection + binds §5 · §0.3 reject · ONE write path ──"
 ck "schema_version 2 dossier (bound; v2 §11 Mermaid amend) renders ok" eq "$(jqr "$(iv deriveDossierView "$(GET dRT)")" .ok)" "true"
 HI="$(jq -c '.schema_version=3' <<<"$(GET dRT)")"
 ck "envelope schema_version 3 REFUSED (unknown higher; bound=2 v2 §0.3)" eq "$(jqr "$(iv deriveDossierView "$HI")" .ok)" "false"
-ck "refusal cites §0.3"                                       has "§0.3" "$(jqr "$(iv deriveDossierView "$HI")" .error)"
+ck "the ONE refusal is flagged too_new (claude-tools-4xe)"    eq "$(jqr "$(iv deriveDossierView "$HI")" .too_new)" "true"
+# criterion 3: human-meaningful on the phone — NO §/§11/contract/65z jargon.
+ck "unknown-higher message is human (says 'newer version')"   has "newer version" "$(jqr "$(iv deriveDossierView "$HI")" .error)"
+ck "unknown-higher message carries NO § jargon"               hasnt "§" "$(jqr "$(iv deriveDossierView "$HI")" .error)"
+ck "unknown-higher message carries NO §11/65z jargon"         hasnt "65z" "$(jqr "$(iv deriveDossierView "$HI")" .error)"
 HIB="$(jq -c '.body.dossier_schema_version=3' <<<"$(GET dRT)")"
 ck "BODY dossier_schema_version 3 REFUSED (unknown higher; bound=2 v2 §5.1/§0.3)" eq "$(jqr "$(iv deriveDossierView "$HIB")" .ok)" "false"
+ck "BODY unknown-higher also flagged too_new"                 eq "$(jqr "$(iv deriveDossierView "$HIB")" .too_new)" "true"
 ck "snapshot schema_version 2 ⇒ Inbox list REFUSED (§4.5/§0.3)" eq "$(jqr "$(iv deriveInboxList "$(jq -c '.schema_version=2' <<<"$SNAP")")" .ok)" "false"
 ck "inbox-view.js makes NO network call (pure core)"          hasnt "fetch(" "$(cat "$VIEW")"
 ck "inbox-view.js has no POST verb"                           hasnt "POST" "$(cat "$VIEW")"
@@ -254,17 +268,37 @@ ck "no token literal in the client app"                       hasnt "COORDINATOR
 ck "no token literal in the shipped shell HTML"               hasnt "COORDINATOR_TOKEN" "$(cat "$SHELL_HTML")"
 ck "client never selects an op (no searchParams op in app.js)" hasnt "set('op'" "$(cat "$APP")"
 
-echo "── ANTI-DRIFT: a MANDATORY §5 field absent ⇒ §11 escalation, NEVER fabricated ──"
+echo "── claude-tools-4xe: an accepted dossier with a gap RENDERS best-effort, LABELED ──"
+# THE BUG this kills: pre-4xe the renderer WALLED a dossier the engine had
+# already accepted (false-success put + a wall on the phone). Now the gate is
+# at WRITE; an accepted-but-imperfect dossier is ALWAYS readable AND answerable,
+# every substitution clearly LABELED in .degraded[] (never silently fabricated).
 NO_FULL="$(jq -c 'del(.body.full_detail)' <<<"$(GET dRT)")"
 EF="$(iv deriveDossierView "$NO_FULL")"
-ck "missing §5.1 full_detail ⇒ REFUSED (ok:false)"           eq "$(jqr "$EF" .ok)" "false"
-ck "refusal is flagged as a §11 escalation"                  eq "$(jqr "$EF" .escalation)" "true"
-ck "refusal names claude-tools-65z (reopen→bump→re-freeze)"  has "claude-tools-65z" "$(jqr "$EF" .error)"
-ck "refusal does NOT fabricate a rendered body"              eq "$(jqr "$EF" 'has("body")')" "false"
+ck "missing §5.1 full_detail ⇒ RENDERS (ok:true, no wall)"   eq "$(jqr "$EF" .ok)" "true"
+ck "it still produces a readable body"                       nz "$(jqr "$EF" '.body.full_detail')"
+ck "the substitution is LABELED, not silently fabricated"    nz "$(jqr "$EF" '.degraded[0]')"
+ck "tldr/sections still render (skim path intact)"           eq "$(jqr "$EF" '[(.body.tldr|length>0),(.body.sections|length>0)]|all')" "true"
 NO_CA="$(jq -c '.items[0]|=del(.context_anchor)' <<<"$(GET dRT)")"
 EC="$(iv deriveDossierView "$NO_CA")"
-ck "missing MANDATORY context_anchor ⇒ REFUSED (AD7)"        eq "$(jqr "$EC" .ok)" "false"
-ck "context_anchor refusal is a §11 escalation"              eq "$(jqr "$EC" .escalation)" "true"
+ck "missing MANDATORY context_anchor ⇒ RENDERS (item answerable)" eq "$(jqr "$EC" .ok)" "true"
+ck "the item keeps its response affordances (answerable)"    nz "$(jqr "$EC" '.items[0].affordances[0]')"
+ck "the missing context is LABELED on the item"              nz "$(jqr "$EC" '.items[0].degraded[0]')"
+ck "context_anchor shows a clear placeholder (not blank)"    nz "$(jqr "$EC" '.items[0].context_anchor.where')"
+# criterion 2: a non-Mermaid diagram on an accepted dossier degrades to a
+# LABELED block (note present) — never dropped, never a silent <pre>.
+NO_MM="$(jq -c '.body.diagrams=[{"caption":"ascii","content":"+--+\n|box|\n+--+"}]' <<<"$(GET dRT)")"
+EM="$(iv deriveDossierView "$NO_MM")"
+ck "non-Mermaid diagram ⇒ RENDERS (ok:true, not walled)"     eq "$(jqr "$EM" .ok)" "true"
+ck "the diagram is kept, flagged degraded (criterion 2)"     eq "$(jqr "$EM" '.body.diagrams[0].degraded')" "true"
+ck "the degraded diagram carries a human note"               nz "$(jqr "$EM" '.body.diagrams[0].note')"
+ck "its raw text is preserved (labeled, not dropped)"        nz "$(jqr "$EM" '.body.diagrams[0].content')"
+# the §5.2.2 opaque reconcile-pointer renders a best-effort summary, answerable.
+RP="$(jq -c '.body={"reconcile_of":"d-orig","reconcile_item":"d-orig-d1","reason":"freeform answer needs interpretation"}' <<<"$(GET dRT)")"
+ER="$(iv deriveDossierView "$RP")"
+ck "reconcile-pointer body ⇒ RENDERS best-effort (ok:true)"  eq "$(jqr "$ER" .ok)" "true"
+ck "reconcile-pointer flagged + summarized (not a wall)"     eq "$(jqr "$ER" .reconcile_pointer)" "true"
+ck "reconcile-pointer keeps its carried item answerable"     nz "$(jqr "$ER" '.items[0].affordances[0]')"
 # Flow-G STRUCTURAL leak guard (mirrors the T6a forensic-drop test): a §10
 # forensic blob injected into a failure card is DROPPED — the Inbox surfaces
 # only §4.5 tiers 1–2 (class/retry/notes); the tier-3 STREAM is never here.

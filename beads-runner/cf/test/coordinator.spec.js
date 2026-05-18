@@ -151,7 +151,17 @@ it("CF.1 substrate is behaviour-identical to coordinator.sh + test-coordinator.s
   // stay bound 1, so each is put at its OWN bound schema_version.
   for (const t of ["dossier", "runner_state", "notification", "lease", "work_snapshot"]) {
     const sv = t === "dossier" ? 2 : 1;
-    await call(GOOD, "put", [t, `rt_${t}`, `{"schema_version":${sv}}`]);
+    // claude-tools-4xe — type=dossier now also runs the §5.1-core WRITE GATE
+    // in _writeRecord: the body MUST be §5.1-core conformant (or the §5.2.2
+    // reconcile-pointer). A bodyless round-trip is no longer accepted — by
+    // design (the gate is on the WRITE boundary, not render-time). The
+    // substrate still does NOT validate the full §5; a minimal conformant body
+    // (bound dossier_schema_version + []-diagrams) round-trips. Bash twin:
+    // test-coordinator.sh same fixture.
+    const rtj = t === "dossier"
+      ? '{"schema_version":2,"body":{"dossier_schema_version":2,"diagrams":[]}}'
+      : `{"schema_version":${sv}}`;
+    await call(GOOD, "put", [t, `rt_${t}`, rtj]);
     const rec = await getRecord(t, `rt_${t}`);
     ck(`§4 ${t} round-trips with principal stamped`, !!rec && rec.principal === "brian");
   }

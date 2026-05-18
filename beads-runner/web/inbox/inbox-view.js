@@ -30,16 +30,27 @@
  *          models only the AFFORDANCE + a blob the app supplies post-fetch.
  *   §0.3  — an unknown HIGHER `schema_version`/`dossier_schema_version` ⇒
  *          REJECT (never best-effort-parse), exactly as every §4/§5 consumer.
+ *          This is the renderer's ONE refusal (claude-tools-4xe).
  *
- * ANTI-DRIFT (task contract): presentation ONLY. This module NEVER invents a
- * §5 field and NEVER best-effort-renders a malformed Dossier. A MANDATORY §5
- * field that is absent (a `body` tier, or a per-Item `context_anchor`) is a
- * §11 BLOCKING escalation to claude-tools-65z — surfaced as an honest refusal
- * view, NOT a UI-side fabrication. It owns NO control logic: consequence
- * application + the per-Item idempotency latch + the S-2 control→work
- * reconcile are T5's; this module maps a form to the §5.2 `response` and
- * derives the ack from the CONTROL-PLANE record the Coordinator reconciles
- * into beads (so the ack carries no Dolt-lag lie — S-2).
+ * CONTRACT — TOLERANT RENDERING (claude-tools-4xe; supersedes the prior
+ * "refuse a malformed Dossier" anti-drift line, which was the bug). The
+ * §5.1-core conformance gate now lives at the engine's ONE dossier WRITE path
+ * (cf/src/coordinator.js _writeRecord + lib/coordinator.sh co__store_put):
+ * a non-conformant dossier is REJECTED before storage — the agent gets a
+ * hard, loud failure, never a false-success put. Therefore this renderer's
+ * invariant is the COMPLEMENT: a dossier the engine ACCEPTED (incl. legacy
+ * pre-gate records) is ALWAYS readable AND answerable. It NEVER blank-refuses
+ * an accepted dossier; the ONLY refusal is §0.3 unknown-HIGHER (a vN renderer
+ * cannot honor a v(N+1) artifact), shown as a plain human message — no
+ * §/contract/§11 jargon on the phone. Every other gap degrades to a clearly-
+ * LABELED best-effort fallback (`.degraded[]`), never a silent fabrication
+ * and never a wall. This is NOT a §11 change: INTERFACE §5.1 mandates the
+ * GENERATOR reject + the renderer render Mermaid as SVG; it never mandated a
+ * render-time REFUSAL of a non-conformant dossier. It owns NO control logic:
+ * consequence application + the per-Item idempotency latch + the S-2
+ * control→work reconcile are T5's; this module maps a form to the §5.2
+ * `response` and derives the ack from the CONTROL-PLANE record the
+ * Coordinator reconciles into beads (so the ack carries no Dolt-lag lie — S-2).
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -156,6 +167,16 @@
     return null;
   }
 
+  /* §0.3 unknown-HIGHER test (claude-tools-4xe). TRUE only when `v` is a clean
+   * integer STRICTLY greater than `bound` — a vN renderer genuinely cannot
+   * honor a v(N+1) artifact (e.g. a diagram form it does not know), so
+   * best-effort would be a lie (§0.3). A missing / non-integer / ≤bound
+   * version is NOT unknown-higher: it renders (tolerantly). This is the ONLY
+   * condition under which deriveDossierView refuses. */
+  function unknownHigher(v, bound) {
+    return typeof v === 'number' && isFinite(v) && Math.floor(v) === v && v > bound;
+  }
+
   /* deriveInboxList(snapshot, nowMs?) → the ranked Inbox + Flow-G glance.
    *
    * Reads ONLY the §4.5 projection (EXIT crit 3). The WAITING-ON-YOU lane is
@@ -235,29 +256,45 @@
     };
   }
 
-  /* deriveItem(it) → one rendered Item row. The affordance is derived FROM
-   * `kind` (§5.2 — the doc IS the form). `context_anchor` is MANDATORY (AD7
-   * self-contained-context invariant): a missing/empty one is a §11
-   * escalation, NOT a silently-dropped field — the caller refuses the whole
-   * dossier. Returns { item } or { missing: '<§-cited reason>' }. */
-  function deriveItem(it) {
-    if (!it || typeof it !== 'object') return { missing: '§5.2 item is not an object' };
-    var id = it.id;
-    if (!nonEmptyStr(id)) return { missing: '§5.2 item missing a non-empty id (the per-Item idempotency key, §0.4)' };
-    var kind = it.kind;
+  /* deriveItem(it, idx?) → one rendered Item row. The affordance is derived
+   * FROM `kind` (§5.2 — the doc IS the form).
+   *
+   * claude-tools-4xe — TOLERANT, never a wall. The conformance gate now lives
+   * at WRITE (cf/src/coordinator.js _writeRecord + lib/coordinator.sh
+   * co__store_put): a non-conformant dossier is REJECTED before it is ever
+   * stored, so the agent gets a hard failure — not a false-success the Inbox
+   * then walls. The renderer's job is the OPPOSITE: every dossier that WAS
+   * accepted (incl. legacy pre-gate records) MUST stay readable AND answerable.
+   * So deriveItem ALWAYS returns { item } — never { missing }. A
+   * malformed/absent field degrades to a clearly-LABELED best-effort fallback
+   * (recorded in item.degraded[]), never a dropped answer control. Returns
+   * { item }. */
+  function deriveItem(it, idx) {
+    var src = (it && typeof it === 'object') ? it : {};
+    var degraded = [];
+    var id = src.id;
+    if (!nonEmptyStr(id)) {
+      // No idempotency key on an accepted record (legacy/pre-gate). Synthesize
+      // a stable per-position key so the human can still answer it; flag it.
+      id = 'item-' + (typeof idx === 'number' ? idx : 0);
+      degraded.push('This item had no id; a temporary one was assigned so you can still respond.');
+    }
+    var kind = src.kind;
     if (!ITEM_KINDS[kind]) {
-      return { missing: '§5.2 item ' + id + ' has kind "' + kind +
-        '" outside the closed enum (approve-reject|pick-option|approve-recommendation|freeform-edit|fyi-objectable)' };
+      // Unknown/absent kind ⇒ fall back to a freeform answer so the human is
+      // never blocked from responding (principle 3: a "no" stays cheap).
+      degraded.push('This item’s type was unrecognized; showing a free-text response.');
+      kind = 'freeform-edit';
     }
-    var ca = it.context_anchor;
-    if (!ca || typeof ca !== 'object' || !nonEmptyStr(ca.where) || !nonEmptyStr(ca.expansion)) {
-      // AD7: "an item whose ask is not understandable without external
-      // context is a contract violation, not a wording nit." T6b MUST render
-      // it inline; a producer that omitted it is the escalation, not a thing
-      // the UI papers over.
-      return { missing: '§5.2 item ' + id + ' missing the MANDATORY context_anchor{where,expansion} (the AD7 self-contained-context invariant)' };
+    var ca = (src.context_anchor && typeof src.context_anchor === 'object') ? src.context_anchor : {};
+    var where = nonEmptyStr(ca.where) ? ca.where : null;
+    var expansion = nonEmptyStr(ca.expansion) ? ca.expansion : null;
+    if (!where || !expansion) {
+      degraded.push('Some context for this item was missing; showing what was provided.');
+      if (!where) where = '(where this sits was not provided)';
+      if (!expansion) expansion = '(no extra context was provided)';
     }
-    var st = it.state || 'open';
+    var st = src.state || 'open';
 
     // §5.2 the response affordance set, derived from kind. Each action is a
     // SINGLE first-class control — reject/edit/object are NOT a penalty path
@@ -282,27 +319,31 @@
         id: id,
         kind: kind,
         affordances: affordances,
-        framing: (it.framing && typeof it.framing === 'object') ? it.framing : {},
+        framing: (src.framing && typeof src.framing === 'object') ? src.framing : {},
         context_anchor: {
-          where: ca.where,
+          where: where,
           link: nonEmptyStr(ca.link) ? ca.link : null,
-          expansion: ca.expansion
+          expansion: expansion
         },
-        options: asArray(it.options).map(function (o) {
+        options: asArray(src.options).map(function (o) {
+          o = (o && typeof o === 'object') ? o : {};
           return {
             option_id: o.option_id || '',
             label: o.label || '(option)',
             blast_radius: o.blast_radius || ''
           }; // consequence_block intentionally NOT surfaced (machine-only §5.3)
         }),
-        recommendation: (it.recommendation && typeof it.recommendation === 'object')
-          ? { value: it.recommendation.value, why: it.recommendation.why } : null,
-        reversible: nonEmptyStr(it.reversible) ? it.reversible : '(reversibility unstated)',
+        recommendation: (src.recommendation && typeof src.recommendation === 'object')
+          ? { value: src.recommendation.value, why: src.recommendation.why } : null,
+        reversible: nonEmptyStr(src.reversible) ? src.reversible : '(reversibility unstated)',
         state: st,
         terminal: isTerminal(st),
+        // Honest, labeled best-effort notes (claude-tools-4xe) — the UI shows
+        // these so a degraded item is never silently papered over.
+        degraded: degraded,
         // A read-back of an already-resolved Item (partial resolution — AD7).
-        response_summary: it.response && typeof it.response === 'object'
-          ? summarizeResponse(it.response) : null
+        response_summary: src.response && typeof src.response === 'object'
+          ? summarizeResponse(src.response) : null
       }
     };
   }
@@ -318,64 +359,123 @@
     return d || 'responded';
   }
 
-  /* deriveDossierView(dossier, nowMs?) → the full §5 render model.
+  /* deriveDossierView(dossier) → the §5 render model.
    *
-   * §0.3 first (reject unknown-higher envelope AND body version). Then EVERY
-   * mandatory §5.1 body tier and EVERY per-Item §5.2 field is enforced: a
-   * gap returns ok:false WITH escalation:true (§11 → claude-tools-65z) — the
-   * renderer refuses rather than fabricate (the task's ANTI-DRIFT line). The
-   * profile (decision / mixed review / all-fyi overview) is EMERGENT from the
-   * body+item mix — there is ONE render path, no per-profile branch (§5.2.1). */
+   * claude-tools-4xe — TOLERANT BY CONTRACT. The §5.1-core conformance gate
+   * was moved to the RIGHT boundary: the engine's ONE dossier WRITE path
+   * (cf/src/coordinator.js _writeRecord + lib/coordinator.sh co__store_put
+   * → dossierWriteBodyOk / co__dossier_write_body_ok). A non-conformant
+   * dossier is now REJECTED before it is ever stored — the agent gets a hard,
+   * loud failure, never a false-success put. The renderer's job is the EXACT
+   * COMPLEMENT: a dossier the engine ACCEPTED (including legacy records stored
+   * before the write gate existed) MUST ALWAYS be readable AND answerable.
+   *
+   * So this NEVER blank-refuses an accepted dossier. The ONE permitted refusal
+   * is §0.3 unknown-HIGHER schema (a vN renderer genuinely cannot honor a
+   * v(N+1) artifact) — and even that is a plain, human-meaningful message, no
+   * contract/§/§11 jargon on the phone. Every other gap degrades to a clearly-
+   * LABELED best-effort fallback (recorded in `.degraded[]` / per-diagram
+   * `.degraded`): tldr/sections/full_detail always render; a non-Mermaid or
+   * empty diagram becomes a labeled warning block (NOT a silent <pre>); items
+   * stay answerable; the §5.2.2 opaque reconcile-pointer renders a best-effort
+   * summary. This is NOT a §11 change: INTERFACE §5.1 mandates the GENERATOR
+   * reject and the renderer render Mermaid as SVG — it never mandates a
+   * render-time REFUSAL of a non-conformant dossier; that was an
+   * implementation choice and it was the bug (claude-tools-4xe). The profile
+   * (decision / overview) stays EMERGENT — one render path (§5.2.1). */
   function deriveDossierView(dossier) {
     var d = dossier && typeof dossier === 'object' ? dossier : {};
+    var bodyRaw = (d.body && typeof d.body === 'object') ? d.body : null;
 
-    var envErr = schemaGate(d.schema_version, SUPPORTED_DOSSIER_SCHEMA,
-      'Dossier schema_version', '§4.1');
-    if (envErr) return { ok: false, error: envErr };
-
-    var body = d.body && typeof d.body === 'object' ? d.body : null;
-    if (!body) {
-      return refuse('Dossier ' + (d.id || '?') +
-        ' has no §5.1 body object — the progressive-disclosure body is mandatory (AD7)');
+    // ── THE ONLY REFUSAL (§0.3 unknown-HIGHER) — human-meaningful, no jargon.
+    if (unknownHigher(d.schema_version, SUPPORTED_DOSSIER_SCHEMA) ||
+        (bodyRaw && unknownHigher(bodyRaw.dossier_schema_version, SUPPORTED_BODY_SCHEMA))) {
+      return {
+        ok: false,
+        too_new: true,
+        error: 'This decision was prepared by a newer version of the app than ' +
+          'the one on your phone, so it can’t be shown here safely. Update the ' +
+          'Inbox app to open it — nothing was lost and your answer is still needed.'
+      };
     }
-    var bodyErr = schemaGate(body.dossier_schema_version, SUPPORTED_BODY_SCHEMA,
-      'Dossier body', '§5.1');
-    if (bodyErr) return { ok: false, error: bodyErr };
 
-    // §5.1 — ALL FOUR tiers mandatory; none optional. A missing tier is the
-    // decision-singular AD7 regression and is REFUSED, never fabricated.
-    var bErr = [];
-    if (!nonEmptyStr(body.tldr)) bErr.push('§5.1 body.tldr (the skim entry point) is missing/empty');
-    var sections = asArray(body.sections);
-    if (sections.length === 0) bErr.push('§5.1 body.sections[] is empty (the decision-singular AD7 regression)');
-    sections.forEach(function (s, i) {
-      if (!s || !nonEmptyStr(s.heading) || !nonEmptyStr(s.prose)) {
-        bErr.push('§5.1 body.sections[' + i + '] needs non-empty {heading,prose}');
+    var degraded = [];
+
+    // §5.2.2 opaque reconcile-pointer — a best-effort summary, never a wall.
+    // It is a follow-up the reconciler will read; surface what it is and keep
+    // any carried item answerable.
+    var isReconcilePtr = bodyRaw && nonEmptyStr(bodyRaw.reconcile_of);
+
+    var tldr, sections, diagrams, fullDetail;
+    if (isReconcilePtr) {
+      degraded.push('This is a follow-up the system raised after an earlier answer; showing a summary.');
+      tldr = 'Follow-up needed' +
+        (nonEmptyStr(bodyRaw.reconcile_item) ? ' on “' + bodyRaw.reconcile_item + '”' : '');
+      sections = [{
+        heading: 'Why you’re seeing this',
+        prose: nonEmptyStr(bodyRaw.reason)
+          ? bodyRaw.reason
+          : 'An earlier response needs another look before it can be applied.'
+      }];
+      if (nonEmptyStr(bodyRaw.reconcile_of)) {
+        sections.push({ heading: 'Original decision', prose: bodyRaw.reconcile_of });
+      }
+      diagrams = [];
+      fullDetail = nonEmptyStr(bodyRaw.reason)
+        ? bodyRaw.reason
+        : 'This dossier points back at an earlier decision; respond to the item below to move it forward.';
+    } else {
+      var body = bodyRaw || {};
+      if (!bodyRaw) degraded.push('This decision had no detail body; showing what was available.');
+
+      tldr = nonEmptyStr(body.tldr) ? body.tldr : '(no short summary was provided)';
+      if (!nonEmptyStr(body.tldr)) degraded.push('No summary line was provided.');
+
+      var rawSecs = asArray(body.sections).filter(function (s) {
+        return s && nonEmptyStr(s.heading) && nonEmptyStr(s.prose);
+      }).map(function (s) { return { heading: s.heading, prose: s.prose }; });
+      if (rawSecs.length === 0) {
+        degraded.push('No detail sections were provided; showing the full write-up instead.');
+        rawSecs = [{
+          heading: 'Details',
+          prose: nonEmptyStr(body.full_detail) ? body.full_detail
+            : (nonEmptyStr(body.tldr) ? body.tldr : '(no detail was provided for this decision)')
+        }];
+      }
+      sections = rawSecs;
+
+      // A diagram that is empty or not Mermaid stays VISIBLE as a clearly-
+      // labeled warning block (criterion 2) — never dropped, never a silent
+      // <pre> masquerading as a rendered diagram (the §5.1 anti-pattern).
+      diagrams = asArray(body.diagrams).map(function (g) {
+        g = (g && typeof g === 'object') ? g : {};
+        var caption = nonEmptyStr(g.caption) ? g.caption : '(untitled diagram)';
+        var content = typeof g.content === 'string' ? g.content : '';
+        if (!nonEmptyStr(content)) {
+          degraded.push('A diagram was empty.');
+          return { caption: caption, content: '', degraded: true,
+            note: 'This diagram was empty.' };
+        }
+        if (!looksLikeMermaid(content)) {
+          degraded.push('A diagram was not in the supported (Mermaid) format; showing its text.');
+          return { caption: caption, content: content, degraded: true,
+            note: 'This diagram isn’t in the supported diagram format — showing its raw text.' };
+        }
+        return { caption: caption, content: content, degraded: false };
+      });
+
+      fullDetail = nonEmptyStr(body.full_detail) ? body.full_detail
+        : (nonEmptyStr(body.tldr) ? body.tldr : '(no additional detail was provided)');
+      if (!nonEmptyStr(body.full_detail)) degraded.push('No full write-up was provided.');
+    }
+
+    // §5.2 items — ALWAYS answerable (deriveItem never refuses; claude-tools-4xe).
+    var items = asArray(d.items).map(function (raw, i) { return deriveItem(raw, i).item; });
+    items.forEach(function (x) {
+      if (x.degraded && x.degraded.length) {
+        degraded.push('An item (' + x.id + ') was incomplete; showing a best-effort version.');
       }
     });
-    if (!Array.isArray(body.diagrams)) {
-      bErr.push('§5.1 body.diagrams[] must be an array ([] only when genuinely non-structural)');
-    } else {
-      body.diagrams.forEach(function (g, i) {
-        if (!g || !nonEmptyStr(g.caption) || !nonEmptyStr(g.content)) {
-          bErr.push('§5.1 body.diagrams[' + i + '] needs non-empty {caption,content}');
-        } else if (!looksLikeMermaid(g.content)) {
-          bErr.push('§5.1 body.diagrams[' + i + '].content MUST be Mermaid source (v2 §11) — prose/ASCII is a contract violation, not a wording nit');
-        }
-      });
-    }
-    if (!nonEmptyStr(body.full_detail)) bErr.push('§5.1 body.full_detail (the stand-alone full picture) is missing/empty — NOT optional');
-    if (bErr.length) return refuse(bErr.join(' · '));
-
-    // §5.2 items — each enforced; a missing context_anchor is the escalation.
-    var rawItems = asArray(d.items);
-    var items = [], iErr = [];
-    rawItems.forEach(function (raw) {
-      var r = deriveItem(raw);
-      if (r.missing) iErr.push(r.missing);
-      else items.push(r.item);
-    });
-    if (iErr.length) return refuse(iErr.join(' · '));
 
     var open = items.filter(function (x) { return !x.terminal; }).length;
     var total = items.length;
@@ -388,15 +488,15 @@
       bead_ref: d.bead_ref || '',
       tier: d.tier || 'blocking',
       timer_fire_at: d.timer_fire_at || null,
+      // Honest, human-readable best-effort notes — the UI shows these so a
+      // degraded-but-readable dossier is never silently papered over.
+      degraded: degraded,
+      reconcile_pointer: !!isReconcilePtr,
       body: {
-        tldr: body.tldr,
-        sections: sections.map(function (s) {
-          return { heading: s.heading, prose: s.prose };
-        }),
-        diagrams: asArray(body.diagrams).map(function (g) {
-          return { caption: g.caption, content: g.content };
-        }),
-        full_detail: body.full_detail
+        tldr: tldr,
+        sections: sections,
+        diagrams: diagrams,
+        full_detail: fullDetail
       },
       items: items,
       rollup: {
@@ -407,8 +507,8 @@
         all_resolved: total > 0 && open === 0
       },
       // §5.2.1 EMERGENT profile (no schema/render branch — just a label for
-      // the header copy: a deep body + all-fyi-objectable/zero items reads as
-      // the Flow-F proactive overview; mixed items read as a review).
+      // the header copy: zero/all-fyi items read as the Flow-F overview;
+      // mixed items read as a review).
       profile: items.length === 0 ||
         items.every(function (x) { return x.kind === 'fyi-objectable'; })
           ? 'overview' : 'decision',
@@ -421,18 +521,6 @@
             : 'Auto-proceeds on its timer if you do nothing (reversible)')
         : 'Untouched items hard-block this gate until resolved (§0.B blocking tier)'
     };
-
-    function refuse(reason) {
-      return {
-        ok: false,
-        escalation: true,
-        error: 'REFUSING to render Dossier ' + (d.id || '?') +
-          ' — a MANDATORY §5 field is absent: ' + reason +
-          '. Per the task ANTI-DRIFT this is a §11 BLOCKING escalation to ' +
-          'claude-tools-65z (reopen → amend+bump+re-freeze), NOT a UI-side ' +
-          'fabrication. The Inbox presents the contract; it never invents it.'
-      };
-    }
   }
 
   /* buildItemResponse(item, input, nowMs?) → the §5.2 `response` payload.

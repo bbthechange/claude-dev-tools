@@ -82,8 +82,10 @@ echo "── EXIT-1: one-screen answer — waiting-on-you + machine health (Flow
 # Dossier (≥1 open item) for this principal ⇒ WAITING-ON-YOU lane non-empty.
 co_request "$GOOD" set-desired projA running "ui:brian-laptop" >/dev/null 2>&1
 co_request "$GOOD" heartbeat "$(hb_line hostA projA running ct-1 "$(ago 20)")" >/dev/null 2>&1
+# claude-tools-4xe — type=dossier writes now run the §5.1-core WRITE GATE;
+# a minimal conformant body round-trips and the §4.5 lane still reads items[].
 co_request "$GOOD" put dossier dOpen \
-  '{"schema_version":2,"id":"dOpen","bead_ref":"claude-tools-99","tier":"blocking","items":[{"id":"i1","state":"open"},{"id":"i2","state":"applied"}]}' >/dev/null 2>&1
+  '{"schema_version":2,"id":"dOpen","bead_ref":"claude-tools-99","tier":"blocking","body":{"dossier_schema_version":2,"diagrams":[]},"items":[{"id":"i1","state":"open"},{"id":"i2","state":"applied"}]}' >/dev/null 2>&1
 BEADS='[{"bead_ref":"claude-tools-99","title":"Impl X","stage":"impl","priority":1,"age":"2h","waiting_on":"review"},{"bead_ref":"claude-tools-12","title":"Idea Y","stage":"idea","priority":2,"age":"1d"},{"bead_ref":"claude-tools-77","title":"Loose","stage":"weird","priority":3,"age":"5m"}]'
 SNAP="$(co_request "$GOOD" work-snapshot projA "$BEADS" 2>/dev/null)"
 V="$(render "$SNAP")"

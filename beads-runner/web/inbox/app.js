@@ -138,7 +138,9 @@
       if (!v.ok) {
         // ANTI-DRIFT: a missing MANDATORY §5 field is a §11 escalation, NOT a
         // best-effort render. Surface it verbatim — never fabricate.
-        showError(v.escalation ? 'Refusing to render — §11 escalation' : 'Cannot render this dossier', v.error);
+        // claude-tools-4xe: the ONLY non-render is §0.3 unknown-HIGHER —
+        // shown as a plain "update the app" message, never §11/contract jargon.
+        showError(v.too_new ? 'Update the app to view this' : 'Cannot show this decision', v.error);
         return;
       }
       formState = {};
@@ -208,6 +210,15 @@
       '. Flag a concern on anything that looks wrong; silence is a valid input (principle 6).';
 
     var secs = el('d-sections'); clear(secs);
+    // claude-tools-4xe — a non-blocking, honest notice when this accepted
+    // dossier had to be shown best-effort (legacy/pre-write-gate record). It
+    // never blocks reading or answering; it just refuses to silently paper
+    // over a gap.
+    if (v.degraded && v.degraded.length) {
+      var dn = mk('div', 'dgerr d-degraded',
+        'Shown best-effort — some parts were incomplete: ' + v.degraded.join(' '));
+      secs.appendChild(dn);
+    }
     v.body.sections.forEach(function (s) {
       var d = mk('div', 'dsec');
       d.appendChild(mk('h2', null, s.heading));
@@ -219,6 +230,15 @@
     v.body.diagrams.forEach(function (g) {
       var d = mk('div', 'diagram');
       d.appendChild(mk('div', 'dgl', g.caption));
+      if (g.degraded) {
+        // Not Mermaid / empty: a clearly-LABELED warning block + the raw text,
+        // never a silent <pre> masquerading as a rendered diagram, never a
+        // dropped diagram (claude-tools-4xe criterion 2 / INTERFACE §5.1).
+        d.appendChild(mk('div', 'dgerr', g.note || 'This diagram could not be rendered.'));
+        if (g.content) d.appendChild(mk('pre', 'dgc dgc-fallback', g.content));
+        dgs.appendChild(d);
+        return;
+      }
       var host = mk('div', 'dgsvg');
       // The Mermaid SOURCE goes in as textContent (never innerHTML);
       // mermaid.run() replaces this node's content with sanitized SVG.

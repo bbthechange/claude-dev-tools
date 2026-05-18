@@ -229,6 +229,11 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     "dOpen",
     JSON.stringify({
       schema_version: 2,
+      // claude-tools-4xe — type=dossier writes run the §5.1-core WRITE GATE
+      // (_writeRecord); a minimal conformant body round-trips and the §4.5
+      // projection still reads only items[] (body stays T6b's). Bash twin:
+      // test-coordinator-reconcile.sh same fixture.
+      body: { dossier_schema_version: 2, diagrams: [] },
       id: "dOpen",
       bead_ref: "claude-tools-99",
       tier: "blocking",
@@ -243,6 +248,7 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     "dResolved",
     JSON.stringify({
       schema_version: 2,
+      body: { dossier_schema_version: 2, diagrams: [] }, // claude-tools-4xe write gate
       id: "dResolved",
       bead_ref: "claude-tools-12",
       tier: "digest",
@@ -296,6 +302,7 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     "dPartly",
     JSON.stringify({
       schema_version: 2,
+      body: { dossier_schema_version: 2, diagrams: [] }, // claude-tools-4xe write gate
       id: "dPartly",
       bead_ref: "claude-tools-55",
       tier: "blocking",

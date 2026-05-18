@@ -26,7 +26,7 @@ import { schemaVersion, safeKey, validateRecord } from "./schema.js";
 // dossier-gen.sh/consequence.sh are separate libs that source coordinator.sh
 // and consume its public surface). The CF.1 ops below are byte-unchanged; CF.6
 // ops are dispatched in a dedicated guard so this substrate stays untouched.
-import { DOSSIER_OPS, handleDossierOp } from "./dossier.js";
+import { DOSSIER_OPS, handleDossierOp, dossierWriteBodyOk } from "./dossier.js";
 // CF.9 (claude-tools-7g0.9) — the §4.3 Notification, layered ON this
 // substrate (a SEPARATE module, mirroring bash notification.sh sourcing
 // coordinator.sh + consuming its public surface). It composes notification
@@ -372,6 +372,17 @@ export class Coordinator {
   async _writeRecord(principal, type, id, obj) {
     const v = validateRecord(type, id, obj);
     if (!v.ok) return { ok: false, code: v.code, msg: v.msg };
+    // claude-tools-4xe — the §5.1-core conformance gate, now on the RIGHT
+    // boundary: the engine's ONE dossier write path. Was render-side only, so
+    // the engine ACCEPTED bodies the Inbox could never render (agent got a
+    // false-success put; human hit a wall). Every dossier write — dossier-put,
+    // generic put, internal re-put — composes through _writeRecord, so this is
+    // the single chokepoint. The §5.2.2 opaque reconcile-pointer is the ONE
+    // contract-defined exemption (handled inside dossierWriteBodyOk).
+    if (type === "dossier") {
+      const bv = dossierWriteBodyOk(obj && obj.body);
+      if (!bv.ok) return { ok: false, code: "non_conformant_body", msg: bv.msg };
+    }
     obj.principal = principal; // §9.1 stamp — after the gate, before the write
     // Single-threaded DO turn => this upsert IS the serialised single write
     // for (type,id). No co__with_lock needed: the runtime is the critical

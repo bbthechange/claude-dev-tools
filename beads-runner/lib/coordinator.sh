@@ -133,6 +133,117 @@ co__schema_version() {
   esac
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# claude-tools-4xe — the §5.1-CORE WRITE GATE, mirrored on the substrate store
+# write for type=dossier (the bash twin of cf/src/coordinator.js _writeRecord
+# calling dossier.js dossierWriteBodyOk).
+#
+# THE BUG this kills: the §11/vkc work enforced Mermaid + dossier_schema_version
+# as a RENDER-time refusal while the WRITE path treated `body` as OPAQUE and
+# accepted the same non-conformance — so an agent got a FALSE SUCCESS (put
+# returned ok) AND the human hit a wall instead of the decision. The gate was
+# on the wrong boundary; it belongs at WRITE. §4.1 itself (INTERFACE.md line
+# 247) defines `body` AS the §5 body (tldr·sections·diagrams·full_detail, all
+# mandatory) — so this NARROW gate is weaker than what §4.1 already mandates;
+# it is NOT a §11/§4.1 contract change, it removes an opacity that was an
+# implementation choice (the bug). The FULL §5 producer gate still lives in
+# T5 (dossier-gen.sh dg__validate_dossier) where the contract puts it.
+#
+# A persisted `dossier` body MUST be EITHER:
+#   (a) the §5.2.2 OPAQUE reconcile-pointer (T5.3 artifact — `body.reconcile_of`
+#       a non-empty string; contractually NOT §5 content, deliberately
+#       body-opaque so the reconciler round-trips it — test-consequence.sh:211),
+#   OR
+#   (b) §5.1-CORE conformant: an integer `body.dossier_schema_version` EQUAL to
+#       the bound `dossier` version (§0.3 — an unknown HIGHER version is
+#       REJECTED, never best-effort-parsed) AND every `diagrams[].content`
+#       Mermaid source (v2 §11).
+# Anything else = a hard, loud REJECT at WRITE (nothing persisted): the agent
+# gets a real failure, never a false-success put the Inbox would wall.
+
+# co__is_mermaid <content> — 0 iff <content> is plausibly Mermaid SOURCE.
+# BYTE-IDENTICAL to dossier-gen.sh dg__is_mermaid AND cf/src/dossier.js
+# looksLikeMermaid AND web/inbox/inbox-view.js looksLikeMermaid (the §8bm
+# differential-equivalence requirement — one single-source algorithm, four
+# byte-identical copies bound by the parity tests; coordinator.sh is the
+# substrate-side copy, the analogue of coordinator.js importing it). ASCII-only
+# / locale-invariant by design: whitespace is exactly U+0020 + U+0009 (never
+# [[:space:]]), keyword a FULL token followed by ASCII sp/tab/colon OR
+# end-of-line (no open wildcard ⇒ no U+2028/U+2029 `.` divergence).
+co__is_mermaid() {
+  local c="${1:-}" line seen_fm=0 in_fm=0
+  local SP=$' \t'   # ASCII space + tab ONLY — NOT [[:space:]] (locale-bound)
+  local kw='graph|flowchart|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|sankey-beta|xychart-beta|block-beta|zenuml|architecture-beta|packet-beta'
+  [[ -z "$c" ]] && return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"                                  # strip a trailing CR (CRLF)
+    [[ "$line" =~ ^[$SP]*$ ]] && continue                 # blank (ASCII sp/tab only)
+    if [[ $seen_fm -eq 0 && $in_fm -eq 0 && "$line" =~ ^[$SP]*---[$SP]*$ ]]; then
+      in_fm=1; seen_fm=1; continue                        # open YAML frontmatter
+    fi
+    if [[ $in_fm -eq 1 ]]; then
+      [[ "$line" =~ ^[$SP]*---[$SP]*$ ]] && in_fm=0        # close frontmatter
+      continue
+    fi
+    [[ "$line" =~ ^[$SP]*%% ]] && continue                # %% comment / %%{init}%% directive
+    [[ "$line" =~ ^[$SP]*($kw)([$SP:]|$) ]] && return 0
+    return 1
+  done <<< "$c"
+  return 1                                              # only frontmatter/comments/blanks ⇒ no diagram
+}
+
+# co__dossier_write_body_ok <envelope_json> — 0 iff the envelope's `.body` is
+# write-conformant per the §5.1-core gate above. Mirrors cf/src/dossier.js
+# dossierWriteBodyOk. Diagnostic on stderr + nonzero on reject (caller persists
+# NOTHING). Operates on the FULL envelope JSON (it reads `.body`).
+co__dossier_write_body_ok() {
+  local json="${1:-}" bound rc
+  bound="$(co__schema_version dossier)"
+  if [[ -z "$bound" ]]; then
+    echo "co: reject (write) — 'dossier' absent from the §4 registry (store-surface contract gap; §0.5)" >&2
+    return 3
+  fi
+  # §5.2.2 opaque reconcile-pointer — the ONE contract-defined exemption.
+  if printf '%s' "$json" | jq -e '(.body|type)=="object" and (.body.reconcile_of|type)=="string" and (.body.reconcile_of|length)>0' >/dev/null 2>&1; then
+    return 0
+  fi
+  printf '%s' "$json" | jq -e '(.body|type)=="object"' >/dev/null 2>&1 || {
+    echo "co: reject (write) — §5.1 dossier body must be a JSON object (claude-tools-4xe write gate; the engine refuses a non-conformant body so the agent never gets a false-success put)" >&2
+    return 3
+  }
+  local sv
+  sv=$(printf '%s' "$json" | jq -r '
+        if (.body.dossier_schema_version|type)=="number"
+           and (.body.dossier_schema_version == (.body.dossier_schema_version|floor))
+        then .body.dossier_schema_version else empty end' 2>/dev/null) || sv=""
+  if [[ -z "$sv" || ! "$sv" =~ ^[0-9]+$ ]]; then
+    echo "co: reject (write) — dossier body missing integer dossier_schema_version (§5.1 'int' / §0.3) — refused at WRITE so the agent gets a hard failure, never a false-success put the Inbox would wall (claude-tools-4xe)" >&2
+    return 3
+  fi
+  if [[ "$sv" -gt "$bound" ]]; then
+    echo "co: reject (write) — dossier_schema_version $sv is an unknown higher version (bound=$bound; §0.3 reject, never best-effort-parse)" >&2
+    return 3
+  fi
+  if [[ "$sv" -ne "$bound" ]]; then
+    echo "co: reject (write) — dossier_schema_version $sv unsupported (binds v$bound only; §0.3)" >&2
+    return 3
+  fi
+  local n i content
+  n=$(printf '%s' "$json" | jq -r 'if (.body.diagrams|type)=="array" then (.body.diagrams|length) else 0 end' 2>/dev/null) || n=0
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  i=0
+  while [[ "$i" -lt "$n" ]]; do
+    content=$(printf '%s' "$json" | jq -r --argjson i "$i" \
+      '.body.diagrams[$i] | if type=="object" and (.content|type)=="string" then .content else "" end' 2>/dev/null) || content=""
+    if ! co__is_mermaid "$content"; then
+      echo "co: reject (write) — §5.1 diagrams[$i].content MUST be Mermaid source (v2 §11) — prose/ASCII is a contract violation; the engine refuses it at WRITE so the agent gets a hard failure, never a false-success put the Inbox would wall (claude-tools-4xe)" >&2
+      return 3
+    fi
+    i=$((i+1))
+  done
+  return 0
+}
+
 # ── strong consistency primitive (§2.1) ──────────────────────────────────────
 # A per-key advisory lock so every write to a given (type,id) is serialised —
 # this is the single-writer-per-key semantics §2.1 requires for Lease and for
@@ -180,9 +291,17 @@ co__rec_path() { printf '%s/records/%s.%s.json' "$(co__ensure_store)" "$1" "$2";
 #        §4 record therefore carries principal = the resolved principal.
 #   Writes atomically (temp + mv) under the per-key lock. Returns nonzero and
 #   writes NOTHING on any rejection.
-# NOTE (anti-drift): this round-trips whatever §4-shaped envelope it is given.
-#   It does NOT generate Dossier body/items (T5), derive liveness or run a
-#   reconcile (T4.3), arbitrate a Lease (T4.2), or aggregate capacity (T4.4).
+# NOTE (anti-drift): this round-trips whatever §4-shaped envelope it is given —
+#   with ONE narrow exception added by claude-tools-4xe: for type=dossier it
+#   ALSO runs the §5.1-core WRITE GATE (co__dossier_write_body_ok) so a
+#   non-conformant dossier body is REJECTED at WRITE, never accepted into a
+#   false-success the Inbox would then wall. It still does NOT GENERATE the
+#   Dossier body/items (T5 dossier-gen.sh is the §5 sole producer; the full §5
+#   gate stays there), derive liveness or run a reconcile (T4.3), arbitrate a
+#   Lease (T4.2), or aggregate capacity (T4.4). The gate is the bash twin of
+#   cf/src/coordinator.js _writeRecord — same single store-write chokepoint, so
+#   generic `put dossier`, `dossier-put`, AND every internal re-put compose
+#   through it; the §5.2.2 reconcile-pointer is the sole contract exemption.
 co__store_put() {
   local principal="$1" type="$2" id="$3" json="$4"
   local bound; bound="$(co__schema_version "$type")"
@@ -214,6 +333,15 @@ co__store_put() {
   if [[ "$sv" -ne "$bound" ]]; then
     echo "co: reject — $type schema_version $sv unsupported (skeleton binds v$bound only; §0.3)" >&2
     return 3
+  fi
+  # claude-tools-4xe — the §5.1-core WRITE GATE on the ONE store-write
+  # chokepoint (bash twin of cf/src/coordinator.js _writeRecord). For
+  # type=dossier the body MUST be the §5.2.2 reconcile-pointer OR §5.1-core
+  # conformant (integer dossier_schema_version==bound + Mermaid diagrams);
+  # anything else is a hard reject here so the agent never gets a false-success
+  # put the Inbox would wall. Other §4 types are unaffected (body opaque).
+  if [[ "$type" == "dossier" ]]; then
+    co__dossier_write_body_ok "$json" || return 3
   fi
   # §9.1 stamp: the RESOLVED principal, overwriting anything the caller put.
   local stamped

@@ -89,8 +89,15 @@ ck "use-site literal 'someone-else' overwritten"   bash -c "[[ \"\$(jq -r .princ
 # (the §11 Mermaid amend single-source bump 1→2); the other §4 record types
 # stay bound 1, so each is put at its OWN bound schema_version.
 for t in dossier runner_state notification lease work_snapshot; do
-  sv=1; [[ "$t" == dossier ]] && sv=2
-  co_request "$GOOD" put "$t" "rt_$t" "{\"schema_version\":$sv}" >/dev/null 2>&1
+  sv=1; rtj="{\"schema_version\":1}"
+  # claude-tools-4xe — type=dossier now also runs the §5.1-core WRITE GATE in
+  # co__store_put (bash twin of cf _writeRecord): the body MUST be §5.1-core
+  # conformant (or the §5.2.2 reconcile-pointer). A bodyless round-trip is no
+  # longer accepted — by design (the gate is on the WRITE boundary). The
+  # substrate still does NOT validate the full §5 (tldr/sections/…): a minimal
+  # conformant body (bound dossier_schema_version, []-diagrams) round-trips.
+  [[ "$t" == dossier ]] && { sv=2; rtj='{"schema_version":2,"body":{"dossier_schema_version":2,"diagrams":[]}}'; }
+  co_request "$GOOD" put "$t" "rt_$t" "$rtj" >/dev/null 2>&1
   rec="$(co_request "$GOOD" get "$t" "rt_$t" 2>/dev/null)"
   ck "§4 $t round-trips with principal stamped" \
      bash -c "[[ \"\$(jq -r .principal <<<'$rec' 2>/dev/null)\" == brian ]]"

@@ -305,6 +305,62 @@ function validateBody(b) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// claude-tools-4xe — the §5.1-CORE WRITE GATE: the conformance gate moved to
+// the RIGHT boundary (the engine's ONE dossier write path), not render-time.
+//
+// THE BUG this kills: the §11/vkc work enforced Mermaid + dossier_schema_version
+// as a RENDER-time refusal while the WRITE path (validateEnvelope treats body
+// as OPAQUE) accepted the same non-conformance — so an agent got a FALSE
+// SUCCESS (put returned ok) AND the human hit a wall instead of the decision.
+//
+// A persisted `dossier` body MUST be EITHER:
+//   (a) the §5.2.2 OPAQUE reconcile-pointer (T5.3 artifact — `body.reconcile_of`
+//       present; contractually NOT §5 content, deliberately body-opaque so the
+//       reconciler can round-trip it — test-consequence.sh:211/305), OR
+//   (b) §5.1-CORE conformant: an integer `dossier_schema_version` EQUAL to the
+//       bound version (§0.3 — an unknown HIGHER version is REJECTED, never
+//       best-effort-parsed) AND every `diagrams[].content` Mermaid (v2 §11).
+//
+// This is deliberately NARROWER than the full §5 producer gate
+// (validateDossier: tldr/sections≥1/full_detail/per-item §5.2): the substrate
+// MUST still round-trip the opaque reconcile-pointer + the envelope/state-
+// machine/latch test bodies (which carry the bound version + []-diagrams), and
+// internal re-puts re-persist an already-§5-valid body. The full §5 gate stays
+// where the contract puts it — the §5 SOLE PRODUCER (dossier-generate /
+// dossier-from-worker-ask). This gate is the minimum that makes "the engine
+// accepts a body the Inbox can never render" structurally impossible.
+//
+// Bash twin: lib/dossier.sh do_dossier_put (same predicate, same reconcile-
+// pointer exemption, same single-source Mermaid algorithm — §8bm differential
+// equivalence). Wired into the ONE store write (coordinator.js _writeRecord)
+// so NO dossier write path — dossier-put, generic put, internal re-put — can
+// skip it; the reconcile-pointer is the sole, contract-defined exemption.
+export function dossierWriteBodyOk(body) {
+  // §5.2.2 opaque reconcile-pointer — the ONE contract-defined exemption.
+  if (isObj(body) && neStr(body.reconcile_of)) return OK;
+  const bound = boundSv();
+  if (bound === null || bound === undefined)
+    return rej("dossier: reject (write) — 'dossier' absent from the §4 registry (store-surface contract gap; §0.5)");
+  if (!isObj(body))
+    return rej("dossier: reject (write) — §5.1 body must be a JSON object (claude-tools-4xe write gate; the engine refuses a non-conformant body so the agent never gets a false-success put)");
+  const sv = intSv(body.dossier_schema_version);
+  if (sv === null)
+    return rej("dossier: reject (write) — body missing integer dossier_schema_version (§5.1 'int' / §0.3) — refused at WRITE so the agent gets a hard failure, never a false-success put the Inbox would wall (claude-tools-4xe)");
+  if (sv > bound)
+    return rej(`dossier: reject (write) — dossier_schema_version ${sv} is an unknown higher version (bound=${bound}; §0.3 reject, never best-effort-parse)`);
+  if (sv !== bound)
+    return rej(`dossier: reject (write) — dossier_schema_version ${sv} unsupported (binds v${bound} only; §0.3)`);
+  const dgs = Array.isArray(body.diagrams) ? body.diagrams : [];
+  for (let i = 0; i < dgs.length; i++) {
+    const d = dgs[i];
+    const content = isObj(d) && typeof d.content === "string" ? d.content : "";
+    if (!looksLikeMermaid(content))
+      return rej(`dossier: reject (write) — §5.1 diagrams[${i}].content MUST be Mermaid source (v2 §11) — prose/ASCII is a contract violation; the engine refuses it at WRITE so the agent gets a hard failure, never a false-success put the Inbox would wall (claude-tools-4xe)`);
+  }
+  return OK;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // §5.2 Item — kind enum · MANDATORY context_anchor · framing · reversible ·
 //             per-kind options/recommendation · machine-applyable §5.3 block
 //             (port of dg__validate_item)

@@ -161,10 +161,14 @@ ck "explicit now_epoch arg still honored when clock is dead"      bash -c 'sourc
 
 echo "── EXIT-3: §4.5 read-only projection reflects desired+actual+liveness ──"
 BEADS='[{"bead_ref":"claude-tools-99","title":"Impl X","stage":"impl","priority":1,"age":"2h","waiting_on":"review","failure":{"class":"UNKNOWN_FAILURE","retry_state":"1/3","runner_notes":["Runner: retrying"]}},{"bead_ref":"claude-tools-12","title":"Idea Y","stage":"idea","priority":2,"age":"1d"},{"bead_ref":"claude-tools-77","title":"Loose","stage":"weird","priority":3,"age":"5m"}]'
+# claude-tools-4xe — type=dossier writes now run the §5.1-core WRITE GATE
+# (co__store_put): a minimal conformant body (bound dossier_schema_version +
+# []-diagrams) is required; the §4.5 projection still reads only items[] (body
+# stays T6b's), so a minimal body keeps these waiting_on_you assertions intact.
 co_request "$GOOD" put dossier dOpen \
-  '{"schema_version":2,"id":"dOpen","bead_ref":"claude-tools-99","tier":"blocking","items":[{"id":"i1","state":"open"},{"id":"i2","state":"applied"}]}' >/dev/null 2>&1
+  '{"schema_version":2,"id":"dOpen","bead_ref":"claude-tools-99","tier":"blocking","body":{"dossier_schema_version":2,"diagrams":[]},"items":[{"id":"i1","state":"open"},{"id":"i2","state":"applied"}]}' >/dev/null 2>&1
 co_request "$GOOD" put dossier dResolved \
-  '{"schema_version":2,"id":"dResolved","bead_ref":"claude-tools-12","tier":"digest","items":[{"id":"j1","state":"applied"},{"id":"j2","state":"expired"}]}' >/dev/null 2>&1
+  '{"schema_version":2,"id":"dResolved","bead_ref":"claude-tools-12","tier":"digest","body":{"dossier_schema_version":2,"diagrams":[]},"items":[{"id":"j1","state":"applied"},{"id":"j2","state":"expired"}]}' >/dev/null 2>&1
 SNAP="$(co_request "$GOOD" work-snapshot projA "$BEADS" 2>/dev/null)"
 ck "projection declares itself read_only:true"                eq "$(jq -r '.read_only' <<<"$SNAP")" "true"
 ck "projection schema_version is 1 (§4.5)"                    eq "$(jq -r '.schema_version' <<<"$SNAP")" "1"
