@@ -386,3 +386,213 @@ sr_human_resolve() {
   sr__resolve_bfh "$tref" || { echo "stuck-routing: resolve — could not record decision for '$tref'" >&2; return 4; }
   return 0
 }
+
+# ════════════════════════════════════════════════════════════════════════════
+# I4 — the FEEDBACK RETURN PATH: the parked runner observes the human's phone
+#      answer in the HOSTED engine and resumes the agent WITH it (epic 8bm).
+# ════════════════════════════════════════════════════════════════════════════
+# The closed loop's return leg, the slice epic 8bm names "never been wired":
+# §7.3 PARKS the fork (sr__raise_bfh {resolved:false} + the bead driven
+# blocked) and the runner moves on (§7.5). When Brian answers on his phone the
+# deployed Inbox `/api/respond` proxy POSTs the FROZEN `item-apply` op to the
+# HOSTED engine (web/inbox/functions/api/respond.js) — the §5.2 response is
+# recorded on the Item and §5.2.2/§7.4 moves it open→answered→applied IN THE
+# HOSTED ENGINE. Nothing on the runner side ever LOOKED there: the local S-2
+# bfh record stayed {resolved:false} forever, so `sr_reconcile_blocked_for_
+# human` never lifted the bead and the agent never resumed. I4 adds the AWAIT
+# (poll the hosted Dossier over the SAME §2.1 `co_request get dossier` read
+# surface the I1 transport carries → the deployed engine) and the RESUME (the
+# human's decision, captured the moment it is observed, is handed to the
+# re-dispatched agent so it ACTS on the answer instead of re-hitting the fork).
+#
+# ANTI-DRIFT: this is a CONSUMER of the already-frozen surfaces — `do_dossier_
+# get`/`do_dossier_rollup` (§2.1/§4.1 reads, T5.1) + the existing S-2 bfh
+# namespace + `sr__resolve_bfh`. It introduces NO §4 record type and NO new op
+# (the resume-answer file is a T5-owned SIBLING namespace under the SAME store,
+# exactly the `blocked-for-human` / `dossier-dedup` / §10.3 `forensic`
+# precedent). It NEVER applies a §5.3 consequence or flips a §7.4 per-Item
+# latch (T5.3 owns that, applied IN the hosted engine by `item-apply`); it
+# only READS the post-apply Item state to know the human decided, and never
+# aborts the runner (a poll hiccup leaves the fork PARKED — it must not rot,
+# never falsely resume).
+
+# sr__answer_dir — the resume-answer sibling namespace (mirrors sr__bfh_dir).
+# Holds the human decision captured at observation time so it SURVIVES the
+# `sr_reconcile_blocked_for_human` resolved:true hard-delete of the bfh record
+# and is self-contained for the resume prompt (no second hosted fetch needed).
+sr__answer_dir() {
+  local d; d="$(co_store_dir 2>/dev/null)" || d="${CO_STORE:-${TMPDIR:-/tmp}/claude-beads-coordinator}"
+  printf '%s/blocked-for-human-answer' "$d"
+}
+
+# sr_resume_answer <task_ref> — echo the captured resume-answer record JSON
+#   (so the runner can splice the human decision into the resumed agent's
+#   prompt), or return 1 if no answer is pending for this task_ref. Read-only.
+sr_resume_answer() {
+  local tref="${1:-}" path
+  do__safe_key "$tref" 2>/dev/null || return 1
+  path="$(sr__answer_dir)/$tref.json"
+  [[ -f "$path" ]] || return 1
+  cat "$path" 2>/dev/null || return 1
+}
+
+# sr_consume_resume_answer <task_ref> — one-shot delete of the resume-answer
+#   record once it has been spliced into a resumed run, so a later unrelated
+#   pickup of the same bead never re-injects a stale decision. Idempotent.
+sr_consume_resume_answer() {
+  local tref="${1:-}" path
+  do__safe_key "$tref" 2>/dev/null || return 0
+  path="$(sr__answer_dir)/$tref.json"
+  rm -f "$path" 2>/dev/null || true
+  return 0
+}
+
+# sr_format_resume_directive <task_ref>
+#   Render the captured decision as the human-readable RESUME block the runner
+#   prepends to the worker prompt — the "demonstrably changes what the agent
+#   does next" payload. Self-contained from the answer record (no hosted
+#   fetch). Echoes the block; returns 1 if there is no pending answer.
+sr_format_resume_directive() {
+  local tref="${1:-}" rec
+  rec="$(sr_resume_answer "$tref")" || return 1
+  printf '%s' "$rec" | jq -r '
+    "═══ HUMAN DECISION — the parked fork on " + (.task_ref // "this task")
+      + " was answered (resume) ═══",
+    "A human reviewed the STUCK_NEEDS_HUMAN dossier you raised and DECIDED. Do",
+    "NOT re-raise the fork. Act on this decision and complete the task:",
+    "",
+    "  The ask was: " + (.ask // "(see the bead notes / your earlier structured ask)"),
+    "  Human chose: " + (.chosen_label // .chosen // "(see response below)")
+      + (if (.chosen_blast_radius // "") != "" then "  — " + .chosen_blast_radius else "" end),
+    (if (.free_text // "") != "" then "  Human note: " + .free_text else empty end),
+    "  Raw response (§5.2): " + (.response | tojson),
+    "",
+    "Proceed under this decision. The dossier item has already been applied in",
+    "the hosted engine (§5.2.2/§7.4); your job is to carry the work forward",
+    "under the human decision above and then close the bead as normal."
+  ' 2>/dev/null || return 1
+}
+
+# sr_poll_hosted_resolution <bearer> [task_ref]
+#   THE I4 AWAIT. For each still-PARKED fork (a local S-2 bfh record with
+#   resolved:false), READ the Dossier back from the engine over the §2.1
+#   `co_request get dossier` surface (→ the HOSTED deployed engine when the I1
+#   COORDINATOR_URL transport is configured; the in-process store otherwise —
+#   the §0.2-nonnormative transport boundary, unchanged). If the human has
+#   answered on the phone, `item-apply` has moved an Item to answered|applied
+#   (and the §4.1 rollup to `resolved`) IN THE ENGINE. On observing that:
+#     1. Capture the decision into the resume-answer sibling namespace BEFORE
+#        anything else (it must survive the bfh hard-delete the reconcile does).
+#     2. `sr__resolve_bfh` flip the S-2 record resolved:false→true — the NEXT
+#        `sr_reconcile_blocked_for_human` then lifts the work-plane block
+#        (bead → open, re-enters `bd ready`) and the runner re-dispatches it
+#        with the captured answer (the RESUME).
+#   Hosted unreachable / 401 / not-yet-answered ⇒ the fork stays PARKED (it
+#   MUST NOT rot, and MUST NOT falsely resume — the §7.3 discipline mirrored on
+#   the return leg). Idempotent (an already-captured / already-resolved fork is
+#   skipped without a re-fetch). With no <task_ref> it sweeps every parked
+#   record. Echoes the count of forks newly observed-resolved; ALWAYS returns 0
+#   (a poll never aborts the runner — exactly like the reconcile).
+sr_poll_hosted_resolution() {
+  local bearer="${1:-}" only="${2:-}" dir adir n=0 f tref did dossier rolled
+  command -v do_dossier_get >/dev/null 2>&1 || { echo 0; return 0; }
+  [[ -n "$bearer" ]] || bearer="bearer-runner-stuck"
+  dir="$(sr__bfh_dir)"
+  [[ -d "$dir" ]] || { echo 0; return 0; }
+  adir="$(sr__answer_dir)"; mkdir -p "$adir" 2>/dev/null || true
+  local files=()
+  if [[ -n "$only" ]]; then
+    do__safe_key "$only" 2>/dev/null || { echo 0; return 0; }
+    [[ -f "$dir/$only.json" ]] && files=("$dir/$only.json")
+  else
+    for f in "$dir"/*.json; do [[ -e "$f" ]] && files+=("$f"); done
+  fi
+  for f in "${files[@]:-}"; do
+    [[ -e "$f" ]] || continue
+    tref=$(jq -r '.task_ref // ""'   "$f" 2>/dev/null) || tref=""
+    did=$(jq -r  '.dossier_id // ""' "$f" 2>/dev/null) || did=""
+    [[ -n "$tref" && -n "$did" ]] || continue
+    [[ "$(jq -r '.resolved // false' "$f" 2>/dev/null)" == "true" ]] && continue
+    # Already captured (a prior poll observed it) ⇒ just ensure the S-2 flip is
+    # recorded (idempotent — covers a crash between capture and resolve) and
+    # skip the network read.
+    if [[ -f "$adir/$tref.json" ]]; then
+      sr__resolve_bfh "$tref" || true
+      continue
+    fi
+    # Observe the engine. NONZERO/empty (hosted 401, unreachable, not yet
+    # persisted) ⇒ the fork stays PARKED for the next poll (must not rot).
+    dossier="$(do_dossier_get "$bearer" "$did" 2>/dev/null)" || continue
+    [[ -n "$dossier" ]] || continue
+    printf '%s' "$dossier" | jq -e 'type=="object"' >/dev/null 2>&1 || continue
+    rolled="$(do_dossier_rollup "$dossier" 2>/dev/null)"   # self-defaults to 'open'
+    # Decided iff an Item the human acted on is terminal-or-answered, OR the
+    # whole Dossier rolled up resolved. An untouched fork (Brian has not
+    # answered) is NOT decided — the parked agent correctly stays parked.
+    local decided_item
+    decided_item="$(printf '%s' "$dossier" | jq -c '
+      ( .items // [] ) | map(select(.state=="answered" or .state=="applied")) | .[0] // empty
+    ' 2>/dev/null)" || decided_item=""
+    if [[ -z "$decided_item" && "$rolled" != "resolved" ]]; then
+      continue
+    fi
+    # If the rollup says resolved but every Item is `expired` (timed-FYI / no
+    # human decision), there is no answer to act on — the reconcile still lifts
+    # it via the timer path; the resume directive only fires on a real human
+    # response. Fall back to the first non-open Item otherwise.
+    if [[ -z "$decided_item" ]]; then
+      decided_item="$(printf '%s' "$dossier" | jq -c '
+        ( .items // [] ) | map(select(.state!="open")) | .[0] // empty' 2>/dev/null)" || decided_item=""
+    fi
+    # All-`expired` (timed-FYI / no human decision): there is nothing to
+    # SPLICE — flip S-2 so the reconcile lifts the bead via the timer path,
+    # but do NOT count it in `n` (n = forks with a captured human DECISION the
+    # runner will resume WITH; the bead-lift is separately reported by the
+    # reconcile's own count). Keeps the runner's "will RESUME with the
+    # decision" line honest.
+    [[ -n "$decided_item" ]] || { sr__resolve_bfh "$tref" || true; continue; }
+    # Build a self-contained, human-readable answer record: the chosen option's
+    # label/blast-radius is resolved HERE (from the Item's own §5.2 options[])
+    # so the resume prompt needs no second hosted fetch.
+    local iid rec now
+    iid=$(printf '%s' "$decided_item" | jq -r '.id // ""' 2>/dev/null) || iid=""
+    # Same UTC timestamp idiom as the frozen sr__raise_bfh/sr__resolve_bfh
+    # siblings (forensic consistency across the bfh + answer namespaces).
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    # jq `//` only short-circuits on null/false (NOT ""), so empty-string
+    # fall-through is done explicitly via `select(.!="")` (yields nothing when
+    # empty ⇒ the next `//` alternative is taken). Keeps the captured decision
+    # honest whether the §5.2 response is a pick (selected_option_id), an
+    # approve/reject (decision), or an edited/freeform (free_text) shape.
+    rec="$(printf '%s' "$decided_item" | jq -c --arg tref "$tref" --arg did "$did" --arg at "$now" '
+      def nz: select((. // "") != "");
+      ( .response // {} ) as $r
+      | ( ($r.selected_option_id | nz) // "" ) as $sel
+      | ( ($r.decision | nz) // "" ) as $dec
+      | ( ( .options // [] ) | map(select(.option_id==$sel)) | .[0] // {} ) as $opt
+      | ( ($sel | nz) // ($dec | nz) // "" ) as $chosen
+      | { task_ref:$tref, dossier_id:$did, item_id:(.id // ""),
+          ask:( (.framing.ask | nz) // (.context_anchor.where | nz) // "" ),
+          response:$r,
+          chosen:$chosen,
+          chosen_label:( ($opt.label | nz) // ($chosen | nz) // "(answered — see the dossier)" ),
+          chosen_blast_radius:( $opt.blast_radius // "" ),
+          free_text:( ($r.free_text | nz) // ($r.note | nz) // ($r.edited_value | nz) // ($r.text | nz) // "" ),
+          decided_at:$at }' 2>/dev/null)" || rec=""
+    [[ -n "$rec" ]] || rec="$(jq -cn --arg tref "$tref" --arg did "$did" --arg iid "$iid" --arg at "$now" \
+        '{task_ref:$tref,dossier_id:$did,item_id:$iid,ask:"",response:{},chosen:"",chosen_label:"(answered — see the dossier)",chosen_blast_radius:"",free_text:"",decided_at:$at}' 2>/dev/null)"
+    # Capture FIRST (must outlive the reconcile delete), THEN flip S-2.
+    local atmp="$adir/$tref.json.$$.tmp"
+    if printf '%s' "$rec" > "$atmp" 2>/dev/null && mv -f "$atmp" "$adir/$tref.json" 2>/dev/null; then
+      sr__resolve_bfh "$tref" || true
+      n=$((n+1))
+    else
+      rm -f "$atmp" 2>/dev/null || true
+      # Could not persist the capture ⇒ do NOT flip S-2 (resuming without the
+      # answer would defeat the point); leave PARKED for the next poll.
+      echo "stuck-routing: poll — could not capture the resume-answer for '$tref'; left PARKED for the next poll (the fork must not resume without the decision)" >&2
+    fi
+  done
+  echo "$n"
+  return 0
+}

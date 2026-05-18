@@ -722,6 +722,37 @@ while true; do
     done
   done
 
+  # ── I4 FEEDBACK RETURN PATH — the PARKED runner observes Brian's phone
+  #    answer in the HOSTED engine and lifts the fork back into the ready set
+  #    (claude-tools-ryz; epic 8bm). The closed loop's return leg ───────────────
+  # §7.3 PARKED the fork (sr__raise_bfh {resolved:false} + bead blocked) and
+  # the runner moved on (§7.5). Each loop iteration — BEFORE selecting the next
+  # task, while the runner is otherwise busy on other beads — it now:
+  #   1. sr_poll_hosted_resolution: READ each parked Dossier back over the SAME
+  #      §2.1 `co_request get dossier` surface the I1 transport carries (→ the
+  #      HOSTED deployed engine when COORDINATOR_URL is set). When Brian
+  #      answered on the phone the deployed Inbox `/api/respond` proxy already
+  #      POSTed the FROZEN `item-apply` op upstream, so the Item is
+  #      answered|applied IN THE ENGINE — the runner captures that decision and
+  #      flips the S-2 record resolved:true.
+  #   2. sr_reconcile_blocked_for_human: the existing S-2 control→work step then
+  #      lifts the work-plane block (bead → open ⇒ re-enters `bd ready`).
+  # The very next next_task can re-pick it and the prompt-build splice (below)
+  # hands the captured decision to the resumed agent so it ACTS on the answer.
+  # Identical OPTIONAL/guarded/observable-not-silent posture as the §7.3 stuck
+  # block + the §8.2 la_* calls: absent libs ⇒ no-op; hosted unreachable/401/
+  # not-yet-answered ⇒ the fork stays PARKED (it must not rot AND must not
+  # falsely resume); NEVER aborts the loop (a poll/reconcile is best-effort).
+  if command -v sr_poll_hosted_resolution >/dev/null 2>&1 \
+     && command -v sr_reconcile_blocked_for_human >/dev/null 2>&1; then
+    : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
+    SR_RESUMED="$(sr_poll_hosted_resolution "${SR_BEARER:-bearer-runner-stuck}" 2>/dev/null || echo 0)"
+    SR_LIFTED="$(sr_reconcile_blocked_for_human "${SR_BEARER:-bearer-runner-stuck}" 2>/dev/null || echo 0)"
+    if [[ "${SR_RESUMED:-0}" != "0" || "${SR_LIFTED:-0}" != "0" ]]; then
+      echo "  FEEDBACK RETURN (§7.3/S-2/I4): observed ${SR_RESUMED:-0} answered fork(s) in the hosted engine; reconciled ${SR_LIFTED:-0} blocked-for-human bead(s) — a fork Brian answered on his phone is back in the ready set and will RESUME with the decision spliced in."
+    fi
+  fi
+
   TASK_JSON=$(next_task)
   TASK_ID=$(echo "$TASK_JSON" | jq -r '.[0].id // empty')
 
@@ -827,6 +858,34 @@ PROMPT_DELIM
     PROMPT="$PROMPT
 
 $PROMPT_EXTRA"
+  fi
+
+  # ── I4 RESUME — a fork Brian answered re-enters here; splice the decision ──
+  # This task was PARKED at a STUCK_NEEDS_HUMAN fork, Brian answered it on his
+  # phone, the loop-top poll observed it in the hosted engine and the S-2
+  # reconcile lifted the block — so it is back in `bd ready` and we are about
+  # to re-dispatch it. PREPEND the captured human decision to the worker prompt
+  # (highest salience — first thing the agent reads) so it ACTS on the answer
+  # instead of re-hitting the same fork: this is precisely "Brian's phone
+  # answer demonstrably changes what the parked agent does next" (the I4
+  # acceptance). Also mirror the decision into the bead notes (beside the
+  # agent's own structured ask) so the resume is durable + auditable outside
+  # the prompt. One-shot: consumed after splicing so a later unrelated pickup
+  # never re-injects a stale decision. Guarded-optional like every sr_* call.
+  if command -v sr_resume_answer >/dev/null 2>&1 \
+     && sr_resume_answer "$TASK_ID" >/dev/null 2>&1; then
+    : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
+    SR_DIRECTIVE="$(sr_format_resume_directive "$TASK_ID" 2>/dev/null || true)"
+    if [[ -n "$SR_DIRECTIVE" ]]; then
+      PROMPT="$SR_DIRECTIVE
+
+$PROMPT"
+      if command -v bd >/dev/null 2>&1; then
+        bd update "$TASK_ID" --append-notes="HUMAN_DECISION (I4 resume — Brian answered the dossier on his phone): $(printf '%s' "$SR_DIRECTIVE" | tr '\n' ' ' | cut -c1-700)" >/dev/null 2>&1 || true
+      fi
+      echo "  RESUME (§7.3/S-2/I4): $TASK_TITLE — Brian's phone answer spliced into the worker prompt; the agent now acts on the human's decision, not the fork."
+    fi
+    sr_consume_resume_answer "$TASK_ID" 2>/dev/null || true
   fi
 
   # ── Run claude session ───────────────────────────────────────────────────
