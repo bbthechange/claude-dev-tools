@@ -102,6 +102,25 @@ fi
 # Coordinator owns desired-state, never the LA (§1.1).
 PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"
 
+# ── §4.2 actual-state heartbeat → per-workspace registration (I2; epic 8bm) ──
+# The runner is the §1.1 caller of job-3 (heartbeat-actual-state). hb() emits
+# one §4.2 actual line keyed by PROJECT_REF and, when a hosted COORDINATOR_URL
+# is configured, immediately drains the durable §1.1 outbox so the runner
+# REGISTERS + stays live (last_heartbeat_at within §0.5 STALE_AFTER) in the
+# HOSTED engine under its OWN project_ref — N runners, one hosted authority.
+# Identical OPTIONAL/guarded posture to every la_* call: absent lib ⇒ no-op;
+# no COORDINATOR_URL ⇒ la_outbox_drain is undefined and the line only ever
+# appends to the local durable queue (standalone/oracle/conformance runs
+# byte-unaffected — drained on a later hosted reconnect, the §2.4 contract).
+# NEVER aborts the loop (mirrors la_report_terminal_reason's last-write rule).
+hb() {
+  command -v la_report_heartbeat >/dev/null 2>&1 || return 0
+  la_report_heartbeat "$1" "${2:-}" || true
+  if declare -F la_outbox_drain >/dev/null 2>&1; then
+    la_outbox_drain "${COORDINATOR_TOKEN:-}" >/dev/null 2>&1 || true
+  fi
+}
+
 # ── §6.1 lease ↔ beads-status binding (T4.2, claude-tools-am8) ────────────────
 # AD2.1: a GLOBAL EXCLUSIVE lease is acquired BEFORE `bd update
 # --status=in_progress`; its release pairs that (lease release/expiry ⇒ the
@@ -223,6 +242,12 @@ cleanup() {
     lease_release_seam "$CURRENT_TASK_ID"   # §6.1 release⇒open (BC-35 interrupt)
   fi
   runner_cleanup
+  # §4.2 `stopping`: honest final actual on the interrupt path too (last
+  # durable line; drained on the next hosted reconnect — §2.4 — so a killed
+  # runner reads back `stale`, never a stale `live` lie).
+  if command -v la_report_heartbeat >/dev/null 2>&1; then
+    la_report_heartbeat stopping "${CURRENT_TASK_ID:-}" || true
+  fi
   # §8.2 terminal-reason re-home: last durable control-plane write BEFORE the
   # process exits — exit 1 = SIGINT/SIGTERM (BC-21 table / BC-35).
   if command -v la_report_terminal_reason >/dev/null 2>&1; then
@@ -600,6 +625,11 @@ notify_user() {
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 
+# §4.2 `starting`: the very first registration line — a freshly (re)launched
+# runner appears in the hosted engine under its project_ref before it claims
+# any work (the I2 "appears as a live runner via the deployed read path").
+hb starting
+
 while true; do
   # Check for graceful stop signal
   if [[ -f "$STOP_FILE" ]]; then
@@ -632,6 +662,7 @@ while true; do
   if [[ -z "$TASK_ID" ]]; then
     echo ""
     echo "No more ready tasks."
+    hb idle   # §4.2: last actual before the clean drain — honestly idle, not gone
     break
   fi
 
@@ -689,6 +720,7 @@ while true; do
 
   CURRENT_TASK_ID="$TASK_ID"
   bd update "$TASK_ID" --status=in_progress 2>/dev/null || true
+  hb running "$TASK_ID"   # §4.2: actual=running + current_task_ref, re-registers liveness
 
   # ── Build prompt ─────────────────────────────────────────────────────────
 
@@ -1074,6 +1106,13 @@ print_incidents_summary
 # AUTH=3 (the whole point of the re-home, S-7).
 if command -v la_report_terminal_reason >/dev/null 2>&1; then
   la_report_terminal_reason CLEAN 0 "" "${PROJECT_REF:-}" || true
+fi
+# §4.2 `stopping`: the honest final actual — last_heartbeat_at freezes here, so
+# the hosted read path derives `stale` once §0.5 STALE_AFTER elapses (C6: a
+# stored `live` would lie the instant the runner exits). Emitted into the same
+# queue the drain below flushes; do NOT drain here (the I1 drain owns that).
+if command -v la_report_heartbeat >/dev/null 2>&1; then
+  la_report_heartbeat stopping "" || true
 fi
 # I1 (claude-tools-txj): §2.4 drain-on-reconnect, realised at clean shutdown —
 # push the machine-local §1.1 UP queue (capacity reports, …) to the DEPLOYED

@@ -225,6 +225,40 @@ la_report_capacity() {
      >> "$(la__outbox)" 2>/dev/null || true
 }
 
+# la_report_heartbeat <actual> [current_task_ref]  — §1.1 item-3 / §4.2 UP
+# actual-state+liveness heartbeat (the I2 per-workspace registration line;
+# epic claude-tools-8bm). The Coordinator never reads runner liveness from
+# anywhere — it ingests what the Local Agent reports UP, keyed by the §4.2
+# controllable unit `project_ref` (PROJECT_REF, distinct per workspace: this
+# is what makes "coordinate across workspaces" = N runners, one hosted
+# authority). The drainer (la_outbox_drain) maps report=="heartbeat" to the
+# hosted `heartbeat` op (reconcile.js co__heartbeat, differentially proven ≡
+# the bash oracle by CF.11); `observed_at` IS last_heartbeat_at, THE S-1
+# liveness datum read back as `live` iff now − it ≤ STALE_AFTER. Same
+# OPTIONAL/guarded posture as la_report_capacity — every call site in the
+# runner is `command -v la_report_heartbeat`-gated; with no hosted
+# COORDINATOR_URL the line only ever appends to the durable local outbox
+# (byte-unaffected standalone/oracle/conformance runs), exactly as the §1.1
+# queue did before I1. `actual` MUST be in the §4.2 enum
+# {starting,running,idle,stopping,stopped,crashed}; the hosted co__heartbeat
+# rejects anything else (we never best-effort-coerce — pass it verbatim).
+la_report_heartbeat() {
+  local actual="$1" cur="${2:-}" ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  jq -cn \
+     --argjson sv 1 \
+     --arg pr  "$(la_principal)" \
+     --arg rid "$(la_runner_id)" \
+     --arg prj "${PROJECT_REF:-$(basename "$(pwd)" 2>/dev/null)}" \
+     --arg act "$actual" \
+     --arg cur "$cur" \
+     --arg at  "$ts" \
+     '{report:"heartbeat",schema_version:$sv,principal:$pr,runner_id:$rid,
+       project_ref:$prj,actual:$act,observed_at:$at}
+      + (if $cur=="" then {} else {current_task_ref:$cur} end)' \
+     >> "$(la__outbox)" 2>/dev/null || true
+}
+
 # ── §8.2 terminal-reason re-home ─────────────────────────────────────────────
 # la_report_terminal_reason <terminal_class> <bc21_exit> <task_ref> <project_ref>
 #

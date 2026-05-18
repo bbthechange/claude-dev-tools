@@ -45,7 +45,11 @@ PERMISSION_FLAGS=(
     "WebFetch" "WebSearch"  # Cloudflare Workers/DO docs (T4/T5); O-1 probe research pattern
 )
 
-EXTRA_CLAUDE_FLAGS=(--no-chrome)
+# --add-dir: epic 8bm I1/I2 wire & verify a runner in the SECOND workspace
+# (/Users/brianbutler/code/thirsty). Without this the headless agent's file
+# tools are trusted only within claude-tools and cannot configure thirsty —
+# the I2 task would silently stall. Scoped to the one real workspace 2.
+EXTRA_CLAUDE_FLAGS=(--no-chrome --add-dir /Users/brianbutler/code/thirsty)
 
 # ── Watchdog grace (BC-22) ───────────────────────────────────────────────────
 # Overhaul tasks legitimately run quiet for a while (harness spawning claude -p,
