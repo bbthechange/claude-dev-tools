@@ -74,7 +74,17 @@ case "$cmd" in
         *) shift;;
       esac
     done ;;
+  # The human-needed signal in this bd build is the `human` LABEL set via
+  # `bd label add <id> human` (NOT `bd human <id>`, which no-ops — the I5
+  # rehearsal divergence). Track BOTH forms into $BD_HUMAN so the assertions
+  # observe "the bead was marked human-needed" regardless of mechanism.
   human)  printf '%s\n' "${1:-}" >> "${BD_HUMAN:-/dev/null}" ;;
+  label)
+    sub="${1:-}"; shift || true
+    if [[ "$sub" == "add" ]]; then
+      lid="${1:-}"; shift || true
+      for a in "$@"; do [[ "$a" == "human" ]] && printf '%s\n' "$lid" >> "${BD_HUMAN:-/dev/null}"; done
+    fi ;;
   show)
     id="${1:-}"; s="open"; [[ -f "${BDST}/$id" ]] && s="$(cat "${BDST}/$id")"
     jq -cn --arg id "$id" --arg s "$s" '[{id:$id,status:$s}]' ;;

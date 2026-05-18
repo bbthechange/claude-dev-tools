@@ -187,7 +187,14 @@ sr_drive_bead_blocked() {
   [[ -n "$tref" ]] || return 1
   command -v bd >/dev/null 2>&1 || return 0
   bd update "$tref" --status=blocked >/dev/null 2>&1 || true
-  bd human "$tref"                   >/dev/null 2>&1 || true
+  # `bd human <id>` is NOT a valid invocation in this bd build — `human` is a
+  # command GROUP (human list/respond/dismiss) and a human-needed bead is one
+  # carrying the `human` LABEL (`bd human list` reads the label; the wwl §7.2
+  # detect_worker_stuck_primary keys on status=blocked + the `human` label).
+  # The literal `bd human "$tref"` silently no-ops (prints help, rc 0) so the
+  # label was NEVER set by the runner — a real deploy-divergence surfaced by
+  # the I5 rehearsal. Set the label directly (the verified mechanism).
+  bd label add "$tref" human >/dev/null 2>&1 || true
   return 0
 }
 
@@ -360,8 +367,11 @@ sr_reconcile_blocked_for_human() {
       rm -f "$f" 2>/dev/null || true
     else
       # Still blocked-for-human ⇒ re-assert the work-plane truth idempotently.
+      # `bd label add … human` (NOT `bd human <id>`, which no-ops in this bd
+      # build) — the reconcile must be able to RESTORE a lost/clobbered `human`
+      # label, the datum the wwl §7.2 PRIMARY detector + `bd human list` read.
       bd update "$tref" --status=blocked >/dev/null 2>&1 || true
-      bd human "$tref"                   >/dev/null 2>&1 || true
+      bd label add "$tref" human         >/dev/null 2>&1 || true
     fi
     n=$((n+1))
   done

@@ -562,13 +562,69 @@ dg_from_worker_ask() {
   printf '%s' "$ask" | jq -e 'type=="object"' >/dev/null 2>&1 || {
     echo "dossier-gen: reject — worker structured ask not a JSON object (§7.2)" >&2; return 2; }
   [[ -n "$did" && -n "$bref" ]] || { echo "dossier-gen: reject — need <dossier_id> <bead_ref> (§7.2/§7.4: id is the dedup'd one — T5.5)" >&2; return 2; }
+  # ── §5.1 diagrams[] for the §7.2 worker-stuck dossier (claude-tools-8bm I5):
+  # vkc made diagrams[].content a RENDERABLE Mermaid format and built the
+  # Inbox SVG renderer, but NOTHING on the §7.2 worker-stuck generation path
+  # ever PRODUCED a diagram — sr_worker_ask carries no `diagrams`, dg__author
+  # passes `source.diagrams // []` straight through, so every real stuck
+  # dossier reached the phone with diagrams:[] and the renderer was dead code
+  # (a verified-but-disconnected gap — exactly epic 8bm's reason to exist). A
+  # decision fork IS structural (§5.1/AD7: [] is ONLY the genuinely-
+  # non-structural case — a pick-one human fork is not that), so synthesize a
+  # real Mermaid `flowchart` of the fork: the ask → a decision node → one
+  # branch per option → that option's blast-radius leaf, the recommended
+  # option visually marked. Labels are sanitized to a Mermaid-safe ASCII
+  # subset and bracket-quoted so the strict-mode renderer parses them; the
+  # synthesized content begins with `flowchart` so it passes dg__is_mermaid
+  # and the frozen §5.1 v2 gate. Generated here (not in dg__author) so the
+  # default deterministic author keeps passing source.diagrams through and a
+  # DG_AUTHOR_CMD model swap still gets the same structural input.
+  local diagrams_json
+  diagrams_json=$(printf '%s' "$ask" | jq -c '
+    # Mermaid-safe label: collapse to a printable ASCII subset, drop the
+    # characters Mermaid treats specially inside node text, clamp length.
+    def mm: ( . // "" ) | tostring
+            | gsub("[\\r\\n]+"; " ")
+            | gsub("[^A-Za-z0-9 ,.:;/_+%()=&@#-]"; " ")
+            | gsub(" +"; " ")
+            | gsub("^ +| +$"; "")
+            | .[0:90]
+            | if . == "" then "(unspecified)" else . end;
+    ( .options // [] ) as $opts
+    | ( .recommendation.value // "" ) as $rec
+    | if ($opts | length) == 0 then []
+      else
+        [ "flowchart TD",
+          "  A[\"" + ((.ask // .tldr // "Decision required") | mm) + "\"]",
+          "  D{\"Human decides\"}",
+          "  A --> D"
+        ]
+        + ( [ $opts | to_entries[]
+              | .key as $i | .value as $o
+              | ( "O" + ($i|tostring) ) as $on
+              | ( "B" + ($i|tostring) ) as $bn
+              | ( if ($o.option_id // "") == $rec and $rec != ""
+                  then "  D ==>|recommended| " + $on + "([\"" + (($o.label // $o.option_id // "Option") | mm) + "\"])"
+                  else "  D -->|option| "      + $on + "([\"" + (($o.label // $o.option_id // "Option") | mm) + "\"])"
+                  end ),
+                "  " + $on + " --> " + $bn + "[\"" + (($o.blast_radius // "Blast radius unspecified") | mm) + "\"]"
+              ] | flatten )
+        | [ { caption: "Decision fork — pick one option (§7.2 worker-stuck)",
+              content: join("\n") } ]
+      end' 2>/dev/null) || diagrams_json="[]"
+  # Harden: only feed VALID JSON to the --argjson below. Any jq hiccup ⇒ the
+  # safe genuinely-non-structural [] (the §5.1 gate accepts []; the fork still
+  # routes — sr_route_stuck already drove the bead BEFORE generation, so a
+  # diagram-synthesis miss never rots the fork).
+  printf '%s' "$diagrams_json" | jq -e 'type=="array"' >/dev/null 2>&1 || diagrams_json="[]"
   gi=$(printf '%s' "$ask" | jq -c \
-        --arg did "$did" --arg bref "$bref" '
+        --arg did "$did" --arg bref "$bref" --argjson diagrams "$diagrams_json" '
         { id:$did, kind:"decide", trigger:"worker_stuck",
           bead_ref:$bref, tier:"blocking", timer_fire_at:null,
           source:{ tldr:(.tldr // .ask // "Worker reached a fork it must not resolve."),
                    ask:(.ask // .tldr // "Pick how to proceed."),
                    options:(.options // []),
+                   diagrams:$diagrams,
                    recommendation:(.recommendation // null),
                    reversible:(.reversible // "Unspecified by the worker ask (§7.2).") },
           items:[ { id:($did + "-d1"),

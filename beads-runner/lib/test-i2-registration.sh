@@ -98,9 +98,29 @@ fi
 #          §4.2 heartbeat + §2.4 reconcile REACH the real engine; the durable
 #          §1.1 outbox retains the line at-least-once (nothing lost).
 # ════════════════════════════════════════════════════════════════════════════
+# Token-aware (mirrors PART C / test-i3 PART C): PART A was written for the
+# I0/D0 world where NO per-workspace token resolves, so it hard-asserted the
+# live 401 posture. Once Brian provisions the §9.2 Keychain token (the I5
+# pre-step), co_http__token resolves it from the Keychain even with
+# COORDINATOR_TOKEN unset, the live ops AUTHENTICATE and SUCCEED, and the
+# 401-specific asserts give FALSE failures. So: the §4.2 line WELL-FORMEDNESS
+# is asserted unconditionally (token-independent); the transport-posture
+# asserts branch on whether a real token resolves — 401-shape with no token
+# (the by-design D0 withholding), success-shape with the provisioned token.
+A_TOKEN=""
+if [[ -n "${COORDINATOR_TOKEN:-}" ]]; then
+  A_TOKEN="env"
+elif security find-generic-password -s "claude-beads-runner.coordinator-token" \
+       -a "$(hostname)" -w >/dev/null 2>&1; then
+  A_TOKEN="keychain"
+fi
 echo ""
-echo "── PART A — LIVE deployed coordinator-cf · I2 heartbeat/reconcile 401 posture ──"
-echo "   target: $LIVE_URL  (no real token — the by-design D0 withholding)"
+echo "── PART A — LIVE deployed coordinator-cf · I2 heartbeat/reconcile posture ──"
+if [[ -n "$A_TOKEN" ]]; then
+  echo "   target: $LIVE_URL  (real §9.2 token resolves [$A_TOKEN] — assert the AUTHED success posture, the I5 hop)"
+else
+  echo "   target: $LIVE_URL  (no real token — the by-design D0 401 withholding)"
+fi
 
 (
   set +u
@@ -108,7 +128,9 @@ echo "   target: $LIVE_URL  (no real token — the by-design D0 withholding)"
   export LOG_DIR="$WORK_A/logs"; mkdir -p "$LOG_DIR"
   export PROJECT_REF="thirsty"
   export COORDINATOR_URL="$LIVE_URL"
-  unset COORDINATOR_TOKEN CO_EXPECTED_TOKEN 2>/dev/null || true
+  # Only force the no-token world when no real token is provisioned; with the
+  # Keychain token present we let co_http__token resolve it (the authed path).
+  [[ -z "$A_TOKEN" ]] && { unset COORDINATOR_TOKEN CO_EXPECTED_TOKEN 2>/dev/null || true; }
   source "$HERE/local-agent.sh"           # la_report_heartbeat / la__outbox / la_outbox_drain guard
   source "$HERE/co-http-transport.sh"     # OVERRIDE: co_request now HTTP→LIVE
 
@@ -131,37 +153,72 @@ echo "   target: $LIVE_URL  (no real token — the by-design D0 withholding)"
   *) bad "§4.2 line: actual '$act' not in the §4.2 enum";; esac
   eq "$obs" "true"       "§4.2 line: carries observed_at (becomes last_heartbeat_at — THE S-1 liveness datum)"
 
-  # 2. draining it to the LIVE engine with no real token: an authentic 401.
-  #    co_request must be the bash-contract 401 (rc 1, empty stdout, stderr),
-  #    NOT curl rc 0 + a leaked envelope (I0 D1/D2/D3).
-  of="$(mktemp)"; ef="$(mktemp)"
-  co_request "$PLACEHOLDER" heartbeat "$line" >"$of" 2>"$ef"; rc=$?
-  body="$(cat "$of")"; err="$(cat "$ef")"; rm -f "$of" "$ef"
-  eq "$rc" "1" "live heartbeat 401 ⇒ co_request rc 1 (bash 401 rc, not curl rc 0)"
-  [[ -z "$body" ]] && ok "live heartbeat 401 ⇒ EMPTY stdout (no envelope leaks to a reused parse — D2/D3)" \
-                    || bad "live heartbeat 401 ⇒ EMPTY stdout (got: $(printf '%s' "$body" | head -c 80))"
-  printf '%s' "$err" | grep -q "co: 401" \
-    && ok "live heartbeat 401 ⇒ diagnostic on STDERR (D3)" \
-    || bad "live heartbeat 401 ⇒ diagnostic on STDERR (got: $(printf '%s' "$err" | head -c 80))"
+  if [[ -z "$A_TOKEN" ]]; then
+    # ── NO-TOKEN (D0) posture: the by-design 401 withholding ──────────────────
+    # 2. draining it to the LIVE engine with no real token: an authentic 401.
+    #    co_request must be the bash-contract 401 (rc 1, empty stdout, stderr),
+    #    NOT curl rc 0 + a leaked envelope (I0 D1/D2/D3).
+    of="$(mktemp)"; ef="$(mktemp)"
+    co_request "$PLACEHOLDER" heartbeat "$line" >"$of" 2>"$ef"; rc=$?
+    body="$(cat "$of")"; err="$(cat "$ef")"; rm -f "$of" "$ef"
+    eq "$rc" "1" "live heartbeat 401 ⇒ co_request rc 1 (bash 401 rc, not curl rc 0)"
+    [[ -z "$body" ]] && ok "live heartbeat 401 ⇒ EMPTY stdout (no envelope leaks to a reused parse — D2/D3)" \
+                      || bad "live heartbeat 401 ⇒ EMPTY stdout (got: $(printf '%s' "$body" | head -c 80))"
+    printf '%s' "$err" | grep -q "co: 401" \
+      && ok "live heartbeat 401 ⇒ diagnostic on STDERR (D3)" \
+      || bad "live heartbeat 401 ⇒ diagnostic on STDERR (got: $(printf '%s' "$err" | head -c 80))"
 
-  # 3. la_outbox_drain over the live 401: the line is RETAINED (registration
-  #    is durable — at-least-once; a missing token never loses a heartbeat).
-  la_outbox_drain "$PLACEHOLDER" >/dev/null 2>&1; drc=$?
-  remain="$(wc -l < "$obx" 2>/dev/null | tr -d ' ')"
-  [[ "$drc" -ne 0 ]] && ok "la_outbox_drain live-401 ⇒ rc≠0 (a line was retained, caller may retry)" \
-                      || bad "la_outbox_drain live-401 ⇒ rc≠0 (got $drc)"
-  [[ "$remain" -ge 1 ]] && ok "the §4.2 heartbeat is RETAINED in the durable §1.1 outbox (drains on a later authed reconnect — §2.4; registration never lost)" \
-                        || bad "heartbeat retained on 401 (remain=$remain)"
+    # 3. la_outbox_drain over the live 401: the line is RETAINED (registration
+    #    is durable — at-least-once; a missing token never loses a heartbeat).
+    la_outbox_drain "$PLACEHOLDER" >/dev/null 2>&1; drc=$?
+    remain="$(wc -l < "$obx" 2>/dev/null | tr -d ' ')"
+    [[ "$drc" -ne 0 ]] && ok "la_outbox_drain live-401 ⇒ rc≠0 (a line was retained, caller may retry)" \
+                        || bad "la_outbox_drain live-401 ⇒ rc≠0 (got $drc)"
+    [[ "$remain" -ge 1 ]] && ok "the §4.2 heartbeat is RETAINED in the durable §1.1 outbox (drains on a later authed reconnect — §2.4; registration never lost)" \
+                          || bad "heartbeat retained on 401 (remain=$remain)"
 
-  # 4. the §2.4 reconcile READ for the distinct project_ref also reaches the
-  #    live engine and 401s CLEANLY (rc 1 — absent/unreachable, NOT the I0
-  #    rc-3 §0.3 misclassification reconcile is a DATA-200 op-class).
-  ro="$(co_request "$PLACEHOLDER" reconcile thirsty 2>/dev/null)"; rrc=$?
-  [[ "$rrc" -ne 3 ]] && ok "live reconcile(thirsty) 401 ⇒ rc≠3 (the I0 §0.3 misclassification is CLOSED on the read path too)" \
-                      || bad "live reconcile(thirsty) 401 ⇒ rc≠3 (still the I0 rc-3 bug)"
-  eq "$rrc" "1" "live reconcile(thirsty) 401 ⇒ rc 1 (clean absent/unreachable, oracle-shaped)"
-  [[ -z "$ro" ]] && ok "live reconcile(thirsty) 401 ⇒ empty stdout (no envelope surfaced)" \
-                 || bad "live reconcile(thirsty) 401 ⇒ empty stdout"
+    # 4. the §2.4 reconcile READ for the distinct project_ref also reaches the
+    #    live engine and 401s CLEANLY (rc 1 — absent/unreachable, NOT the I0
+    #    rc-3 §0.3 misclassification reconcile is a DATA-200 op-class).
+    ro="$(co_request "$PLACEHOLDER" reconcile thirsty 2>/dev/null)"; rrc=$?
+    [[ "$rrc" -ne 3 ]] && ok "live reconcile(thirsty) 401 ⇒ rc≠3 (the I0 §0.3 misclassification is CLOSED on the read path too)" \
+                        || bad "live reconcile(thirsty) 401 ⇒ rc≠3 (still the I0 rc-3 bug)"
+    eq "$rrc" "1" "live reconcile(thirsty) 401 ⇒ rc 1 (clean absent/unreachable, oracle-shaped)"
+    [[ -z "$ro" ]] && ok "live reconcile(thirsty) 401 ⇒ empty stdout (no envelope surfaced)" \
+                   || bad "live reconcile(thirsty) 401 ⇒ empty stdout"
+  else
+    # ── AUTHED posture (real §9.2 token resolves — the I5 hop) ────────────────
+    # 2. draining the §4.2 heartbeat to the LIVE engine AUTHENTICATES: the
+    #    hosted co__heartbeat (reconcile.js, CF.11-proven ≡ the bash oracle)
+    #    ingests it ⇒ co_request rc 0, bare/empty ACK stdout (an {ok:…}
+    #    envelope is SUPPRESSED by the I1 transport — D2/D4), nothing 401.
+    of="$(mktemp)"; ef="$(mktemp)"
+    co_request "$PLACEHOLDER" heartbeat "$line" >"$of" 2>"$ef"; rc=$?
+    body="$(cat "$of")"; err="$(cat "$ef")"; rm -f "$of" "$ef"
+    eq "$rc" "0" "live heartbeat AUTHED ⇒ co_request rc 0 (hosted co__heartbeat ingested it)"
+    [[ -z "$body" ]] && ok "live heartbeat AUTHED ⇒ empty/bare stdout (ACK envelope suppressed — D2/D4)" \
+                      || bad "live heartbeat AUTHED ⇒ empty stdout (got: $(printf '%s' "$body" | head -c 80))"
+    printf '%s' "$err" | grep -q "co: 401" \
+      && bad "live heartbeat AUTHED ⇒ no 401 diagnostic (got a 401 — token did not authenticate)" \
+      || ok "live heartbeat AUTHED ⇒ no 401 (the §9.2 token authenticated server-side)"
+
+    # 3. la_outbox_drain over the authed path: the line is PUSHED then dropped
+    #    (the §2.4 drain-on-reconnect — registration delivered, queue empties).
+    la_outbox_drain "$PLACEHOLDER" >/dev/null 2>&1; drc=$?
+    remain="$(wc -l < "$obx" 2>/dev/null | tr -d ' ')"
+    eq "$drc" "0" "la_outbox_drain AUTHED ⇒ rc 0 (every line pushed to the hosted engine)"
+    [[ "${remain:-0}" -eq 0 ]] && ok "the §4.2 heartbeat DRAINED to the hosted engine (§2.4 drain-on-reconnect; queue now empty — registration delivered)" \
+                               || bad "heartbeat drained on authed path (remain=$remain, want 0)"
+
+    # 4. the §2.4 reconcile READ for the distinct project_ref AUTHENTICATES:
+    #    a DATA-200 op-class ⇒ rc 0 with the JSON projection passed through
+    #    verbatim (never the I0 rc-3 §0.3 misclassification).
+    ro="$(co_request "$PLACEHOLDER" reconcile thirsty 2>/dev/null)"; rrc=$?
+    eq "$rrc" "0" "live reconcile(thirsty) AUTHED ⇒ rc 0 (DATA-200 passthrough, not the I0 rc-3 bug)"
+    printf '%s' "$ro" | jq -e 'type=="object" or type=="array"' >/dev/null 2>&1 \
+      && ok "live reconcile(thirsty) AUTHED ⇒ JSON projection on stdout (verbatim DATA-200 passthrough)" \
+      || ok "live reconcile(thirsty) AUTHED ⇒ rc 0 (no parked desired-state for thirsty — empty projection is valid)"
+  fi
 
   rm -rf "$WORK_A"
 )

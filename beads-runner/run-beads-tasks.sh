@@ -838,8 +838,8 @@ If -- and ONLY if -- you hit a genuine fork you must NOT resolve yourself (an ir
        Options: <each option and its blast radius>
        Recommendation: <your pick> -- <why>
        Reversible: <what is / isn't reversible>"
-  3. bd human BEADS_ID
-  4. Stop. Do NOT close the issue, do NOT pick an option yourself, do NOT keep working around it -- end your turn. The runner detects this state, routes the ask to the human, and resumes the task once they decide. For a real human-decision fork this IS the correct, expected outcome -- not a failure.
+  3. bd label add BEADS_ID human
+  4. Stop. Do NOT close the issue, do NOT pick an option yourself, do NOT keep working around it -- end your turn. The runner detects this state (status=blocked + the 'human' label), routes the ask to the human, and resumes the task once they decide. For a real human-decision fork this IS the correct, expected outcome -- not a failure.
 
 Follow the instructions in the task description above exactly. The description contains the full workflow for this task type.
 

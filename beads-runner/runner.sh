@@ -249,7 +249,7 @@ If you reach a genuine fork you must NOT resolve yourself -- an irreversible or 
   2. Write the structured ask into the bead:
        bd update BEADS_ID --append-notes="<the ask>"   (or --design="...")
      It MUST clearly contain, labelled: TL;DR; the ask (the single decision needed); the options; your recommendation and why; and how reversible each option is.
-  3. bd human BEADS_ID
+  3. bd label add BEADS_ID human
   4. Exit with status code BEADS_STUCK_EXIT and do NOT close the issue.
 This is the only correct way to surface a human decision.
 
@@ -291,7 +291,10 @@ _drive_blocked_for_human() {
   local tref="$1" rec
   # Work-plane projection — best-effort + idempotent (bd is fail-open here).
   safe_capture BD_UNAVAILABLE "" -- bd update "$tref" --status=blocked >/dev/null
-  safe_capture BD_UNAVAILABLE "" -- bd human "$tref" >/dev/null
+  # `bd human <id>` no-ops in this bd build (human = command group; the
+  # human-needed signal is the `human` LABEL — `bd human list` / the wwl §7.2
+  # PRIMARY detector read the label). Set it directly (I5-rehearsal divergence).
+  safe_capture BD_UNAVAILABLE "" -- bd label add "$tref" human >/dev/null
   # Control-plane: a contract-shaped (§4.1) worker_stuck Dossier record keyed
   # on task_ref (§0.4 dossier-level double-trigger dedup key). The Coordinator
   # owns the create-once dedup + the control→work reconcile (S-2) — stubbed
