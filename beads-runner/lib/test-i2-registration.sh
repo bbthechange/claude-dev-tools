@@ -338,6 +338,12 @@ if [[ -z "$PROD_TOKEN" ]]; then
   note "EXACT deployed-Board read front. The live run is a zero-code-change"
   note "credential flip consolidated SOLELY into the I5 session."
 else
+  # PART-C-local scratch: PART C is independent of PART B, so it must NOT
+  # reach for PART B's $STATE_DIR — that is assigned only inside the
+  # wrangler-present branch (line ~183). Under the file's `set -u`, the I5
+  # hop on a wrangler-less host (real token, no local engine) would abort
+  # with `STATE_DIR: unbound` BEFORE the RESULT line. Own temp file ⇒ safe.
+  CTXT="$(mktemp)"
   ( set +u
     W="$(mktemp -d)"; export LOG_DIR="$W/logs"; mkdir -p "$W/logs"
     export COORDINATOR_URL="$LIVE_URL"
@@ -352,12 +358,13 @@ else
     live="$(printf '%s' "$rec" | jq -r '.liveness' 2>/dev/null)"
     echo "CLIVE drain=$dr rec=$rr live=$live"
     rm -rf "$W"
-  ) > "$STATE_DIR/c.txt" 2>/dev/null || true
-  if grep -q "CLIVE drain=0 rec=0 live=live" "$STATE_DIR/c.txt" 2>/dev/null; then
+  ) > "$CTXT" 2>/dev/null || true
+  if grep -q "CLIVE drain=0 rec=0 live=live" "$CTXT" 2>/dev/null; then
     ok "LIVE deployed engine: thirsty heartbeat REGISTERED + reconcile ⇒ liveness=live (the I5 hop, token present)"
   else
-    bad "LIVE deployed registration ($(cat "$STATE_DIR/c.txt" 2>/dev/null | tr -d '\n' | head -c 120))"
+    bad "LIVE deployed registration ($(cat "$CTXT" 2>/dev/null | tr -d '\n' | head -c 120))"
   fi
+  rm -f "$CTXT" 2>/dev/null || true
 fi
 
 echo ""

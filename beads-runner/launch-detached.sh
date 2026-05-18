@@ -99,8 +99,11 @@ echo "launch-detached: log       = $LOG"
 # runner so the runner process itself is the pid we track (no wrapper layer).
 (
   cd "$WORKSPACE_DIR" || exit 0
-  nohup bash -c '
-    echo "$$" > "'"$PIDFILE"'"
+  # PIDFILE crosses into the bootstrap via the ENVIRONMENT, not string-spliced
+  # into the single-quoted body — a workspace path containing a quote/`$(`
+  # then stays inert data, never reparsed by the inner shell.
+  DETACHED_PIDFILE="$PIDFILE" nohup bash -c '
+    echo "$$" > "$DETACHED_PIDFILE"
     exec "$@"
   ' _ "${RUNNER[@]}" "$@" >"$LOG" 2>&1 </dev/null &
   disown 2>/dev/null || true
