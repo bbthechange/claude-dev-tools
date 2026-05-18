@@ -36,6 +36,17 @@ PERMISSION_FLAGS=(
     "Bash(curl:*)" "Bash(python:*)" "Bash(python3:*)"
 )
 EXTRA_CLAUDE_FLAGS=(--no-chrome)
+# §7.6 guardrail (AD3.5; research Q3-bonus/Q5): workers run with the three
+# interactive tools REMOVED from the advertised set — closes the EnterPlanMode
+# silent-no-op temptation and the AskUserQuestion/ExitPlanMode soft-fail at the
+# source. Kept SEPARATE from EXTRA_CLAUDE_FLAGS (which a project .beads/
+# runner.sh overrides wholesale, e.g. to add --add-dir) so the frozen-contract
+# guardrail survives project config. The instructed §7.2 PRIMARY path (prompt
+# below) is STILL required — a bare prohibition is empirically insufficient
+# (research Q5); the guardrail removes the tool, the prompt supplies the
+# positive deliberate alternative. Keep --output-format stream-json (set on the
+# claude invocation): `text` hides permission_denials[] the §7.2 BACKSTOP needs.
+GUARDRAIL_FLAGS=(--disallowedTools AskUserQuestion EnterPlanMode ExitPlanMode)
 PROMPT_EXTRA=""
 MAX_RETRIES=${MAX_RETRIES:-2}
 MAX_CONSECUTIVE_FAILURES=${MAX_CONSECUTIVE_FAILURES:-3}
@@ -43,6 +54,7 @@ DEFAULT_MODEL=${DEFAULT_MODEL:-opus[1m]}  # [1m] = 1M context variant; auto-trac
 USAGE_THRESHOLD=${USAGE_THRESHOLD:-70}       # pause new tasks above this % (0 = disabled)
 USAGE_SLEEP_SECONDS=${USAGE_SLEEP_SECONDS:-1800} # sleep duration when over threshold (30 min)
 USAGE_CACHE_SECONDS=${USAGE_CACHE_SECONDS:-300}  # cache usage API response (avoid hammering per-loop)
+export WORKER_STUCK_EXIT=${WORKER_STUCK_EXIT:-7} # §7.2/§8.1 worker deliberate-stuck sentinel exit (≠ BC-21 0–4; INTERFACE.md v1 constants). Exported: a stuck-aware worker wrapper reads it; the §7.2 detection below keys on it.
 IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}                # seconds of stream silence before watchdog kills (env-overridable)
 LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-14}     # rotation: delete runner-logs older than this
 LOG_DIR=".beads/runner-logs"                     # post-mortem artifacts (stream-json, ps/lsof snapshots, incidents.log)
@@ -470,6 +482,43 @@ classify_failure() {
   echo "UNKNOWN_FAILURE"
 }
 
+# §7.2 PRIMARY worker-driven stuck detection (the deliberate signal).
+# Research Q4 + I3's genuine dogfood (claude-tools-3in), both confirmed: a
+# capable headless worker does NOT slip the §7.6 guardrail — it OBEYS "just
+# execute, don't ask" and, on a real human-decision fork, takes the INSTRUCTED
+# deterministic path the prompt now mandates: `bd update --status=blocked` →
+# structured ask → `bd human` → exit WORKER_STUCK_EXIT (§7.2). §7.1 mandates
+# STUCK_NEEDS_HUMAN PREEMPT both the exit-0 "agent forgot to close" masking
+# (research Q5 failure class) and UNKNOWN_FAILURE. Detection fires on EITHER —
+# zero model trust, same discipline as the §7.2 BACKSTOP stream scan:
+#   1. exit == WORKER_STUCK_EXIT — the §7.2/§8.1 canonical worker sentinel
+#      (what the conformance `stuck_primary` plan emits; what a stuck-aware
+#      worker wrapper sets). The deterministic primary.
+#   2. the bead STATE the worker deterministically produced: status=blocked
+#      AND the `human` flag (label) set — the REAL-WORLD corroborator, because
+#      a real `claude -p` ends its turn and exits 0 (it cannot set its own
+#      process exit code; research Q4 — so the bd CLI side-effects are the
+#      reliable real signal). The runner sets the bead in_progress before the
+#      run (never blocked), so blocked+human after is this run's deliberate
+#      worker act, not a stale-state false positive.
+# Echoes "worker_stuck" + returns 0 on a fire; nonzero + silent otherwise.
+# Args: $1 = task_id, $2 = claude exit code.
+detect_worker_stuck_primary() {
+  local task_id="$1" exit_code="${2:-0}" row
+  if [[ "$exit_code" == "${WORKER_STUCK_EXIT:-7}" ]]; then
+    echo "worker_stuck"; return 0
+  fi
+  command -v bd >/dev/null 2>&1 || return 1
+  row=$(bd show "$task_id" --json 2>/dev/null) || return 1
+  [[ -n "$row" ]] || return 1
+  printf '%s' "$row" | jq -e -r '
+    if (.[0].status == "blocked")
+       and (any(.[].labels[]?; . == "human")) then true else empty end' \
+    >/dev/null 2>&1 || return 1
+  echo "worker_stuck"
+  return 0
+}
+
 # Create an analysis task that blocks the failed task.
 # A fresh agent investigates the failure and creates follow-up tasks.
 # Args: $1 = task_id, $2 = task_title, $3 = failure_reason
@@ -749,6 +798,18 @@ BEADS_DESC
 
 IMPORTANT: You are running non-interactively. Do NOT use EnterPlanMode or ExitPlanMode -- there is no human to approve plans. Do NOT use AskUserQuestion -- there is no human to answer. Just execute the work directly.
 
+If -- and ONLY if -- you hit a genuine fork you must NOT resolve yourself (an irreversible product / architecture / scope decision that is the human's call to make, or a spec ambiguity where guessing would risk real damage), do NOT ask and do NOT guess a default. This is NOT for ordinary hard work and NOT a substitute for thinking a problem through -- it is only for a decision a human owns. When you hit one, take the deliberate stuck-signal path, in this exact order, then STOP:
+  1. bd update BEADS_ID --status=blocked
+  2. Write the structured ask into the bead so a human can decide from it alone:
+       bd update BEADS_ID --append-notes="STUCK_NEEDS_HUMAN
+       TL;DR: <one sentence>
+       The ask: <the precise decision needed>
+       Options: <each option and its blast radius>
+       Recommendation: <your pick> -- <why>
+       Reversible: <what is / isn't reversible>"
+  3. bd human BEADS_ID
+  4. Stop. Do NOT close the issue, do NOT pick an option yourself, do NOT keep working around it -- end your turn. The runner detects this state, routes the ask to the human, and resumes the task once they decide. For a real human-decision fork this IS the correct, expected outcome -- not a failure.
+
 Follow the instructions in the task description above exactly. The description contains the full workflow for this task type.
 
 Before closing the issue, add a brief debrief note summarizing how it went:
@@ -781,6 +842,7 @@ $PROMPT_EXTRA"
     --output-format stream-json \
     --verbose \
     --model "$TASK_MODEL" \
+    "${GUARDRAIL_FLAGS[@]+"${GUARDRAIL_FLAGS[@]}"}" \
     "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
     "${PERMISSION_FLAGS[@]+"${PERMISSION_FLAGS[@]}"}" \
     > "$STREAM_FILE" 2>&1 &
@@ -908,26 +970,57 @@ $PROMPT_EXTRA"
 
   CLASSIFICATION=$(classify_failure "$SIGNAL_FILE" "$TASK_ID" "$CLAUDE_EXIT")
 
-  # ── §7.3 STUCK_NEEDS_HUMAN — a fired backstop drives the bead (T5.5) ──────
-  # The worker slipped past the §7.6 guardrail (result.permission_denials[
-  # AskUserQuestion|ExitPlanMode] OR a "Entered plan mode." tool_result). §7.3:
-  # the backstop MUST ITSELF drive the bead to blocked-for-human and route the
-  # fork into ONE Dossier (§7.4 dossier-level dedup keyed task_ref; S-2 the
-  # Coordinator owns blocked-for-human). This is the cross-tier OUTCOME ONLY —
-  # classify_failure (§7.1) is byte-untouched and NO §7.5 breaker/retry counter
-  # is advanced (STUCK is not a failure: the runner blocks the bead and moves
-  # on — §7.5, like a blocking analysis child). The worker-driven primary
-  # (WORKER_STUCK_EXIT) is the §7.1 classification slot = T2's, deliberately
-  # NOT handled here. Guarded-optional like the §8.2 la_* calls.
+  # ── §7.1/§7.2/§7.3 STUCK_NEEDS_HUMAN — the deliberate PRIMARY *and* the
+  #    zero-trust BACKSTOP both drive ONE bead+dossier+notification (T5.5) ─────
+  # §7.2 defines TWO independent triggers for the SAME §7.3 outcome; the runner
+  # must honor BOTH or a compliant agent's genuine stuck never reaches the
+  # spine (claude-tools-wwl; the I5 prerequisite):
+  #   • PRIMARY (worker-driven, instructed — AD3.1; research Q4): I3's genuine
+  #     dogfood + research/headless-stuck-signal.md, confirmed — a capable
+  #     headless worker does NOT slip the §7.6 guardrail; it OBEYS and, on a
+  #     real human-decision fork, takes the INSTRUCTED deterministic bd path
+  #     the prompt now mandates. It then ends its turn ⇒ `claude -p` exit 0 ⇒
+  #     classify_failure = TASK_NOT_CLOSED; §7.1 mandates STUCK_NEEDS_HUMAN
+  #     PREEMPT that exit-0 "agent forgot to close" masking. Detected from the
+  #     bead state the worker deterministically produced (zero model trust).
+  #   • BACKSTOP (runner-side, zero model trust — AD3.3): the by-design RARE
+  #     slip (result.permission_denials[AskUserQuestion|ExitPlanMode] OR an
+  #     "Entered plan mode." residual), overriding the false exit-0 success.
+  # Either ⇒ the SAME §7.3 drive + §7.4 task_ref-keyed ONE Dossier + the §4.3
+  # Notification spine (sr_route_stuck → dg → do_dossier_put → no_emit). §7.1
+  # precedence: the two FLEET-FATAL classes (AUTH_FAILURE, BILLING_ERROR — "the
+  # runner is dead, only you can fix") still outrank STUCK and fall through to
+  # the dispatch; STUCK preempts every per-task class and TASK_NOT_CLOSED.
+  # classify_failure (§7.1 marker chain) is byte-untouched — this is the §7.3
+  # cross-tier OUTCOME guard, NOT a new classification arm; NO §7.5 breaker/
+  # retry counter advances (STUCK is not a failure: block the bead, move on).
+  # Guarded-optional like the §8.2 la_* calls (absent libs ⇒ runner unchanged).
   SR_STUCK_HANDLED=""
-  if command -v sr_route_stuck >/dev/null 2>&1 && command -v sr_scan_backstop >/dev/null 2>&1; then
+  SR_TRIGGER=""
+  SR_REASON=""
+  if [[ "$CLASSIFICATION" != "AUTH_FAILURE" && "$CLASSIFICATION" != "BILLING_ERROR" ]] \
+     && command -v sr_route_stuck >/dev/null 2>&1 && command -v sr_scan_backstop >/dev/null 2>&1; then
     SR_BACKSTOP="$(sr_scan_backstop "$STREAM_FILE" 2>/dev/null || true)"
-    if [[ -n "$SR_BACKSTOP" ]]; then
+    SR_PRIMARY="$(detect_worker_stuck_primary "$TASK_ID" "$CLAUDE_EXIT" 2>/dev/null || true)"
+    # Provenance: the deliberate PRIMARY is the §7.2 worker-driven signal
+    # (dossier .trigger = "worker_stuck", the genuine §7.2 fork the deployed
+    # Inbox reads); a bare slip is "backstop:<which>". If BOTH fire on the same
+    # fork the deliberate path wins provenance; §7.4 task_ref dedup collapses
+    # them to ONE dossier regardless of which trigger arrived first.
+    if [[ -n "$SR_PRIMARY" ]]; then
+      SR_TRIGGER="worker_stuck"
+      SR_REASON="PRIMARY worker-driven (§7.2 deliberate bd-signal — compliant agent)"
+    elif [[ -n "$SR_BACKSTOP" ]]; then
+      SR_TRIGGER="backstop:$SR_BACKSTOP"
+      SR_REASON="BACKSTOP fired ($SR_BACKSTOP) (§7.2 zero-trust slip)"
+    fi
+    if [[ -n "$SR_TRIGGER" ]]; then
       : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
       # §7.4: capture the dedup'd dossier id sr_route_stuck echoes (one fork ⇒
-      # ONE id; idempotent on a backstop re-trigger). stderr stays suppressed.
+      # ONE id; idempotent on a re-trigger — PRIMARY+BACKSTOP on the same fork
+      # collapse here). stderr stays suppressed.
       SR_DID="$(sr_route_stuck "${SR_BEARER:-bearer-runner-stuck}" "$TASK_ID" \
-        "backstop:$SR_BACKSTOP" "$(sr_worker_ask "$TASK_ID" 2>/dev/null || true)" \
+        "$SR_TRIGGER" "$(sr_worker_ask "$TASK_ID" 2>/dev/null || true)" \
         2>/dev/null || true)"
       # §4.3/C3 — the SINGLE Notification for that dossier MUST exist at
       # creation, BEFORE any send. I3 wires the emit here (the disconnection:
@@ -965,13 +1058,13 @@ $PROMPT_EXTRA"
       ;;
   esac
 
-  # §7.3/§7.5: a backstop-driven STUCK_NEEDS_HUMAN bypasses the normal
+  # §7.3/§7.5: a STUCK_NEEDS_HUMAN (PRIMARY or BACKSTOP) bypasses the normal
   # classification dispatch — the bead is ALREADY blocked-for-human and the
   # runner just moves on (it must NOT be reset to --status=open and is
   # breaker/retry-exempt). classify_failure (§7.1) is untouched; this is the
   # §7.3 OUTCOME guard, not a new classification arm.
   if [[ -n "$SR_STUCK_HANDLED" ]]; then
-    echo "  STUCK_NEEDS_HUMAN: $TASK_TITLE — backstop fired ($SR_BACKSTOP); bead driven to blocked-for-human (§7.3), fork ⇒ one Dossier (§7.4). Runner continues (§7.5)."
+    echo "  STUCK_NEEDS_HUMAN: $TASK_TITLE — $SR_REASON; bead driven to blocked-for-human (§7.3), fork ⇒ one Dossier (§7.4) + §4.3 Notification. Runner continues (§7.5)."
   else
   case "$CLASSIFICATION" in
     SUCCESS)

@@ -102,6 +102,41 @@ if [[ -f "$RUNNER" ]]; then
     && ok "no_emit failure is OBSERVABLE-not-silent (LOUD §-cited WARN; never blocks the §7.3 drive — C3 RESIDUAL)" \
     || bad "no_emit failure must be loud-not-silent"
   bash -n "$RUNNER" 2>/dev/null && ok "run-beads-tasks.sh parses (bash -n clean) with the I3 wiring" || bad "runner syntax with I3 wiring"
+
+  # ── claude-tools-wwl: the §7.2 PRIMARY worker-driven stuck is now wired to
+  #    the SAME dossier+notification spine (the I5 prerequisite). I3 surfaced
+  #    that sr_route_stuck+no_emit were wired ONLY on the §7.2 BACKSTOP; a
+  #    compliant agent (which, confirmed, does NOT slip) took the deliberate
+  #    bd-signal and it never reached the spine. wwl closes that. ──────────────
+  grep -q 'detect_worker_stuck_primary()' "$RUNNER" \
+    && ok "wwl: runner has a §7.2 PRIMARY detector (detect_worker_stuck_primary)" \
+    || bad "wwl: §7.2 PRIMARY detector present"
+  grep -q 'WORKER_STUCK_EXIT' "$RUNNER" \
+    && ok "wwl: §7.2 PRIMARY keys on the WORKER_STUCK_EXIT sentinel (the §8.1 constant)" \
+    || bad "wwl: WORKER_STUCK_EXIT sentinel referenced"
+  # The PRIMARY routes to the SAME spine: trigger 'worker_stuck' (so the
+  # dossier .trigger reads worker_stuck — the genuine §7.2 fork) into the same
+  # sr_route_stuck+no_emit call the backstop uses.
+  grep -q 'SR_TRIGGER="worker_stuck"' "$RUNNER" \
+    && ok "wwl: PRIMARY routes with trigger=worker_stuck into the SAME sr_route_stuck+no_emit spine" \
+    || bad "wwl: PRIMARY routes worker_stuck into the shared spine"
+  grep -q 'detect_worker_stuck_primary "\$TASK_ID" "\$CLAUDE_EXIT"' "$RUNNER" \
+    && ok "wwl: the stuck block evaluates BOTH triggers (PRIMARY detect + BACKSTOP scan)" \
+    || bad "wwl: stuck block evaluates the PRIMARY detector"
+  # §7.6 guardrail flag (the bc-38 FORWARD GATE): --disallowedTools on the
+  # claude invocation, kept separate from the project-overridable arrays.
+  grep -q 'GUARDRAIL_FLAGS=(--disallowedTools AskUserQuestion EnterPlanMode ExitPlanMode)' "$RUNNER" \
+    && ok "wwl/§7.6: GUARDRAIL_FLAGS removes the 3 interactive tools (defense-in-depth behind the prompt)" \
+    || bad "wwl/§7.6: --disallowedTools guardrail present"
+  # §7.2 PRIMARY positive path in the worker prompt (research Q5: a bare
+  # prohibition is insufficient — it must be paired with the deliberate path).
+  grep -q 'take the deliberate stuck-signal path' "$RUNNER" \
+    && ok "wwl/§7.2: the worker prompt INSTRUCTS the deliberate stuck path (not just the bare prohibition)" \
+    || bad "wwl/§7.2: prompt instructs the deliberate primary path"
+  # §7.1 precedence: the two FLEET-FATAL classes still outrank STUCK.
+  grep -q '"\$CLASSIFICATION" != "AUTH_FAILURE" && "\$CLASSIFICATION" != "BILLING_ERROR"' "$RUNNER" \
+    && ok "wwl/§7.1: AUTH_FAILURE/BILLING_ERROR still outrank STUCK (frozen precedence honored)" \
+    || bad "wwl/§7.1: fleet-fatal precedence guard present"
 else
   bad "run-beads-tasks.sh missing"
 fi
@@ -157,10 +192,10 @@ if [[ "${#GSTREAMS[@]}" -ge 1 ]]; then
   else
     note "No genuine backstop slip across the genuine runs — EXPECTED with current Opus + the standard prompt (capable models obey 'just execute, don't ask')."
     note "I3's deliverable (the §4.3 emit wiring) is proven against the LIVE DEPLOYED engine by PART 0/A/B/C below; the genuine FULLY-UNMOCKED human-on-phone"
-    note "run is the epic's I5-consolidated sole gate (batching directive). FOLLOW-UP for I5/Brian: run-beads-tasks.sh wires sr_route_stuck+no_emit ONLY on"
-    note "the §7.2 BACKSTOP; the PRIMARY worker-driven stuck (the deliberate bd-signal the research says capable models should be INSTRUCTED to emit) is"
-    note "'T2's §7.1 classification slot, deliberately NOT handled here' — so a compliant agent's genuine stuck does NOT yet reach the dossier spine. That"
-    note "PRIMARY-path wiring (or a prompt that instructs the deliberate signal) is the real lever for a deterministic genuine end-to-end at I5."
+    note "run is the epic's I5-consolidated sole gate (batching directive). RESOLVED (claude-tools-wwl): the §7.2 PRIMARY worker-driven stuck (the"
+    note "deliberate bd-signal capable models are now INSTRUCTED to emit, since — confirmed — they do NOT slip the backstop) is wired to the SAME"
+    note "sr_route_stuck+no_emit spine as the BACKSTOP (PART 0 wwl asserts the detector/guardrail/prompt; the conformance bc10-stuck-slot + bc-38"
+    note "§7.6 forward gates flip GATE-MET). A compliant agent's genuine stuck now reaches the dossier spine deterministically — the I5 lever is in place."
   fi
 else
   note "No captured genuine streams under tmp/i3/ — the genuine runs are this"
