@@ -83,6 +83,23 @@ if [[ -f "$SR_LIB" ]]; then
   source "$SR_LIB"
 fi
 
+# ── §4.3 Notification emit-at-creation (I3, claude-tools-3in; epic 8bm) ───────
+# The disconnection I3 closes: the stuck path above persists the Dossier
+# (sr_route_stuck → dg_from_worker_ask → dg_generate → do_dossier_put) but
+# NEVER created the SINGLE §4.3 Notification — notification.sh's no_emit was
+# oracle-tested yet wired NOWHERE into the runner, so a real stuck reached the
+# hosted engine as a dossier with no notification. C3/§4.3 already mandate the
+# Notification row EXIST at dossier creation (before any send) — this sources
+# the existing lib so no_emit is callable; the actual emit is wired into the
+# §7.3 stuck block (guarded-optional, idempotent one-per-Dossier, observable-
+# not-silent — the same discipline as the la_*/sr_* calls). NON-§11: wiring an
+# already-contracted lib, not a contract change. STRICT NO-OP when absent.
+NO_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/notification.sh"
+if [[ -f "$NO_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$NO_LIB"
+fi
+
 # ── Hosted transport (I1, claude-tools-txj; epic claude-tools-8bm) ────────────
 # Sourced AFTER the SR/LA libs so the in-process bash co_request (pulled in by
 # the stuck-routing → dossier-gen → dossier → coordinator.sh guard chain) is
@@ -907,9 +924,24 @@ $PROMPT_EXTRA"
     SR_BACKSTOP="$(sr_scan_backstop "$STREAM_FILE" 2>/dev/null || true)"
     if [[ -n "$SR_BACKSTOP" ]]; then
       : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
-      sr_route_stuck "${SR_BEARER:-bearer-runner-stuck}" "$TASK_ID" \
+      # §7.4: capture the dedup'd dossier id sr_route_stuck echoes (one fork ⇒
+      # ONE id; idempotent on a backstop re-trigger). stderr stays suppressed.
+      SR_DID="$(sr_route_stuck "${SR_BEARER:-bearer-runner-stuck}" "$TASK_ID" \
         "backstop:$SR_BACKSTOP" "$(sr_worker_ask "$TASK_ID" 2>/dev/null || true)" \
-        >/dev/null 2>&1 || true
+        2>/dev/null || true)"
+      # §4.3/C3 — the SINGLE Notification for that dossier MUST exist at
+      # creation, BEFORE any send. I3 wires the emit here (the disconnection:
+      # the dossier reached the hosted engine with no notification). no_emit
+      # is one-per-Dossier idempotent (safe on the §7.4 re-trigger), reads the
+      # just-persisted §4.1 tier, and persists via co_request (→ the HOSTED
+      # engine when COORDINATOR_URL is set — I1). Best-effort + LOUD-on-fail,
+      # NEVER blocking the §7.3 bead drive (the fork must not rot on a notify
+      # hiccup — the C3 RESIDUAL discipline; no_emit retry is safe).
+      if command -v no_emit >/dev/null 2>&1 && [[ -n "$SR_DID" ]]; then
+        if ! no_emit "${SR_BEARER:-bearer-runner-stuck}" "$SR_DID" >/dev/null 2>&1; then
+          echo "  STUCK_NEEDS_HUMAN: WARN dossier '$SR_DID' persisted but the §4.3 no_emit FAILED — a dossier with NO Notification (C3 'row exists at creation' unmet). Observable, not silent; no_emit is idempotent so a later T5.5/operator re-emit is safe."
+        fi
+      fi
       append_runner_note "$TASK_ID" "STUCK_NEEDS_HUMAN" "-"
       record_incident   "$TASK_ID" "STUCK_NEEDS_HUMAN" "-"
       if command -v la_report_terminal_reason >/dev/null 2>&1; then
