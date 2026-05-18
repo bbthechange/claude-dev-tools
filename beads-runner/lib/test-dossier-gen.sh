@@ -60,8 +60,9 @@ JF()     { GET "$1" | jq -r "$2" 2>/dev/null; }                          # JF <i
 # A final machine-applyable §5.3 block (cb_schema_version stamped — these
 # fixtures are POST-author §5 items, the form dg__validate_item gates; the
 # author's `cb_schema_version //= sv` makes re-stamp via dg_generate a no-op).
-# Sibling test-dossier.sh likewise hardcodes the frozen `cb_schema_version:1`.
-CB='{"cb_schema_version":1,"creates":[{"title":"follow-up","type":"task"}],"unblocks":[],"labels":[],"status_changes":[]}'
+# Sibling test-dossier.sh likewise hardcodes the bound `cb_schema_version`
+# (v2 — the §11 Mermaid amend coarse single-source bump 1→2).
+CB='{"cb_schema_version":2,"creates":[{"title":"follow-up","type":"task"}],"unblocks":[],"labels":[],"status_changes":[]}'
 
 # §5.2 Item specs (generation-input form: §5 content, NO §4.1.1 record fields —
 # dg_generate adds the clean open/null/false/null record).
@@ -119,7 +120,7 @@ SRC_STRUCT='{ "tldr":"Pick the auth boundary for the coordinator.",
   "ask":"Which token model does v1 adopt?",
   "sections":[{"heading":"Context","prose":"The runner reached the §9.1 chokepoint."},
               {"heading":"Trade-offs","prose":"Static bearer vs per-call mint."}],
-  "diagrams":[{"caption":"Auth flow","content":"runner -> [authenticate] -> principal"}],
+  "diagrams":[{"caption":"Auth flow","content":"flowchart LR\n  runner --> authenticate --> principal"}],
   "full_detail":"Standalone: v1 uses a constant principal; the pick fixes the C7 seam so later is one if at the chokepoint, no migration.",
   "structural":true }'
 SRC_NONSTRUCT='{ "tldr":"Approve the doc tone pass.",
@@ -158,8 +159,21 @@ ckn "§5.1 empty sections[] REJECTED (decision-singular AD7 regression)" \
    dg__validate_body "$(jq -c --argjson sv "$(do__bound_sv)" '.dossier_schema_version=$sv' <<<"$BADBODY")"
 ckn "§5.1 missing full_detail REJECTED (not optional — AD7)" \
    dg__validate_body "$(jq -cn --argjson sv "$(do__bound_sv)" '{dossier_schema_version:$sv,tldr:"x",sections:[{heading:"h",prose:"p"}],diagrams:[]}')"
-ckn "§0.3 — body dossier_schema_version=2 REJECTED (unknown higher)" \
-   dg__validate_body "$(jq -cn '{dossier_schema_version:2,tldr:"x",sections:[{heading:"h",prose:"p"}],diagrams:[],full_detail:"f"}')"
+ckn "§0.3 — body dossier_schema_version=3 REJECTED (unknown higher; bound=2 v2)" \
+   dg__validate_body "$(jq -cn '{dossier_schema_version:3,tldr:"x",sections:[{heading:"h",prose:"p"}],diagrams:[],full_detail:"f"}')"
+# v2 §11 Mermaid amendment — diagrams[].content MUST be Mermaid source.
+ckn "§5.1 v2 — diagrams[].content = PROSE REJECTED (not Mermaid, contract violation)" \
+   dg__validate_body "$(jq -cn --argjson sv "$(do__bound_sv)" '{dossier_schema_version:$sv,tldr:"x",sections:[{heading:"h",prose:"p"}],diagrams:[{caption:"c",content:"This is just prose, not a diagram."}],full_detail:"f"}')"
+ckn "§5.1 v2 — diagrams[].content = ASCII-art REJECTED (not Mermaid)" \
+   dg__validate_body "$(jq -cn --argjson sv "$(do__bound_sv)" '{dossier_schema_version:$sv,tldr:"x",sections:[{heading:"h",prose:"p"}],diagrams:[{caption:"c",content:"+---+\n| A |\n+---+"}],full_detail:"f"}')"
+ck  "§5.1 v2 — diagrams[].content = Mermaid flowchart ACCEPTED" \
+   dg__validate_body "$(jq -cn --argjson sv "$(do__bound_sv)" '{dossier_schema_version:$sv,tldr:"x",sections:[{heading:"h",prose:"p"}],diagrams:[{caption:"c",content:"flowchart TD\n  A --> B"}],full_detail:"f"}')"
+ck  "§5.1 v2 — Mermaid after %%{init}%% directive + ---frontmatter--- ACCEPTED" \
+   dg__validate_body "$(jq -cn --argjson sv "$(do__bound_sv)" '{dossier_schema_version:$sv,tldr:"x",sections:[{heading:"h",prose:"p"}],diagrams:[{caption:"c",content:"---\ntitle: T\n---\n%%{init: {\"theme\":\"dark\"}}%%\nsequenceDiagram\n  A->>B: hi"}],full_detail:"f"}')"
+ckn "§5.1 v2 — a STRUCTURAL dg_generate with non-Mermaid diagram ⇒ REJECTED, nothing written" \
+   dg_generate "$GOOD" "$(gi genBadDg worker_stuck blocking "$(jq -c '.diagrams=[{caption:"x",content:"plain prose, not mermaid"}]' <<<"$SRC_STRUCT")" "[$(item_po d1)]")"
+ckn "§5.1 v2 — the non-Mermaid-diagram dossier was NOT written" \
+   co_request "$GOOD" get dossier genBadDg
 
 echo ""
 echo "── EXIT-2: MANDATORY context_anchor{where,expansion} — reject, no write ──"
@@ -197,10 +211,10 @@ ckn "pick-option with NO options ⇒ REJECTED (§5.2)" \
 ckn "pick-option duplicate option_id ⇒ REJECTED (ambiguous chosen block)" \
    dg__validate_item "$(jq -c '.options[1].option_id=.options[0].option_id' <<<"$(item_po a9)")"
 # §5.3 machine-applyability gate (the producer-side bind of the frozen schema).
-ck  "dg__cb_applyable accepts a v1 four-array block" \
+ck  "dg__cb_applyable accepts a bound (v2) four-array block" \
    dg__cb_applyable "$(jq -cn --argjson sv "$(do__bound_sv)" '{cb_schema_version:$sv,creates:[],unblocks:[],labels:[],status_changes:[]}')"
-ckn "§0.3 — cb_schema_version=2 REJECTED (unknown higher)" \
-   dg__cb_applyable '{"cb_schema_version":2,"creates":[]}'
+ckn "§0.3 — cb_schema_version=3 REJECTED (unknown higher; bound=2 v2)" \
+   dg__cb_applyable '{"cb_schema_version":3,"creates":[]}'
 ckn "§5.3 — creates not an array ⇒ REJECTED (not machine-applyable)" \
    dg__cb_applyable "$(jq -cn --argjson sv "$(do__bound_sv)" '{cb_schema_version:$sv,creates:"nope"}')"
 ckn "an Item whose cb is NOT machine-applyable ⇒ Item REJECTED" \
@@ -256,15 +270,15 @@ cat > "$FAKE" <<'EOF'
 #!/bin/bash
 # A wholly different "generator": ignores the raw material, emits its own
 # valid §5 body+items. Proves dg_generate binds the SCHEMA, not the author.
-jq -cn '{ body:{ dossier_schema_version:1, tldr:"swapped-author tldr",
+jq -cn '{ body:{ dossier_schema_version:2, tldr:"swapped-author tldr",
             sections:[{heading:"S","prose":"swapped prose"}],
-            diagrams:[{caption:"c","content":"d"}],
+            diagrams:[{caption:"c","content":"flowchart TD\n  X --> Y"}],
             full_detail:"swapped full detail, stands alone." },
           items:[ { id:"sw1", kind:"approve-reject",
             framing:{ask:"swapped ask",why:"swapped why"},
             context_anchor:{where:"swapped where","expansion":"swapped expansion"},
             reversible:"swapped reversible",
-            consequence_block:{cb_schema_version:1,creates:[],unblocks:[],labels:[],status_changes:[]} } ] }'
+            consequence_block:{cb_schema_version:2,creates:[],unblocks:[],labels:[],status_changes:[]} } ] }'
 EOF
 chmod +x "$FAKE"
 DG_AUTHOR_CMD="$FAKE" dg_generate "$GOOD" "$(gi swap human_flag blocking "$SRC_STRUCT" "[$(item_ar ignored)]")" >/dev/null 2>&1
@@ -277,11 +291,11 @@ ck "the swapped dossier still passes the SAME frozen §5 gate" \
 FAKEBAD="$WORK/fake-bad.sh"
 cat > "$FAKEBAD" <<'EOF'
 #!/bin/bash
-jq -cn '{ body:{ dossier_schema_version:1, tldr:"t",
+jq -cn '{ body:{ dossier_schema_version:2, tldr:"t",
             sections:[{heading:"h","prose":"p"}], diagrams:[], full_detail:"f" },
           items:[ { id:"bad1", kind:"approve-reject",
             framing:{ask:"a",why:"w"}, reversible:"r",
-            consequence_block:{cb_schema_version:1,creates:[],unblocks:[],labels:[],status_changes:[]} } ] }'
+            consequence_block:{cb_schema_version:2,creates:[],unblocks:[],labels:[],status_changes:[]} } ] }'
 EOF
 chmod +x "$FAKEBAD"
 ckn "swapped author emitting an Item w/o context_anchor ⇒ STILL REJECTED" \
@@ -294,8 +308,8 @@ ckn "§9.1 — nothing written on the auth-failed generate"    co_request "$GOOD
 
 echo ""
 echo "── ANTI-DRIFT (structural — sibling surfaces untouched) ──"
-ck "T4 §4 registry UNCHANGED — dossier⇒1 (T5.2 added NO §4 record type)" \
-   eq "$(co__schema_version dossier)" "1"
+ck "T4 §4 registry: dossier⇒2 (v2 §11 Mermaid amend bump; NOT a T5.2 drift — T5.2 added NO §4 record type)" \
+   eq "$(co__schema_version dossier)" "2"
 ck "T5.2 added NO 'dossier_gen' §4 record type" \
    eq "$(co__schema_version dossier_gen)" ""
 ck "the §5 sub-versions track the ONE bound source (§0.5; T5.3 precedent)" \

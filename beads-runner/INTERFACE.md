@@ -1,6 +1,6 @@
 # Beads Runner — Cross-Tier Interface Contract
 
-**Version: `v1` · Status: FROZEN (gated checkpoint claude-tools-65z — signed off by Brian, 2026-05-16)**
+**Version: `v2` · Status: FROZEN (gated checkpoint claude-tools-65z — re-frozen 2026-05-17; v1 signed off by Brian 2026-05-16)**
 Owner: Brian · Produced: 2026-05-16 · Sourced from: `DESIGN.md` v2 (architecture
 decisions), `UX-DESIGN.md` (§0 requirement provenance), `BEHAVIORAL-CONTRACT.md`
 (SCAR regression gate), `research/headless-stuck-signal.md` (AD3 basis).
@@ -12,9 +12,33 @@ SCHEMA-CORRECTION note on claude-tools-65z; §9.1/§4.2 corrected to **not**
 over-bind the DESIGN-C4-deferred trust asymmetry. That resync happened
 *before* the freeze gate (clean source-resync, never a re-freeze): the
 anti-drift process working as intended — the authoritative source moved, the
-keystone re-synced, *then* the gate. **This `v1` is now FROZEN** (Brian
+keystone re-synced, *then* the gate. **This `v1` was FROZEN** (Brian
 sign-off, 2026-05-16); any further change is the §11 BLOCKING-escalation
 protocol (reopen claude-tools-65z, bump version, re-freeze).
+
+**§11 amendment → `v2` (2026-05-17, Brian pre-authorized — NOT a silent edit).**
+Trigger: dogfooding a live dossier on a phone exposed that §5.1
+`diagrams[].content` was an unconstrained string, so the §0.A-core *diagrams*
+tier was satisfiable by ASCII/prose and the Inbox dumped it into a `<pre>`
+with **no diagram rendering at all** — the §0.A diagram requirement was
+under-delivered in lockstep across contract/generator/renderer. Amendment:
+§5.1 `diagrams[].content` is now constrained to **Mermaid** source (a text
+diagram language — LLM-authorable, deterministically SVG-renderable,
+git-friendly; format ratified by Brian 2026-05-17); DESIGN AD7 updated in
+lockstep; the bound dossier schema version bumped `1 → 2`. **Coarse-bump
+note (deliberate, per §0.5/§0.3 single-source design):** the §5
+`dossier_schema_version`, the §4.1 Dossier-envelope `schema_version`, and the
+§5.3 `cb_schema_version` all track ONE normative source (the §4 record-type
+registry — "a future bump is one §0/§11 registry edit, never a drift"); the
+amend therefore moves the whole Dossier artifact `1 → 2` in one edit. This is
+the *designed* bump mechanism, not over-scope: a v1 consumer MUST reject a v2
+Dossier (§0.3) — correct, because a v1 renderer cannot honor the new diagram
+contract; generator + renderer are upgraded in the same lockstep. Brian
+pre-authorized this amend+bump+re-freeze with "no back-and-forth" (the
+Mermaid format was a settled decision; this is its execution). The genuine
+human-on-phone proof that a real Mermaid diagram renders is epic
+claude-tools-8bm's sole closing gate (I5), not this freeze. **This `v2` is
+now FROZEN**; any further change repeats the §11 protocol.
 
 > **This document is the single versioned source of truth for every cross-tier
 > contract in the beads-runner overhaul (epic claude-tools-glk).** Every
@@ -22,11 +46,12 @@ protocol (reopen claude-tools-65z, bump version, re-freeze).
 > here and MUST NOT unilaterally change them.
 >
 > **Immutability.** Once this task (claude-tools-65z) is closed under its gated
-> checkpoint (Brian sign-off), `INTERFACE.md v1` is **frozen**. A needed change
-> is a **BLOCKING escalation**: reopen claude-tools-65z, amend, bump the
-> document version (`v2`) and the affected `*_schema_version`, re-freeze, and
-> only then may downstream proceed. **No local divergence is ever permitted.**
-> Downstream tasks cite "`INTERFACE.md v1 §N`" in their OWNS/EXIT criteria.
+> checkpoint, `INTERFACE.md` is **frozen** at its current version (now `v2`,
+> the Mermaid §5.1 amendment). A needed change is a **BLOCKING escalation**:
+> reopen claude-tools-65z, amend, bump the document version and the affected
+> `*_schema_version`, re-freeze, and only then may downstream proceed. **No
+> local divergence is ever permitted.** Downstream tasks cite
+> "`INTERFACE.md §N`" (current frozen version) in their OWNS/EXIT criteria.
 
 ---
 
@@ -43,11 +68,14 @@ clause.** The Cloudflare realization is non-normative — see Appendix A. A tier
 that leaks a provider primitive into a cross-tier signature violates this
 contract.
 
-**§0.3 Versioning.** The document carries one version (`v1`). Every persisted
-store record and the dossier carry an integer `schema_version` (or
+**§0.3 Versioning.** The document carries one version (`v2`; `v1`→`v2` was the
+§11 Mermaid §5.1 amendment — see the header record). Every persisted store
+record and the dossier carry an integer `schema_version` (or
 `*_schema_version`). Consumers bind to a schema version; they MUST reject an
 unknown higher version rather than best-effort-parse it. Bumping any
-`schema_version` requires the §0 freeze/escalation protocol.
+`schema_version` requires the §0 freeze/escalation protocol. The Dossier
+artifact's bound version is now `2` (§4.1/§5.1/§5.3 all track the one §4
+registry source — see §5.1 and the header coarse-bump note).
 
 **§0.4 Identifiers & time.** `bead_ref`/`task_ref` = the beads issue id string
 (e.g. `claude-tools-65z`). Idempotency is **two-layer (AD3.4):** the
@@ -196,7 +224,7 @@ Notation is a **schema** (field · type · semantics), not source code. Unknown
 higher `schema_version` ⇒ reject (§0.3). Every record carries
 `principal: PRINCIPAL_V1` (§9).
 
-### §4.1 Dossier  (`schema_version: 1`) — AD7
+### §4.1 Dossier  (`schema_version: 2`) — AD7
 
 **The Inbox unit is a Dossier, not "a Decision" (AD7).** A depth-tiered `body`
 ⊃ N **independently-respondable** `items[]`. Partial/iterative resolution is
@@ -208,7 +236,7 @@ this is the stored envelope.
 | Field | Type | Semantics |
 |---|---|---|
 | `id` | string | Dossier id. |
-| `schema_version` | int | `1`. |
+| `schema_version` | int | `2`. (v2: §11 Mermaid amendment; bumped in lockstep with `dossier_schema_version`/`cb_schema_version` — one §4 registry source, §0.5/§0.3.) |
 | `principal` | string | `PRINCIPAL_V1`. |
 | `kind` | enum **(open, C2 seam)** | Interaction mode: `"decide"` implemented v1; `"pair"` **reserved, not implemented**. Open discriminator (not a closed shape). Distinct from per-Item `kind` (§5). |
 | `trigger` | enum | `human_flag` \| `worker_stuck` \| `stage_gate` \| `proactive_checkpoint` (Flow B/F triggers). |
@@ -302,7 +330,7 @@ mechanism; **the schema and its item-granularity are §0.A and MUST NOT be
 shrunk to a decision-singular shape** — that cannot express a 15-item mixed
 review or a standalone design overview, the regression AD7 fixes.)*
 
-`Dossier`, `dossier_schema_version: 1` = a depth-tiered **`body`** ⊃ N
+`Dossier`, `dossier_schema_version: 2` = a depth-tiered **`body`** ⊃ N
 independently-respondable **`items[]`**.
 
 ### §5.1 `body` — progressive disclosure, **all tiers mandatory** (AD7)
@@ -312,10 +340,10 @@ The generator MUST produce **every** tier; none is optional. This is the
 
 | Field | Type | Semantics |
 |---|---|---|
-| `dossier_schema_version` | int | `1`. |
+| `dossier_schema_version` | int | `2`. (v2: §11 Mermaid amendment. The §4.1 Dossier-envelope `schema_version`, this `dossier_schema_version`, and §5.3 `cb_schema_version` all track the ONE §4 registry source — §0.5/§0.3 single-source; a bump moves the whole artifact `1 → 2` in one §11 edit.) |
 | `tldr` | string | One sentence + what is being asked, overall. The skim entry point (notification body draws from this; the notification stays terse — content lives here, principle 2). |
 | `sections[]` | array | `{ heading: string, prose: string }` — skimmable headers with enough text under each to convey the point without the full detail. |
-| `diagrams[]` | array | `{ caption: string, content: string }` — structural diagrams; MUST be present when the matter is structural (empty array only when genuinely non-structural). |
+| `diagrams[]` | array | `{ caption: string, content: string }`. **`content` MUST be valid Mermaid diagram source** (v2 §11 amendment; format ratified 2026-05-17). Mermaid is a text diagram language — LLM-authorable, deterministically renderable to SVG, git-friendly. `content` MUST begin with a Mermaid diagram-type header (optionally preceded by a `---`…`---` frontmatter block and/or a `%%{init:…}%%` directive): `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram`/`stateDiagram-v2`, `erDiagram`, `journey`, `gantt`, `pie`, `mindmap`, `timeline`, `gitGraph`, `quadrantChart`, `requirementDiagram`, `C4Context`/`C4Container`/`C4Component`, `sankey-beta`, `xychart-beta`, `block-beta`. Free prose or ASCII art is a **contract violation**, not a wording nit — exactly as a contextless `context_anchor` is (§5.2): the generator MUST reject it, never best-effort-pass it. The renderer (T6b/Inbox) MUST render it as an actual diagram (SVG), **never** as source text in a `<pre>`. `diagrams[]` MUST be present (≥1 entry) when the matter is structural; the array is `[]` ONLY when genuinely non-structural. |
 | `full_detail` | string | Stand-alone prose: enough that when skimming the headers + glancing at diagrams is insufficient, this alone conveys the full picture. **Not optional.** |
 
 ### §5.2 `items[]` — N independently-respondable Items (AD7)
@@ -359,7 +387,7 @@ dossier — scoped to the item, never re-opening resolved siblings.
 (idempotent per-Item, S-6); non-auto-proceeding items left open never block
 siblings or the pipeline (AD7).
 
-### §5.3 ConsequenceBlock  (`cb_schema_version: 1`) — per-Item, machine-applyable
+### §5.3 ConsequenceBlock  (`cb_schema_version: 2`) — per-Item, machine-applyable
 
 Pre-declared per Item/option (§0.B / principle 5) so the common path is
 **deterministic and instantly trustworthy**; applied idempotently per-Item by
@@ -367,7 +395,7 @@ T5 (§7.4):
 
 | Field | Type | Semantics |
 |---|---|---|
-| `cb_schema_version` | int | `1`. |
+| `cb_schema_version` | int | `2`. (v2: bumped in lockstep — the ConsequenceBlock shape is unchanged, but the whole Dossier artifact tracks one §4 registry source; §0.5/§0.3 single-source coarse bump, see the header note.) |
 | `creates` | array | `{ title, type, priority, labels[], description, deps[] }` — new beads. |
 | `unblocks` | string[] | `bead_ref`s to unblock. |
 | `labels` | array | `{ bead_ref, add[], remove[] }`. |
@@ -620,9 +648,10 @@ contents, large `tool_result` bodies) is replaced by a placeholder carrying
 
 ## §11. Downstream binding map & change protocol
 
-*(Anti-drift: each task cites the INTERFACE.md v1 sections it owns/binds.)*
+*(Anti-drift: each task cites the INTERFACE.md sections it owns/binds, at the
+current frozen version — now `v2`.)*
 
-| Task | Binds / owns INTERFACE.md v1 §§ |
+| Task | Binds / owns INTERFACE.md §§ |
 |---|---|
 | T1a (ooc) | §3, §7.1, §7.5, §8.1 — assertions cite these as literal close-criteria |
 | T1b (crq) | §6.1/6.2, §7 (cross-tier), §8.2, §10.1 — observability/security/STUCK e2e |
@@ -632,14 +661,24 @@ contents, large `tool_result` bodies) is replaced by a placeholder carrying
 | T5 (40c) | §2.2, §4.1/§4.1.1/§4.3, §5 (body+§5.2 items+§5.3 ConsequenceBlock; sole producer), §7.3/7.4 — **Dossier DO, per-Item** |
 | T6a (p2m) | §4.2 (`liveness`), §4.5 (projection, read-only) — Board |
 | T6b (xre) | §5 (sole renderer; §5.1 body tiers + §5.2 per-Item affordances + §5.2.1 profiles), §4.5, §10.3 (fetch UI) — Inbox + Flow G |
+| vkc (8bm) | §5.1 `diagrams[].content` = Mermaid (the v2 amend); generator emits/validates it, Inbox renders it as SVG — bound to the re-frozen §5.1 + bumped dossier schema version |
+
+**§11 amendment ledger.**
+
+| Version | Date | Change | Authorization |
+|---|---|---|---|
+| `v1` | 2026-05-16 | Initial freeze (post AD7 pre-freeze resync). | Brian sign-off (gated checkpoint claude-tools-65z) |
+| `v2` | 2026-05-17 | §5.1 `diagrams[].content` constrained to Mermaid; DESIGN AD7 lockstep; Dossier bound schema version `1 → 2` (coarse single-source bump per §0.5/§0.3). | Brian pre-authorized "no back-and-forth"; format ratified 2026-05-17 (claude-tools-65z reopened §11, re-frozen) |
 
 **Change protocol (anti-drift, normative).** This document is **immutable
 once claude-tools-65z is closed under its gated checkpoint**. Any tier that
 finds the contract insufficient or contradictory MUST: (1) **stop** — not
 diverge locally; (2) reopen claude-tools-65z; (3) amend the affected
 section + bump the document version and the affected `*_schema_version`;
-(4) re-run the §0 freeze (Brian sign-off); (5) only then resume, citing the
-new version. A local divergence is a contract violation, not a shortcut.
+(4) re-run the §0 freeze (Brian sign-off, or a pre-authorized settled
+decision executed and announced — the v2 Mermaid amend precedent);
+(5) only then resume, citing the new version. A local divergence is a
+contract violation, not a shortcut.
 
 ---
 
@@ -686,3 +725,16 @@ replacement. §9.1/§4.2 corrected to keep the C4 **seam** (actor captured,
 single chokepoint) while **not** enforcing the C4-DEFERRED trust asymmetry in
 v1 (DESIGN C4: "authorize all equally; later = one `if`") — removing an
 earlier over-binding of a §0.C-deferred behavior into the frozen contract.
+
+**v2 §11 Mermaid amend (no SCAR impact).** Constraining §5.1
+`diagrams[].content` to Mermaid touches **no BC** — the dossier/diagram layer
+is new surface, uncharacterized in BEHAVIORAL-CONTRACT (same standing as the
+AD7 resync). It *strengthens* the §0.A "diagrams" requirement (a string that
+could be ASCII prose now MUST be renderable Mermaid) without weakening any
+SCAR. The coarse `1 → 2` artifact bump is the §0.5/§0.3 single-source design
+working as intended ("a future bump is one §0/§11 registry edit"); §5.3's
+ConsequenceBlock shape is byte-unchanged — only its version literal tracks the
+one source. Reviewer EXIT-3 check for v2: confirm Mermaid is required (not
+SHOULD), the reject-non-Mermaid mirrors the §5.2 contextless-anchor
+contract-violation discipline, the renderer-as-SVG clause is normative, and
+no §5.2/§5.3/§7.4 per-Item semantics changed.

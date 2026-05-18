@@ -107,7 +107,7 @@ async function NCOUNT() {
 // ── §4.1 envelope + §4.1.1 item builders (the bash mk()/item()) ─────────────
 const mk = (id, tier, items) => ({
   id,
-  schema_version: 1,
+  schema_version: 2,
   kind: "decide",
   trigger: "proactive_checkpoint",
   bead_ref: "claude-tools-65z",
@@ -115,7 +115,7 @@ const mk = (id, tier, items) => ({
   created_at: "2026-05-16T00:00:00Z",
   timer_fire_at: null,
   body: {
-    dossier_schema_version: 1,
+    dossier_schema_version: 2,
     tldr: "opaque",
     sections: [],
     diagrams: [],
@@ -128,7 +128,7 @@ const item = (i) => ({
   kind: "approve-reject",
   framing: {},
   context_anchor: { where: "x", expansion: "y" },
-  consequence_block: { cb_schema_version: 1, creates: [], unblocks: [], labels: [], status_changes: [] },
+  consequence_block: { cb_schema_version: 2, creates: [], unblocks: [], labels: [], status_changes: [] },
   state: "open",
   response: null,
   consequence_applied: false,
@@ -263,8 +263,8 @@ it("CF.9 §4.3 Notification is behaviour-identical to lib/notification.sh + its 
     (await call(GOOD, "put", ["notify", "z", '{"schema_version":1}'])).body?.code === "unknown_type"
   );
   ck(
-    "dossier registry entry UNTOUCHED — a v2 dossier is still §0.3-rejected",
-    !good(await call(GOOD, "dossier-put", [{ ...mk("dRegChk", "blocking", []), schema_version: 2 }]))
+    "dossier registry entry dossier⇒2 (v2 §11 Mermaid amend; notification added no record type) — a v3 dossier is still §0.3-rejected",
+    !good(await call(GOOD, "dossier-put", [{ ...mk("dRegChk", "blocking", []), schema_version: 3 }]))
   );
   const capsRes = await SELF.fetch(
     new Request("https://coordinator.local/", { method: "GET", headers: { authorization: `Bearer ${GOOD}` } })

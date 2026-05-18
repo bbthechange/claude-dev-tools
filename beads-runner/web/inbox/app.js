@@ -147,6 +147,50 @@
     }).catch(function (e) { showError('Cannot fetch the dossier', e.message); });
   }
 
+  // §5.1 v2 (§11 Mermaid amendment): diagrams[].content is Mermaid source and
+  // MUST render as an actual diagram (SVG), never source text in a <pre>.
+  // Uses mermaid.run({nodes}): Mermaid (securityLevel:'strict', DOMPurify
+  // built in) sanitizes and inserts the SVG into the node itself — this code
+  // never assigns innerHTML. Awaits window.__mermaidReady (index.html). If
+  // mermaid never loads, or one diagram fails to parse, that ONE diagram
+  // degrades to a labeled source block + an explicit note — the dossier is
+  // never blocked (a malformed diagram is a generator bug surfaced honestly,
+  // not a dead Inbox).
+  function diagramFallback(host, src, why) {
+    clear(host);
+    host.appendChild(mk('div', 'dgerr', why || 'could not render — showing Mermaid source'));
+    host.appendChild(mk('pre', 'dgc dgc-fallback', src));
+  }
+  function renderDiagrams(pending) {
+    // Skip a host detached by a re-render between schedule and settle (a new
+    // renderDossier already cleared #d-diagrams) — avoids dead work on a
+    // node that is no longer in the document.
+    function live(p) { return p.host && p.host.isConnected !== false && p.host.isConnected; }
+    window.__mermaidReady.then(function (mermaid) {
+      var run = pending.filter(live);
+      if (!run.length) return;
+      var nodes = run.map(function (p) { return p.node; });
+      Promise.resolve(
+        mermaid.run({ nodes: nodes, suppressErrors: true })
+      ).then(function () {
+        run.forEach(function (p) {
+          // On success Mermaid replaced the node's content with an <svg>.
+          if (live(p) && (!p.node.querySelector || !p.node.querySelector('svg'))) {
+            diagramFallback(p.host, p.src, 'Mermaid could not parse this diagram — showing source');
+          }
+        });
+      }).catch(function () {
+        run.forEach(function (p) {
+          if (live(p)) diagramFallback(p.host, p.src, 'Mermaid could not parse this diagram — showing source');
+        });
+      });
+    }).catch(function () {
+      pending.forEach(function (p) {
+        if (live(p)) diagramFallback(p.host, p.src, 'diagram renderer unavailable — showing Mermaid source');
+      });
+    });
+  }
+
   function renderDossier(v) {
     el('title').textContent = v.profile === 'overview' ? 'Overview' : 'Dossier';
     el('back').hidden = false;
@@ -171,12 +215,20 @@
       secs.appendChild(d);
     });
     var dgs = el('d-diagrams'); clear(dgs);
+    var pending = [];
     v.body.diagrams.forEach(function (g) {
       var d = mk('div', 'diagram');
       d.appendChild(mk('div', 'dgl', g.caption));
-      d.appendChild(mk('pre', 'dgc', g.content));
+      var host = mk('div', 'dgsvg');
+      // The Mermaid SOURCE goes in as textContent (never innerHTML);
+      // mermaid.run() replaces this node's content with sanitized SVG.
+      var node = mk('pre', 'mermaid', g.content);
+      host.appendChild(node);
+      d.appendChild(host);
       dgs.appendChild(d);
+      pending.push({ host: host, node: node, src: g.content });
     });
+    if (pending.length) renderDiagrams(pending);
     el('d-full').textContent = v.body.full_detail;
 
     var box = el('d-items'); clear(box);

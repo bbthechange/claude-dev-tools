@@ -92,12 +92,12 @@ iv() { node -e '
   const a=process.argv.slice(3).map(s=>{ try{return JSON.parse(s);}catch(e){return s;} });
   process.stdout.write(JSON.stringify(V[fn].apply(null,a)));' "$VIEW" "$@"; }
 
-CB='{"cb_schema_version":1,"creates":[{"title":"impl from dossier","type":"task"}],"unblocks":["claude-tools-dep"],"labels":[],"status_changes":[]}'
+CB='{"cb_schema_version":2,"creates":[{"title":"impl from dossier","type":"task"}],"unblocks":["claude-tools-dep"],"labels":[],"status_changes":[]}'
 SRC='{ "tldr":"Pick the auth boundary for the coordinator.",
   "ask":"Which token model does v1 adopt?",
   "sections":[{"heading":"Context","prose":"The runner reached the §9.1 chokepoint and must not guess."},
               {"heading":"Trade-offs","prose":"Static bearer vs per-call mint — load-bearing for C7."}],
-  "diagrams":[{"caption":"Auth flow","content":"runner -> [authenticate] -> principal"}],
+  "diagrams":[{"caption":"Auth flow","content":"flowchart LR\n  runner --> authenticate --> principal"}],
   "full_detail":"Standalone: v1 uses a constant principal; the pick fixes the C7 seam so later is one if at the chokepoint, no migration.",
   "structural":true }'
 item_ar() { jq -cn --arg id "$1" --argjson cb "$CB" '
@@ -226,12 +226,12 @@ ZB="$(jq -c '.body.dossier_schema_version=-1' <<<"$(GET dRT)")"
 ck "negative body dossier_schema_version ⇒ REFUSED (§5.1)"    eq "$(jqr "$(iv deriveDossierView "$ZB")" .ok)" "false"
 
 echo "── EXIT-3: reads only the projection + binds §5 · §0.3 reject · ONE write path ──"
-ck "schema_version 1 dossier (bound) renders ok"             eq "$(jqr "$(iv deriveDossierView "$(GET dRT)")" .ok)" "true"
-HI="$(jq -c '.schema_version=2' <<<"$(GET dRT)")"
-ck "envelope schema_version 2 ⇒ REFUSED (§0.3)"              eq "$(jqr "$(iv deriveDossierView "$HI")" .ok)" "false"
+ck "schema_version 2 dossier (bound; v2 §11 Mermaid amend) renders ok" eq "$(jqr "$(iv deriveDossierView "$(GET dRT)")" .ok)" "true"
+HI="$(jq -c '.schema_version=3' <<<"$(GET dRT)")"
+ck "envelope schema_version 3 REFUSED (unknown higher; bound=2 v2 §0.3)" eq "$(jqr "$(iv deriveDossierView "$HI")" .ok)" "false"
 ck "refusal cites §0.3"                                       has "§0.3" "$(jqr "$(iv deriveDossierView "$HI")" .error)"
-HIB="$(jq -c '.body.dossier_schema_version=2' <<<"$(GET dRT)")"
-ck "BODY dossier_schema_version 2 ⇒ REFUSED (§5.1/§0.3)"      eq "$(jqr "$(iv deriveDossierView "$HIB")" .ok)" "false"
+HIB="$(jq -c '.body.dossier_schema_version=3' <<<"$(GET dRT)")"
+ck "BODY dossier_schema_version 3 REFUSED (unknown higher; bound=2 v2 §5.1/§0.3)" eq "$(jqr "$(iv deriveDossierView "$HIB")" .ok)" "false"
 ck "snapshot schema_version 2 ⇒ Inbox list REFUSED (§4.5/§0.3)" eq "$(jqr "$(iv deriveInboxList "$(jq -c '.schema_version=2' <<<"$SNAP")")" .ok)" "false"
 ck "inbox-view.js makes NO network call (pure core)"          hasnt "fetch(" "$(cat "$VIEW")"
 ck "inbox-view.js has no POST verb"                           hasnt "POST" "$(cat "$VIEW")"

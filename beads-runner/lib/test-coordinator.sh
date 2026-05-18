@@ -85,9 +85,12 @@ got="$(co_request "$GOOD" get notification n1 2>/dev/null)"
 ck "notification round-trips"                      bash -c "[[ -n \"$got\" ]]"
 ck "stored principal == PRINCIPAL_V1 (stamped)"    bash -c "[[ \"\$(jq -r .principal <<<'$got')\" == brian ]]"
 ck "use-site literal 'someone-else' overwritten"   bash -c "[[ \"\$(jq -r .principal <<<'$got')\" != 'someone-else' ]]"
-# Every §4 record TYPE round-trips (store owner).
+# Every §4 record TYPE round-trips (store owner). dossier is bound to v2
+# (the §11 Mermaid amend single-source bump 1→2); the other §4 record types
+# stay bound 1, so each is put at its OWN bound schema_version.
 for t in dossier runner_state notification lease work_snapshot; do
-  co_request "$GOOD" put "$t" "rt_$t" "{\"schema_version\":1}" >/dev/null 2>&1
+  sv=1; [[ "$t" == dossier ]] && sv=2
+  co_request "$GOOD" put "$t" "rt_$t" "{\"schema_version\":$sv}" >/dev/null 2>&1
   rec="$(co_request "$GOOD" get "$t" "rt_$t" 2>/dev/null)"
   ck "§4 $t round-trips with principal stamped" \
      bash -c "[[ \"\$(jq -r .principal <<<'$rec' 2>/dev/null)\" == brian ]]"

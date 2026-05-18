@@ -48,9 +48,38 @@
   'use strict';
 
   // Contract-bound schema versions this renderer understands (§0.3).
-  var SUPPORTED_SNAPSHOT_SCHEMA = 1; // §4.5 work-snapshot
-  var SUPPORTED_DOSSIER_SCHEMA = 1;  // §4.1 Dossier envelope
-  var SUPPORTED_BODY_SCHEMA = 1;     // §5.1 body (dossier_schema_version)
+  // v2 (§11 Mermaid amendment): the Dossier artifact tracks ONE registry
+  // source — §4.1 envelope + §5.1 body bumped 1→2 in lockstep. work-snapshot
+  // (§4.5) is a SEPARATE record type and did NOT bump — still 1.
+  var SUPPORTED_SNAPSHOT_SCHEMA = 1; // §4.5 work-snapshot (unchanged)
+  var SUPPORTED_DOSSIER_SCHEMA = 2;  // §4.1 Dossier envelope (v2)
+  var SUPPORTED_BODY_SCHEMA = 2;     // §5.1 body (dossier_schema_version, v2)
+
+  // §5.1 v2: diagrams[].content MUST be Mermaid source (prose/ASCII is a
+  // contract violation — the §5.2 contextless-anchor discipline). This is a
+  // byte-for-byte port of dossier-gen.sh dg__is_mermaid AND cf/src/dossier.js
+  // looksLikeMermaid (the §8bm differential-equivalence requirement): split
+  // on \n only (strip a trailing \r), whitespace is ASCII space+tab ONLY
+  // (never \s / [[:space:]] — those diverge on Unicode/locale), and the
+  // keyword must be a FULL token followed by an ASCII sp/tab/colon OR
+  // end-of-line (no open wildcard ⇒ no `.` vs `.*` divergence on
+  // U+2028/U+2029). The authoritative parse is the SVG render (app.js).
+  var MERMAID_KW = '(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|sankey-beta|xychart-beta|block-beta|zenuml|architecture-beta|packet-beta)';
+  var MM_BLANK = /^[ \t]*$/, MM_FM = /^[ \t]*---[ \t]*$/, MM_CMT = /^[ \t]*%%/;
+  var MM_HEAD = new RegExp('^[ \\t]*' + MERMAID_KW + '([ \\t:]|$)');
+  function looksLikeMermaid(s) {
+    if (typeof s !== 'string' || s === '') return false;
+    var lines = s.split('\n'), inFm = false, seenFm = false;
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i].replace(/\r$/, '');
+      if (MM_BLANK.test(ln)) continue;
+      if (!seenFm && !inFm && MM_FM.test(ln)) { inFm = true; seenFm = true; continue; }
+      if (inFm) { if (MM_FM.test(ln)) inFm = false; continue; }
+      if (MM_CMT.test(ln)) continue; // %% comment / %%{init}%% directive
+      return MM_HEAD.test(ln);
+    }
+    return false;
+  }
 
   // §5.2 the CLOSED Item-kind enum. "The Item's kind IS its response
   // affordance" — T6b renders the control FROM this, never invents one.
@@ -330,6 +359,8 @@
       body.diagrams.forEach(function (g, i) {
         if (!g || !nonEmptyStr(g.caption) || !nonEmptyStr(g.content)) {
           bErr.push('§5.1 body.diagrams[' + i + '] needs non-empty {caption,content}');
+        } else if (!looksLikeMermaid(g.content)) {
+          bErr.push('§5.1 body.diagrams[' + i + '].content MUST be Mermaid source (v2 §11) — prose/ASCII is a contract violation, not a wording nit');
         }
       });
     }
@@ -622,6 +653,7 @@
     SUPPORTED_SNAPSHOT_SCHEMA: SUPPORTED_SNAPSHOT_SCHEMA,
     SUPPORTED_DOSSIER_SCHEMA: SUPPORTED_DOSSIER_SCHEMA,
     SUPPORTED_BODY_SCHEMA: SUPPORTED_BODY_SCHEMA,
+    looksLikeMermaid: looksLikeMermaid,
     ITEM_KINDS: ITEM_KINDS
   };
 });

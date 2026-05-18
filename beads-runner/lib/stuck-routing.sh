@@ -244,7 +244,11 @@ sr_worker_ask() {
   # (§5.2 pick-option needs ≥1 option with a machine-applyable §5.3 block +
   # recommendation{value,why}). The choice itself is the human's; the runner
   # only frames "resume vs abandon", each pre-declaring its §5.3 consequence.
-  cb='{"cb_schema_version":1,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}'
+  # No hardcoded cb_schema_version: this is §7.2 RAW material, not authored §5.
+  # The dossier builder (dg_from_worker_ask) stamps the bound version via its
+  # `cb_schema_version //= sv` — pinning a literal here would break under the
+  # §0/§11 single-source bump (v2: pinning 1 would be rejected vs bound 2).
+  cb='{"creates":[],"unblocks":[],"labels":[],"status_changes":[]}'
   jq -cn --arg tref "$tref" --arg tldr "$tldr" --argjson cb "$cb" '
     { tldr:$tldr,
       ask:("How should the runner proceed on " + $tref + " (a human-decision fork)?"),

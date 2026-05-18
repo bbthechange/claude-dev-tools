@@ -16,10 +16,12 @@
 #
 #   • §5.1 `body` — ALL FOUR tiers MANDATORY (AD7): `tldr` (non-empty),
 #     `sections[]` (≥1 `{heading,prose}`, each non-empty — the skimmable
-#     deep body), `diagrams[]` (`{caption,content}`; `[]` ONLY when the
-#     matter is genuinely non-structural — a structural source MUST yield
-#     ≥1 diagram), `full_detail` (non-empty stand-alone prose). None optional.
-#     `dossier_schema_version` stamped from the single bound source (§0.5).
+#     deep body), `diagrams[]` (`{caption,content}`; `content` MUST be
+#     Mermaid source — v2 §11 amendment, prose/ASCII REJECTED; `[]` ONLY
+#     when the matter is genuinely non-structural — a structural source MUST
+#     yield ≥1 diagram), `full_detail` (non-empty stand-alone prose). None
+#     optional. `dossier_schema_version` stamped from the single bound
+#     source (§0.5; v2 = `2`, the §11 coarse single-source bump).
 #
 #   • §5.2 `items[]` — N independently-respondable Items. `kind` is the
 #     CLOSED §5.2 response-affordance enum (distinct from the §4.1 dossier
@@ -118,6 +120,48 @@ fi
 # never a drift here.
 dg__sv() { do__bound_sv; }
 
+# ── §5.1 diagrams[].content = Mermaid (v2 §11 amendment) ─────────────────────
+# dg__is_mermaid <content>
+#   0 iff <content> is plausibly Mermaid SOURCE — i.e. after an optional
+#   `---`…`---` frontmatter block and any leading blank / `%%`-comment /
+#   `%%{init:…}%%`-directive lines, the first meaningful line begins with a
+#   Mermaid diagram-type keyword. This is the producer-side "looks like
+#   Mermaid" gate (the §5.2 contextless-anchor discipline applied to diagrams:
+#   prose / ASCII art is a contract violation, REJECTED — never
+#   best-effort-passed). The authoritative parse is the renderer's (Mermaid →
+#   SVG on the phone, INTERFACE §5.1); this gate only keeps non-Mermaid out.
+#
+#   ASCII-ONLY / LOCALE-INVARIANT by design: whitespace is exactly U+0020 +
+#   U+0009 (never `[[:space:]]`, which is locale-dependent), and the keyword
+#   must be a full token followed by an ASCII space/tab/colon OR end-of-line
+#   (no open `.*`). This makes the verdict byte-identical to the JS ports in
+#   cf/src/dossier.js + web/inbox/inbox-view.js (the §8bm differential-
+#   equivalence requirement — no Unicode-line-separator / locale divergence).
+dg__is_mermaid() {
+  local c="${1:-}" line seen_fm=0 in_fm=0
+  local SP=$' \t'   # ASCII space + tab ONLY — NOT [[:space:]] (locale-bound)
+  local kw='graph|flowchart|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|sankey-beta|xychart-beta|block-beta|zenuml|architecture-beta|packet-beta'
+  [[ -z "$c" ]] && return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"                                  # strip a trailing CR (CRLF)
+    [[ "$line" =~ ^[$SP]*$ ]] && continue                 # blank (ASCII sp/tab only)
+    if [[ $seen_fm -eq 0 && $in_fm -eq 0 && "$line" =~ ^[$SP]*---[$SP]*$ ]]; then
+      in_fm=1; seen_fm=1; continue                        # open YAML frontmatter
+    fi
+    if [[ $in_fm -eq 1 ]]; then
+      [[ "$line" =~ ^[$SP]*---[$SP]*$ ]] && in_fm=0        # close frontmatter
+      continue
+    fi
+    [[ "$line" =~ ^[$SP]*%% ]] && continue                # %% comment / %%{init}%% directive
+    # first meaningful line: a Mermaid keyword as a FULL token (ASCII sp/tab/
+    # colon delimiter OR end-of-line) — no open wildcard ⇒ no JS-regex `.`
+    # divergence on U+2028/U+2029.
+    [[ "$line" =~ ^[$SP]*($kw)([$SP:]|$) ]] && return 0
+    return 1
+  done <<< "$c"
+  return 1                                              # only frontmatter/comments/blanks ⇒ no diagram
+}
+
 # ════════════════════════════════════════════════════════════════════════════
 # §5.3 ConsequenceBlock — producer-side MACHINE-APPLYABLE gate
 # ════════════════════════════════════════════════════════════════════════════
@@ -170,7 +214,9 @@ dg__cb_applyable() {
 #   regression and is REJECTED); `diagrams[]` an array of `{caption,content}`
 #   each non-empty (the array itself MAY be `[]` — that is the genuinely-
 #   non-structural case; the structural-source ⇒ ≥1-diagram policy is the
-#   GENERATOR's, asserted by test); `full_detail` non-empty string.
+#   GENERATOR's, asserted by test) AND each `content` MUST be Mermaid source
+#   (v2 §11 amendment — prose/ASCII REJECTED, §5.1); `full_detail` non-empty
+#   string.
 dg__validate_body() {
   local b="${1:-}" bound sv
   bound="$(dg__sv)"
@@ -218,6 +264,22 @@ dg__validate_body() {
          (if (.content|type)=="string" and ((.content|gsub("^\\s+|\\s+$";""))|length)>0 then empty else "§5.1 diagrams[\($i)].content: non-empty string" end) ] | .[])
     ' 2>/dev/null) || serrs="§5.1 sections/diagrams: unparseable"
   if [[ -n "$serrs" ]]; then echo "dossier-gen: reject — $serrs" >&2; return 3; fi
+  # §5.1 v2 (§11 Mermaid amendment): each diagram's `content` MUST be Mermaid
+  # source — prose / ASCII art is a contract violation, REJECTED (the §5.2
+  # contextless-anchor discipline). The renderer (T6b) is the authoritative
+  # parse; this is the producer gate that keeps non-Mermaid out of the store.
+  local ndg i dc
+  ndg=$(printf '%s' "$b" | jq -r '(.diagrams // []) | length' 2>/dev/null) || ndg=0
+  [[ "$ndg" =~ ^[0-9]+$ ]] || ndg=0
+  i=0
+  while [[ "$i" -lt "$ndg" ]]; do
+    dc=$(printf '%s' "$b" | jq -r ".diagrams[$i].content // \"\"" 2>/dev/null) || dc=""
+    if ! dg__is_mermaid "$dc"; then
+      echo "dossier-gen: reject — §5.1 diagrams[$i].content: MUST be Mermaid source (v2 §11) — prose/ASCII is a contract violation, not a wording nit; expected a Mermaid diagram-type header (graph/flowchart/sequenceDiagram/… optionally after ---frontmatter--- or %%{init}%%)" >&2
+      return 3
+    fi
+    i=$((i+1))
+  done
   return 0
 }
 

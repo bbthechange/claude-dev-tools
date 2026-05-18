@@ -17,12 +17,12 @@ export function PRINCIPAL_V1(env) {
 }
 
 // ── §4 record-type registry & schema versions ───────────────────────────────
-// Every §4 record type binds to ONE schema_version (all `1` in INTERFACE.md
-// v1). Unknown type => null (rejected at the door). Adding a type or bumping a
-// version is the §0/§11 freeze-escalation protocol, never a local edit.
-// 1:1 with coordinator.sh co__schema_version.
+// Every §4 record type binds to ONE schema_version. Unknown type => null
+// (rejected at the door). Adding a type or bumping a version is the §0/§11
+// freeze-escalation protocol, never a local edit. 1:1 with coordinator.sh
+// co__schema_version (this object IS the CF single-source registry mirror).
 const SCHEMA_VERSIONS = {
-  dossier: 1,        // §4.1 Dossier envelope (body/items producer = CF.6)
+  dossier: 2,        // §4.1 Dossier envelope (body/items producer = CF.6). v2: §11 Mermaid §5.1 amend — single-source coarse bump 1→2 (§0.5/§0.3), 1:1 with coordinator.sh co__schema_version dossier⇒2.
   runner_state: 1,   // §4.2 RunnerState
   notification: 1,   // §4.3 Notification (creation/dispatch = CF.9)
   lease: 1,          // §4.4 Lease (arbitration/fencing = CF.2)

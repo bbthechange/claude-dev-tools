@@ -291,7 +291,7 @@ BDEOF
     # the value faithfully. The label still proves the point — it is resolved
     # by sr_poll_hosted_resolution FROM THE ITEM'S OWN §5.2 options[] (not from
     # the bare response), i.e. the resume directive is self-contained.
-    ASK='{"tldr":"Worker hit a product fork it must not resolve.","ask":"Adopt approach A or B for '"$FIXTURE"'?","options":[{"option_id":"a","label":"Approach-A-recommended-reversible","blast_radius":"low-fully-reversible","consequence_block":{"cb_schema_version":1,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}},{"option_id":"b","label":"Approach-B","blast_radius":"medium","consequence_block":{"cb_schema_version":1,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}}],"recommendation":{"value":"a","why":"A is reversible and lower blast radius."},"reversible":"Nothing applied until a human picks (§5.3 = T5.3)."}'
+    ASK='{"tldr":"Worker hit a product fork it must not resolve.","ask":"Adopt approach A or B for '"$FIXTURE"'?","options":[{"option_id":"a","label":"Approach-A-recommended-reversible","blast_radius":"low-fully-reversible","consequence_block":{"cb_schema_version":2,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}},{"option_id":"b","label":"Approach-B","blast_radius":"medium","consequence_block":{"cb_schema_version":2,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}}],"recommendation":{"value":"a","why":"A is reversible and lower blast radius."},"reversible":"Nothing applied until a human picks (§5.3 = T5.3)."}'
 
     # ---- WORLD A: in-process bash ORACLE — the behaviour the HTTP path must match
     ( set +u

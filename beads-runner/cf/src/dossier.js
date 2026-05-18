@@ -231,6 +231,33 @@ function validateCb(cb, tag = "§5.3 ConsequenceBlock") {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// §5.1 v2 (§11 Mermaid amendment): diagrams[].content MUST be Mermaid source.
+// Port of dossier-gen.sh dg__is_mermaid — kept byte-for-byte equivalent so the
+// hosted engine's verdict ≡ the bash oracle (epic claude-tools-8bm I1 rule).
+// Byte-for-byte equivalent to dossier-gen.sh dg__is_mermaid AND
+// web/inbox/inbox-view.js looksLikeMermaid: \n-split (strip trailing \r),
+// ASCII space+tab ONLY (never \s — diverges on Unicode), keyword as a FULL
+// token followed by ASCII sp/tab/colon OR end-of-line (no open wildcard ⇒
+// no U+2028/U+2029 `.` divergence). §8bm differential-equivalence.
+const MM_KW =
+  "(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|sankey-beta|xychart-beta|block-beta|zenuml|architecture-beta|packet-beta)";
+const MM_BLANK = /^[ \t]*$/, MM_FM = /^[ \t]*---[ \t]*$/, MM_CMT = /^[ \t]*%%/;
+const MM_HEAD = new RegExp("^[ \\t]*" + MM_KW + "([ \\t:]|$)");
+function looksLikeMermaid(s) {
+  if (typeof s !== "string" || s === "") return false;
+  const lines = s.split("\n");
+  let inFm = false, seenFm = false;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i].replace(/\r$/, "");
+    if (MM_BLANK.test(ln)) continue;
+    if (!seenFm && !inFm && MM_FM.test(ln)) { inFm = true; seenFm = true; continue; }
+    if (inFm) { if (MM_FM.test(ln)) inFm = false; continue; }
+    if (MM_CMT.test(ln)) continue; // %% comment / %%{init}%% directive
+    return MM_HEAD.test(ln);
+  }
+  return false;
+}
+
 // §5.1 body — all four tiers MANDATORY (AD7)  (port of dg__validate_body)
 // ════════════════════════════════════════════════════════════════════════════
 function validateBody(b) {
@@ -267,6 +294,12 @@ function validateBody(b) {
       return rej(`dossier-gen: reject — §5.1 diagrams[${i}].caption: non-empty string`);
     if (!trimNE(d.content))
       return rej(`dossier-gen: reject — §5.1 diagrams[${i}].content: non-empty string`);
+  }
+  // v2 §11 Mermaid amendment — content MUST be Mermaid (prose/ASCII REJECTED,
+  // the §5.2 contextless-anchor discipline). Same diagnostic as the bash gate.
+  for (let i = 0; i < b.diagrams.length; i++) {
+    if (!looksLikeMermaid(b.diagrams[i].content))
+      return rej(`dossier-gen: reject — §5.1 diagrams[${i}].content: MUST be Mermaid source (v2 §11) — prose/ASCII is a contract violation, not a wording nit; expected a Mermaid diagram-type header (graph/flowchart/sequenceDiagram/… optionally after ---frontmatter--- or %%{init}%%)`);
   }
   return OK;
 }

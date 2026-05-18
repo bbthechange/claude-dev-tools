@@ -149,7 +149,7 @@ async function DUE(id, now) {
 const CA = "2099-05-16T00:00:00Z"; // +86400 ⇒ 2099-05-17T00:00:00Z ; +3600 ⇒ …01:00:00Z
 const mk = (id, tier, items, ca = CA) => ({
   id,
-  schema_version: 1,
+  schema_version: 2,
   kind: "decide",
   trigger: "proactive_checkpoint",
   bead_ref: "claude-tools-65z",
@@ -157,7 +157,7 @@ const mk = (id, tier, items, ca = CA) => ({
   created_at: ca,
   timer_fire_at: null,
   body: {
-    dossier_schema_version: 1,
+    dossier_schema_version: 2,
     tldr: "opaque",
     sections: [],
     diagrams: [],
@@ -166,7 +166,7 @@ const mk = (id, tier, items, ca = CA) => ({
   items,
 });
 const cb = (t) => ({
-  cb_schema_version: 1,
+  cb_schema_version: 2,
   creates: [{ title: `new ${t}`, type: "task", priority: 2, labels: ["auto"], description: "d" }],
   unblocks: [`unb-${t}`],
   labels: [],
@@ -388,7 +388,7 @@ it("CF.7 differential vs timed-fyi.sh + test-timed-fyi.sh (§2.2 / S-6 / §5.2.2
   ck("a timed-fyi dossier never infinite-stalls (0 fyi-objectable left open)", openFyi === 0);
 
   // ── EXIT-5: binds §2.2/§7.4 · anti-drift (structural) ──
-  ck("§4 registry UNCHANGED — dossier⇒1 (no schema bump)", schemaVersion("dossier") === 1);
+  ck("§4 registry dossier⇒2 (v2 §11 Mermaid amend; timed-fyi added no record type)", schemaVersion("dossier") === 2);
   ck("NO §4 record type added — 'timed_fyi' unregistered", schemaVersion("timed_fyi") === null);
   ck("the timer is the §2.2 SURFACE, not a §4 record ('timer' unregistered)", schemaVersion("timer") === null);
   const caps = (await call(GOOD, "capabilities", [])).raw;

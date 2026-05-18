@@ -228,7 +228,7 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     "dossier",
     "dOpen",
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       id: "dOpen",
       bead_ref: "claude-tools-99",
       tier: "blocking",
@@ -242,7 +242,7 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     "dossier",
     "dResolved",
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       id: "dResolved",
       bead_ref: "claude-tools-12",
       tier: "digest",
@@ -295,7 +295,7 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     "dossier",
     "dPartly",
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       id: "dPartly",
       bead_ref: "claude-tools-55",
       tier: "blocking",

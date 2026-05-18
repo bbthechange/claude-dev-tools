@@ -62,16 +62,16 @@ NCOUNT() { ls "$CO_STORE"/records/notification.*.json 2>/dev/null | wc -l | tr -
 # seed a dossier via the T5.1 store directly (no_emit reads the tier off it).
 mk() {  # mk <id> <tier> <items-json-array>
   jq -cn --arg id "$1" --arg tier "$2" --argjson items "$3" '
-    { id:$id, schema_version:1, kind:"decide", trigger:"proactive_checkpoint",
+    { id:$id, schema_version:2, kind:"decide", trigger:"proactive_checkpoint",
       bead_ref:"claude-tools-65z", tier:$tier,
       created_at:"2026-05-16T00:00:00Z", timer_fire_at:null,
-      body:{ dossier_schema_version:1, tldr:"opaque", sections:[],
+      body:{ dossier_schema_version:2, tldr:"opaque", sections:[],
              diagrams:[], full_detail:"T5.2 owns this" },
       items:$items }'
 }
 item() { jq -cn --arg i "$1" '
     { id:$i, kind:"approve-reject", framing:{}, context_anchor:{where:"x",expansion:"y"},
-      consequence_block:{cb_schema_version:1,creates:[],unblocks:[],labels:[],status_changes:[]},
+      consequence_block:{cb_schema_version:2,creates:[],unblocks:[],labels:[],status_changes:[]},
       state:"open", response:null, consequence_applied:false, applied_at:null }'; }
 # 15 distinct items ⇒ a 15-item dossier (must still yield ONE Notification).
 items15() { local a="" i; for i in $(seq 1 15); do a="$a$([[ -n "$a" ]] && echo ,)$(item "i$i")"; done; printf '[%s]' "$a"; }
@@ -174,8 +174,8 @@ ck  "the opaque channel tag round-trips VERBATIM (no schema change — C3)" \
 # a T4-registered type — T5.6 adds none and never edits the registry).
 ck  "T4 §4 registry UNCHANGED — notification⇒1 (no schema bump)" \
     eq "$(co__schema_version notification)" "1"
-ck  "dossier registry entry UNTOUCHED (no sibling GATE flipped)" \
-    eq "$(co__schema_version dossier)" "1"
+ck  "T4 §4 registry dossier⇒2 (v2 §11 Mermaid amend; T5.6/notification added no record type, no sibling GATE flipped)" \
+    eq "$(co__schema_version dossier)" "2"
 ck  "NO §4 record type added — 'notify' unregistered" \
     eq "$(co__schema_version notify)" ""
 caps="$(co_capabilities 2>/dev/null || true)"

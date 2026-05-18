@@ -92,16 +92,16 @@ DUE()    { co_request "$GOOD" timer-due "${2:-}" 2>/dev/null | grep -Fxq -- "$1"
 CA="2026-05-16T00:00:00Z"      # +86400 ⇒ 2026-05-17T00:00:00Z ; +3600 ⇒ ...01:00:00Z
 mk() {  # mk <id> <tier> <items-json-array>
   jq -cn --arg id "$1" --arg tier "$2" --argjson items "$3" --arg ca "$CA" '
-    { id:$id, schema_version:1, kind:"decide", trigger:"proactive_checkpoint",
+    { id:$id, schema_version:2, kind:"decide", trigger:"proactive_checkpoint",
       bead_ref:"claude-tools-65z", tier:$tier,
       created_at:$ca, timer_fire_at:null,
-      body:{ dossier_schema_version:1, tldr:"opaque", sections:[],
+      body:{ dossier_schema_version:2, tldr:"opaque", sections:[],
              diagrams:[], full_detail:"T5.2 owns this" },
       items:$items }'
 }
 cb() {  # cb <tag>  — a §5.3 block tagged so per-item apply is countable
   jq -cn --arg t "$1" '
-    { cb_schema_version:1,
+    { cb_schema_version:2,
       creates:[ { title:("new "+$t), type:"task", priority:2, labels:["auto"],
                   description:"d" } ],
       unblocks:["unb-"+$t], labels:[], status_changes:[] }'; }
@@ -264,7 +264,7 @@ ck  "a timed-fyi dossier never infinite-stalls (0 fyi-objectable left open)" \
 
 echo ""
 echo "── EXIT-5: binds §2.2/§7.4 · anti-drift (structural) ──"
-ck  "T4 §4 registry UNCHANGED — dossier⇒1 (no schema bump)" eq "$(co__schema_version dossier)" "1"
+ck  "T4 §4 registry dossier⇒2 (v2 §11 Mermaid amend; timed-fyi added no record type)" eq "$(co__schema_version dossier)" "2"
 ck  "NO §4 record type added — 'timed_fyi' unregistered"    eq "$(co__schema_version timed_fyi)" ""
 ck  "the timer is the T4 §2.2 SURFACE, not a §4 record ('timer' unregistered)" \
    eq "$(co__schema_version timer)" ""

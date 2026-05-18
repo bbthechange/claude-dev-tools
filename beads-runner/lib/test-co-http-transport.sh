@@ -59,12 +59,12 @@ mk()   { jq -cn --arg id "$1" --argjson sv "$2" --argjson items "$3" '
     { id:$id, schema_version:$sv, kind:"decide", trigger:"worker_stuck",
       bead_ref:"claude-tools-txj", tier:"blocking",
       created_at:"2026-05-17T00:00:00Z", timer_fire_at:null,
-      body:{ dossier_schema_version:1, tldr:"opaque to substrate",
+      body:{ dossier_schema_version:2, tldr:"opaque to substrate",
              sections:[], diagrams:[], full_detail:"I1 transport proof" },
       items:$items }'; }
 item() { jq -cn --arg i "$1" --arg s "$2" '
     { id:$i, kind:"approve-reject", framing:{}, context_anchor:{where:"x",expansion:"y"},
-      consequence_block:{cb_schema_version:1,creates:[],unblocks:[],labels:[],status_changes:[]},
+      consequence_block:{cb_schema_version:2,creates:[],unblocks:[],labels:[],status_changes:[]},
       state:$s, response:null, consequence_applied:false, applied_at:null }'; }
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -167,7 +167,7 @@ else
       W="$(mktemp -d)"; export CO_STORE="$W/store"
       unset COORDINATOR_URL COORDINATOR_TOKEN CO_EXPECTED_TOKEN 2>/dev/null || true
       source "$HERE/dossier.sh"            # in-process bash co_request
-      D="$(mk dCT 1 "[$(item i1 open)]")"
+      D="$(mk dCT 2 "[$(item i1 open)]")"
       id="$(do_dossier_put "$PLACEHOLDER" "$D")"; echo "putrc=$?"
       do_dossier_get "$PLACEHOLDER" dCT >/dev/null 2>&1; echo "getPrc=$?"
       do_dossier_get "$PLACEHOLDER" dABSENT >/dev/null 2>&1; echo "getArc=$?"
@@ -192,7 +192,7 @@ else
       source "$HERE/dossier.sh"            # reused stack
       source "$HERE/co-http-transport.sh"  # OVERRIDE → HTTP → local engine
 
-      D="$(mk dCT 1 "[$(item i1 open),$(item i2 open)]")"
+      D="$(mk dCT 2 "[$(item i1 open),$(item i2 open)]")"
       id="$(do_dossier_put "$PLACEHOLDER" "$D")"; prc=$?
       echo "BPUT rc=$prc id=$id"
 
@@ -228,7 +228,7 @@ else
       && ok "do_dossier_put over HTTP returns the dossier id (dCT)" \
       || bad "do_dossier_put over HTTP returns the dossier id"
     eq "$(g 'BGETP rc')" "$oracle_rc_getP" "do_dossier_get present over HTTP ≡ oracle rc ($oracle_rc_getP)"
-    eq "$(grep -o 'BREC_SV=[0-9]*' "$B" | cut -d= -f2)" "1" "get-present record: schema_version is integer 1 (§0.3 binds — D2 record passes through verbatim)"
+    eq "$(grep -o 'BREC_SV=[0-9]*' "$B" | cut -d= -f2)" "2" "get-present record: schema_version is integer 2 (v2 §11 Mermaid amend; §0.3 binds — D2 record passes through verbatim)"
     eq "$(grep -o 'BREC_PR=[a-z]*' "$B" | cut -d= -f2)" "true" "get-present record: §9.1 principal stamped by the engine"
     eq "$(grep -o 'BREC_ITEMS=[0-9]*' "$B" | cut -d= -f2)" "2" "get-present record: items[] round-tripped (2)"
     eq "$(g 'BGETA rc')" "$oracle_rc_getA" "do_dossier_get ABSENT over HTTP ≡ oracle rc ($oracle_rc_getA) — D2 §0.3-misclassification CLOSED"
@@ -333,7 +333,7 @@ else
     source "$HERE/dossier.sh"
     source "$HERE/co-http-transport.sh"
     DID="i1-live-$$"
-    D="$(mk "$DID" 1 "[$(item i1 open)]")"
+    D="$(mk "$DID" 2 "[$(item i1 open)]")"
     id="$(do_dossier_put "$PLACEHOLDER" "$D")"; prc=$?
     rec="$(do_dossier_get "$PLACEHOLDER" "$DID" 2>/dev/null)"; grc=$?
     echo "CLIVE put=$prc get=$grc id=$id"

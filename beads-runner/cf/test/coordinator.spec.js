@@ -146,9 +146,12 @@ it("CF.1 substrate is behaviour-identical to coordinator.sh + test-coordinator.s
   ck("notification round-trips", !!n1);
   ck("stored principal == PRINCIPAL_V1 (stamped)", !!n1 && n1.principal === "brian");
   ck("use-site literal 'someone-else' overwritten", !!n1 && n1.principal !== "someone-else");
-  // Every §4 record TYPE round-trips (store owner).
+  // Every §4 record TYPE round-trips (store owner). dossier is bound to v2
+  // (the §11 Mermaid amend single-source bump 1→2); the other §4 record types
+  // stay bound 1, so each is put at its OWN bound schema_version.
   for (const t of ["dossier", "runner_state", "notification", "lease", "work_snapshot"]) {
-    await call(GOOD, "put", [t, `rt_${t}`, '{"schema_version":1}']);
+    const sv = t === "dossier" ? 2 : 1;
+    await call(GOOD, "put", [t, `rt_${t}`, `{"schema_version":${sv}}`]);
     const rec = await getRecord(t, `rt_${t}`);
     ck(`§4 ${t} round-trips with principal stamped`, !!rec && rec.principal === "brian");
   }

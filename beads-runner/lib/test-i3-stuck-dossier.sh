@@ -235,7 +235,7 @@ echo "   target: $LIVE_URL  (no real token — the by-design D0 withholding)"
 
   # the hosted `put dossier` hop: bash-contract 401 (rc1/empty/stderr), the
   # I0 D1/D2/D3 divergences CLOSED by I1 (not curl rc0 + leaked envelope).
-  env='{"id":"stuck-'"$FIXTURE"'","schema_version":1,"kind":"decide","trigger":"worker_stuck","bead_ref":"'"$FIXTURE"'","tier":"blocking","created_at":"2026-05-17T00:00:00Z","timer_fire_at":null,"body":{"tldr":"x","sections":[],"diagrams":[],"full_detail":"x"},"items":[]}'
+  env='{"id":"stuck-'"$FIXTURE"'","schema_version":2,"kind":"decide","trigger":"worker_stuck","bead_ref":"'"$FIXTURE"'","tier":"blocking","created_at":"2026-05-17T00:00:00Z","timer_fire_at":null,"body":{"dossier_schema_version":2,"tldr":"x","sections":[],"diagrams":[],"full_detail":"x"},"items":[]}'
   of="$(mktemp)"; ef="$(mktemp)"
   co_request "$PLACEHOLDER" put dossier "stuck-$FIXTURE" "$env" >"$of" 2>"$ef"; drc=$?
   echo "A_PUTDOS_RC=$drc"

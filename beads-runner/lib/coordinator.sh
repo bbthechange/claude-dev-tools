@@ -124,7 +124,7 @@ co__ensure_store() {
 # version is the §0/§11 freeze-escalation protocol, never a local edit.
 co__schema_version() {
   case "$1" in
-    dossier)       echo 1 ;;   # §4.1 Dossier envelope (body/items prod = T5)
+    dossier)       echo 2 ;;   # §4.1 Dossier envelope (body/items prod = T5). v2: §11 Mermaid §5.1 amend — single-source coarse bump 1→2 (§0.5/§0.3): §5.1 dossier_schema_version + §5.3 cb_schema_version track this one value.
     runner_state)  echo 1 ;;   # §4.2 RunnerState
     notification)  echo 1 ;;   # §4.3 Notification
     lease)         echo 1 ;;   # §4.4 Lease (arbitration = T4.2)

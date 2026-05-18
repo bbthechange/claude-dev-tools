@@ -166,7 +166,8 @@ async function dedupGet(tref) {
 // machine-applyable §5.3 block + recommendation{value,why}) so CF.6 authors a
 // real worker_stuck dossier — the §7.2→§5 raw-material consumption. 1:1 with
 // the bash test's ASK_JSON (cb_schema_version tracks the ONE bound source,
-// §0.5 — equals the bash literal 1, behaviour-identical).
+// §0.5 — equals the bash literal 2 after the §11 Mermaid amend bump,
+// behaviour-identical).
 const SV = schemaVersion("dossier");
 const ASK = {
   tldr: "Worker hit a fork it must not resolve.",

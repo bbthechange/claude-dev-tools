@@ -128,7 +128,7 @@ const mk = (id, sv, items) => ({
   created_at: "2026-05-16T00:00:00Z",
   timer_fire_at: null,
   body: {
-    dossier_schema_version: 1,
+    dossier_schema_version: 2,
     tldr: "opaque to substrate",
     sections: [],
     diagrams: [],
@@ -141,7 +141,7 @@ const item = (id, state) => ({
   kind: "approve-reject",
   framing: {},
   context_anchor: { where: "x", expansion: "y" },
-  consequence_block: { cb_schema_version: 1, creates: [], unblocks: [], labels: [], status_changes: [] },
+  consequence_block: { cb_schema_version: 2, creates: [], unblocks: [], labels: [], status_changes: [] },
   state,
   response: null,
   consequence_applied: false,
@@ -157,30 +157,30 @@ const cb = (tag, v) => ({
 const recFields = (state) => ({ state, response: null, consequence_applied: false, applied_at: null });
 const item_ar = (id, state) => ({
   id, kind: "approve-reject", framing: {}, context_anchor: { where: "x", expansion: "y" },
-  consequence_block: cb(id, 1), reversible: "r", ...recFields(state),
+  consequence_block: cb(id, 2), reversible: "r", ...recFields(state),
 });
 const item_po = (id, state) => ({
   id, kind: "pick-option", framing: {}, context_anchor: { where: "x", expansion: "y" },
   options: [
-    { option_id: "opt-a", label: "A", blast_radius: "x", consequence_block: cb(`${id}A`, 1) },
-    { option_id: "opt-b", label: "B", blast_radius: "y", consequence_block: cb(`${id}B`, 1) },
+    { option_id: "opt-a", label: "A", blast_radius: "x", consequence_block: cb(`${id}A`, 2) },
+    { option_id: "opt-b", label: "B", blast_radius: "y", consequence_block: cb(`${id}B`, 2) },
   ],
   recommendation: { value: "opt-a", why: "because" },
-  consequence_block: cb(`${id}A`, 1), reversible: "r", ...recFields(state),
+  consequence_block: cb(`${id}A`, 2), reversible: "r", ...recFields(state),
 });
 const item_ff = (id, state) => ({
   id, kind: "freeform-edit", framing: {}, context_anchor: { where: "x", expansion: "y" },
-  consequence_block: cb(id, 1), reversible: "r", ...recFields(state),
+  consequence_block: cb(id, 2), reversible: "r", ...recFields(state),
 });
 const item_rec = (id, state) => ({
   id, kind: "approve-recommendation", framing: {}, context_anchor: { where: "x", expansion: "y" },
-  recommendation: { value: "v", why: "w" }, consequence_block: cb(id, 1), reversible: "r", ...recFields(state),
+  recommendation: { value: "v", why: "w" }, consequence_block: cb(id, 2), reversible: "r", ...recFields(state),
 });
 const item_obj = (id, state) => ({
   id, kind: "fyi-objectable", framing: {}, context_anchor: { where: "x", expansion: "y" },
-  consequence_block: cb(id, 1), reversible: "r", ...recFields(state),
+  consequence_block: cb(id, 2), reversible: "r", ...recFields(state),
 });
-const cb_bare = (tag) => ({ cb_schema_version: 1, creates: [{ title: `bare ${tag}`, labels: ["x"] }], unblocks: [], labels: [], status_changes: [] });
+const cb_bare = (tag) => ({ cb_schema_version: 2, creates: [{ title: `bare ${tag}`, labels: ["x"] }], unblocks: [], labels: [], status_changes: [] });
 const item_bare = (id, state) => ({
   id, kind: "approve-reject", framing: {}, context_anchor: { where: "x", expansion: "y" },
   consequence_block: cb_bare(id), reversible: "r", ...recFields(state),
@@ -192,7 +192,7 @@ const RESP_EDITED = { decision: "approve", edited_value: "changed by human", res
 const RESP_OBJECT = { decision: "object", freeform_text: "I object to this auto-proceed", responded_at: "2026-05-16T01:00:00Z", principal: "brian" };
 
 // ── §5 generation-input builders (the bash test-dossier-gen.sh fixtures) ────
-const CBG = { cb_schema_version: 1, creates: [{ title: "follow-up", type: "task" }], unblocks: [], labels: [], status_changes: [] };
+const CBG = { cb_schema_version: 2, creates: [{ title: "follow-up", type: "task" }], unblocks: [], labels: [], status_changes: [] };
 const gItemAr = (id) => ({
   id, kind: "approve-reject",
   framing: { ask: "Approve the schema rename?", why: "It unblocks T6b." },
@@ -233,7 +233,7 @@ const SRC_STRUCT = {
   tldr: "Pick the auth boundary for the coordinator.",
   ask: "Which token model does v1 adopt?",
   sections: [{ heading: "Context", prose: "The runner reached the §9.1 chokepoint." }, { heading: "Trade-offs", prose: "Static bearer vs per-call mint." }],
-  diagrams: [{ caption: "Auth flow", content: "runner -> [authenticate] -> principal" }],
+  diagrams: [{ caption: "Auth flow", content: "flowchart LR\n  runner --> authenticate --> principal" }],
   full_detail: "Standalone: v1 uses a constant principal; the pick fixes the C7 seam so later is one if at the chokepoint, no migration.",
   structural: true,
 };
@@ -252,22 +252,22 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   // ════════════════════════════════════════════════════════════════════════
   // test-dossier.sh — EXIT-1: §4.1/§4.1.1 round-trip · principal+sv · §0.3
   // ════════════════════════════════════════════════════════════════════════
-  const D1 = mk("dossA", 1, [item("it1", "open"), item("it2", "open")]);
+  const D1 = mk("dossA", 2, [item("it1", "open"), item("it2", "open")]);
   const put1 = await call(GOOD, "dossier-put", [D1]);
-  ck("do_dossier_put accepts a well-formed v1 envelope", good(put1));
+  ck("do_dossier_put accepts a well-formed v2 envelope", good(put1));
   ck("returns the dossier id", put1.body && put1.body.id === "dossA");
   const S = await GET("dossA");
   ck("envelope round-tripped through the §4 store", !!S && S.id === "dossA");
   ck("§9.1 STAMPED principal=PRINCIPAL_V1", !!S && S.principal === "brian");
-  ck("schema_version=1 persisted (§4.1)", !!S && S.schema_version === 1);
+  ck("schema_version=2 persisted (§4.1; v2 §11 amend)", !!S && S.schema_version === 2);
   ck("items[] round-tripped (2 Items)", !!S && S.items.length === 2);
   ck("OPAQUE body round-tripped UNTOUCHED (no §5 synthesis)", !!S && S.body.full_detail === "T5.2 owns this");
   ck("per-Item §4.1.1 record shape persisted", !!S && S.items[0].consequence_applied === false);
   const dgA = await dget("dossA");
   ck("do_dossier_get returns the record", !!dgA && dgA.id === "dossA");
   // §0.3 — unknown HIGHER schema_version rejected on WRITE, NO write.
-  const bad2 = await call(GOOD, "dossier-put", [mk("dossHi", 2, [item("it1", "open")])]);
-  ck("§0.3 — schema_version 2 REJECTED on write (unknown higher)", !good(bad2));
+  const bad2 = await call(GOOD, "dossier-put", [mk("dossHi", 3, [item("it1", "open")])]);
+  ck("§0.3 — schema_version 3 REJECTED on write (unknown higher; bound=2 v2)", !good(bad2));
   ck("§0.3 — the rejected higher-version dossier was NOT written", (await GET("dossHi")) === null);
   // §0.3 also bound on the READ path: a v3 slipped straight into the store
   // (bypassing put) must be rejected by do_dossier_get, not best-parsed.
@@ -280,7 +280,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   const strSv = await call(GOOD, "dossier-put", [{ ...D1, schema_version: "1" }]);
   ck('§0.3 — string "1" schema_version REJECTED', !good(strSv));
   // §9.1 — no bearer ⇒ rejected BEFORE any write (reuse the ONE chokepoint).
-  const noTok = await call(null, "dossier-put", [mk("dossNoTok", 1, [item("it1", "open")])]);
+  const noTok = await call(null, "dossier-put", [mk("dossNoTok", 2, [item("it1", "open")])]);
   ck("§9.1 — missing bearer ⇒ do_dossier_put REJECTED (401)", noTok.status === 401);
   ck("§9.1 — nothing written on the auth-failed path", (await GET("dossNoTok")) === null);
 
@@ -298,7 +298,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("expired→open ILLEGAL (terminal)", !(await sc("expired", "open")));
   ck("answered→open ILLEGAL (no rewind)", !(await sc("answered", "open")));
   ck("unknown→answered ILLEGAL", !(await sc("bogus", "answered")));
-  await call(GOOD, "dossier-put", [mk("dossSM", 1, [item("s1", "open"), item("s2", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dossSM", 2, [item("s1", "open"), item("s2", "open")])]);
   ck("set-state s1 open→answered ⇒ persisted",
     good(await call(GOOD, "item-set-state", ["dossSM", "s1", "answered"])) && istate(await GET("dossSM"), "s1") === "answered");
   ck("set-state s1 answered→applied ⇒ persisted",
@@ -312,7 +312,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   // test-dossier.sh — EXIT-3: PRIMITIVE 1 latch (PRIMITIVE 2 task_ref dedup
   // is CF.8's DISTINCT dossier-level key — deliberately NOT here)
   // ════════════════════════════════════════════════════════════════════════
-  await call(GOOD, "dossier-put", [mk("dossL", 1, [item("L1", "open"), item("L2", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dossL", 2, [item("L1", "open"), item("L2", "open")])]);
   ck("do_item_latch flips consequence_applied false→true once", good(await call(GOOD, "item-latch", ["dossL", "L1"])));
   ck("L1.consequence_applied is now true", ica(await GET("dossL"), "L1") === true);
   ck("L1.applied_at stamped (§4.1.1)", iat(await GET("dossL"), "L1") !== null);
@@ -329,15 +329,15 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   // ════════════════════════════════════════════════════════════════════════
   const rollup = async (env_) => (await call(GOOD, "dossier-rollup", [env_])).raw;
   ck("rollup = open while ≥1 item non-terminal",
-    (await rollup(mk("x", 1, [item("a", "applied"), item("b", "open")]))) === "open");
+    (await rollup(mk("x", 2, [item("a", "applied"), item("b", "open")]))) === "open");
   ck("rollup = open while an item is merely answered (non-terminal)",
-    (await rollup(mk("x", 1, [item("a", "answered")]))) === "open");
+    (await rollup(mk("x", 2, [item("a", "answered")]))) === "open");
   ck("rollup = resolved when ALL items terminal (applied|expired)",
-    (await rollup(mk("x", 1, [item("a", "applied"), item("b", "expired")]))) === "resolved");
-  await call(GOOD, "dossier-put", [mk("dossR", 1, [item("r1", "open")])]);
+    (await rollup(mk("x", 2, [item("a", "applied"), item("b", "expired")]))) === "resolved");
+  await call(GOOD, "dossier-put", [mk("dossR", 2, [item("r1", "open")])]);
   ck("rollup persisted onto the stored envelope (projection datum)", (await GET("dossR")).state === "open");
   // THE AD7 invariant: the rollup gates NOTHING — resolve exactly 6 of 15.
-  await call(GOOD, "dossier-put", [mk("doss15", 1, Array.from({ length: 15 }, (_, i) => item(`q${i + 1}`, "open")))]);
+  await call(GOOD, "dossier-put", [mk("doss15", 2, Array.from({ length: 15 }, (_, i) => item(`q${i + 1}`, "open")))]);
   for (let n = 1; n <= 6; n++) {
     await call(GOOD, "item-set-state", ["doss15", `q${n}`, "answered"]);
     await call(GOOD, "item-latch", ["doss15", `q${n}`]);
@@ -364,7 +364,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   // test-dossier.sh — EXIT-3/4 CONCURRENCY: single-WRITER, not single-value
   // (S-6 timer-fire vs poll-fallback; AD7 under load) — the AD1 payoff
   // ════════════════════════════════════════════════════════════════════════
-  await call(GOOD, "dossier-put", [mk("dossC", 1, [item("C1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dossC", 2, [item("C1", "open")])]);
   const latchRace = await Promise.all(
     "abcdefgh".split("").map(() => call(GOOD, "item-latch", ["dossC", "C1"]))
   );
@@ -375,7 +375,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("C1.applied_at stamped once (no torn/duplicate apply)", iat(await GET("dossC"), "C1") !== null);
   // AD7 partial resolution UNDER CONCURRENCY: parallel set-state on DIFFERENT
   // sibling Items must NOT clobber each other (no lost update).
-  await call(GOOD, "dossier-put", [mk("dossP", 1, Array.from({ length: 12 }, (_, i) => item(`p${i + 1}`, "open")))]);
+  await call(GOOD, "dossier-put", [mk("dossP", 2, Array.from({ length: 12 }, (_, i) => item(`p${i + 1}`, "open")))]);
   await Promise.all(Array.from({ length: 12 }, (_, i) => call(GOOD, "item-set-state", ["dossP", `p${i + 1}`, "answered"])));
   ck("12 concurrent sibling-Item moves ALL persisted (no lost update — AD7)",
     (await GET("dossP")).items.filter((x) => x.state === "answered").length === 12);
@@ -383,7 +383,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   // ════════════════════════════════════════════════════════════════════════
   // test-consequence.sh — EXIT-1: idempotency — double-tap AND alarm+poll
   // ════════════════════════════════════════════════════════════════════════
-  await call(GOOD, "dossier-put", [mk("dA", 1, [item_ar("i1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dA", 2, [item_ar("i1", "open")])]);
   await resetBd();
   ck("do_item_apply (approve) succeeds", good(await call(GOOD, "item-apply", ["dA", "i1", RESP_APPROVE])));
   ck("i1 consequence_applied flipped false→true", ica(await GET("dA"), "i1") === true);
@@ -398,7 +398,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("NO additional §5.3 create on double-tap", (await BDN("create --title new i1")) === CR1);
   // ALARM + POLL (S-6): the entrypoint T5.4/CF.7 calls from BOTH alarm-fire
   // and poll-fallback — concurrently. Exactly one applier; consequence ONCE.
-  await call(GOOD, "dossier-put", [mk("dC", 1, [item_ar("c1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dC", 2, [item_ar("c1", "open")])]);
   await resetBd();
   const applyRace = await Promise.all(
     "abcdefgh".split("").map(() => call(GOOD, "item-apply", ["dC", "c1", RESP_APPROVE]))
@@ -416,7 +416,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
 
   // ── test-consequence.sh — EXIT-3: §5.2.2 PER-ITEM routing ──
   // (a) pick-option: the CHOSEN option's block, not the other's.
-  await call(GOOD, "dossier-put", [mk("dP", 1, [item_po("p1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dP", 2, [item_po("p1", "open")])]);
   await resetBd();
   ck("pick opt-a ⇒ deterministic apply succeeds", good(await call(GOOD, "item-apply", ["dP", "p1", RESP_PICK_A])));
   ck("chosen option-A block applied", (await BDN("create --title new p1A")) === 1);
@@ -424,7 +424,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("p1 applied + latched", istate(await GET("dP"), "p1") === "applied");
   ck("no follow-up dossier on the deterministic path", (await dget("dP-fu-p1")) === null);
   // (b) RECONCILER: freeform ⇒ NO block applied, follow-up scoped to item.
-  await call(GOOD, "dossier-put", [mk("dR", 1, [item_ar("sib1", "open"), item_ff("ff1", "open"), item_ar("sib2", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dR", 2, [item_ar("sib1", "open"), item_ff("ff1", "open"), item_ar("sib2", "open")])]);
   await call(GOOD, "item-apply", ["dR", "sib1", RESP_APPROVE]);
   const SIB1_AT = iat(await GET("dR"), "sib1");
   await resetBd();
@@ -443,19 +443,19 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("OPEN sibling sib2 still open (never reopened/closed)", istate(await GET("dR"), "sib2") === "open");
   ck("OPEN sibling sib2 latch still false", ica(await GET("dR"), "sib2") === false);
   // (c) EDITED approve-recommendation ⇒ reconciler (edited, not pure).
-  await call(GOOD, "dossier-put", [mk("dE", 1, [item_rec("e1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dE", 2, [item_rec("e1", "open")])]);
   await resetBd();
   ck("approve-recommendation w/ edited_value ⇒ succeeds", good(await call(GOOD, "item-apply", ["dE", "e1", RESP_EDITED])));
   ck("edited ⇒ RECONCILER (no deterministic block applied)", (await BDN("create --title new e1")) === 0);
   ck("edited ⇒ a follow-up dossier emitted", !!(await dget("dE-fu-e1")));
   // (d) un-edited approve-recommendation ⇒ DETERMINISTIC.
-  await call(GOOD, "dossier-put", [mk("dD", 1, [item_rec("d1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dD", 2, [item_rec("d1", "open")])]);
   await resetBd();
   ck("un-edited approve-recommendation ⇒ deterministic", good(await call(GOOD, "item-apply", ["dD", "d1", RESP_APPROVE])));
   ck("deterministic block applied (bd create ran)", (await BDN("create --title new d1")) === 1);
   ck("no follow-up on the deterministic recommendation", (await dget("dD-fu-d1")) === null);
   // (e) decision:"object" on a fyi-objectable item ⇒ RECONCILER.
-  await call(GOOD, "dossier-put", [mk("dO", 1, [item_obj("o1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dO", 2, [item_obj("o1", "open")])]);
   await resetBd();
   ck("fyi-objectable + decision:object ⇒ reconciler succeeds", good(await call(GOOD, "item-apply", ["dO", "o1", RESP_OBJECT])));
   ck("objected ⇒ NO §5.3 block applied (no bd create)", (await BDN("create --title new o1")) === 0);
@@ -463,7 +463,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("objected o1 marked applied+latched (exactly once)", istate(await GET("dO"), "o1") === "applied");
 
   // ── test-consequence.sh — EXIT-2: partial application — 6 of 15 ──
-  await call(GOOD, "dossier-put", [mk("d15", 1, Array.from({ length: 15 }, (_, i) => item_ar(`q${i + 1}`, "open")))]);
+  await call(GOOD, "dossier-put", [mk("d15", 2, Array.from({ length: 15 }, (_, i) => item_ar(`q${i + 1}`, "open")))]);
   await resetBd();
   for (let n = 1; n <= 6; n++) await call(GOOD, "item-apply", ["d15", `q${n}`, RESP_APPROVE]);
   const d15s = await GET("d15");
@@ -479,33 +479,33 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("q7 now applied", istate(await GET("d15"), "q7") === "applied");
 
   // ── test-consequence.sh — EXIT-5: FROZEN §5.3 binding · key=Item id ──
-  const dV = mk("dV", 1, [item_ar("v1", "open")]);
-  dV.items[0].consequence_block.cb_schema_version = 2;
+  const dV = mk("dV", 2, [item_ar("v1", "open")]);
+  dV.items[0].consequence_block.cb_schema_version = 3;
   await call(GOOD, "dossier-put", [dV]);
   await resetBd();
-  ck("cb_schema_version 2 ⇒ apply REJECTED (§0.3 unknown higher)", !good(await call(GOOD, "item-apply", ["dV", "v1", RESP_APPROVE])));
+  ck("cb_schema_version 3 ⇒ apply REJECTED (§0.3 unknown higher; bound=2 v2)", !good(await call(GOOD, "item-apply", ["dV", "v1", RESP_APPROVE])));
   ck("the §0.3-rejected block ran NO work-plane op", (await BDN("create")) === 0);
   ck("the §0.3-rejected item latch NOT flipped", ica(await GET("dV"), "v1") === false);
   ck("the §0.3-rejected item NOT moved to applied", istate(await GET("dV"), "v1") !== "applied");
-  await call(GOOD, "dossier-put", [mk("dB", 1, [item_bare("b1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dB", 2, [item_bare("b1", "open")])]);
   await resetBd();
   ck("bare create (no type/priority/desc) ⇒ apply succeeds", good(await call(GOOD, "item-apply", ["dB", "b1", RESP_APPROVE])));
   ck("absent §5.3 type NOT synthesised (no --type)", (await BDN("create --title bare b1 --type")) === 0);
   ck("absent §5.3 prio NOT synthesised (no -p)", (await BDN("create --title bare b1 .* -p ")) === 0);
   ck("absent §5.3 desc NOT synthesised (no -d)", (await BDN("create --title bare b1 .* -d ")) === 0);
   ck("the bare create DID run (title + present labels only)", (await BDN("create --title bare b1 --labels x")) === 1);
-  await call(GOOD, "dossier-put", [mk("dK", 1, [item_ar("k1", "open"), item_ar("k2", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dK", 2, [item_ar("k1", "open"), item_ar("k2", "open")])]);
   await call(GOOD, "item-apply", ["dK", "k1", RESP_APPROVE]);
   ck("applying k1 latched k1", ica(await GET("dK"), "k1") === true);
   ck("applying k1 did NOT latch sibling k2 (key=Item id; §0.4)", ica(await GET("dK"), "k2") === false);
   ck("sibling k2 still open", istate(await GET("dK"), "k2") === "open");
-  await call(GOOD, "dossier-put", [mk("dN", 1, [item_ar("n1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dN", 2, [item_ar("n1", "open")])]);
   await call(GOOD, "item-set-state", ["dN", "n1", "answered", RESP_APPROVE]);
   await resetBd();
   ck("answered Item applies from its RECORDED .response (no arg)", good(await call(GOOD, "item-apply", ["dN", "n1"])));
   ck("answered-path applied the block", (await BDN("create --title new n1")) === 1);
   ck("answered-path n1 now applied", istate(await GET("dN"), "n1") === "applied");
-  await call(GOOD, "dossier-put", [mk("dX", 1, [item_ar("x1", "open")])]);
+  await call(GOOD, "dossier-put", [mk("dX", 2, [item_ar("x1", "open")])]);
   await call(GOOD, "item-set-state", ["dX", "x1", "expired"]);
   ck("expired Item ⇒ apply REJECTED", !good(await call(GOOD, "item-apply", ["dX", "x1", RESP_APPROVE])));
   ck("apply on a MISSING Item id REJECTED (§0.4)", !good(await call(GOOD, "item-apply", ["dN", "nope", RESP_APPROVE])));
@@ -526,7 +526,7 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("§5.1 sections[0] heading+prose non-empty", !!gA && !!gA.body.sections[0].prose);
   ck("§5.1 diagrams[] NON-empty for a STRUCTURAL source", !!gA && gA.body.diagrams.length >= 1);
   ck("§5.1 full_detail present + non-empty", !!gA && !!gA.body.full_detail);
-  ck("§5.1 dossier_schema_version stamped (=bound 1)", !!gA && gA.body.dossier_schema_version === 1);
+  ck("§5.1 dossier_schema_version stamped (=bound 2)", !!gA && gA.body.dossier_schema_version === 2);
   const G1b = gi("genB", "proactive_checkpoint", "digest", SRC_NONSTRUCT, [gItemAr("d1")]);
   ck("non-structural source ⇒ dg_generate still succeeds", good(await call(GOOD, "dossier-generate", [G1b])));
   const gB = await GET("genB");
@@ -534,11 +534,11 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("the other 3 tiers still present (non-structural)", !!gB && !!gB.body.full_detail);
   const vb = async (b) => good(await call(GOOD, "validate-body", [b]));
   ck("§5.1 empty sections[] REJECTED (decision-singular AD7 regression)",
-    !(await vb({ dossier_schema_version: 1, tldr: "x", sections: [], diagrams: [], full_detail: "y" })));
+    !(await vb({ dossier_schema_version: 2, tldr: "x", sections: [], diagrams: [], full_detail: "y" })));
   ck("§5.1 missing full_detail REJECTED (not optional — AD7)",
-    !(await vb({ dossier_schema_version: 1, tldr: "x", sections: [{ heading: "h", prose: "p" }], diagrams: [] })));
-  ck("§0.3 — body dossier_schema_version=2 REJECTED (unknown higher)",
-    !(await vb({ dossier_schema_version: 2, tldr: "x", sections: [{ heading: "h", prose: "p" }], diagrams: [], full_detail: "f" })));
+    !(await vb({ dossier_schema_version: 2, tldr: "x", sections: [{ heading: "h", prose: "p" }], diagrams: [] })));
+  ck("§0.3 — body dossier_schema_version=3 REJECTED (unknown higher; bound=2 v2)",
+    !(await vb({ dossier_schema_version: 3, tldr: "x", sections: [{ heading: "h", prose: "p" }], diagrams: [], full_detail: "f" })));
 
   // ── test-dossier-gen.sh — EXIT-2: MANDATORY context_anchor — reject ──
   const vi = async (i) => good(await call(GOOD, "validate-item", [i]));
@@ -564,17 +564,17 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("pick-option each option carries a pre-declared consequence_block",
     !!gA && gA.items[0].options.map((o) => o.consequence_block).length === 2);
   ck("pick-option option cb_schema_version stamped (=bound, §0.3)",
-    !!gA && gA.items[0].options[0].consequence_block.cb_schema_version === 1);
+    !!gA && gA.items[0].options[0].consequence_block.cb_schema_version === 2);
   ck("pick-option missing recommendation ⇒ REJECTED (§5.2)",
     !(await vi((() => { const x = gItemPo("a7"); delete x.recommendation; return x; })())));
   ck("pick-option with NO options ⇒ REJECTED (§5.2)", !(await vi({ ...gItemPo("a8"), options: [] })));
   ck("pick-option duplicate option_id ⇒ REJECTED (ambiguous chosen block)",
     !(await vi((() => { const x = gItemPo("a9"); x.options[1].option_id = x.options[0].option_id; return x; })())));
   const vc = async (c) => good(await call(GOOD, "cb-applyable", [c]));
-  ck("dg__cb_applyable accepts a v1 four-array block",
-    await vc({ cb_schema_version: 1, creates: [], unblocks: [], labels: [], status_changes: [] }));
-  ck("§0.3 — cb_schema_version=2 REJECTED (unknown higher)", !(await vc({ cb_schema_version: 2, creates: [] })));
-  ck("§5.3 — creates not an array ⇒ REJECTED", !(await vc({ cb_schema_version: 1, creates: "nope" })));
+  ck("dg__cb_applyable accepts a v2 four-array block",
+    await vc({ cb_schema_version: 2, creates: [], unblocks: [], labels: [], status_changes: [] }));
+  ck("§0.3 — cb_schema_version=3 REJECTED (unknown higher; bound=2 v2)", !(await vc({ cb_schema_version: 3, creates: [] })));
+  ck("§5.3 — creates not an array ⇒ REJECTED", !(await vc({ cb_schema_version: 2, creates: "nope" })));
   ck("an Item whose cb is NOT machine-applyable ⇒ Item REJECTED",
     !(await vi({ ...gItemAr("a10"), consequence_block: { cb_schema_version: 99 } })));
 
@@ -619,8 +619,8 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   // env knob (a Worker cannot exec a cmd) — the SAME env-knob pattern CF.1
   // uses for CO_EXPECTED_TOKEN. A swapped author still flows the SAME §5 gate.
   env.DG_AUTHOR_FIXTURE = JSON.stringify({
-    body: { dossier_schema_version: 1, tldr: "swapped-author tldr", sections: [{ heading: "S", prose: "swapped prose" }], diagrams: [{ caption: "c", content: "d" }], full_detail: "swapped full detail, stands alone." },
-    items: [{ id: "sw1", kind: "approve-reject", framing: { ask: "swapped ask", why: "swapped why" }, context_anchor: { where: "swapped where", expansion: "swapped expansion" }, reversible: "swapped reversible", consequence_block: { cb_schema_version: 1, creates: [], unblocks: [], labels: [], status_changes: [] } }],
+    body: { dossier_schema_version: 2, tldr: "swapped-author tldr", sections: [{ heading: "S", prose: "swapped prose" }], diagrams: [{ caption: "c", content: "flowchart TD\n  A --> B" }], full_detail: "swapped full detail, stands alone." },
+    items: [{ id: "sw1", kind: "approve-reject", framing: { ask: "swapped ask", why: "swapped why" }, context_anchor: { where: "swapped where", expansion: "swapped expansion" }, reversible: "swapped reversible", consequence_block: { cb_schema_version: 2, creates: [], unblocks: [], labels: [], status_changes: [] } }],
   });
   await call(GOOD, "dossier-generate", [gi("swap", "human_flag", "blocking", SRC_STRUCT, [gItemAr("ignored")])]);
   ck("a SWAPPED author still produces a schema-valid dossier (pass-count not bound)",
@@ -628,8 +628,8 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("the swapped dossier still passes the SAME frozen §5 gate",
     good(await call(GOOD, "validate-dossier", [await GET("swap")])));
   env.DG_AUTHOR_FIXTURE = JSON.stringify({
-    body: { dossier_schema_version: 1, tldr: "t", sections: [{ heading: "h", prose: "p" }], diagrams: [], full_detail: "f" },
-    items: [{ id: "bad1", kind: "approve-reject", framing: { ask: "a", why: "w" }, reversible: "r", consequence_block: { cb_schema_version: 1, creates: [], unblocks: [], labels: [], status_changes: [] } }],
+    body: { dossier_schema_version: 2, tldr: "t", sections: [{ heading: "h", prose: "p" }], diagrams: [], full_detail: "f" },
+    items: [{ id: "bad1", kind: "approve-reject", framing: { ask: "a", why: "w" }, reversible: "r", consequence_block: { cb_schema_version: 2, creates: [], unblocks: [], labels: [], status_changes: [] } }],
   });
   ck("swapped author emitting an Item w/o context_anchor ⇒ STILL REJECTED",
     !good(await call(GOOD, "dossier-generate", [gi("swapbad", "human_flag", "blocking", SRC_STRUCT, [])])));
@@ -642,7 +642,8 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   // ════════════════════════════════════════════════════════════════════════
   // ANTI-DRIFT (structural — sibling surfaces untouched)
   // ════════════════════════════════════════════════════════════════════════
-  // CF.1 §4 registry UNCHANGED — dossier⇒1 (sv1 ok above; sv2 rejected above).
+  // CF.1 §4 registry dossier⇒2 (v2 §11 Mermaid amend; CF.6 added no record
+  // type) — sv2 ok above; sv3 rejected above.
   // CF.6 added NO §4 record type: a put of a CF.6-shaped type is an unknown
   // §4 type (the `co__schema_version dossier_dedup/dossier_fu/dossier_gen ==
   // ""` analogue — the dossier-level dedup is CF.8's distinct key, NOT here).

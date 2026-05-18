@@ -11,8 +11,9 @@
 #
 # Asserts the EXIT CRITERIA T5.1 owns against INTERFACE.md v1:
 #   1. §4.1{body,items[]} + §4.1.1 Item round-trip THROUGH the T4 store with
-#      `principal` + `schema_version=1` STAMPED; an unknown HIGHER
-#      schema_version is REJECTED (§0.3) on BOTH write and read.
+#      `principal` + `schema_version=2` STAMPED (v2 — §11 Mermaid amend
+#      single-source bump); an unknown HIGHER schema_version is REJECTED
+#      (§0.3) on BOTH write and read.
 #   2. The per-Item state machine permits ONLY open→answered→applied and
 #      open→expired; every illegal transition (skip / terminal-escape /
 #      no-op / unknown) is REJECTED (no write).
@@ -93,34 +94,34 @@ mk() {  # mk <id> <schema_version> <items-json-array>
     { id:$id, schema_version:$sv, kind:"decide", trigger:"worker_stuck",
       bead_ref:"claude-tools-65z", tier:"blocking",
       created_at:"2026-05-16T00:00:00Z", timer_fire_at:null,
-      body:{ dossier_schema_version:1, tldr:"opaque to substrate",
+      body:{ dossier_schema_version:2, tldr:"opaque to substrate",
              sections:[], diagrams:[], full_detail:"T5.2 owns this" },
       items:$items }'
 }
 item() { # item <id> <state> — §5 keys present but substrate-irrelevant
   jq -cn --arg i "$1" --arg s "$2" '
     { id:$i, kind:"approve-reject", framing:{}, context_anchor:{where:"x",expansion:"y"},
-      consequence_block:{cb_schema_version:1,creates:[],unblocks:[],labels:[],status_changes:[]},
+      consequence_block:{cb_schema_version:2,creates:[],unblocks:[],labels:[],status_changes:[]},
       state:$s, response:null, consequence_applied:false, applied_at:null }'
 }
 
 echo "── EXIT-1: §4.1/§4.1.1 round-trip · principal+sv stamped · §0.3 ──"
-D1="$(mk dossA 1 "[$(item it1 open),$(item it2 open)]")"
+D1="$(mk dossA 2 "[$(item it1 open),$(item it2 open)]")"
 id="$(do_dossier_put "$GOOD" "$D1")"; rc=$?
-ck "do_dossier_put accepts a well-formed v1 envelope"        eq "$rc" "0"
+ck "do_dossier_put accepts a well-formed v2 envelope"        eq "$rc" "0"
 ck "returns the dossier id"                                  eq "$id" "dossA"
 S="$(GET dossA)"
 ck "envelope round-tripped through the T4 §4 store"          eq "$(jq -r .id <<<"$S")" "dossA"
 ck "T4 STAMPED principal=PRINCIPAL_V1 (§9.1)"                eq "$(jq -r .principal <<<"$S")" "brian"
-ck "schema_version=1 persisted (§4.1)"                       eq "$(jq -r .schema_version <<<"$S")" "1"
+ck "schema_version=2 persisted (§4.1; v2 §11 amend)"         eq "$(jq -r .schema_version <<<"$S")" "2"
 ck "items[] round-tripped (2 Items)"                         eq "$(jq -r '.items|length' <<<"$S")" "2"
 ck "OPAQUE body round-tripped UNTOUCHED (no §5 synthesis)" \
    eq "$(jq -r '.body.full_detail' <<<"$S")" "T5.2 owns this"
 ck "per-Item §4.1.1 record shape persisted"                  eq "$(jq -r '.items[0].consequence_applied' <<<"$S")" "false"
 ck "do_dossier_get returns the record"                       eq "$(do_dossier_get "$GOOD" dossA | jq -r .id)" "dossA"
 # §0.3 — unknown HIGHER schema_version rejected on the WRITE path, NO write.
-BAD2="$(mk dossHi 2 "[$(item it1 open)]")"
-ckn "§0.3 — schema_version 2 REJECTED on write (unknown higher)"  do_dossier_put "$GOOD" "$BAD2"
+BAD2="$(mk dossHi 3 "[$(item it1 open)]")"
+ckn "§0.3 — schema_version 3 REJECTED on write (unknown higher; bound=2 v2)"  do_dossier_put "$GOOD" "$BAD2"
 ckn "§0.3 — the rejected higher-version dossier was NOT written"  co_request "$GOOD" get dossier dossHi
 # §0.3 also bound on the READ path (defense): a v3 slipped directly into the
 # store (bypassing put) must be rejected by do_dossier_get, not parsed.
@@ -133,7 +134,7 @@ ckn "§0.3 — string \"1\" schema_version REJECTED (jq type-check)" \
    do_dossier_put "$GOOD" "$(jq -c '.schema_version="1"' <<<"$D1")"
 # §9.1 — no/invalid token ⇒ rejected BEFORE any write (reuse ONE chokepoint).
 ckn "§9.1 — missing bearer ⇒ do_dossier_put REJECTED" \
-   do_dossier_put "" "$(mk dossNoTok 1 "[$(item it1 open)]")"
+   do_dossier_put "" "$(mk dossNoTok 2 "[$(item it1 open)]")"
 ckn "§9.1 — nothing written on the auth-failed path"  co_request "$GOOD" get dossier dossNoTok
 
 echo ""
@@ -151,7 +152,7 @@ ckn "answered→open ILLEGAL (no rewind)"    do_item_state_check answered open
 ckn "unknown→answered ILLEGAL"             do_item_state_check bogus answered
 # Applied through the store: open→answered→applied succeeds; an illegal jump
 # is rejected with NO write (the stored state is unchanged).
-do_dossier_put "$GOOD" "$(mk dossSM 1 "[$(item s1 open),$(item s2 open)]")" >/dev/null
+do_dossier_put "$GOOD" "$(mk dossSM 2 "[$(item s1 open),$(item s2 open)]")" >/dev/null
 ck  "set-state s1 open→answered ⇒ persisted"     setstate_then_is "$GOOD" dossSM s1 answered
 ck  "set-state s1 answered→applied ⇒ persisted"  setstate_then_is "$GOOD" dossSM s1 applied
 ckn "set-state s2 open→applied REJECTED (illegal skip)"        do_item_set_state "$GOOD" dossSM s2 applied
@@ -161,7 +162,7 @@ ckn "set-state on a MISSING Item id REJECTED (§0.4)"           do_item_set_stat
 
 echo ""
 echo "── EXIT-3: PRIMITIVE 1 latch · PRIMITIVE 2 task_ref dedup ──"
-do_dossier_put "$GOOD" "$(mk dossL 1 "[$(item L1 open),$(item L2 open)]")" >/dev/null
+do_dossier_put "$GOOD" "$(mk dossL 2 "[$(item L1 open),$(item L2 open)]")" >/dev/null
 ck  "do_item_latch flips consequence_applied false→true once"  do_item_latch "$GOOD" dossL L1
 ck  "L1.consequence_applied is now true"                       eq "$(ICA dossL L1)" "true"
 ck  "L1.applied_at stamped (§4.1.1)"                           ne "$(JFIELD dossL '.items[]|select(.id=="L1").applied_at')" "null"
@@ -184,19 +185,19 @@ ck  "§9.1 — the auth-failed dedup wrote NOTHING"               ne "$(do_dedup
 echo ""
 echo "── EXIT-4: DERIVED rollup — informational, NEVER a gate (AD7) ──"
 ck "rollup = open while ≥1 item non-terminal" \
-   eq "$(do_dossier_rollup "$(mk x 1 "[$(item a applied),$(item b open)]")")" "open"
+   eq "$(do_dossier_rollup "$(mk x 2 "[$(item a applied),$(item b open)]")")" "open"
 ck "rollup = open while an item is merely answered (non-terminal)" \
-   eq "$(do_dossier_rollup "$(mk x 1 "[$(item a answered)]")")" "open"
+   eq "$(do_dossier_rollup "$(mk x 2 "[$(item a answered)]")")" "open"
 ck "rollup = resolved when ALL items terminal (applied|expired)" \
-   eq "$(do_dossier_rollup "$(mk x 1 "[$(item a applied),$(item b expired)]")")" "resolved"
-do_dossier_put "$GOOD" "$(mk dossR 1 "[$(item r1 open)]")" >/dev/null
+   eq "$(do_dossier_rollup "$(mk x 2 "[$(item a applied),$(item b expired)]")")" "resolved"
+do_dossier_put "$GOOD" "$(mk dossR 2 "[$(item r1 open)]")" >/dev/null
 ck "rollup persisted onto the stored envelope (T6a projection datum)" \
    eq "$(JFIELD dossR '.state')" "open"
 # THE AD7 invariant: the rollup gates NOTHING. Build a 15-item dossier,
 # resolve exactly 6, prove the other 9 still accept ops; then prove an op
 # STILL succeeds when the rollup reads resolved.
 fifteen="$(for n in $(seq 1 15); do item "q$n" open; done | paste -sd, -)"
-do_dossier_put "$GOOD" "$(mk doss15 1 "[$fifteen]")" >/dev/null
+do_dossier_put "$GOOD" "$(mk doss15 2 "[$fifteen]")" >/dev/null
 for n in 1 2 3 4 5 6; do
   do_item_set_state "$GOOD" doss15 "q$n" answered >/dev/null
   do_item_latch     "$GOOD" doss15 "q$n"          >/dev/null
@@ -228,7 +229,7 @@ echo "   single-value (S-6 timer-fire vs poll-fallback; AD7 under load) ──"
 # A sequential 2nd-latch rejection only proves single-VALUE idempotence on a
 # quiescent store; S-6 (§2.2 timer-fire racing poll-fallback) is a genuine
 # CONCURRENCY scenario, so the latch must reject the 2nd *concurrent* writer.
-do_dossier_put "$GOOD" "$(mk dossC 1 "[$(item C1 open)]")" >/dev/null
+do_dossier_put "$GOOD" "$(mk dossC 2 "[$(item C1 open)]")" >/dev/null
 RD="$WORK/race-latch"; mkdir -p "$RD"
 for k in a b c d e f g h; do
   ( do_item_latch "$GOOD" dossC C1 >/dev/null 2>&1; echo "$?" > "$RD/$k" ) &
@@ -243,7 +244,7 @@ ck "C1.applied_at stamped once (no torn/duplicate apply)"   ne "$(JFIELD dossC '
 # DIFFERENT sibling Items must NOT clobber each other (the per-dossier
 # single-writer lock makes the shared envelope a single-writer object).
 fifteen2="$(for n in $(seq 1 12); do item "p$n" open; done | paste -sd, -)"
-do_dossier_put "$GOOD" "$(mk dossP 1 "[$fifteen2]")" >/dev/null
+do_dossier_put "$GOOD" "$(mk dossP 2 "[$fifteen2]")" >/dev/null
 for n in $(seq 1 12); do
   ( do_item_set_state "$GOOD" dossP "p$n" answered >/dev/null 2>&1 ) &
 done
@@ -263,7 +264,7 @@ ck "the surviving binding is internally consistent (one fork⇒one dossier)" \
 
 echo ""
 echo "── ANTI-DRIFT (structural — sibling surfaces untouched) ──"
-ck "T4 §4 registry UNCHANGED — dossier⇒1 (no schema bump)"  eq "$(co__schema_version dossier)" "1"
+ck "T4 §4 registry dossier⇒2 (v2 §11 Mermaid amend; substrate added no record type)"  eq "$(co__schema_version dossier)" "2"
 ck "substrate added NO §4 record type — 'dossier_dedup' unregistered" \
    eq "$(co__schema_version dossier_dedup)" ""
 ck "dedup record is a T5 sibling namespace, NOT records/ (§10.3 precedent)" \

@@ -105,9 +105,9 @@ ASK_JSON='{"tldr":"Worker hit a fork it must not resolve.",
  "ask":"Adopt approach A or B?",
  "options":[
    {"option_id":"a","label":"Approach A","blast_radius":"low",
-    "consequence_block":{"cb_schema_version":1,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}},
+    "consequence_block":{"cb_schema_version":2,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}},
    {"option_id":"b","label":"Approach B","blast_radius":"medium",
-    "consequence_block":{"cb_schema_version":1,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}}],
+    "consequence_block":{"cb_schema_version":2,"creates":[],"unblocks":[],"labels":[],"status_changes":[]}}],
  "recommendation":{"value":"a","why":"A is reversible and lower blast radius."},
  "reversible":"Nothing applied until a human picks (§5.3 = T5.3)."}'
 

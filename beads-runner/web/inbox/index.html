@@ -120,6 +120,30 @@
 
   <div class="pop" id="pop"><span id="popmsg"></span></div>
 
+  <!-- v2 §11 Mermaid amendment: §5.1 diagrams[].content is Mermaid source;
+       the Inbox MUST render it as an actual diagram (SVG), never source in a
+       <pre>. A classic script (runs before the deferred module) creates the
+       readiness Promise + an 8s timeout; the pinned ESM module resolves it.
+       If the import fails (offline / CDN blocked / CSP) the timeout rejects
+       and app.js degrades to a labeled source block with a "could not
+       render" note — it never hangs the dossier. -->
+  <script>
+    window.__mermaidReady = new Promise(function (res, rej) {
+      window.__mermaidResolve = res;
+      setTimeout(function () { rej(new Error('mermaid load timeout')); }, 8000);
+    });
+    window.__mermaidReady.catch(function () {}); // app.js owns the fallback
+  </script>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'dark',
+      fontFamily: '"IBM Plex Mono", ui-monospace, monospace'
+    });
+    window.__mermaidResolve(mermaid);
+  </script>
   <script src="./inbox-view.js"></script>
   <script src="./app.js"></script>
 </body>
