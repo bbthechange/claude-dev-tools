@@ -1,0 +1,37 @@
+# a53 DEPLOY GATE — PRODUCTION config (ADDITIVE; not an edit of the FROZEN
+# CF.1 wrangler.toml nor CF.10's LOCAL wrangler.pages-dev.toml).
+#
+# Production realization = the CF.10 adapter front (pages-dev/adapter.js) over
+# the byte-unchanged CF.1 Worker (../src/index.js), so the FROZEN T6a/T6b Pages
+# proxies' `/request?op=` REST dialect is served in production exactly as it is
+# locally. The adapter imports src/index.js and re-exports the Coordinator DO
+# => the SAME single-threaded singleton (AD1 intact); the §9.1 authenticate()
+# chokepoint stays the frozen Worker's (CO_EXPECTED_TOKEN still enforced).
+#
+# Same `name` as the step-5 deploy => same DO namespace + the already-set
+# CO_EXPECTED_TOKEN secret + the real hosted D1 all carry over; this redeploy
+# only swaps the entrypoint (raw Worker -> adapter front).
+
+name = "coordinator-cf"
+main = "pages-dev/adapter.js"
+compatibility_date = "2026-05-01"
+
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Coordinator"]
+
+# The real hosted D1 created in a53 step 1 (same binding/name as the engine
+# expects; database_id is the live one, not the local placeholder).
+[[d1_databases]]
+binding = "DB"
+database_name = "coordinator-records"
+database_id = "c80f8fb8-da0c-40b1-8051-70ff4ec5dd51"
+migrations_dir = "migrations"
+
+# CO_EXPECTED_TOKEN is set as a Worker SECRET on this Worker name (a53 step 4)
+# — never plaintext here. Unset-in-config => the secret store value wins.
+[vars]
