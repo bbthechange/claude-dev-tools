@@ -617,34 +617,63 @@ classify_failure() {
 # deterministic path the prompt now mandates: `bd update --status=blocked` →
 # structured ask → `bd human` → exit WORKER_STUCK_EXIT (§7.2). §7.1 mandates
 # STUCK_NEEDS_HUMAN PREEMPT both the exit-0 "agent forgot to close" masking
-# (research Q5 failure class) and UNKNOWN_FAILURE. Detection fires on EITHER —
+# (research Q5 failure class) and UNKNOWN_FAILURE. Detection fires on ANY —
 # zero model trust, same discipline as the §7.2 BACKSTOP stream scan:
 #   1. exit == WORKER_STUCK_EXIT — the §7.2/§8.1 canonical worker sentinel
 #      (what the conformance `stuck_primary` plan emits; what a stuck-aware
 #      worker wrapper sets). The deterministic primary.
-#   2. the bead STATE the worker deterministically produced: status=blocked
-#      AND the `human` flag (label) set — the REAL-WORLD corroborator, because
-#      a real `claude -p` ends its turn and exits 0 (it cannot set its own
-#      process exit code; research Q4 — so the bd CLI side-effects are the
-#      reliable real signal). The runner sets the bead in_progress before the
-#      run (never blocked), so blocked+human after is this run's deliberate
-#      worker act, not a stale-state false positive.
+#   2. CANONICAL bead state: status=blocked AND the `human` label set — the
+#      real-world corroborator (the runner sets in_progress before each run,
+#      so blocked+human after is this run's deliberate act). claude -p exits
+#      0 regardless (research Q4); the bd-CLI side effects are the signal.
+#   3. RELAXED bead state (claude-tools-2ir): the `human` label set AND notes
+#      contain a STUCK_NEEDS_HUMAN marker, even WITHOUT status=blocked. Post-
+#      mortem of n34 + the opa→n34, 4wt→4xe chains: agents reliably do 3 of
+#      the 4 stuck-protocol steps (label + structured note + stop) but slip
+#      step 1 (status flip). The signal is honest; a 4-step ceremony where
+#      missing step 1 invalidates the OTHER 3 is brittle. Brian's policy call
+#      (2026-05-20): accept the signal, AUTO-FLIP status=blocked here so the
+#      rest of the flow (sr_route_stuck, dossier, blocked-for-human routing)
+#      sees the canonical state. Tradeoff Brian acknowledged: forgives slips
+#      but trusts the label; the existing flow already trusts the label
+#      heavily. Every auto-flip logs an incident so we see slip frequency.
 # Echoes "worker_stuck" + returns 0 on a fire; nonzero + silent otherwise.
 # Args: $1 = task_id, $2 = claude exit code.
 detect_worker_stuck_primary() {
-  local task_id="$1" exit_code="${2:-0}" row
+  local task_id="$1" exit_code="${2:-0}" row status has_human has_stuck_note
   if [[ "$exit_code" == "${WORKER_STUCK_EXIT:-7}" ]]; then
     echo "worker_stuck"; return 0
   fi
   command -v bd >/dev/null 2>&1 || return 1
-  row=$(bd show "$task_id" --json 2>/dev/null) || return 1
+  # --long --json includes the `notes` key (the runner already relies on this
+  # shape at create_analysis_task — same contract).
+  row=$(bd show "$task_id" --long --json 2>/dev/null) || return 1
   [[ -n "$row" ]] || return 1
-  printf '%s' "$row" | jq -e -r '
-    if (.[0].status == "blocked")
-       and (any(.[].labels[]?; . == "human")) then true else empty end' \
-    >/dev/null 2>&1 || return 1
-  echo "worker_stuck"
-  return 0
+  status=$(printf '%s' "$row" | jq -r '.[0].status // ""' 2>/dev/null)
+  has_human=$(printf '%s' "$row" | jq -r '
+    if (any(.[].labels[]?; . == "human")) then "yes" else "no" end' 2>/dev/null)
+  has_stuck_note=$(printf '%s' "$row" | jq -r '
+    if ((.[0].notes // "") | test("STUCK_NEEDS_HUMAN")) then "yes" else "no" end' 2>/dev/null)
+  # Case 2: canonical blocked+human — fires as before, no auto-flip needed.
+  if [[ "$status" == "blocked" && "$has_human" == "yes" ]]; then
+    echo "worker_stuck"; return 0
+  fi
+  # Case 3 (claude-tools-2ir RELAXED): human label + STUCK_NEEDS_HUMAN note,
+  # status NOT blocked ⇒ the agent slipped step 1. Auto-flip and log so the
+  # downstream §7.3 spine sees the canonical state, and metrics show how often
+  # the slip happens (informs prompt-vs-runner-tolerance investment).
+  if [[ "$has_human" == "yes" && "$has_stuck_note" == "yes" ]]; then
+    bd update "$task_id" --status=blocked >/dev/null 2>&1 || true
+    if command -v record_incident >/dev/null 2>&1; then
+      record_incident "$task_id" "STUCK_AUTOFLIP:relaxed-primary(human+note,no-blocked)" "-"
+    fi
+    if command -v append_runner_note >/dev/null 2>&1; then
+      append_runner_note "$task_id" "STUCK_AUTOFLIP relaxed-primary — agent set 'human' label + STUCK_NEEDS_HUMAN note but missed status=blocked; runner auto-flipped (claude-tools-2ir)" "-"
+    fi
+    echo "worker_stuck"
+    return 0
+  fi
+  return 1
 }
 
 # Create an analysis task that blocks the failed task.
@@ -1081,8 +1110,8 @@ BEADS_DESC
 
 IMPORTANT: You are running non-interactively. Do NOT use EnterPlanMode or ExitPlanMode -- there is no human to approve plans. Do NOT use AskUserQuestion -- there is no human to answer. Just execute the work directly.
 
-If -- and ONLY if -- you hit a genuine fork you must NOT resolve yourself (an irreversible product / architecture / scope decision that is the human's call to make, or a spec ambiguity where guessing would risk real damage), do NOT ask and do NOT guess a default. This is NOT for ordinary hard work and NOT a substitute for thinking a problem through -- it is only for a decision a human owns. When you hit one, take the deliberate stuck-signal path, in this exact order, then STOP:
-  1. bd update BEADS_ID --status=blocked
+If -- and ONLY if -- you hit a genuine fork you must NOT resolve yourself (an irreversible product / architecture / scope decision that is the human's call to make, or a spec ambiguity where guessing would risk real damage), do NOT ask and do NOT guess a default. This is NOT for ordinary hard work and NOT a substitute for thinking a problem through -- it is only for a decision a human owns. When you hit one, take the deliberate stuck-signal path, in this exact order, then STOP. ALL FOUR STEPS ARE REQUIRED -- step 1 (the status flip) is the linchpin; missing it leaves the bead looking 'in_progress' to everything downstream. Do step 1 FIRST, before anything else:
+  1. bd update BEADS_ID --status=blocked    ⟵ DO THIS FIRST. This is the canonical signal; without it the bead reads as still-running.
   2. Write the structured ask into the bead so a human can decide from it alone:
        bd update BEADS_ID --append-notes="STUCK_NEEDS_HUMAN
        TL;DR: <one sentence>
@@ -1092,6 +1121,8 @@ If -- and ONLY if -- you hit a genuine fork you must NOT resolve yourself (an ir
        Reversible: <what is / isn't reversible>"
   3. bd label add BEADS_ID human
   4. Stop. Do NOT close the issue, do NOT pick an option yourself, do NOT keep working around it -- end your turn. The runner detects this state (status=blocked + the 'human' label), routes the ask to the human, and resumes the task once they decide. For a real human-decision fork this IS the correct, expected outcome -- not a failure.
+
+Self-check before you stop: run `bd show BEADS_ID` and confirm status is blocked, the human label is present, and the STUCK_NEEDS_HUMAN note is in the notes. If status is still in_progress, you missed step 1 -- redo it now.
 
 Follow the instructions in the task description above exactly. The description contains the full workflow for this task type.
 
