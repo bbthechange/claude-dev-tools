@@ -52,6 +52,14 @@ set -uo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 
+# ── L2 (claude-tools-1tu) gate-policy chokepoint ─────────────────────────────
+# The runner consults gate-policy.sh on every candidate pickup (st_reconcile).
+# A `gate-human:*` verdict means: do NOT auto-pick this bead up — surface it
+# to Brian (set status=blocked + add `human` label, append a structured note)
+# and move on. See agents/gate-policy.md for the table + the 3 GATE points.
+# Env-overridable so the test harness can point at a fake on PATH.
+GATE_POLICY_SH="${GATE_POLICY_SH:-$RUNNER_DIR/gate-policy.sh}"
+
 # ── §0.5 frozen constants (env-overridable; literal default == §0.5 table) ────
 CONTROL_POLL_INTERVAL="${CONTROL_POLL_INTERVAL:-60}"   # §0.5 (60 s) desired-state poll DURING a task; stop honored ≤ this
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"         # §0.5 (60 s) actual-state+liveness heartbeat; lease renew
@@ -948,6 +956,50 @@ st_starting() {
   transition RECONCILE
 }
 
+# ── L2 (claude-tools-1tu) — gate-human surface ───────────────────────────────
+# When the gate-policy verdict on a candidate is `gate-human:<reason>`, we do
+# NOT acquire a lease or set in_progress. We mirror the existing _drive_blocked_
+# for_human shape used by §7.3 STUCK_NEEDS_HUMAN so the Coordinator's snapshot
+# projection / Inbox surface reuses the same `status=blocked + human label`
+# channel — one routing seam, two producers. For the collaborative-stage
+# preset (the only v1 enforced gate; see agents/gate-policy.md) the note
+# reads "READY_TO_PAIR" so the Inbox can render the canonical
+# "ready to pair on <title>" row (UX mocks). The bead does NOT re-appear in
+# `bd ready` (status=blocked filters it out), so the runner moves cleanly to
+# the next candidate without burning a retry-counter slot.
+_surface_gate_human() {
+  local bead="$1" title="$2" verdict="$3"
+  local reason="${verdict#gate-human:}" ts note
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  case "$reason" in
+    collaborative-stage)
+      note="READY_TO_PAIR
+Reason: preset:collaborative-stage — Brian asked to be IN this stage with the agent
+Title: $title
+Surfaced at: $ts (runner gate-policy / L2 claude-tools-1tu)" ;;
+    bd-unavailable)
+      note="GATE_HUMAN
+Reason: bd label list failed during gate-policy consultation — fail-CLOSED
+Title: $title
+Surfaced at: $ts (runner gate-policy / L2 claude-tools-1tu)" ;;
+    unknown-preset)
+      note="GATE_HUMAN
+Reason: preset label is not in the v1 closed enum — fail-CLOSED so an enricher typo cannot quietly skip Brian
+Title: $title
+Surfaced at: $ts (runner gate-policy / L2 claude-tools-1tu)" ;;
+    *)
+      note="GATE_HUMAN
+Reason: $reason
+Title: $title
+Surfaced at: $ts (runner gate-policy / L2 claude-tools-1tu)" ;;
+  esac
+  # Work-plane projection — best-effort + idempotent (mirrors §7.3 shape).
+  safe_capture BD_UNAVAILABLE "" -- bd update "$bead" --status=blocked >/dev/null
+  safe_capture BD_UNAVAILABLE "" -- bd label add "$bead" human >/dev/null
+  safe_capture BD_UNAVAILABLE "" -- bd update "$bead" --append-notes="$note" >/dev/null
+  echo "runner: gate-policy verdict=$verdict for $bead — surfaced to human (status=blocked + label:human), continuing"
+}
+
 # THE single reconcile point between tasks.
 st_reconcile() {
   CANDIDATE_ID=""; CANDIDATE_TITLE=""; CANDIDATE_DESC=""
@@ -994,6 +1046,40 @@ st_reconcile() {
   fi
   CANDIDATE_TITLE="$(printf '%s' "$ready_json" | jq -r '.[0].title // ""'       2>/dev/null)"
   CANDIDATE_DESC="$(printf '%s' "$ready_json"  | jq -r '.[0].description // ""' 2>/dev/null)"
+
+  # ── L2 (claude-tools-1tu) gate-policy consultation ─────────────────────────
+  # BEFORE the lease acquire (so a gate-human bead never burns a lease or an
+  # in-progress write). The script prints `auto-advance` for the common case
+  # and `gate-human:<reason>` when Brian must see it first. A bd subprocess
+  # failure inside the script yields `gate-human:bd-unavailable` (fail-CLOSED
+  # on the gate — opposite of capacity's fail-OPEN posture; agents/gate-policy.md).
+  # If the script itself is missing we fail-OPEN to auto-advance (an old
+  # checkout / unwritable RUNNER_DIR should NOT silently block every pickup);
+  # one visible degrade line is emitted so the regression is loud.
+  local gate_verdict
+  if [[ -x "$GATE_POLICY_SH" ]]; then
+    gate_verdict="$("$GATE_POLICY_SH" decide "$CANDIDATE_ID" 2>/dev/null)" \
+      || gate_verdict="${gate_verdict:-gate-human:bd-unavailable}"
+  else
+    degrade GATE_POLICY_MISSING "$GATE_POLICY_SH not executable — auto-advancing all pickups (L2 gate disabled)"
+    gate_verdict="auto-advance"
+  fi
+  case "$gate_verdict" in
+    auto-advance)
+      : ;;
+    gate-human:*)
+      _surface_gate_human "$CANDIDATE_ID" "$CANDIDATE_TITLE" "$gate_verdict"
+      sleep "${LEASE_DENY_BACKOFF:-3}"
+      transition RECONCILE; return ;;
+    *)
+      # Unknown verdict shape is a contract drift — fail-CLOSED for safety
+      # and emit a typed degrade so the next iteration's logs name it.
+      degrade GATE_POLICY_VERDICT "unrecognized verdict='$gate_verdict' from $GATE_POLICY_SH — treating as gate-human (fail-CLOSED)"
+      _surface_gate_human "$CANDIDATE_ID" "$CANDIDATE_TITLE" "gate-human:unrecognized-verdict"
+      sleep "${LEASE_DENY_BACKOFF:-3}"
+      transition RECONCILE; return ;;
+  esac
+
   transition CLAIM
 }
 
