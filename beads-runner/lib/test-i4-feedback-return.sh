@@ -456,6 +456,172 @@ else
   note "batching directive (the sole epic-closing gate)."
 fi
 
+# ════════════════════════════════════════════════════════════════════════════
+# PART D — M5 idle-handoff via the daemon (claude-tools-0ll). With the daemon
+#          observing and the workspace runner IDLE (or about to come around to
+#          pick the same parked task), the daemon must capture the answer file
+#          INTO THE WORKSPACE STORE and emit the structured `idle-handoff:
+#          workspace=X bead=Y dossier=Z` observable — and the splice path the
+#          runner already carries (PART 0 above proves it is wired) must read
+#          that file back as the HUMAN DECISION block the resumed agent sees.
+#          The test uses the in-process bash store (no COORDINATOR_URL ⇒ no
+#          HTTP override) so it is hermetic and runs in seconds. We call the
+#          daemon's per-workspace driver directly — equivalent to one tick of
+#          the daemon's main loop — without launching a real daemon process.
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART D — M5 idle-handoff end-to-end · daemon poll → answer file → HUMAN DECISION splice (claude-tools-0ll) ──"
+DAEMON_DIR="$(cd "$HERE/../daemon" 2>/dev/null && pwd)"
+POLL_LIB="$DAEMON_DIR/hosted-resolution-poll.sh"
+REG_LIB="$DAEMON_DIR/workspace-registry.sh"
+if [[ ! -f "$POLL_LIB" || ! -f "$REG_LIB" ]]; then
+  bad "M5 daemon libs missing (need $POLL_LIB and $REG_LIB) — PART D SKIPPED"
+else
+  # M5 is the LOG line + the idempotent splice path; assert both surface.
+  grep -q 'idle-handoff:' "$POLL_LIB" \
+    && ok "hosted-resolution-poll.sh declares the M5 structured 'idle-handoff:' observable" \
+    || bad "hosted-resolution-poll.sh must emit an 'idle-handoff:' line on the M5 branch"
+  grep -q 'M5 (claude-tools-0ll)' "$POLL_LIB" \
+    && ok "hosted-resolution-poll.sh marks the M5 branch (claude-tools-0ll) so a reader can trace the wiring" \
+    || bad "hosted-resolution-poll.sh must cite claude-tools-0ll on the M5 branch"
+
+  (
+    set +u
+    WD="$(mktemp -d)"
+    WS="$WD/workspace"
+    mkdir -p "$WS/.beads/runner-logs"
+    WS_STORE="$WS/.beads/runner-logs/.co-store"
+    mkdir -p "$WS_STORE/records" "$WS_STORE/blocked-for-human" "$WS_STORE/blocked-for-human-answer"
+
+    # Shadow `bd` so the daemon's reconcile (which the per-workspace poll also
+    # runs) is a no-op — same precedent as test-m4-hosted-resolution-poll.sh
+    # PART B and lib/test-i4 PART B oracle. The fake bd is NOT a mock of the
+    # M5 code under test (the daemon really captures the answer + emits the
+    # log line); it only stands in for the work-plane CLI so we can inspect
+    # the bfh observable without the reconcile deleting it on us.
+    FAKEBIN="$WD/bin"; mkdir -p "$FAKEBIN"
+    cat > "$FAKEBIN/bd" <<'BDEOF'
+#!/bin/bash
+exit 0
+BDEOF
+    chmod +x "$FAKEBIN/bd"
+    export PATH="$FAKEBIN:$PATH"
+
+    FIXTURE="tools-m5test"
+    DID="stuck-$FIXTURE"
+    NOW="2026-05-20T00:00:00Z"
+
+    # Seed a parked S-2 bfh record (the SOURCE OF TRUTH the poll keys on).
+    jq -cn --arg tr "$FIXTURE" --arg d "$DID" --arg at "$NOW" \
+      '{task_ref:$tr,dossier_id:$d,principal:"brian",
+        trigger:"backstop:permission_denials",
+        raised_at:$at,resolved:false,resolved_at:null}' \
+      > "$WS_STORE/blocked-for-human/$FIXTURE.json"
+
+    # Seed an answered dossier (one item state=answered with a real options[]
+    # + response) — exactly what the deployed engine returns after the human
+    # answers on the phone via `item-apply`. Schema_version=2 (the dossier
+    # bound).
+    jq -cn --arg id "$DID" '{
+      schema_version:2,id:$id,kind:"worker_stuck",principal:"brian",
+      body:{},
+      items:[{
+        id:"d1",kind:"pick-option",state:"answered",
+        framing:{ask:"Adopt approach A or B for tools-m5test?"},
+        options:[
+          {option_id:"a",label:"Approach-A-recommended-reversible",
+           blast_radius:"low-fully-reversible",
+           consequence_block:{cb_schema_version:2,creates:[],unblocks:[],labels:[],status_changes:[]}},
+          {option_id:"b",label:"Approach-B",
+           blast_radius:"medium",
+           consequence_block:{cb_schema_version:2,creates:[],unblocks:[],labels:[],status_changes:[]}}
+        ],
+        response:{decision:"pick",selected_option_id:"a"}
+      }]}' > "$WS_STORE/records/dossier.$DID.json"
+
+    # IDLE workspace: live pidfile (this shell's own pid) + last heartbeat
+    # actual=idle. This is the M5 "easy path" — no current_task_ref, splice
+    # picks it up on the next loop top.
+    echo "$$" > "$WS/.beads/runner-logs/detached-runner.pid"
+    printf '%s\n' '{"report":"heartbeat","actual":"idle","observed_at":"2026-05-20T00:00:05Z"}' \
+      > "$WS/.beads/runner-logs/coordinator-outbox.jsonl"
+
+    # Build a one-entry registry pointing at this workspace.
+    REG="$WD/workspaces.json"
+    jq -cn --arg dir "$WS" --arg pref "claude-tools-m5test" \
+      '{workspaces:[{project_ref:$pref,dir:$dir,coordinator_url:"",coordinator_token_keychain:""}]}' \
+      > "$REG"
+
+    # shellcheck source=/dev/null
+    . "$REG_LIB"
+    # shellcheck source=/dev/null
+    . "$POLL_LIB"
+    registry_load "$REG" >/dev/null 2>&1 || { echo "D_REG=fail"; rm -rf "$WD"; exit 0; }
+
+    # ONE TICK of the daemon's main loop, captured. The function emits the M4
+    # dispatch line + the M5 idle-handoff line on stderr-via-log() (no log()
+    # in this scope ⇒ the printf fallback writes to stdout).
+    OUT="$(daemon_poll_workspace_hosted_resolution 0 2>&1)"
+    printf '%s\n' "$OUT" > "$WD/tick.log"
+    echo "D_TICK_HAS_M4=$(grep -q 'M4 dispatch' "$WD/tick.log" && echo yes || echo no)"
+    echo "D_TICK_HAS_IDLE=$(grep -q 'idle-handoff:' "$WD/tick.log" && echo yes || echo no)"
+    echo "D_TICK_HAS_WS=$(grep -q "workspace=$WS" "$WD/tick.log" && echo yes || echo no)"
+    echo "D_TICK_HAS_BEAD=$(grep -q "bead=$FIXTURE" "$WD/tick.log" && echo yes || echo no)"
+    echo "D_TICK_HAS_DID=$(grep -q "dossier=$DID" "$WD/tick.log" && echo yes || echo no)"
+    echo "D_TICK_HAS_RUNNER_IDLE=$(grep -q 'runner_state=idle' "$WD/tick.log" && echo yes || echo no)"
+
+    ANS="$WS_STORE/blocked-for-human-answer/$FIXTURE.json"
+    [[ -f "$ANS" ]] && echo "D_ANS=present" || echo "D_ANS=absent"
+    if [[ -f "$ANS" ]]; then
+      echo "D_ANS_TREF=$(jq -r '.task_ref' "$ANS" 2>/dev/null)"
+      echo "D_ANS_CHOSEN=$(jq -r '.chosen' "$ANS" 2>/dev/null)"
+      echo "D_ANS_LABEL=$(jq -r '.chosen_label' "$ANS" 2>/dev/null)"
+    fi
+
+    # And — the heart of the acceptance — the SAME splice path the runner uses
+    # (sr_format_resume_directive, which reads $CO_STORE/blocked-for-human-
+    # answer/<tref>.json) renders the HUMAN DECISION block from the file the
+    # daemon captured. This is "the workspace runner re-picks the bead and the
+    # prompt contains the HUMAN DECISION block" without launching claude -p.
+    (
+      set +u
+      export CO_STORE="$WS_STORE"
+      # shellcheck source=/dev/null
+      . "$HERE/stuck-routing.sh"
+      DIR="$(sr_format_resume_directive "$FIXTURE" 2>/dev/null)"
+      printf '%s' "$DIR" | grep -q 'HUMAN DECISION' && echo "D_DIR_HDR=yes" || echo "D_DIR_HDR=no"
+      printf '%s' "$DIR" | grep -q 'Approach-A-recommended-reversible' && echo "D_DIR_CHOICE=yes" || echo "D_DIR_CHOICE=no"
+      printf '%s' "$DIR" | grep -q 'NOT re-raise the fork' && echo "D_DIR_NOREraise=yes" || echo "D_DIR_NOREraise=no"
+    )
+
+    # Idempotent — a SECOND tick must not re-emit a stale idle-handoff for the
+    # same already-captured answer (new_list filtering in the poll keys off
+    # before/after listing; verify the contract).
+    OUT2="$(daemon_poll_workspace_hosted_resolution 0 2>&1)"
+    printf '%s\n' "$OUT2" > "$WD/tick2.log"
+    echo "D_TICK2_HAS_IDLE=$(grep -q 'idle-handoff:' "$WD/tick2.log" && echo yes || echo no)"
+
+    rm -rf "$WD"
+  ) > "$HERE/../.i4-d.txt" 2>/dev/null
+  dg(){ grep -o "$1=[A-Za-z0-9_./:-]*" "$HERE/../.i4-d.txt" 2>/dev/null | head -1 | cut -d= -f2; }
+
+  eq "$(dg D_TICK_HAS_M4)"           "yes" "M4 dispatch line still emitted under the M5 branch (regression guard)"
+  eq "$(dg D_TICK_HAS_IDLE)"         "yes" "M5 daemon emits the structured 'idle-handoff:' observable on the IDLE workspace branch"
+  eq "$(dg D_TICK_HAS_WS)"           "yes" "idle-handoff carries the WORKSPACE path (operator can disambiguate across N workspaces)"
+  eq "$(dg D_TICK_HAS_BEAD)"         "yes" "idle-handoff carries the PARKED BEAD (task_ref)"
+  eq "$(dg D_TICK_HAS_DID)"          "yes" "idle-handoff carries the DOSSIER id (the §2.1 record the human answered)"
+  eq "$(dg D_TICK_HAS_RUNNER_IDLE)"  "yes" "M4 dispatch line still records runner_state=idle (the M5 branch fires only when the runner is idle/parked)"
+  eq "$(dg D_ANS)"                   "present" "the answer file landed at the WORKSPACE'S CO_STORE/blocked-for-human-answer/ — the EXACT path sr_format_resume_directive reads"
+  eq "$(dg D_ANS_TREF)"              "tools-m5test" "the captured answer is bound to the parked bead (task_ref=tools-m5test)"
+  eq "$(dg D_ANS_CHOSEN)"            "a" "the captured decision is the human's chosen option_id"
+  eq "$(dg D_ANS_LABEL)"             "Approach-A-recommended-reversible" "chosen_label resolved from the item's own §5.2 options[] (self-contained — no second hosted fetch at resume)"
+  eq "$(dg D_DIR_HDR)"               "yes" "sr_format_resume_directive (the runner's splice — run-beads-tasks.sh:875-888) renders the HUMAN DECISION block from the daemon-captured file"
+  eq "$(dg D_DIR_CHOICE)"            "yes" "the resumed worker prompt carries the human's actual choice (Approach-A-recommended-reversible) — 'demonstrably changes what the parked agent does next'"
+  eq "$(dg D_DIR_NOREraise)"         "yes" "the resumed worker prompt tells the agent NOT to re-raise the fork (acts on the answer, not the fork)"
+  eq "$(dg D_TICK2_HAS_IDLE)"        "no"  "idempotent: a SECOND daemon tick on the same captured answer does NOT re-emit idle-handoff (new-list filtering holds)"
+  rm -f "$HERE/../.i4-d.txt" 2>/dev/null
+fi
+
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"
 printf '  RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

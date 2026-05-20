@@ -227,6 +227,8 @@ daemon_dispatch_for_state() {
     [[ -f "$adir/$fname" ]] || continue
     tref="$(jq -r '.task_ref // ""' "$adir/$fname" 2>/dev/null)" || tref=""
     [[ -n "$tref" ]] || continue
+    did="$(jq -r '.dossier_id // ""' "$adir/$fname" 2>/dev/null)" || did=""
+    iid="$(jq -r '.item_id    // ""' "$adir/$fname" 2>/dev/null)" || iid=""
     branch=""
     if [[ "$state" == "absent" || "$state" == "idle" ]]; then
       decision="M5 (idle/parked): the workspace runner is idle or absent; the existing prompt-splice path in run-beads-tasks.sh picks it up on its next loop top"
@@ -247,14 +249,39 @@ daemon_dispatch_for_state() {
       printf '%s M4 dispatch: workspace=%s task_ref=%s runner_state=%s ⇒ %s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$ws" "$tref" "$state" "$decision"
     fi
+    # M5 (claude-tools-0ll): on the idle / busy-on-the-parked-task branch,
+    # emit the structured idle-handoff observable. The poll already wrote the
+    # resume-answer file at $adir/$fname (which IS the workspace runner's
+    # CO_STORE/blocked-for-human-answer location — sr__answer_dir uses the
+    # same workspace-scoped CO_STORE the runner exports), so there is no
+    # additional file to write here and NO additional process to launch: the
+    # workspace runner's normal next-task loop picks the now-unblocked bead up
+    # and the existing prompt-splice (run-beads-tasks.sh:875-888) injects the
+    # HUMAN DECISION block. We log idle-handoff so the operator can see the
+    # hand-off completed and confirm the answer file landed in the right place.
+    if [[ "$branch" == "M5" ]]; then
+      if [[ -f "$adir/$fname" ]]; then
+        if declare -F log >/dev/null 2>&1; then
+          log "idle-handoff: workspace=$ws bead=$tref dossier=$did answer=$adir/$fname — workspace runner's next-task loop will splice the HUMAN DECISION directive (run-beads-tasks.sh:875-888); no additional process launched"
+        else
+          printf '%s idle-handoff: workspace=%s bead=%s dossier=%s answer=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$ws" "$tref" "$did" "$adir/$fname"
+        fi
+      else
+        if declare -F log >/dev/null 2>&1; then
+          log "idle-handoff: workspace=$ws bead=$tref dossier=$did ⇒ answer file MISSING at $adir/$fname — splice will not fire (investigate the poll capture)"
+        else
+          printf '%s idle-handoff: workspace=%s bead=%s dossier=%s answer-MISSING=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$ws" "$tref" "$did" "$adir/$fname"
+        fi
+      fi
+    fi
     # M6 (claude-tools-4iy): on the busy-on-DIFFERENT-task branch, actually
     # launch the bd-surgery agent. The dispatch function is loaded by
     # daemon.sh alongside this file (when present); guard with declare -F so
     # this poll lib still tests cleanly in isolation (PART C of the M4
     # acceptance does NOT spawn a real agent).
     if [[ "$branch" == "M6" ]] && declare -F daemon_m6_dispatch_busy >/dev/null 2>&1; then
-      did="$(jq -r '.dossier_id // ""' "$adir/$fname" 2>/dev/null)" || did=""
-      iid="$(jq -r '.item_id    // ""' "$adir/$fname" 2>/dev/null)" || iid=""
       daemon_m6_dispatch_busy "$ws" "$tref" "$did" "$iid" "$adir/$fname" || true
     fi
   done <<< "$newlist"
