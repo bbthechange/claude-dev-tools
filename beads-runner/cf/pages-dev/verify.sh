@@ -209,9 +209,21 @@ WITHAUTH="$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $GO
 ck "same /request WITH the server-side bearer ⇒ 200 (authed)"      eq "$WITHAUTH" "200"
 
 echo ""
-echo "── EXIT-4: no FROZEN edit (proxies / engine / INTERFACE) — additive wiring only ──"
-DIRTY="$(cd "$CF_DIR/../.." && git status --porcelain -- beads-runner/web beads-runner/cf/src beads-runner/cf/wrangler.toml beads-runner/INTERFACE.md 2>/dev/null | grep -E '^( M|MM|AM|D )' || true)"
-ck "web/ + cf/src + cf/wrangler.toml + INTERFACE.md UNMODIFIED"     test -z "$DIRTY"
+echo "── EXIT-4: no FROZEN edit (READ proxies / engine / INTERFACE) — additive wiring only ──"
+# F2 (claude-tools-8fh) legitimately edits the BOARD CLIENT (board-view.js /
+# app.js / board.css) to add the per-workspace toggle row, so the prior
+# "web/ UNMODIFIED" blanket is REPLACED with a narrower check: the FROZEN
+# READ proxies (functions/api/board.js, the inbox proxies) and the engine
+# source remain untouched. The Board client surfaces are now an evolving
+# UI layer (test-board.sh owns its structural invariants).
+DIRTY="$(cd "$CF_DIR/../.." && git status --porcelain \
+  -- beads-runner/web/board/functions \
+     beads-runner/web/inbox/functions \
+     beads-runner/cf/src \
+     beads-runner/cf/wrangler.toml \
+     beads-runner/INTERFACE.md \
+  2>/dev/null | grep -E '^( M|MM|AM|D )' || true)"
+ck "READ proxies + cf/src + wrangler.toml + INTERFACE.md UNMODIFIED" test -z "$DIRTY"
 # Flow D (F1, claude-tools-49w) legitimized set-desired as the Board-side
 # write proxy, so the adapter NOW names it as a mapped write op — the prior
 # "no set-desired literal" CF.10-era assertion has been REPLACED with a
@@ -219,6 +231,28 @@ ck "web/ + cf/src + cf/wrangler.toml + INTERFACE.md UNMODIFIED"     test -z "$DI
 # asserts the adapter has the unwrap to the engine's positional args).
 ck "adapter maps set-desired writes (Flow D Board-side, F1)"        has "\"set-desired\"" "$(cat "$HERE/adapter.js")"
 ck "the adapter never holds/injects a bearer (copies header thru)" hasnt "Bearer " "$(cat "$HERE/adapter.js")"
+# F2 (claude-tools-8fh): a fresh GET /api/board after a real /api/set-desired
+# POST reflects the new desired-state on the SAME RunnerState the daemon will
+# converge against — the Board↔engine write loop is wired end-to-end (the
+# convergence itself is M3's job and gated by claude-tools-6mx). The actual
+# stays whatever the runner last reported — NEVER promoted by the write.
+SD_BODY='{"project_ref":"projA","desired":{"state":"paused","actor":"ui:verify"}}'
+SDOUT="$(curl -s -X POST -H 'content-type: application/json' -d "$SD_BODY" "$B/api/set-desired")"
+ck "POST /api/set-desired (F2 client→F1 proxy→engine) ⇒ ok"          eq "$(jq -r '.ok' <<<"$SDOUT")" "true"
+BH3="$(curl -s "$B/api/board")"
+ck "next /api/board reflects new desired=paused (engine round-trip)" eq "$(jq -r '.projects[]|select(.project_ref=="projA").runner_state.desired' <<<"$BH3")" "paused"
+# Honest-state: the actual is NOT promoted by the write — it is whatever the
+# runner last reported (here `running` from the seed) until M3 converges.
+ck "actual NOT promoted by the write (principle 4 — honest)"         eq "$(jq -r '.projects[]|select(.project_ref=="projA").runner_state.actual' <<<"$BH3")" "running"
+# The §9.1 chokepoint also covers the WRITE path — credential-less direct
+# POST to the engine /request must 401, exactly like the read.
+NOAUTH_W="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "$SD_BODY" "$A/request?op=set-desired")"
+ck "credential-less /request?op=set-desired ⇒ 401 (§9.1 covers write)" eq "$NOAUTH_W" "401"
+# An invalid desired-state is rejected at the proxy with 422 BEFORE a
+# Coordinator round-trip (the cheap-and-honest first gate — F1).
+SD_BAD='{"project_ref":"projA","desired":{"state":"bogus","actor":"ui:verify"}}'
+BADC="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "$SD_BAD" "$B/api/set-desired")"
+ck "POST set-desired with bogus state ⇒ 422 (proxy frozen-set gate)"  eq "$BADC" "422"
 
 echo ""
 echo "======================================================================"

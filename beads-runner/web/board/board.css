@@ -125,6 +125,58 @@ body{
   text-transform:uppercase;color:var(--slate)}
 .runner .rcap.over{color:var(--amber-soft)}
 
+/* F2 (claude-tools-8fh) — per-workspace desired-state toggle row.
+ * Mobile-first: each button is ≥44×44px (Apple HIG / WCAG 2.5.5 minimum),
+ * no hover-only state. ACTIVE = the button matching the current ACTUAL —
+ * never desired (board-view.js enforces). The pending banner is its own
+ * line so it can never be mistaken for the actual pill. */
+.runner .rctrls{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
+.runner .rbtn{
+  flex:1 1 auto;min-width:72px;min-height:44px;
+  padding:10px 12px;border-radius:9px;
+  font-family:var(--mono);font-size:12px;letter-spacing:.04em;
+  background:var(--panel-2);color:var(--text);
+  border:1px solid var(--line-2);
+  cursor:pointer;-webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+  transition:background .15s, border-color .15s;
+}
+.runner .rbtn:focus-visible{outline:2px solid var(--sky);outline-offset:2px}
+.runner .rbtn:active{background:var(--ink-2)}
+.runner .rbtn.active{
+  background:rgba(79,214,160,.15);
+  border-color:rgba(79,214,160,.5);
+  color:var(--mint);
+  font-weight:500;
+}
+.runner.stale .rbtn.active{
+  /* S-1: a stale runner has NO live actual to highlight; the renderer drops
+   * `active`, but if somehow set we still suppress the green pill look. */
+  background:var(--panel-2);border-color:var(--line-2);color:var(--text);
+  font-weight:400;
+}
+.runner .rbtn.busy{opacity:.55;cursor:progress}
+.runner .rbtn:disabled{opacity:.55;cursor:not-allowed}
+
+.runner .rpending{
+  margin-top:9px;font-size:11px;letter-spacing:.04em;
+  padding:7px 10px;border-radius:8px;
+  background:rgba(255,180,84,.1);
+  border:1px solid rgba(255,180,84,.3);
+  color:var(--amber-soft);
+}
+.runner .rstale{
+  margin-top:8px;font-size:10px;letter-spacing:.04em;
+  color:var(--coral);
+}
+.runner .rerr{
+  margin-top:8px;font-size:11px;letter-spacing:.02em;
+  padding:7px 10px;border-radius:8px;
+  background:rgba(255,107,107,.1);
+  border:1px solid rgba(255,107,107,.35);
+  color:var(--coral);
+}
+
 .errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
   background:rgba(255,107,107,.08);border-radius:14px;padding:18px}
 .err-h{color:var(--coral);font-size:13px;letter-spacing:.12em;

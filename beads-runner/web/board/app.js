@@ -1,4 +1,4 @@
-/* beads-runner/web/board/app.js — T6a (claude-tools-p2m).
+/* beads-runner/web/board/app.js — T6a (claude-tools-p2m) + F2 (claude-tools-8fh).
  *
  * The browser glue ONLY: fetch the §4.5 projection from the same-origin
  * /api/board read proxy (the §9.1 chokepoint — the client bears NO secret and
@@ -6,18 +6,34 @@
  * DOM. Auto-refresh on a fixed cadence so liveness stays honest (a stale
  * runner must surface — §4.2/S-1).
  *
- * NO WRITE PATH (EXIT crit 3): the ONLY network call in the whole client is a
- * credential-less GET of the read proxy. There is no form, no POST, no
- * mutation affordance. The WAITING-ON-YOU lane is a deep-link pointer into
- * T6b's Inbox — this app NEVER renders the dossier body (anti-drift: that is
- * T6b). All honest-state / S-1 rendering decisions live in board-view.js;
- * this file only writes the derived strings into elements.
+ * THE ONE WRITE PATH (F2, claude-tools-8fh): the per-workspace toggle row
+ * POSTs to /api/set-desired (F1, claude-tools-49w) — the Board's ONE Pages
+ * write proxy. The hard-coded upstream op lives server-side; the client just
+ * sends {project_ref, desired:{state, actor:'ui'}} and renders honestly
+ * (principle 4): the projection's ACTUAL never moves until the next refresh
+ * reports it; a tap surfaces only a secondary "desired: X (waiting for
+ * runner to honor)" banner. The WAITING-ON-YOU lane is still a deep-link
+ * pointer into T6b's Inbox — this app NEVER renders the dossier body
+ * (anti-drift: that is T6b). All honest-state / S-1 rendering decisions
+ * live in board-view.js; this file only writes the derived strings into
+ * elements and POSTs the user's tap.
  */
 (function () {
   'use strict';
 
   var REFRESH_MS = 30000; // re-poll so a runner going stale surfaces (§4.2/S-1)
   var BoardView = window.BoardView;
+
+  // F2 — per-workspace ephemeral capture of "user just tapped X". Map keyed
+  // by project_ref; entry is cleared on the first refresh whose projection
+  // reports actual === pending state (i.e. the daemon has converged). Lives
+  // in memory only; a reload starts honest with no pending overlay.
+  var pendingDesired = {};
+
+  // The actor stamped on F2 POSTs. C4: captured-not-enforced (the
+  // chokepoint's resolved PRINCIPAL_V1 is authoritative); this is a
+  // breadcrumb for forensics, not an auth claim.
+  var BOARD_ACTOR = 'ui:board';
 
   var el = {
     loading: document.getElementById('loading'),
@@ -113,6 +129,64 @@
     });
   }
 
+  function postSetDesired(projectRef, state, btn) {
+    // The ONE write — POST to F1. Server-side bearer; client carries no
+    // secret (§9.1/§9.2) and never picks the op. On success we update the
+    // ephemeral pendingDesired and trigger a re-render; the projection's
+    // ACTUAL is unchanged until the next /api/board refresh reports it
+    // (principle 4 — honest, never optimistic).
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+    fetch('/api/set-desired', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json'
+      },
+      body: JSON.stringify({
+        project_ref: projectRef,
+        desired: { state: state, actor: BOARD_ACTOR }
+      })
+    })
+      .then(function (resp) {
+        return resp.text().then(function (body) {
+          var data = null;
+          try { data = JSON.parse(body); } catch (e) { data = null; }
+          if (!resp.ok || (data && data.ok === false)) {
+            var msg = (data && data.error)
+              ? data.error
+              : 'set-desired returned HTTP ' + resp.status;
+            throw new Error(msg);
+          }
+          return data;
+        });
+      })
+      .then(function () {
+        // Capture the pending overlay; refresh() will clear it once the
+        // projection's actual catches up. The view model NEVER promotes
+        // pending to actual — board-view.js enforces this.
+        pendingDesired[projectRef] = { state: state, set_at_ms: Date.now() };
+        if (lastSnapshot) render(BoardView.deriveBoardView(
+          lastSnapshot, Date.now(), { pending_desired: pendingDesired }));
+        // Force an early refresh so the user sees actual catch up sooner.
+        setTimeout(refresh, 1500);
+      })
+      .catch(function (e) {
+        // Honest surfacing — show the error inline on the runner row.
+        var note = document.createElement('div');
+        note.className = 'rerr';
+        note.textContent = 'set-desired failed: ' +
+          (e && e.message ? e.message : String(e));
+        if (btn && btn.parentNode && btn.parentNode.parentNode) {
+          var existing = btn.parentNode.parentNode.querySelector('.rerr');
+          if (existing) existing.remove();
+          btn.parentNode.parentNode.appendChild(note);
+        }
+      })
+      .then(function () {
+        if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
+      });
+  }
+
   function renderRunners(runners) {
     clear(el.runners);
     if (runners.length === 0) {
@@ -129,6 +203,33 @@
       // S-1: the last-reported actual of a stale runner is muted CONTEXT,
       // never promoted to a live state (board-view.js guarantees this).
       if (r.actual_note) box.appendChild(mk('div', 'rnote', r.actual_note));
+      // F2 — per-row toggle controls. Buttons reflect ACTUAL; the active
+      // pill is the current actual state (never desired).
+      var controlsBox = mk('div', 'rctrls');
+      (r.controls || []).forEach(function (c) {
+        var btn = mk('button', 'rbtn' + (c.active ? ' active' : ''), c.label);
+        btn.setAttribute('type', 'button');
+        btn.setAttribute(
+          'aria-label',
+          'Set ' + r.project_ref + ' desired-state to ' + c.state
+        );
+        btn.setAttribute('aria-pressed', c.active ? 'true' : 'false');
+        btn.dataset.state = c.state;
+        btn.addEventListener('click', function () {
+          postSetDesired(r.project_ref, c.state, btn);
+        });
+        controlsBox.appendChild(btn);
+      });
+      box.appendChild(controlsBox);
+      // Pending banner (principle 4): "desired: X (waiting for runner to
+      // honor)" — secondary line, never promoted to actual.
+      if (r.pending_label) {
+        box.appendChild(mk('div', 'rpending', r.pending_label));
+      }
+      // Stale-controls warning: still tappable, but honestly flagged.
+      if (r.stale_controls_note) {
+        box.appendChild(mk('div', 'rstale', r.stale_controls_note));
+      }
       var cap = mk('div', 'rcap' + (r.capacity_verdict === 'over' ? ' over' : ''),
         'capacity: ' + r.capacity_verdict);
       box.appendChild(cap);
@@ -162,8 +263,30 @@
       new Date().toLocaleTimeString();
   }
 
+  // The last projection we successfully rendered — held so a tap can re-render
+  // with the new pending overlay without re-fetching, AND so we can clear
+  // stale pending entries the moment actual catches up.
+  var lastSnapshot = null;
+
+  function clearHonoredPending(snapshot) {
+    // Walk the projection's projects[]: any project whose ACTUAL matches its
+    // pending state has been honored by the daemon — clear it. This is what
+    // makes the pending banner disappear honestly (never optimistically).
+    var projects = Array.isArray(snapshot && snapshot.projects) ? snapshot.projects : [];
+    projects.forEach(function (p) {
+      var ref = p && p.project_ref;
+      if (!ref || !pendingDesired[ref]) return;
+      var actual = p.runner_state && p.runner_state.actual;
+      if (actual && actual === pendingDesired[ref].state) {
+        delete pendingDesired[ref];
+      }
+    });
+  }
+
   function refresh() {
-    // The ONE network call: a credential-less, same-origin, read-only GET.
+    // The READ network call: a credential-less, same-origin GET to /api/board.
+    // (The Board's ONE write seam is the F2 POST in postSetDesired — both go
+    // through Pages-side proxies; neither carries a token client-side.)
     fetch('/api/board', { method: 'GET', headers: { accept: 'application/json' } })
       .then(function (resp) {
         return resp.text().then(function (body) {
@@ -188,7 +311,10 @@
         });
       })
       .then(function (snapshot) {
-        render(BoardView.deriveBoardView(snapshot));
+        lastSnapshot = snapshot;
+        clearHonoredPending(snapshot);
+        render(BoardView.deriveBoardView(
+          snapshot, Date.now(), { pending_desired: pendingDesired }));
       })
       .catch(function (e) {
         showError(e && e.message ? e.message : String(e));

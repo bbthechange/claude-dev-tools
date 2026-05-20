@@ -52,6 +52,17 @@
   // honest-state rule (principle 4) means we never paint desired over actual.
   var ACTUAL_HEALTHY_ACTIVE = { running: 1, idle: 1, starting: 1 };
 
+  // F2 (claude-tools-8fh) — the four FROZEN desired-states the per-workspace
+  // toggle row exposes. Pinned in the same order as set-desired.js's
+  // ALLOWED_STATES so a UI typo and an engine typo cannot drift apart. The
+  // label is presentation; the `state` is the wire value the F1 client sends.
+  var DESIRED_CONTROLS = [
+    { state: 'running',    label: 'Run' },
+    { state: 'paused',     label: 'Pause' },
+    { state: 'spare-only', label: 'Spare-only' },
+    { state: 'stopped',    label: 'Stop' }
+  ];
+
   /* formatAgo(fromIso, nowMs?) → "Nm" | "Nh" | "Nd" | "Ns" — a presentation
    * formatting of the §4.2 `last_heartbeat_at` contract datum (NOT a derived
    * liveness decision; that is the Coordinator's, consumed verbatim). Honest
@@ -70,7 +81,7 @@
     return Math.floor(h / 24) + 'd';
   }
 
-  /* deriveRunner(p, nowMs) → the per-project RunnerState view row.
+  /* deriveRunner(p, nowMs, pendingDesired) → the per-project RunnerState view row.
    *
    * THE S-1 INVARIANT lives here: liveness comes ONLY from the projection
    * (§4.2 Coordinator-derived). A `stale` runner gets state_class="stale" and
@@ -79,8 +90,20 @@
    * running/idle pill. A stale runner therefore cannot read as
    * `actual: running` — the lie S-1/C6 forbids. A live runner shows its
    * honest actual, and an honest "→ target: <desired>" when desired≠actual
-   * (principle 4 — stopping… is literally true, never optimistic). */
-  function deriveRunner(p, nowMs) {
+   * (principle 4 — stopping… is literally true, never optimistic).
+   *
+   * F2 (claude-tools-8fh) — the per-row CONTROLS view. The four toggle
+   * buttons (Run / Pause / Spare-only / Stop) reflect the workspace's current
+   * ACTUAL state from the §4.5 projection — NEVER desired (principle 4: the
+   * Board shows ACTUAL, never optimistic). `pendingDesired` is a
+   * client-side ephemeral capture of "the user just tapped X" — it surfaces
+   * as a "desired: X (waiting for runner to honor)" banner UNTIL the next
+   * refresh reports actual=X (then app.js clears the pending entry). The
+   * pending banner is NEVER allowed to promote actual; it is a separate
+   * secondary line. A stale runner's controls are still rendered (the user
+   * can request a desired-state change) but flagged "may not apply quickly"
+   * so the user is not misled into thinking the tap was honored. */
+  function deriveRunner(p, nowMs, pendingDesired) {
     var rs = (p && p.runner_state) || {};
     var liveness = rs.liveness === 'live' ? 'live' : 'stale'; // honest default
     var actual = rs.actual || null;
@@ -116,15 +139,54 @@
         : base;
       row.actual_note = null;
     }
+
+    // F2 — per-row controls. `active` is the button matching CURRENT ACTUAL
+    // (NEVER desired). A stale runner has NO active button (S-1: a stale
+    // runner has no honest live state to highlight).
+    row.controls = DESIRED_CONTROLS.map(function (c) {
+      return {
+        state: c.state,
+        label: c.label,
+        active: liveness === 'live' && actual === c.state
+      };
+    });
+
+    // Pending banner — client-side ephemeral. Only surface if the pending
+    // state has NOT yet been observed as actual; honest "waiting" phrasing.
+    var pState = pendingDesired && typeof pendingDesired.state === 'string'
+      ? pendingDesired.state : null;
+    if (pState && pState !== actual) {
+      row.pending_desired = pState;
+      row.pending_label = 'desired: ' + pState +
+        ' (waiting for runner to honor)';
+    } else {
+      row.pending_desired = null;
+      row.pending_label = null;
+    }
+
+    // Stale-controls warning. Controls are still tappable (the daemon may
+    // wake the workspace), but the user is told outcomes may lag.
+    row.stale_controls_note = liveness === 'stale'
+      ? 'stale — last seen ' + ago + ' ago, controls may not apply quickly'
+      : null;
+
     return row;
   }
 
-  /* deriveBoardView(snapshot, nowMs?) → the whole Board view model.
+  /* deriveBoardView(snapshot, nowMs?, opts?) → the whole Board view model.
    * snapshot is the parsed §4.5 work-snapshot JSON. On an unknown HIGHER
    * schema_version it returns an ERROR view (§0.3 — refuse, never
-   * best-effort-render). */
-  function deriveBoardView(snapshot, nowMs) {
+   * best-effort-render).
+   *
+   * F2 (claude-tools-8fh): `opts.pending_desired` is an optional
+   * { [project_ref]: { state } } map of client-side ephemeral "user just
+   * tapped" captures. It is NOT a contract field — the projection remains
+   * authoritative and this overlay can NEVER promote actual; it only
+   * supplies the secondary "waiting for runner to honor" banner. */
+  function deriveBoardView(snapshot, nowMs, opts) {
     var snap = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    var pendingMap = (opts && opts.pending_desired && typeof opts.pending_desired === 'object')
+      ? opts.pending_desired : {};
 
     var sv = snap.schema_version;
     if (typeof sv !== 'number' || Math.floor(sv) !== sv) {
@@ -145,7 +207,10 @@
     }
 
     var projects = Array.isArray(snap.projects) ? snap.projects : [];
-    var runners = projects.map(function (p) { return deriveRunner(p, nowMs); });
+    var runners = projects.map(function (p) {
+      var ref = p && p.project_ref ? p.project_ref : '(unknown)';
+      return deriveRunner(p, nowMs, pendingMap[ref] || null);
+    });
 
     // WAITING-ON-YOU lane — §4.5: stored Dossiers (this principal) with ≥1
     // still-open item. The producer emits COUNTS only (no dossier content —
@@ -280,6 +345,7 @@
     deriveRunner: deriveRunner,
     formatAgo: formatAgo,
     STAGE_ORDER: STAGE_ORDER,
+    DESIRED_CONTROLS: DESIRED_CONTROLS,
     SUPPORTED_SNAPSHOT_SCHEMA: SUPPORTED_SNAPSHOT_SCHEMA
   };
 });

@@ -34,6 +34,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$HERE/coordinator.sh"
 VIEW="$HERE/../web/board/board-view.js"
 PROXY="$HERE/../web/board/functions/api/board.js"
+WPROXY="$HERE/../web/board/functions/api/set-desired.js"
 APP="$HERE/../web/board/app.js"
 SHELL_HTML="$HERE/../web/board/index.html"
 [[ -f "$LIB"   ]] || { echo "FATAL: coordinator.sh not found at $LIB"; exit 2; }
@@ -135,15 +136,30 @@ RM="$(jq -c '.runners[0]' <<<"$VM")"
 ck "live desired≠actual surfaced honestly (actual + target)"        has "running (target: stopped)" "$(jq -r '.state_label' <<<"$RM")"
 ck "honest mismatch is NOT masked to desired"                        hasnt "^stopped$" "$(jq -r '.state_label' <<<"$RM")"
 
-echo "── EXIT-3: NO Dolt write path — proven by STRUCTURE ──"
-# The renderer is a pure function: no network, no mutation primitive at all.
+echo "── EXIT-3: write path is the ONE narrow F1 seam — proven by STRUCTURE ──"
+# T6a + F2 (claude-tools-8fh): the pure renderer is still purely pure — no
+# network at all (so no fetch, no POST verb, even in prose). The browser app
+# now has TWO calls: the credential-less GET to /api/board AND the narrow F2
+# POST to /api/set-desired (and ONLY those two endpoints — never the
+# Coordinator directly, never with a token). Each Pages proxy enforces its
+# own narrow shape (GET-only read; POST-only write with the upstream op
+# hard-coded). The Board has NO write path to Dolt; F1's set-desired writes
+# RunnerState in D1 and the daemon (M3) converges actual→desired.
 ck "board-view.js makes NO network call (no fetch/XHR)"      hasnt "fetch(" "$(cat "$VIEW")"
 ck "board-view.js has no write/POST verb"                    hasnt "POST" "$(cat "$VIEW")"
-# The client app's ONLY call is a credential-less GET; no mutation verb.
-ck "app.js issues a GET (read) ..."                          has "method: 'GET'" "$(cat "$APP")"
-ck "... and NO POST/PUT/PATCH/DELETE anywhere"               hasnt "method: 'POST'" "$(cat "$APP")"
-ck "app.js never sends a body (no write payload)"            hasnt "body:" "$(cat "$APP")"
-# The Pages read proxy: GET-only handler + the §4.5 read op hard-coded.
+ck "board-view.js has no PUT/PATCH/DELETE verb"              hasnt "PUT" "$(cat "$VIEW")"
+# The client app's TWO calls — both same-origin, credential-less, narrow.
+ck "app.js issues a GET to /api/board (read channel)"        has "fetch('/api/board'" "$(cat "$APP")"
+ck "app.js issues a POST to /api/set-desired (F2 write)"     has "fetch('/api/set-desired'" "$(cat "$APP")"
+ck "app.js POST method is the F2 write only"                 has "method: 'POST'" "$(cat "$APP")"
+# STRUCTURAL — the ONLY two endpoints reached are /api/board and
+# /api/set-desired (a third fetch URL would be a write-path widening that
+# bypasses the §9.1 chokepoint pattern).
+ck "app.js fetches ONLY /api/board and /api/set-desired"     eq "$(grep -cE "fetch\('/api/" "$APP")" "2"
+ck "app.js carries NO upstream URL/Coordinator base"         hasnt "/request" "$(cat "$APP")"
+ck "app.js never sets an authorization header (§9.2)"        hasnt "authorization" "$(cat "$APP")"
+ck "app.js write body is the F1 named-shape (state/actor)"   has "desired: { state:" "$(cat "$APP")"
+# The Pages READ proxy: GET-only handler + the §4.5 read op hard-coded.
 ck "proxy exports ONLY onRequestGet (no mutate handler)"     has "export async function onRequestGet" "$(cat "$PROXY")"
 ck "proxy exports NO onRequestPost/Put/Patch/Delete"         hasnt "onRequestPost" "$(cat "$PROXY")"
 ck "proxy hard-codes the §4.5 READ producer op"              has "COORDINATOR_OP = 'work-snapshot'" "$(cat "$PROXY")"
@@ -161,6 +177,14 @@ ck "proxy upstream call is method GET (read channel)"        has "method: 'GET'"
 ck "the bearer token is a server-side env binding (§9.1/§9.2)" has "env.COORDINATOR_TOKEN" "$(cat "$PROXY")"
 ck "no token literal in the client app (secret not client-side)" hasnt "COORDINATOR_TOKEN" "$(cat "$APP")"
 ck "no token literal in the shipped shell HTML"                  hasnt "COORDINATOR_TOKEN" "$(cat "$SHELL_HTML")"
+# The Pages WRITE proxy (F1, claude-tools-49w): POST-only handler + the
+# set-desired write op hard-coded server-side; bearer never client-side.
+[[ -f "$WPROXY" ]] || { bad "F1 write proxy file exists at $WPROXY"; }
+ck "F1 write proxy exports ONLY onRequestPost"                has "export async function onRequestPost" "$(cat "$WPROXY")"
+ck "F1 write proxy exports NO onRequestGet/Put/Patch/Delete"  hasnt "onRequestGet" "$(cat "$WPROXY")"
+ck "F1 write proxy hard-codes upstream op 'set-desired'"      has "COORDINATOR_OP = 'set-desired'" "$(cat "$WPROXY")"
+ck "F1 write proxy bearer is server-side env binding"         has "env.COORDINATOR_TOKEN" "$(cat "$WPROXY")"
+ck "F1 write proxy pins the four desired-states (frozen set)" has "ALLOWED_STATES" "$(cat "$WPROXY")"
 # STRUCTURAL (behavioral, not a prose grep — board-view.js's anti-drift
 # comment legitimately says "forensic"): inject a §10-shaped forensic blob
 # into a card AND the runner_state, render, and prove the renderer DROPS it —
@@ -188,8 +212,65 @@ ck "missing integer schema_version ⇒ also refused"           eq "$(jq -r '.ok'
 ck "schema_version 1 (bound) still renders ok"               eq "$(jq -r '.ok' <<<"$(render "$SNAP")")" "true"
 ck "projection self-declares read_only:true (surfaced)"      eq "$(jq -r '.read_only' <<<"$(render "$SNAP")")" "true"
 
+echo "── EXIT-5: F2 (claude-tools-8fh) — per-workspace toggles, honest-state ──"
+# The renderer exposes a controls model per runner row: four buttons keyed to
+# the FROZEN desired-states, with `active` reflecting CURRENT ACTUAL (never
+# desired). A pending-desired overlay (the user just tapped) surfaces as a
+# SECONDARY banner — it MUST NOT promote actual (principle 4: honest, never
+# optimistic). A stale runner has no active button (S-1: stale is its own
+# state) AND carries a "controls may not apply quickly" warning.
+# Render with an explicit pending overlay so we can assert non-optimism:
+render_with_pending() { printf '%s' "$1" | node -e '
+  let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+    const BV=require(process.argv[1]);
+    const pd=JSON.parse(process.argv[2]);
+    let snap; try{snap=JSON.parse(s);}catch(e){snap=s;}
+    process.stdout.write(JSON.stringify(BV.deriveBoardView(snap, Date.now(), {pending_desired: pd})));
+  });' "$VIEW" "$2"; }
+# Fresh fixture: live runner with actual=running, no mismatch.
+co_request "$GOOD" set-desired projF2 running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostF2 projF2 running ctF2 "$(ago 10)")" >/dev/null 2>&1
+SNAP_F2="$(co_request "$GOOD" work-snapshot projF2 "[]" 2>/dev/null)"
+VF2="$(render "$SNAP_F2")"
+RF2="$(jq -c '.runners[]|select(.project_ref=="projF2")' <<<"$VF2")"
+ck "controls list is exactly four FROZEN states"            eq "$(jq -r '[.controls[].state]|join(",")' <<<"$RF2")" "running,paused,spare-only,stopped"
+ck "control labels are mobile-friendly verbs"               eq "$(jq -r '[.controls[].label]|join(",")' <<<"$RF2")" "Run,Pause,Spare-only,Stop"
+ck "active = the CURRENT ACTUAL state (running)"            eq "$(jq -r '.controls[]|select(.state=="running").active' <<<"$RF2")" "true"
+ck "only ONE button is active per row"                       eq "$(jq -r '[.controls[]|select(.active)]|length' <<<"$RF2")" "1"
+ck "no pending overlay ⇒ pending_label is null"              eq "$(jq -r '.pending_label' <<<"$RF2")" "null"
+# Tap Stop: the user just POSTed desired=stopped. The projection still
+# reports actual=running until the daemon converges. Honest rendering MUST
+# NOT promote stopped to active; active must remain running, and a SECONDARY
+# banner must surface the desired waiting state.
+PD='{"projF2":{"state":"stopped"}}'
+VF2P="$(render_with_pending "$SNAP_F2" "$PD")"
+RF2P="$(jq -c '.runners[]|select(.project_ref=="projF2")' <<<"$VF2P")"
+ck "pending desired surfaces as a 'waiting' banner"          has "desired: stopped (waiting for runner to honor)" "$(jq -r '.pending_label' <<<"$RF2P")"
+ck "pending NEVER promotes actual — active stays on running" eq "$(jq -r '.controls[]|select(.state=="running").active' <<<"$RF2P")" "true"
+ck "pending does NOT activate the tapped button (stopped)"   eq "$(jq -r '.controls[]|select(.state=="stopped").active' <<<"$RF2P")" "false"
+ck "honest state_label is still the actual ('running')"      has "running" "$(jq -r '.state_label' <<<"$RF2P")"
+ck "pending banner does NOT mutate state_label to desired"   hasnt "stopped" "$(jq -r '.state_label' <<<"$RF2P")"
+# Once the projection's actual catches up to pending, the overlay clears
+# (app.js does this; the view model just doesn't surface it if state==actual).
+PD2='{"projF2":{"state":"running"}}'  # daemon has converged — pending == actual
+VF2C="$(render_with_pending "$SNAP_F2" "$PD2")"
+RF2C="$(jq -c '.runners[]|select(.project_ref=="projF2")' <<<"$VF2C")"
+ck "pending==actual ⇒ no waiting banner (honest convergence)" eq "$(jq -r '.pending_label' <<<"$RF2C")" "null"
+# Stale runner: controls render, NONE active, stale warning surfaces.
+RS="$(jq -c '.runners[]|select(.project_ref=="projA")' <<<"$V2")"
+ck "stale runner: NO control button is active (S-1)"         eq "$(jq -r '[.controls[]|select(.active)]|length' <<<"$RS")" "0"
+ck "stale runner carries the 'may not apply quickly' note"   has "controls may not apply quickly" "$(jq -r '.stale_controls_note' <<<"$RS")"
+ck "stale warning names a 'last seen … ago' duration"        has "last seen" "$(jq -r '.stale_controls_note' <<<"$RS")"
+# Mobile-friendly CSS: ≥44px tap targets, no hover-only state.
+CSS="$HERE/../web/board/board.css"
+[[ -f "$CSS" ]] || bad "board.css present"
+ck "control buttons declare min-height ≥44px (tap target)"   has "min-height:44px" "$(cat "$CSS")"
+ck "control buttons set touch-action:manipulation (no 300ms)" has "touch-action:manipulation" "$(cat "$CSS")"
+ck "control buttons are NOT hover-only (have :active style)"  has ".rbtn:active" "$(cat "$CSS")"
+ck "shell HTML viewport tag enables mobile sizing"           has "width=device-width" "$(cat "$SHELL_HTML")"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
-echo " test-board (T6a, claude-tools-p2m):  PASS=$PASS  FAIL=$FAIL"
+echo " test-board (T6a + F2 claude-tools-8fh):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]
