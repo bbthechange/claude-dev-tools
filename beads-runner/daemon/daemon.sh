@@ -42,6 +42,11 @@ HEARTBEAT_INTERVAL="${BEADS_DAEMON_HEARTBEAT_INTERVAL:-10}"
 # (Brian answers the dossier ⇒ ≤60s to the resume-answer file lands in the
 # workspace store), well-bounded against a long `claude -p` in any workspace.
 HOSTED_RESOLUTION_POLL_INTERVAL="${BEADS_DAEMON_HOSTED_RESOLUTION_POLL_INTERVAL:-30}"
+# M3: per-workspace desired-state poll cadence. 60s default — matches the
+# in-runner S-5 cadence (runner.sh's CONTROL_POLL_INTERVAL) so the daemon
+# observes desired-state mutations at the same rate the runner used to
+# self-reconcile, and the AD8/Flow-D loop closes within ~60s end-to-end.
+DESIRED_STATE_POLL_INTERVAL="${BEADS_DAEMON_DESIRED_STATE_POLL_INTERVAL:-60}"
 
 # ─── source the per-machine library (DESIGN §3.2 retraction-of-topology
 # is about TIER, not about the library — the daemon still source's it) ────
@@ -60,6 +65,10 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # time. Drain hook (daemon_m6_kill_all) wired into on_exit below.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/m6-dispatch.sh"
+# M3 (claude-tools-cgh): per-workspace desired-state poll + spawn/SIGTERM
+# state machine. Defines daemon_m3_reconcile_all + daemon_m3_* helpers.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/desired-state-poll.sh"
 
 log() {
   # one-line log helper; stdout is redirected to daemon-logs/stdout.log by
@@ -122,6 +131,11 @@ handle_sighup() {
   log "SIGHUP received; reloading workspace registry"
   if registry_load "$WORKSPACES_JSON"; then
     log "workspace registry reload ok ($(registry_count) workspaces)"
+    # M3 (claude-tools-cgh): drop the per-workspace last-observed-desired
+    # memory on a registry reload so a removed workspace doesn't keep a
+    # phantom slot and an added workspace's first observation logs as
+    # "<unset> → <desired>" (the real transition into observed-state).
+    daemon_m3_reset_state_memory 2>/dev/null || true
   else
     log "WARN: workspace registry reload failed; keeping previous state"
   fi
@@ -173,7 +187,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -186,8 +200,10 @@ main() {
 
   # Main loop. Heartbeat every HEARTBEAT_INTERVAL; the M4 hosted-resolution
   # poll runs every HOSTED_RESOLUTION_POLL_INTERVAL (per-workspace, AD8 §3.2
-  # job 5). Other M2/M3/M5/M6 jobs land here in their own issues.
+  # job 5); the M3 desired-state poll runs every DESIRED_STATE_POLL_INTERVAL
+  # (per-workspace spawn/SIGTERM state machine, §3.2 job 2+3).
   local _last_hosted_poll=0
+  local _last_desired_poll=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
     # M4 (claude-tools-8jb): on cadence, poll every registered workspace for
@@ -200,6 +216,18 @@ main() {
     if [ "$((_now - _last_hosted_poll))" -ge "$HOSTED_RESOLUTION_POLL_INTERVAL" ]; then
       _last_hosted_poll="$_now"
       run_hosted_resolution_poll || true
+    fi
+    # M3 (claude-tools-cgh): on cadence, poll every registered workspace's
+    # RunnerState.desired and drive the per-workspace process state machine
+    # (spawn via launch-detached.sh / SIGTERM the existing runner / no-op).
+    # On daemon-startup the FIRST iteration runs at boot (when both
+    # _last_desired_poll and _now are within INTERVAL of each other) — this
+    # is intentional: the daemon must immediately reconcile any pidfile it
+    # adopted against current desired-state (an orphan stopped-workspace
+    # runner from a prior boot must be SIGTERMed at boot, not 60s later).
+    if [ "$((_now - _last_desired_poll))" -ge "$DESIRED_STATE_POLL_INTERVAL" ] || [ "$_last_desired_poll" -eq 0 ]; then
+      _last_desired_poll="$_now"
+      daemon_m3_reconcile_all || true
     fi
     # `sleep` is interruptible by signals; the loop condition is re-checked
     # immediately after wake.
