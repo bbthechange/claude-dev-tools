@@ -54,6 +54,7 @@ DEFAULT_MODEL=${DEFAULT_MODEL:-opus[1m]}  # [1m] = 1M context variant; auto-trac
 USAGE_THRESHOLD=${USAGE_THRESHOLD:-70}       # pause new tasks above this % (0 = disabled)
 USAGE_SLEEP_SECONDS=${USAGE_SLEEP_SECONDS:-1800} # sleep duration when over threshold (30 min)
 USAGE_CACHE_SECONDS=${USAGE_CACHE_SECONDS:-300}  # cache usage API response (avoid hammering per-loop)
+CAPACITY_DENY_BACKOFF=${CAPACITY_DENY_BACKOFF:-60} # C1: per-pickup daemon ask-capacity denied ⇒ release lease + sleep N before retry
 export WORKER_STUCK_EXIT=${WORKER_STUCK_EXIT:-7} # §7.2/§8.1 worker deliberate-stuck sentinel exit (≠ BC-21 0–4; INTERFACE.md v1 constants). Exported: a stuck-aware worker wrapper reads it; the §7.2 detection below keys on it.
 IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}                # seconds of stream silence before watchdog kills (env-overridable)
 LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-14}     # rotation: delete runner-logs older than this
@@ -362,6 +363,57 @@ check_usage() {
   echo "ok" > "$USAGE_CACHE_FILE"
   echo "  Usage: 5h=${five_hour}% 7d=${seven_day}%"
   return 0
+}
+
+# ── C1 (claude-tools-g98) — per-pickup daemon ask-capacity gate ──────────────
+# Consult the daemon's machine-wide capacity verdict (UX 0.A "the runner in
+# each environment checks with that central one before working") at the
+# §3.3-item-2 ask-capacity moment: AFTER lease_acquire_ok, BEFORE the bead
+# transitions to in_progress. The loop-top check_usage gate still fires once
+# per loop; this is the finer-grained per-pickup check that gates the WRITE
+# to in_progress (and lets us release the lease cleanly when the daemon
+# says no, instead of claiming a task we cannot run).
+#
+# Return contract:
+#   0 — allowed (proceed to claim)
+#   1 — denied (caller releases lease, sleeps CAPACITY_DENY_BACKOFF, retries)
+#   2 — daemon unreachable (caller falls back to la_capacity_check per BC-34)
+#
+# Stdout: a short single-token reason ("ok", "5h_hard_ceiling",
+# "7d_hard_ceiling", "spare_cycles_today_exhausted", "cost_class_not_allowed",
+# "daemon_unreachable") — the runner logs this verbatim so the failure mode
+# is observable (the C1 acceptance criterion).
+daemon_ask_capacity() {
+  local cost_class="${1:-standard}" cached pct_5h pct_7d ramp allowed
+  command -v la__capacity_via_daemon >/dev/null 2>&1 || {
+    printf 'daemon_unreachable'
+    return 2
+  }
+  cached=$(la__capacity_via_daemon 2>/dev/null) || {
+    printf 'daemon_unreachable'
+    return 2
+  }
+  pct_5h=$(printf '%s' "$cached" | jq -r '.pct_5h // 0' 2>/dev/null) || pct_5h=0
+  pct_7d=$(printf '%s' "$cached" | jq -r '.pct_7d // 0' 2>/dev/null) || pct_7d=0
+  ramp=$(printf '%s'  "$cached" | jq -r '.spare_ramp_today // 100' 2>/dev/null) || ramp=100
+  allowed=$(printf '%s' "$cached" | jq -r '.allowed_cost_classes[]?' 2>/dev/null)
+  if printf '%s\n' "$allowed" | grep -qx "$cost_class"; then
+    printf 'ok'
+    return 0
+  fi
+  # Denied — derive the §6.3 reason from the same numbers the daemon used.
+  local threshold="${USAGE_THRESHOLD:-70}" five_i seven_i ramp_i
+  five_i=${pct_5h%.*};   five_i=${five_i:-0}
+  seven_i=${pct_7d%.*};  seven_i=${seven_i:-0}
+  ramp_i=${ramp%.*};     ramp_i=${ramp_i:-100}
+  if   [[ "$five_i"  -ge "$threshold" ]]; then printf '5h_hard_ceiling'
+  elif [[ "$seven_i" -ge "$threshold" ]]; then printf '7d_hard_ceiling'
+  elif [[ "$cost_class" == "low_priority" ]] && [[ "$seven_i" -ge "$ramp_i" ]]; then
+    printf 'spare_cycles_today_exhausted'
+  else
+    printf 'cost_class_not_allowed'
+  fi
+  return 1
 }
 
 # ── Task selection ───────────────────────────────────────────────────────────
@@ -825,6 +877,38 @@ while true; do
     sleep "${LEASE_DENY_BACKOFF:-3}"   # avoid hot-spin re-polling the same task
     continue
   fi
+
+  # C1 (claude-tools-g98): consult the daemon's ask-capacity verdict NOW —
+  # after the lease is held (so a winning runner has the bead) and before
+  # the WRITE to in_progress (so a denied verdict releases the lease and
+  # leaves the bead open for another env / another moment). Fail-OPEN per
+  # BC-34: a daemon-unreachable verdict falls back to the local
+  # la_capacity_check (which itself fails OPEN on every keychain/API error).
+  TASK_COST_CLASS="${TASK_COST_CLASS:-standard}"
+  CAP_REASON=$(daemon_ask_capacity "$TASK_COST_CLASS"); CAP_RC=$?
+  case "$CAP_RC" in
+    0) echo "  Capacity (via daemon): $TASK_COST_CLASS allowed" ;;
+    1)
+      echo "  Capacity DENIED by daemon for $TASK_ID (cost=$TASK_COST_CLASS, reason=$CAP_REASON) — releasing lease, sleeping ${CAPACITY_DENY_BACKOFF}s."
+      lease_release_seam "$TASK_ID"
+      sleep "$CAPACITY_DENY_BACKOFF"
+      continue
+      ;;
+    2)
+      # Daemon unreachable — fall back to the existing local heuristic.
+      # la_capacity_check internally tries the daemon cache first, then the
+      # direct Keychain+API path (BC-34 fail-OPEN on every error), so this
+      # is the canonical "no daemon" path.
+      echo "  Capacity (daemon unreachable) — falling back to local la_capacity_check for $TASK_COST_CLASS."
+      if command -v la_capacity_check >/dev/null 2>&1 \
+         && ! la_capacity_check "$TASK_COST_CLASS"; then
+        echo "  Capacity DENIED by local fallback for $TASK_ID (cost=$TASK_COST_CLASS) — releasing lease, sleeping ${CAPACITY_DENY_BACKOFF}s."
+        lease_release_seam "$TASK_ID"
+        sleep "$CAPACITY_DENY_BACKOFF"
+        continue
+      fi
+      ;;
+  esac
 
   CURRENT_TASK_ID="$TASK_ID"
   bd update "$TASK_ID" --status=in_progress 2>/dev/null || true
