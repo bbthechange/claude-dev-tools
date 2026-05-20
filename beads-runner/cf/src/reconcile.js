@@ -480,11 +480,45 @@ async function workSnapshot(co, principal, proj, beadsStr) {
 
   // The join + the lifecycle columns. Each card: title·stage·priority·runner
   // state·age·the one thing it waits on (INTERFACE §4.5). Failure metadata is
-  // carried from the work-truth read (Flow G tiers 1–2); the §10 forensic
-  // stream is structurally absent (never read here). Key shape mirrors the
-  // bash jq `{bead_ref,title,stage:(.stage//""),priority,age,
-  // waiting_on:(.waiting_on//null),failure:(.failure//null)}` (a shorthand
-  // key is present-with-null when the source field is absent).
+  // carried from the work-truth read (Flow G tiers 1–2): class + retry-state
+  // + Runner: note timeline + last_runner_note_at + silent-vs-loud flag (the
+  // G1 board-badge contract — UX principle 7: silent failures surface louder
+  // because they ROT). The §10 forensic stream is structurally absent (never
+  // read here, and `forensic_blob`/`stream_json` ARE stripped at the producer
+  // — defense-in-depth on top of the renderer drop).
+  //
+  // `silent` is DERIVED from `class` when the runner doesn't supply it: a
+  // class in SILENT_CLASSES (TASK_NOT_CLOSED, TOOL_ERROR:*, SUBAGENT_MISSING,
+  // MCP_DOWN) ⇒ silent (looked green but isn't / dependency missing without
+  // a hard fail — the "rotting" classes). The runner can override by setting
+  // an explicit boolean. Unknown class ⇒ NOT silent (honest default — we do
+  // not louden a class we can't classify; only known-silent gets loudened).
+  const SILENT_CLASSES = new Set([
+    "TASK_NOT_CLOSED",
+    "SUBAGENT_MISSING",
+    "MCP_DOWN",
+  ]);
+  const normalizeFailure = (f) => {
+    if (!f || typeof f !== "object" || Array.isArray(f)) return null;
+    const cls = typeof f.class === "string" && f.class ? f.class : "UNKNOWN_FAILURE";
+    const retry = typeof f.retry_state === "string" && f.retry_state ? f.retry_state : null;
+    const notes = Array.isArray(f.runner_notes)
+      ? f.runner_notes.filter((n) => typeof n === "string")
+      : [];
+    const lastAt = typeof f.last_runner_note_at === "string" && f.last_runner_note_at
+      ? f.last_runner_note_at
+      : null;
+    const silent = typeof f.silent === "boolean"
+      ? f.silent
+      : (SILENT_CLASSES.has(cls) || cls.startsWith("TOOL_ERROR"));
+    return {
+      class: cls,
+      retry_state: retry,
+      runner_notes: notes,
+      last_runner_note_at: lastAt,
+      silent,
+    };
+  };
   const card = (b) => ({
     bead_ref: b.bead_ref ?? null,
     title: b.title ?? null,
@@ -492,7 +526,7 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     priority: b.priority ?? null,
     age: b.age ?? null,
     waiting_on: b.waiting_on ?? null,
-    failure: b.failure ?? null,
+    failure: normalizeFailure(b.failure),
   });
   const lifecycle_columns = {};
   for (const s of stages) {

@@ -100,7 +100,25 @@ body{
 .bead .bf .wo{color:var(--dim)}
 .bead.failbead{border-color:rgba(255,107,107,.32);
   background:linear-gradient(160deg,rgba(255,107,107,.1),var(--panel))}
-.bead .warn{color:var(--coral);font-size:9px;letter-spacing:.06em;margin-top:6px}
+/* G1 (claude-tools-b6y) — silent failures render LOUDER than loud ones
+ * (UX principle 7: silent rots — TASK_NOT_CLOSED / TOOL_ERROR:* / etc).
+ * A stronger coral border + a glow + a pulsing left edge make a silent
+ * card outweigh a loud one at the same glance distance. */
+.bead.failbead.silent{
+  border-color:rgba(255,107,107,.62);
+  background:linear-gradient(160deg,rgba(255,107,107,.22),var(--panel));
+  box-shadow:0 0 0 1px rgba(255,107,107,.18),
+             inset 3px 0 0 0 var(--coral);
+}
+.bead .warn{color:var(--coral);font-size:9px;letter-spacing:.06em;margin-top:6px;
+  display:block;text-decoration:none}
+/* G1: the badge is a deep-link into T6b's Inbox failure view; keep the
+ * 44×44 touch target through padding, never an underline (matches the
+ * waitcard idiom). A silent badge gets a brighter coral so the click
+ * affordance reads as "this is the rotting one, look at it first". */
+a.warn{color:var(--coral);cursor:pointer;padding:4px 0;min-height:24px}
+a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-radius:4px}
+.bead.failbead.silent .warn{color:#ff8a8a;font-weight:500}
 .col-empty{color:var(--faint);font-size:10px;padding:4px 3px}
 
 /* per-project runners — honest state + S-1 liveness */

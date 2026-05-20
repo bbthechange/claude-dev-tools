@@ -114,7 +114,17 @@
         c.appendChild(mk('div', 'col-empty', '—'));
       }
       col.cards.forEach(function (card) {
-        var b = mk('div', 'bead' + (card.failure ? ' failbead' : ''));
+        // G1 (claude-tools-b6y): a failing card carries the .failbead class
+        // (existing) plus .silent when the projection flags it silent — CSS
+        // paints the silent ones LOUDER than loud ones (UX principle 7).
+        // The badge row is the deep-link affordance: when failure_href is
+        // set we render the badge as an <a> into T6b's Inbox failure view.
+        var beadCls = 'bead';
+        if (card.failure) {
+          beadCls += ' failbead';
+          if (card.failure.silent) beadCls += ' silent';
+        }
+        var b = mk('div', beadCls);
         b.appendChild(mk('div', 'bt', card.title));
         var bf = mk('div', 'bf');
         bf.appendChild(mk('span', null,
@@ -122,7 +132,12 @@
           (card.age ? ' · ' + card.age : '')));
         if (card.waiting_on) bf.appendChild(mk('span', 'wo', card.waiting_on));
         b.appendChild(bf);
-        if (card.failure) b.appendChild(mk('div', 'warn', card.failure.badge));
+        if (card.failure) {
+          var href = card.failure.failure_href;
+          var badge = mk(href ? 'a' : 'div', 'warn', card.failure.badge);
+          if (href) badge.setAttribute('href', href);
+          b.appendChild(badge);
+        }
         c.appendChild(b);
       });
       el.cols.appendChild(c);

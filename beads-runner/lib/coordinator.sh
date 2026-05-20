@@ -1389,8 +1389,42 @@ co__work_snapshot() {
   done
   # The join + the lifecycle columns. Each card: title·stage·priority·runner
   # state·age·the one thing it waits on (INTERFACE §4.5). Failure metadata is
-  # carried from the work-truth read (Flow G tiers 1–2); the §10 forensic
-  # stream is structurally absent (never read here).
+  # carried from the work-truth read (Flow G tiers 1–2): class + retry-state +
+  # Runner: note timeline + last_runner_note_at + silent-vs-loud flag (the G1
+  # board-badge contract — UX principle 7: silent failures surface louder
+  # because they ROT). The §10 forensic stream is structurally absent and
+  # `forensic_blob`/`stream_json` are STRIPPED at the producer (defense-in-
+  # depth on top of the renderer drop). `silent` is DERIVED from `class` when
+  # not supplied: TASK_NOT_CLOSED / TOOL_ERROR:* / SUBAGENT_MISSING / MCP_DOWN
+  # ⇒ silent (looked green but isn't / dependency missing without hard fail —
+  # the "rotting" classes); unknown class ⇒ NOT silent (honest default).
+  # The per-bead failure normalizer (a jq filter inlined into the projection
+  # build below). Positive allowlist on the runner-supplied `failure` object:
+  # only the §4.5 contract fields survive, so `forensic_blob`/`stream_json`
+  # are stripped at the producer regardless of what the work-truth carries.
+  local normalize_failure='
+    if (.failure | type) != "object" then null
+    else
+      (.failure.class // "UNKNOWN_FAILURE") as $cls
+      | { class: $cls,
+          retry_state: (if (.failure.retry_state | type) == "string"
+                         and ((.failure.retry_state | length) > 0)
+                        then .failure.retry_state else null end),
+          runner_notes: (if (.failure.runner_notes | type) == "array"
+                         then [.failure.runner_notes[] | select(type=="string")]
+                         else [] end),
+          last_runner_note_at: (if (.failure.last_runner_note_at | type) == "string"
+                                 and ((.failure.last_runner_note_at | length) > 0)
+                                then .failure.last_runner_note_at else null end),
+          silent: (if (.failure.silent | type) == "boolean"
+                   then .failure.silent
+                   else (($cls == "TASK_NOT_CLOSED")
+                         or ($cls == "SUBAGENT_MISSING")
+                         or ($cls == "MCP_DOWN")
+                         or (($cls | type) == "string"
+                             and ($cls | startswith("TOOL_ERROR"))))
+                   end) }
+    end'
   jq -cn \
      --argjson sv 1 \
      --arg principal "$principal" \
@@ -1407,13 +1441,13 @@ co__work_snapshot() {
              | select((.stage // "") == $s)
              | {bead_ref, title, stage:(.stage // ""), priority,
                 age, waiting_on:(.waiting_on // null),
-                failure:(.failure // null)} ]})
+                failure: ('"$normalize_failure"')} ]})
            + { "": [ $beads[]
              | select(((.stage // "") as $st
                  | ($stages|index($st)) == null))
              | {bead_ref, title, stage:(.stage // ""), priority,
                 age, waiting_on:(.waiting_on // null),
-                failure:(.failure // null)} ] } ),
+                failure: ('"$normalize_failure"')} ] } ),
        waiting_on_you:$waiting_on_you}' 2>/dev/null \
     || printf '{"schema_version":1,"principal":"%s","read_only":true,"projects":[],"lifecycle_columns":{},"waiting_on_you":[]}' "$principal"
 }

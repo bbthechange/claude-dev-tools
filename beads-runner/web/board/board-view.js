@@ -52,6 +52,24 @@
   // honest-state rule (principle 4) means we never paint desired over actual.
   var ACTUAL_HEALTHY_ACTIVE = { running: 1, idle: 1, starting: 1 };
 
+  // G1 (claude-tools-b6y) — the "silent" failure classes (UX principle 7:
+  // surface silent failures LOUDER than loud ones, because they ROT — they
+  // looked green but aren't, or a dependency vanished without a hard fail).
+  // Authoritative classification lives in the producer (cf/src/reconcile.js
+  // + lib/coordinator.sh); this set is the renderer's BACK-COMPAT FALLBACK,
+  // used only when an older producer omits the explicit `silent` boolean.
+  // The two MUST stay in sync — if you add a silent class, add it BOTH.
+  var SILENT_CLASSES = {
+    TASK_NOT_CLOSED: 1,
+    SUBAGENT_MISSING: 1,
+    MCP_DOWN: 1
+  };
+  function isSilentClass(cls) {
+    if (typeof cls !== 'string') return false;
+    if (SILENT_CLASSES[cls]) return true;
+    return cls.indexOf('TOOL_ERROR') === 0;
+  }
+
   // F2 (claude-tools-8fh) — the four FROZEN desired-states the per-workspace
   // toggle row exposes. Pinned in the same order as set-desired.js's
   // ALLOWED_STATES so a UI typo and an engine typo cannot drift apart. The
@@ -241,22 +259,47 @@
         count: cards.length,
         cards: cards.map(function (c) {
           var f = c && c.failure ? c.failure : null;
+          var beadRef = c.bead_ref || '';
           return {
-            bead_ref: c.bead_ref || '',
+            bead_ref: beadRef,
             title: c.title || '(untitled)',
             stage: c.stage || '',
             priority: (c.priority === 0 || c.priority) ? c.priority : null,
             age: c.age || null,
             waiting_on: c.waiting_on || null,
-            // Flow G tiers 1–2 metadata ONLY (class + retry-state). The §10
-            // forensic stream is structurally absent from the projection and
-            // its on-demand fetch UI is T6b — NOT rendered here.
-            failure: f ? {
-              class: f.class || 'UNKNOWN_FAILURE',
-              retry_state: f.retry_state || null,
-              badge: '⚠ ' + (f.class || 'UNKNOWN_FAILURE') +
-                (f.retry_state ? ' · ' + f.retry_state : '')
-            } : null
+            // Flow G tiers 1–2 metadata ONLY — class + retry-state + silent
+            // flag + Runner: note count/last-at. The §10 forensic stream is
+            // structurally absent from the projection and its on-demand fetch
+            // UI is T6b (NOT rendered here). G1 (claude-tools-b6y): a card
+            // with a failure deep-links to T6b's Inbox failure-view at
+            // /inbox#/f/<bead_ref> (the analysis-task dossier path, G2).
+            // `silent` is consumed verbatim from the projection (the producer
+            // is authoritative — UX principle 7 "silent failures surface
+            // loudest" requires one place of truth); we ONLY derive it as a
+            // back-compat fallback when an older producer didn't emit the
+            // flag, using the same SILENT_CLASSES set the producer uses.
+            failure: f ? (function () {
+              var cls = f.class || 'UNKNOWN_FAILURE';
+              var silent = (typeof f.silent === 'boolean')
+                ? f.silent
+                : isSilentClass(cls);
+              var notes = Array.isArray(f.runner_notes) ? f.runner_notes : [];
+              return {
+                class: cls,
+                retry_state: f.retry_state || null,
+                silent: silent,
+                runner_notes_count: notes.length,
+                last_runner_note_at: f.last_runner_note_at || null,
+                badge: '⚠ ' + cls +
+                  (f.retry_state ? ' · ' + f.retry_state : '') +
+                  (silent ? ' · silent' : ''),
+                // G1 deep-link: T6b's Inbox SPA failure route. Same shape as
+                // inbox-view.js's failure_href (`#/f/<bead_ref>`); the host
+                // path /inbox is the sibling Pages app. Never null when we
+                // have a bead_ref (the failure view IS the answer).
+                failure_href: beadRef ? '/inbox#/f/' + beadRef : null
+              };
+            }()) : null
           };
         })
       };
@@ -275,10 +318,21 @@
     var overCapacity = runners.filter(function (r) {
       return r.capacity_verdict === 'over';
     });
+    // G1 (claude-tools-b6y) — split the failing count into loud + silent. The
+    // status strip surfaces silent SEPARATELY because they rot (UX principle
+    // 7): a "⚠ N silent" chip carries the louder visual weight than a
+    // "⚠ M failing" chip even when M ≥ N. Strip aggregation reads the same
+    // projection field as each card's badge — one source of truth.
     var failingCards = 0;
+    var silentCards = 0;
     lifecycle.forEach(function (col) {
-      col.cards.forEach(function (c) { if (c.failure) failingCards += 1; });
+      col.cards.forEach(function (c) {
+        if (!c.failure) return;
+        failingCards += 1;
+        if (c.failure.silent) silentCards += 1;
+      });
     });
+    var loudCards = failingCards - silentCards;
     var decisionItems = waiting.reduce(function (a, w) {
       return a + (w.open_item_count || 0);
     }, 0);
@@ -307,7 +361,14 @@
       decisions_waiting: waiting.length,
       decision_items_waiting: decisionItems,
       silent_or_loud_failures: failingCards,
+      // G1 (claude-tools-b6y) — split counts; the strip surfaces silent
+      // SEPARATELY (louder color) than loud (standard color).
+      silent_failures: silentCards,
+      loud_failures: loudCards,
       // Greppable tag chips for the strip — each is a projection-derived fact.
+      // The silent chip is rendered as `kind:'bad'` (loudest visual weight,
+      // UX principle 7), while the loud-failing chip stays `kind:'warn'` — so
+      // even a single silent rotter outweighs many loud retries at a glance.
       tags: [
         { kind: 'runners', text: liveActive.length + ' active' },
         staleRunners.length
@@ -319,8 +380,11 @@
         waiting.length
           ? { kind: 'warn', text: '⚠ ' + waiting.length + ' waiting on you' }
           : null,
-        failingCards
-          ? { kind: 'bad', text: '⚠ ' + failingCards + ' failing' }
+        loudCards
+          ? { kind: 'warn', text: '⚠ ' + loudCards + ' failing' }
+          : null,
+        silentCards
+          ? { kind: 'bad', text: '⚠ ' + silentCards + ' silent' }
           : null,
         overCapacity.length
           ? { kind: 'warn', text: '⚠ ' + overCapacity.length + ' over capacity' }
