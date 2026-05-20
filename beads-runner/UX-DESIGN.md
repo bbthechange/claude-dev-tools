@@ -1,6 +1,6 @@
 # Beads Runner — UX Design
 
-Status: draft (§11-amended 2026-05-20: Flows A/D/F bound to daemon + write-proxies + enricher hat; specialist hats named as one-binary kind-selected model per epic claude-tools-kie) · Scope: user flows, not implementation/architecture
+Status: draft (§11-amended 2026-05-20: Flows A/D/F bound to daemon + write-proxies + enricher hat; specialist hats named as one-binary kind-selected model; Flow B dossier-author committed to the worker-in-session via MCP `ask-brian` per R1 — epic claude-tools-kie) · Scope: user flows, not implementation/architecture
 Owner: Brian · Last updated: 2026-05-20
 
 > **§11 amendment ledger (this document).**
@@ -10,6 +10,7 @@ Owner: Brian · Last updated: 2026-05-20
 > |---|---|---|
 > | 2026-05-20 | Flows A / D / F bound to the post-8bm shape (per-machine daemon, `/api/set-desired` + `/api/intake` write proxies, enricher as the 7th specialist hat, Flow F trigger = bd stage transition + overview profile + `timed-fyi` 24h tier). UX semantics unchanged; the amends are doc→code traceability so a future reader can find the wiring from §4 flows to the M / S / I / F / P tracks under epic claude-tools-kie. | Brian, epic claude-tools-kie scope (children D3/D4) |
 > | 2026-05-20 | Specialist agents named as a closed set of **6 hats** (`ux`, `design`, `impl`, `docs`, `tests`, `reconciler`) realized by **one binary with a kind-selected system prompt**, not 5+ separate codebases. Enricher (Flow A) is the 7th hat in the same model. §2 personas table updated; new §2.1 "The hat model" added with kind enum + 6 starter prompts in Brian's voice + firing triggers (ux/design/impl/docs/tests on stage transitions from Flow F; reconciler on freeform/edited Flow B responses). UX semantics unchanged. | Brian, epic claude-tools-kie scope (child D3) |
+> | 2026-05-20 | **Flow B "DOSSIER BUILD" honest about 1 pass; author surface committed.** The pre-R1 "multi-pass agent, explicit passes" framing was already a 0.C elaboration and is now collapsed in code: the v1 *author* of a worker-stuck dossier is **the worker itself, in-session**, via the `ask-brian` MCP tool (per R1, `claude-tools-59o` / `research/mcp-interactive-tool.md`); the Pass 1–4 framing is retained only as the worker-prompt's *internal structure* (dedup / framing / readability / respondability), not as a multi-agent pipeline. The worker-stuck signal mechanism (instruct + guardrail + `permission_denials[]` backstop, per `research/headless-stuck-signal.md`) is **unchanged** — R1 adds a *positive* path (the MCP tool) without replacing the *negative* backstops; when the worker slips, jq `dg__author` is the fallback / shape-coercer, not silent degradation. Flow B step 2 ("DOSSIER BUILD") rewritten; new "Binding to implementation" block added under Flow B. DESIGN AD7 / §3.1 carries the architectural commit. | Brian, epic claude-tools-kie scope (child D2 = `claude-tools-9zk`) |
 
 This document maps the **user experience** of expanding the beads-runner from a
 single-machine headless task loop into a system that runs your idea→test
@@ -376,7 +377,12 @@ TRIGGER: bd `human` flag · worker hits a fork it can't resolve ·
    cycles waiting). Runner moves on / pauses per project policy.
    │
    ▼
-2. DOSSIER BUILD  (multi-pass agent, explicit passes)
+2. DOSSIER BUILD  (1 fresh-agent pass — IN-SESSION; see §11 amend below)
+   The author is the **worker itself** (the fresh `claude -p` already
+   running the bead in the workspace), authoring the structured ask
+   in-session via the `ask-brian` MCP tool. One pass, not four — the
+   four-pass framing is now the *worker prompt's internal structure*,
+   not a multi-agent pipeline:
    Pass 1 — Dedup vs canon: load goals + design docs; delete anything
             already answered; isolate the *actual delta / new info*.
    Pass 2 — Framing: the ask · options · recommendation + why ·
@@ -389,6 +395,10 @@ TRIGGER: bd `human` flag · worker hits a fork it can't resolve ·
    Pass 4 — Respondability: render response affordances *into* the doc —
             per-decision approve/reject, inline-editable recommendation,
             freeform note. The doc IS the form.
+   These four are the *intent* of the §0.A multi-step document-generation
+   requirement; how the v1 producer realizes them is the §0.C tradeable
+   mechanism that the 2026-05-20 §11 amend collapses to one in-session
+   pass (with jq as the fallback shape-coercer if the worker slipped).
    │
    ▼
 3. NOTIFY  (triage only, never content)
@@ -411,6 +421,57 @@ TRIGGER: bd `human` flag · worker hits a fork it can't resolve ·
 6. CONFIRM  (lightweight ack — so you trust it landed without checking)
    "Approved B · created 3 impl tasks · runner picked up the first"
 ```
+
+**Binding to implementation (§11 amend 2026-05-20).** The "DOSSIER BUILD" step
+above is realized by four concrete pieces — and crucially, by **the worker
+itself**, not by a separate post-hoc agent. This is the post-R1 shape
+(`claude-tools-59o`, research in `research/mcp-interactive-tool.md`):
+
+1. **Worker-stuck signal mechanism — unchanged.** The runner still ships the
+   instruct + guardrail + backstop trio per `research/headless-stuck-signal.md`
+   (DESIGN AD3 / AD3.3 / AD3.5): the worker prompt forbids
+   `AskUserQuestion` / `EnterPlanMode` / `ExitPlanMode`, the
+   `--disallowedTools` guardrail enforces it at the harness, and the
+   `permission_denials[]` array (+ the `"Entered plan mode."` stream scan)
+   catch slips. R1 did not replace this; it added a positive path alongside.
+2. **Positive path = `ask-brian` MCP tool (R1).** On a fork the worker must
+   not resolve, the worker calls `mcp__askbrian__ask-brian` with
+   `{question, options?, recommendation?, why?}`. The MCP server's *first
+   action* is to write that ask as a v2 dossier `items[]` entry durably to
+   the hosted engine (the dossier write — survives lid-close because it
+   happens *before* the poll loop). Then the server polls Brian's answer
+   surface every 1s and returns his answer to the worker as the tool_result.
+   The worker continues in-session with the answer — one task, one session,
+   no exit-and-restart. (R1 demonstrated this blocks cleanly for ≥30 min
+   wall-clock with no observable ceiling.)
+3. **Author = the worker, not a separate dossier-builder agent.** The worker
+   is already a fresh `claude -p` in the workspace cwd with `--add-dir` to
+   the workspace and the workspace's `CLAUDE.md` available — it has strictly
+   more context than any post-hoc reconstructive agent could. The pre-R1
+   sketch of "a real `claude -p` dossier-builder as a separate process,
+   re-launched after the worker exits with a stuck-signal" is **collapsed**
+   in v1: the worker authors the ask in-session, the MCP tool is the write
+   surface. The Pass 1–4 framing in step 2 is retained as the *worker
+   prompt's internal structure*, not as a multi-agent pipeline.
+4. **Fallback = jq `dg__author` shape-coercer.** Two failure cases land
+   here: (a) the worker slipped to a forbidden interactive tool and never
+   made an MCP call (the `permission_denials[]` backstop fires; jq authors
+   a minimal dossier from the bd task + the slipped `tool_input` so the
+   pipeline does not silently drop the ask); (b) the MCP write succeeded
+   but the resulting dossier missed a required AD7 shape (jq coerces it to
+   conform with the §5.1-core WRITE gate). The agent's failure is the
+   fallback's success case — graceful degradation to a thin dossier, never
+   a silent loss. **jq is the fallback, not the v1 primary author.**
+
+**Flow F overview dossiers** (proactive "how it fits together", `timed-fyi`)
+are a separate author surface — see Flow F's §11 amend (P-track). The Flow B
+amend here is specifically about worker-stuck dossiers.
+
+**Architectural commit** lives in `DESIGN.md` §3.1 (AD7 §11 amend
+2026-05-20) and `DESIGN.md` §5 C5. UX semantics in step 2 above are
+unchanged — the dossier the human reads still satisfies the §0.A
+multi-step doc-gen requirement; what changed is the v1 *producer*,
+which is a 0.C-tradeable mechanism the amend now commits to.
 
 ---
 
