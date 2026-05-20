@@ -1,0 +1,13 @@
+{
+  "name": "mcp-askbrian",
+  "version": "0.1.0",
+  "description": "MCP stdio server exposing mcp__askbrian__ask-brian for headless/interactive claude sessions",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "mcp-askbrian": "./server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "*"
+  }
+}

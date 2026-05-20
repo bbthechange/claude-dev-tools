@@ -18,3 +18,9 @@ beads-runner/mocks/
 
 # B5 (claude-tools-uu1) MCP-server SIGKILL probe sandbox — local, throwaway
 .b5-probe/
+
+# mcp-askbrian/ — local node_modules (re-installed on demand) and the
+# test-*.sh scratch dir (CO_STORE for the in-process bash store).
+mcp-askbrian/node_modules/
+mcp-askbrian/.test-scratch/
+mcp-askbrian/package-lock.json
