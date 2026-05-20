@@ -257,6 +257,10 @@ Before closing the issue, add a brief debrief note summarizing how it went:
   bd update BEADS_ID --append-notes="<your debrief>"
 Include: what you did, any difficulties or unexpected behavior, how long things took if notable, anything you were not sure about, and any follow-up suggestions. Be honest -- this is for the human reviewing your work later.
 
+If your work moves this bead to the next lifecycle stage (idea | ux | design | impl | docs | tests | done -- see beads-runner/agents/lifecycle.md), record the transition with the one sanctioned op so the spine stays clean:
+  bd-stage set BEADS_ID <next-stage>
+This is the only correct way to change stage -- it removes any prior stage:* label before adding the new one, so the "exactly one stage per bead" invariant cannot drift. Do NOT bd label add stage:* directly.
+
 When you have completed all steps, close the issue: bd close BEADS_ID
 PROMPT_DELIM
   # Literal replacement, id/title/stuck-exit BEFORE desc so free-form desc text
