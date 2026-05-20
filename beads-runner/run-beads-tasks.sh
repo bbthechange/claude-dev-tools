@@ -1110,19 +1110,24 @@ BEADS_DESC
 
 IMPORTANT: You are running non-interactively. Do NOT use EnterPlanMode or ExitPlanMode -- there is no human to approve plans. Do NOT use AskUserQuestion -- there is no human to answer. Just execute the work directly.
 
-If -- and ONLY if -- you hit a genuine fork you must NOT resolve yourself (an irreversible product / architecture / scope decision that is the human's call to make, or a spec ambiguity where guessing would risk real damage), do NOT ask and do NOT guess a default. This is NOT for ordinary hard work and NOT a substitute for thinking a problem through -- it is only for a decision a human owns. When you hit one, take the deliberate stuck-signal path, in this exact order, then STOP. ALL FOUR STEPS ARE REQUIRED -- step 1 (the status flip) is the linchpin; missing it leaves the bead looking 'in_progress' to everything downstream. Do step 1 FIRST, before anything else:
-  1. bd update BEADS_ID --status=blocked    ⟵ DO THIS FIRST. This is the canonical signal; without it the bead reads as still-running.
-  2. Write the structured ask into the bead so a human can decide from it alone:
-       bd update BEADS_ID --append-notes="STUCK_NEEDS_HUMAN
-       TL;DR: <one sentence>
-       The ask: <the precise decision needed>
-       Options: <each option and its blast radius>
-       Recommendation: <your pick> -- <why>
-       Reversible: <what is / isn't reversible>"
-  3. bd label add BEADS_ID human
-  4. Stop. Do NOT close the issue, do NOT pick an option yourself, do NOT keep working around it -- end your turn. The runner detects this state (status=blocked + the 'human' label), routes the ask to the human, and resumes the task once they decide. For a real human-decision fork this IS the correct, expected outcome -- not a failure.
+If -- and ONLY if -- you hit a genuine fork you must NOT resolve yourself (an irreversible product / architecture / scope decision that is the human's call to make, or a spec ambiguity where guessing would risk real damage), do NOT ask and do NOT guess a default. This is NOT for ordinary hard work and NOT a substitute for thinking a problem through -- it is only for a decision a human owns. When you hit one, call the `mcp__askbrian__ask-brian` MCP tool with a SHORT trigger and wait for it to return Brian's answer. The tool blocks until he answers, then returns the answer as a string -- act on it and continue the task. Multi-question is allowed: if a second fork emerges after the first answer, call the tool again rather than burning a whole stuck cycle. Do NOT close the issue while waiting; just call the tool.
 
-Self-check before you stop: run `bd show BEADS_ID` and confirm status is blocked, the human label is present, and the STUCK_NEEDS_HUMAN note is in the notes. If status is still in_progress, you missed step 1 -- redo it now.
+The trigger is intentionally brief (aim for under 200 words). A fresh dossier-builder agent in its own clean context will read the bead, related code, and design docs and write the polished multi-section dossier with Mermaid + per-option consequence_blocks. Your job is to drop a seed the builder can build on, not to dump your whole context. Tool inputs:
+  - question: one sentence -- the precise decision needed
+  - options: [{label, blast_radius?}, ...] -- name each viable option; blast_radius is OPTIONAL, the builder fills it in from the code
+  - recommendation?: your pick if you have one (the builder may revise after reading)
+  - reversible?: short note on what is / isn't reversible (the builder may revise)
+  - context_dump: freeform note of WHAT IS IN YOUR HEAD that the builder cannot find by reading the bead, related code, and docs itself -- an alternative you considered, a subtle constraint you discovered mid-task, why you cannot resolve this yourself. Do NOT re-explain the bead description or code the builder can read for itself.
+
+Fallback path (only if `mcp__askbrian__ask-brian` is not registered in this session -- the MCP server is rolling out alongside this prompt): write the structured ask into the bead so the runner can route it, then stop. The runner auto-flips status=blocked from the `human` label + STUCK_NEEDS_HUMAN note, so you only need:
+  1. bd update BEADS_ID --append-notes="STUCK_NEEDS_HUMAN
+     TL;DR: <one sentence>
+     The ask: <the precise decision needed>
+     Options: <each option and its blast radius>
+     Recommendation: <your pick> -- <why>
+     Reversible: <what is / isn't reversible>"
+  2. bd label add BEADS_ID human
+  3. Stop. Do NOT close the issue, do NOT pick an option yourself, do NOT keep working around it. For a real human-decision fork this IS the correct, expected outcome -- not a failure.
 
 Follow the instructions in the task description above exactly. The description contains the full workflow for this task type.
 
