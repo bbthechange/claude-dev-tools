@@ -1,0 +1,30 @@
+{
+  "dossier_id": "d-aux-shim-7f3a",
+  "bead_ref": "claude-tools-aux",
+  "trigger": "worker_stuck",
+  "tier": "blocking",
+  "workspace": "/Users/brianbutler/code/claude-tools",
+  "worker_ask": {
+    "tldr": "Worker reached the local-agent ⇄ coordinator unreachable posture for the lease path and the contract isn't fully unambiguous on what counts as a 'fresh lease' for a worker that holds a valid local lease but whose last coordinator-side renew is older than HEARTBEAT_INTERVAL.",
+    "ask": "When the coordinator is unreachable and the local agent holds a lease whose locally-known expires_at is still in the future but whose last successful coordinator-side renew is older than HEARTBEAT_INTERVAL, should the worker treat the lease as 'still held' (continue the in-flight task) or 'stale' (stop cleanly mid-task)?",
+    "options": [
+      {
+        "option_id": "continue",
+        "label": "Continue — locally-valid lease is sufficient under degraded-closed",
+        "blast_radius": "Preserves in-flight work across longer coordinator blips at the cost of widening the BC-04 race window if a second runner ever claims the same task after lease propagation lag.",
+        "consequence_block": null
+      },
+      {
+        "option_id": "stop",
+        "label": "Stop — heartbeat-staleness collapses the lease, finish cleanly and surrender",
+        "blast_radius": "Tightens the BC-04 race floor to one HEARTBEAT_INTERVAL of staleness at the cost of killing in-flight work during normal coordinator blips that the local lease TTL was sized to survive.",
+        "consequence_block": null
+      }
+    ],
+    "recommendation": {
+      "value": "continue",
+      "why": "The local lease TTL was explicitly sized larger than HEARTBEAT_INTERVAL + expected blip exactly to preserve in-flight work; collapsing on heartbeat staleness would defeat the sizing rationale and re-introduce the BC-34 mid-work-kill scar."
+    },
+    "reversible": "Either choice is reversible — the policy is one constant + one branch in the local-agent's tick loop; reversing it doesn't require a data migration."
+  }
+}

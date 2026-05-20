@@ -1,0 +1,133 @@
+{
+  "body": {
+    "tldr": "When the central coordinator is briefly unreachable, should a runner keep working on a task whose local lease is still valid, or stop cleanly the moment its last server-side renew goes stale?",
+    "sections": [
+      {
+        "heading": "The situation, in one paragraph",
+        "prose": "The system has two layers of ownership truth for a running task. The runner machine holds a locally-cached lease that says \"I own this until time T,\" and that cache is what the runner actually checks each tick. Meanwhile, a hosted coordinator is the global arbiter that hands those leases out and tracks when each one was last renewed. Normally the runner renews its lease against the coordinator every heartbeat, well before T. The fork is: the coordinator is briefly unreachable, the local cache still says \"valid until T,\" but the last successful renew is older than one heartbeat interval. The worker is mid-task and has to decide whether to keep going or stop."
+      },
+      {
+        "heading": "Why this is a human decision",
+        "prose": "Both answers preserve a piece of the design and break a different piece. \"Keep going on the local lease\" preserves the rule that brief coordinator outages should not kill in-flight work — a rule the lease lifetime was deliberately sized to honor. \"Stop because the heartbeat is stale\" preserves the rule that a runner should never be optimistic about owning a task when a second runner might also believe it owns the same task. The two rules can't both be maximally honored; an engineer has to pick which one to weaken slightly."
+      },
+      {
+        "heading": "What \"continue\" gets you and costs you",
+        "prose": "Continue means the runner trusts its own locally-cached lease until that lease's expiry, regardless of how recently the coordinator confirmed it. This is the choice the lease TTL was sized for: TTL is comfortably longer than one heartbeat interval plus a typical blip, so a short outage never strands a long task. The cost is a slightly wider window where, in principle, the coordinator could have already handed the lease to someone else and the local runner doesn't know yet — re-opening a small slice of the multi-runner-claims-the-same-task race the lease system was built to close."
+      },
+      {
+        "heading": "What \"stop\" gets you and costs you",
+        "prose": "Stop means heartbeat-staleness collapses the lease at the worker, regardless of whether the local TTL has expired. This tightens the race window to one heartbeat: as soon as the coordinator hasn't confirmed in that long, the runner surrenders. The cost is exactly the failure mode the lease TTL was sized to avoid — a transient coordinator hiccup, well within normal operational noise, would kill an in-flight long-running task. That's the same class of mid-work-kill that the contract elsewhere goes to lengths to avoid."
+      },
+      {
+        "heading": "Recommendation",
+        "prose": "Continue. The lease TTL is the contract; it was explicitly sized larger than the heartbeat plus expected blip for exactly this case, and overriding it with a stricter heartbeat-staleness check undoes the sizing. The race window \"continue\" widens is bounded by the local TTL, which is itself the bound the system is already designed around. Picking \"stop\" would mean re-arguing why the local TTL exists at all."
+      },
+      {
+        "heading": "What's reversible",
+        "prose": "Either policy is one constant plus one branch in the local agent's tick loop. No data migration, no schema change, no API surface change. Flipping it later if the race window turns out to bite is cheap."
+      }
+    ],
+    "diagrams": [
+      {
+        "caption": "Two ownership clocks the runner has to reconcile during a coordinator outage",
+        "content": "sequenceDiagram\n  participant W as Worker\n  participant L as Local Agent\n  participant C as Coordinator\n  Note over W,L: Task in flight, lease held\n  L->>C: heartbeat renew (t)\n  C-->>L: renewed, expires_at=t+TTL\n  Note over C: brief outage starts\n  L-xC: heartbeat renew (t+H)\n  Note over L: last server-confirmed renew is now stale\n  Note over L: local cache still says valid until t+TTL\n  W->>L: tick: should I keep working?\n  alt continue (recommended)\n    L-->>W: yes -- local lease still valid\n  else stop\n    L-->>W: no -- last server confirm is stale\n  end"
+      },
+      {
+        "caption": "Decision fork",
+        "content": "flowchart TD\n  A[\"Coordinator unreachable, local lease still valid, last renew stale\"]\n  D{\"Pick the policy\"}\n  A --> D\n  D ==>|recommended| O0([\"Continue on local lease until TTL\"])\n  O0 --> B0[\"Preserves in-flight work; small widening of multi-claim window\"]\n  D -->|option| O1([\"Stop on heartbeat staleness\"])\n  O1 --> B1[\"Tightens multi-claim window; kills in-flight work on normal blips\"]"
+      }
+    ],
+    "full_detail": "The runner architecture distinguishes two authorities. The local agent on each machine measures real ownership: it checks the lease the machine actually holds, against the local clock, every tick. The coordinator is the global serializer: it is the single source of truth for who has been granted what, and a runner must renew its lease against it periodically. The lease has a time-to-live; the heartbeat interval is much shorter. By design, TTL was set larger than heartbeat-plus-expected-blip so that a brief outage in the coordinator never strands a long-running task — the local cache is enough to keep working while the connection comes back.\n\nThe fork the worker hit is a narrow but real case the contract doesn't pin down crisply. Suppose the coordinator goes silent for slightly longer than one heartbeat. The local cache still says \"this lease is valid until T,\" because T is in the future. But the last *server-side* confirmation of that lease is now older than one heartbeat interval. The question is whether the runner should keep working (the local cache says yes; the TTL was sized for this) or stop cleanly mid-task (the server-side confirmation is stale; conservatism would say stop).\n\nThe two answers each pick a side of a real tradeoff. \"Continue\" preserves the rule that brief outages don't kill in-flight work, at the cost of widening the window in which two runners might both believe they own the same task by some small amount bounded by the TTL. \"Stop\" tightens that race window to one heartbeat, at the cost of killing an in-flight long task during exactly the kind of outage the TTL was sized to survive.\n\nThe recommendation is to continue. The TTL is the system's explicit contract for how long a local lease is trusted in the absence of fresh server confirmation; layering a stricter heartbeat-staleness check on top of it would effectively redefine the TTL, and would resurrect the mid-work-kill behavior the design was specifically built to prevent. If experience later shows the race window opened by trusting the local TTL actually causes problems, the fix is to shorten the TTL — not to keep the TTL long and then short-circuit it with a heartbeat check. Either way the change is one constant plus one branch in the local-agent's tick loop; nothing about the schema, the API, or the data is affected, so this is a cheap policy to revisit."
+  },
+  "items": [
+    {
+      "id": "d-aux-shim-7f3a-d1",
+      "kind": "pick-option",
+      "framing": {
+        "ask": "When the coordinator is briefly unreachable but the local lease is still within its TTL, should the runner keep working or stop cleanly?",
+        "why": "The local lease TTL and the heartbeat-staleness check disagree in this narrow window; the contract's intent isn't unambiguous, and picking one sets which design rule we slightly weaken for the other."
+      },
+      "context_anchor": {
+        "where": "Inside the local agent's tick loop, on the path that evaluates whether the runner should continue executing the bead it currently holds when the coordinator stops answering renew requests.",
+        "expansion": "The runner machine caches the lease it acquired from the coordinator. Each tick it asks two questions: is the locally-cached expiry still in the future, and has the coordinator recently confirmed that lease? Normally both are true. During a brief coordinator outage the second goes false before the first does. The worker stopped at exactly that gap and refused to resolve it on its own."
+      },
+      "options": [
+        {
+          "option_id": "continue",
+          "label": "Keep working — trust the local lease until its TTL expires",
+          "blast_radius": "Preserves in-flight long tasks across brief coordinator outages, which is what the TTL was sized for; widens the multi-runner-claims-the-same-task window by at most the lease's remaining TTL.",
+          "consequence_block": {
+            "creates": [
+              {
+                "title": "Pin local-lease-during-coordinator-outage policy = continue-until-TTL",
+                "type": "task",
+                "priority": 2,
+                "labels": ["design", "local-agent", "lease"],
+                "description": "Encode in the local agent: while the coordinator is unreachable, the runner may continue executing a task whose locally-cached lease expiry is still in the future, regardless of how recently the coordinator confirmed the lease. The locally-cached lease is the trust anchor during an outage; the TTL is the bound.",
+                "deps": ["claude-tools-aux"]
+              },
+              {
+                "title": "Add unreachable-posture test: worker continues past stale heartbeat while local lease valid",
+                "type": "test",
+                "priority": 2,
+                "labels": ["tests", "local-agent", "lease"],
+                "description": "Black-box test: drop the coordinator endpoint, let one heartbeat go stale, assert the worker continues; restore the endpoint, assert the next renew succeeds. Symmetric negative: let the local TTL expire under outage and assert the worker stops cleanly.",
+                "deps": ["claude-tools-aux"]
+              }
+            ],
+            "unblocks": ["claude-tools-aux"],
+            "labels": [
+              { "bead_ref": "claude-tools-aux", "add": [], "remove": ["human"] }
+            ],
+            "status_changes": [
+              { "bead_ref": "claude-tools-aux", "to_status": "open" }
+            ]
+          }
+        },
+        {
+          "option_id": "stop",
+          "label": "Stop — heartbeat staleness collapses the lease, surrender cleanly",
+          "blast_radius": "Tightens the multi-runner race window to one heartbeat interval; kills in-flight long tasks during normal coordinator blips the TTL was sized to absorb.",
+          "consequence_block": {
+            "creates": [
+              {
+                "title": "Pin local-lease-during-coordinator-outage policy = stop-on-stale-heartbeat",
+                "type": "task",
+                "priority": 2,
+                "labels": ["design", "local-agent", "lease"],
+                "description": "Encode in the local agent: while the coordinator is unreachable, treat a heartbeat-staleness condition as a collapse of the lease, finish the current step, and surrender exclusivity even if the local TTL has not yet expired.",
+                "deps": ["claude-tools-aux"]
+              },
+              {
+                "title": "Shorten LEASE_TTL to reflect the new effective trust window",
+                "type": "task",
+                "priority": 2,
+                "labels": ["design", "local-agent", "lease"],
+                "description": "Because the effective trust window collapses to one heartbeat under outage, the nominal TTL no longer carries its sizing argument. Revisit LEASE_TTL and document what it now bounds.",
+                "deps": ["claude-tools-aux"]
+              }
+            ],
+            "unblocks": ["claude-tools-aux"],
+            "labels": [
+              { "bead_ref": "claude-tools-aux", "add": [], "remove": ["human"] }
+            ],
+            "status_changes": [
+              { "bead_ref": "claude-tools-aux", "to_status": "open" }
+            ]
+          }
+        }
+      ],
+      "recommendation": {
+        "value": "continue",
+        "why": "The lease TTL is the design's explicit contract for how long the local cache is trusted without fresh server confirmation; it was sized larger than one heartbeat interval exactly so that a brief outage does not strand a long task. \"Stop on stale heartbeat\" effectively redefines the TTL and resurrects the mid-work-kill behavior the design is built to prevent. If the race window proves problematic in practice, shorten the TTL — don't short-circuit it."
+      },
+      "consequence_block": {
+        "creates": [],
+        "unblocks": [],
+        "labels": [],
+        "status_changes": []
+      },
+      "reversible": "Fully reversible — one constant plus one branch in the local agent's tick loop. No data migration, no schema change."
+    }
+  ]
+}
