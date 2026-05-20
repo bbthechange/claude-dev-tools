@@ -41,7 +41,24 @@ const COORDINATOR_OP = 'set-desired'; // §2.4 C4-seam captured-actor — FROZEN
 // The four legal desired-states, per UX-DESIGN Flow D + INTERFACE §4.2.
 // Pinned as a frozen literal so a UI typo is a 422 here, BEFORE the engine
 // burns a round-trip; the engine's store/schema gate is still authoritative.
+//
+// UI ↔ WIRE vocabulary (F3, claude-tools-6mx — Flow D end-to-end gap):
+//   UX-DESIGN names the four toggles `{running, paused, spare-only, stopped}`.
+//   INTERFACE.md §4.2 names the §4.2 RunnerState.desired enum
+//   `{running, paused, spare-cycles, stopped}` — and the daemon (M3) and
+//   workspace runner C2 gate both READ `spare-cycles` literally. Without a
+//   translation here, a `spare-only` tap would land in the engine verbatim,
+//   the daemon would coerce it to empty (out-of-enum) and no-op forever, and
+//   the C2 gate would never fire — Flow D would silently break for one of its
+//   four states. The proxy is the UI/wire seam, so the normalisation lives
+//   here: validate the UI name, then send the §4.2 enum.
 const ALLOWED_STATES = ['running', 'paused', 'spare-only', 'stopped'];
+const WIRE_STATE = {
+  running:      'running',
+  paused:       'paused',
+  'spare-only': 'spare-cycles',
+  stopped:      'stopped'
+};
 
 function json(body, status) {
   return new Response(JSON.stringify(body), {
@@ -137,10 +154,13 @@ export async function onRequestPost(context) {
       // Mirror the desired's named-JSON-body shape exactly — the adapter unwraps
       // to the engine's positional `[proj, state, actor]` args (§2.4
       // opSetDesired). The client never sets a principal; if they tried, the
-      // chokepoint would overwrite it on the way in.
+      // chokepoint would overwrite it on the way in. F3: the UI's `spare-only`
+      // is normalised to the §4.2 wire enum `spare-cycles` here so the engine
+      // store, the daemon's M3 enum filter, and the runner's C2 gate all see
+      // the same canonical value.
       body: JSON.stringify({
         project_ref: projectRef,
-        desired: { state: state, actor: actor }
+        desired: { state: WIRE_STATE[state], actor: actor }
       })
     });
   } catch (e) {

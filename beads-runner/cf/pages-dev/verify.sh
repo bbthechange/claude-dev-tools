@@ -216,8 +216,13 @@ echo "── EXIT-4: no FROZEN edit (READ proxies / engine / INTERFACE) — addi
 # READ proxies (functions/api/board.js, the inbox proxies) and the engine
 # source remain untouched. The Board client surfaces are now an evolving
 # UI layer (test-board.sh owns its structural invariants).
+# F3 (claude-tools-6mx) further narrows: web/board/functions/api/set-desired.js
+# is the WRITE proxy (F1) — legitimately evolving with the desired-state wire
+# contract (e.g. F3's UI→§4.2 normalisation). Only the READ proxies (board.js,
+# inbox/*) remain in the frozen set; the WRITE proxies live on board.js's
+# sibling path but are NOT frozen.
 DIRTY="$(cd "$CF_DIR/../.." && git status --porcelain \
-  -- beads-runner/web/board/functions \
+  -- beads-runner/web/board/functions/api/board.js \
      beads-runner/web/inbox/functions \
      beads-runner/cf/src \
      beads-runner/cf/wrangler.toml \
@@ -253,6 +258,17 @@ ck "credential-less /request?op=set-desired ⇒ 401 (§9.1 covers write)" eq "$N
 SD_BAD='{"project_ref":"projA","desired":{"state":"bogus","actor":"ui:verify"}}'
 BADC="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d "$SD_BAD" "$B/api/set-desired")"
 ck "POST set-desired with bogus state ⇒ 422 (proxy frozen-set gate)"  eq "$BADC" "422"
+# F3 (claude-tools-6mx) — UI ↔ wire normalisation: a UI `spare-only` MUST land
+# in the engine as the §4.2 enum `spare-cycles` so the daemon's M3 enum filter
+# accepts it and the runner's C2 gate fires. The proxy validates `spare-only`
+# at the gate, then sends `spare-cycles` on the wire — confirmed by the next
+# /api/board read echoing the normalised value.
+SD_SPARE='{"project_ref":"projA","desired":{"state":"spare-only","actor":"ui:verify"}}'
+SDS="$(curl -s -X POST -H 'content-type: application/json' -d "$SD_SPARE" "$B/api/set-desired")"
+ck "POST set-desired spare-only ⇒ ok"                                  eq "$(jq -r '.ok' <<<"$SDS")" "true"
+BH4="$(curl -s "$B/api/board")"
+ck "engine stored §4.2 wire enum 'spare-cycles' (UI normalised in proxy, F3)" \
+    eq "$(jq -r '.projects[]|select(.project_ref=="projA").runner_state.desired' <<<"$BH4")" "spare-cycles"
 
 echo ""
 echo "======================================================================"

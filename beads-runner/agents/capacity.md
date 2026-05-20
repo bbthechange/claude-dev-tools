@@ -11,6 +11,17 @@ test pin) and is logged every cycle as
 `ramp=<pct>% (day=<N> × <SPARE_RAMP_PER_DAY>%)` so the formula is verifiable
 from the daemon's own logs without re-reading code.
 
+**UI ↔ wire vocabulary.** The Board's per-workspace toggle row uses the UI
+label `spare-only` (UX-DESIGN Flow D); the §4.2 RunnerState.desired enum,
+the daemon's M3 reconciler, and the gate below all key on the canonical
+wire value `spare-cycles`. The `web/board/functions/api/set-desired.js`
+proxy normalises UI→wire on write (`WIRE_STATE['spare-only'] =
+'spare-cycles'`, F3 / claude-tools-6mx) so the engine always stores
+`spare-cycles` and downstream consumers never see the UI synonym. An
+unnormalised `spare-only` write WOULD be dropped by the daemon's enum
+filter (no-op) and the gate (case-arm key-miss) — the test-flow-d.sh
+PART B8 / C6 cases assert that exact silent-break shape.
+
 The gate that consumes the math lives in the workspace runner's
 `daemon_ask_capacity` (`run-beads-tasks.sh`). It is invoked per pickup AFTER
 the lease is held and BEFORE the bead is written `in_progress`, with two
