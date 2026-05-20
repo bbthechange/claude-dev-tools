@@ -1036,7 +1036,13 @@ while true; do
       TASK_COST_CLASS="standard"
     fi
   fi
-  CAP_REASON=$(daemon_ask_capacity "$TASK_COST_CLASS" "$WORKSPACE_DESIRED"); CAP_RC=$?
+  # `set -e` exits on a failing command substitution inside an assignment in
+  # bash 4.x+, so neutralise errexit and capture the code in one shot. CAP_RC
+  # stays unset on success (defaults to 0); gets the function's return code on
+  # any non-zero exit (1 = denied, 2 = daemon unreachable, anything else is a
+  # bug the case-statement below will surface).
+  CAP_RC=0
+  CAP_REASON=$(daemon_ask_capacity "$TASK_COST_CLASS" "$WORKSPACE_DESIRED") || CAP_RC=$?
   case "$CAP_RC" in
     0) echo "  Capacity (via daemon): $TASK_COST_CLASS allowed (desired=${WORKSPACE_DESIRED:-running}, prio=${TASK_PRIORITY:-2})" ;;
     1)
