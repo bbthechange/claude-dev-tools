@@ -98,6 +98,11 @@ body{
 .bead .bf{display:flex;align-items:center;justify-content:space-between;
   font-size:9px;color:var(--faint);gap:6px}
 .bead .bf .wo{color:var(--dim)}
+/* L3 (claude-tools-2bf): the per-card "which live workspace is running this
+ * bead" badge. Rendered only when a LIVE runner has it as current_task_ref
+ * (board-view.js drops it for stale runners — S-1). Same dim-text register
+ * as .wo so it reads as secondary card meta, never competing with title. */
+.bead .bf .rn{color:var(--dim)}
 .bead.failbead{border-color:rgba(255,107,107,.32);
   background:linear-gradient(160deg,rgba(255,107,107,.1),var(--panel))}
 /* G1 (claude-tools-b6y) — silent failures render LOUDER than loud ones

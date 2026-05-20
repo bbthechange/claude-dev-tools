@@ -248,14 +248,47 @@
       };
     });
 
-    // Lifecycle columns — keyed by `stage:` (§4.5), FROZEN order, "" honest.
+    // L3 (claude-tools-2bf): per-card "which workspace is running this bead?"
+    // map. The projection's per-project RunnerState carries `current_task_ref`
+    // (§4.2) — the bead_ref the runner last reported it was working. We index
+    // it bead_ref → project_ref so each card can show its live runner. ONLY
+    // a LIVE runner's current_task_ref counts; a stale runner's last-reported
+    // task is muted by S-1 (a stale runner is honestly "we don't know what
+    // it's doing now"). Multiple live runners on the same bead is structurally
+    // possible only as a transient race during a lease handoff (§6.1); we
+    // keep the first observed assignment and surface the rest as a "+N more"
+    // suffix so the honest plural shape never lies as a single value.
+    var beadRunners = {};
+    projects.forEach(function (p) {
+      var rs = p && p.runner_state ? p.runner_state : {};
+      var live = rs.liveness === 'live';
+      var task = typeof rs.current_task_ref === 'string' && rs.current_task_ref
+        ? rs.current_task_ref : null;
+      var ref = p && p.project_ref ? p.project_ref : null;
+      if (!live || !task || !ref) return;
+      if (!beadRunners[task]) beadRunners[task] = [];
+      beadRunners[task].push(ref);
+    });
+    function runnerLabel(beadRef) {
+      var rs = beadRef ? beadRunners[beadRef] : null;
+      if (!rs || rs.length === 0) return null;
+      if (rs.length === 1) return rs[0];
+      return rs[0] + ' (+' + (rs.length - 1) + ' more)';
+    }
+
+    // Lifecycle columns — keyed by `stage:` (§4.5), FROZEN order. The seven
+    // canonical stages render in the spec's order; the empty-string "unstaged"
+    // bucket is appended as a visible eighth lane so legacy beads with no
+    // stage label are never hidden (L3 acceptance: legacy unstaged beads are
+    // visible). The column key STAYS "" — the producer contract — but the
+    // human-facing label is "unstaged" (was the older 'untracked' wording).
     var cols = (snap.lifecycle_columns && typeof snap.lifecycle_columns === 'object')
       ? snap.lifecycle_columns : {};
     var lifecycle = STAGE_ORDER.map(function (stage) {
       var cards = Array.isArray(cols[stage]) ? cols[stage] : [];
       return {
         stage: stage,
-        label: stage === '' ? 'untracked' : stage,
+        label: stage === '' ? 'unstaged' : stage,
         count: cards.length,
         cards: cards.map(function (c) {
           var f = c && c.failure ? c.failure : null;
@@ -267,6 +300,11 @@
             priority: (c.priority === 0 || c.priority) ? c.priority : null,
             age: c.age || null,
             waiting_on: c.waiting_on || null,
+            // L3 — which live runner is on this bead, if any (null when no
+            // live workspace has it as current_task_ref). Presentation-only:
+            // we never invent a runner; a stale runner's last task does NOT
+            // count (S-1 — stale is not "currently working").
+            runner: runnerLabel(beadRef),
             // Flow G tiers 1–2 metadata ONLY — class + retry-state + silent
             // flag + Runner: note count/last-at. The §10 forensic stream is
             // structurally absent from the projection and its on-demand fetch

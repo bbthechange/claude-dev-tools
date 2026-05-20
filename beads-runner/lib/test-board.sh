@@ -102,7 +102,30 @@ ck "lane does NOT carry dossier body/items (T6b owns content)"   eq "$(jq -r '.w
 ck "lifecycle spine present, FROZEN idea→done (+\"\" honest)"     eq "$(jq -r '[.lifecycle[].stage]|join(",")' <<<"$V")" "idea,ux,design,impl,docs,tests,done,"
 ck "impl column carries the bead, with its 'waiting_on'"         eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].waiting_on' <<<"$V")" "review"
 ck "unknown stage 'weird' bucketed honestly under \"\" (not impl)" eq "$(jq -r '.lifecycle[]|select(.stage=="").cards[0].bead_ref' <<<"$V")" "claude-tools-77"
+# L3 (claude-tools-2bf): the legacy/un-staged bucket is rendered as a VISIBLE
+# eighth lane labeled "unstaged" (was "untracked") so legacy beads with no
+# stage label never disappear from the Board.
+ck "unstaged lane labeled 'unstaged' (was 'untracked')"           eq "$(jq -r '.lifecycle[]|select(.stage=="").label' <<<"$V")" "unstaged"
+ck "unstaged lane is the eighth column (after done)"              eq "$(jq -r '.lifecycle|length' <<<"$V")" "8"
 ck "machine reads HEALTHY (no stale/mismatch/failure)"           eq "$(jq -r '.health.ok' <<<"$V")" "true"
+
+echo "── EXIT-1b: L3 — per-card 'which workspace is running this bead' ──"
+# Live runner with current_task_ref pointing at a bead in the projection ⇒
+# that bead's card carries .runner=<project_ref>. A stale runner's last task
+# does NOT propagate (S-1). A card without a live runner stays runner:null.
+co_request "$GOOD" set-desired projW running "ui:brian-laptop" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostW projW running claude-tools-99 "$(ago 15)")" >/dev/null 2>&1
+SNAP_L3="$(co_request "$GOOD" work-snapshot "" "$BEADS" 2>/dev/null)"
+V_L3="$(render "$SNAP_L3")"
+ck "live runner's current_task_ref attributes to the impl card" eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].runner' <<<"$V_L3")" "projW"
+ck "a card without a live runner keeps runner:null"             eq "$(jq -r '.lifecycle[]|select(.stage=="idea").cards[0].runner' <<<"$V_L3")" "null"
+# Stale runner's last current_task_ref ≠ "currently working" (S-1). Re-anchor
+# projW to a stale last-heartbeat AND a different live runner on a different
+# bead to prove the stale assignment is dropped, not preserved.
+co_request "$GOOD" heartbeat "$(hb_line hostW projW running claude-tools-99 "$(ago 99999)")" >/dev/null 2>&1
+SNAP_L3S="$(co_request "$GOOD" work-snapshot "" "$BEADS" 2>/dev/null)"
+V_L3S="$(render "$SNAP_L3S")"
+ck "stale runner's last task is NOT attributed (S-1)"           eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].runner' <<<"$V_L3S")" "null"
 
 echo "── EXIT-2: S-1 — an OFFLINE runner shows STALE, never running ──"
 # projA's last heartbeat ages past STALE_AFTER (no further beats) ⇒ the

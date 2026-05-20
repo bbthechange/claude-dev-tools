@@ -131,6 +131,10 @@
           (card.priority != null ? 'P' + card.priority : '·') +
           (card.age ? ' · ' + card.age : '')));
         if (card.waiting_on) bf.appendChild(mk('span', 'wo', card.waiting_on));
+        // L3 (claude-tools-2bf): which live workspace currently has this bead
+        // as its current_task_ref. Null ⇒ no live runner ⇒ nothing rendered
+        // (S-1: a stale runner's last task isn't "currently working").
+        if (card.runner) bf.appendChild(mk('span', 'rn', '⚙ ' + card.runner));
         b.appendChild(bf);
         if (card.failure) {
           var href = card.failure.failure_href;
