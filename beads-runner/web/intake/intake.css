@@ -1,0 +1,188 @@
+/* beads-runner/web/intake/intake.css — I1 (claude-tools-tbl).
+ *
+ * Phone-first Flow A intake. Reuses the T6a/T6b visual LANGUAGE (same tokens,
+ * fonts) — anti-drift. Mobile rules per the I1 spec:
+ *   • all interactive targets ≥44×44 CSS px
+ *   • NO hover-only states (every affordance is visible without a pointer)
+ *   • the textarea + submit are reachable with one thumb; nothing else
+ *     competes for the screen when the keyboard is up
+ *   • full-screen-keyboard UX: the layout does not depend on viewport
+ *     height (Safari's keyboard shrinks visualViewport, so we don't pin
+ *     anything to a fixed bottom that would float into the keyboard)
+ */
+
+:root{
+  --ink:#080a0e; --ink-2:#0b0e14; --panel:#10141c; --panel-2:#161b25;
+  --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.12);
+  --text:#e8ebf1; --dim:#8b94a6; --faint:#535b6b;
+  --amber:#ffb454; --amber-soft:#ffcd86; --amber-glow:rgba(255,180,84,.22);
+  --mint:#4fd6a0; --coral:#ff6b6b; --sky:#74a8ff; --slate:#5b6577;
+  --font-display:'Fraunces',Georgia,serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --tap:44px; /* I1: ≥44px touch targets */
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--ink);color:var(--text);font-family:var(--mono);
+  min-height:100vh;-webkit-font-smoothing:antialiased;
+  background-image:
+    radial-gradient(900px 600px at 78% -5%, rgba(116,168,255,.06), transparent 60%),
+    radial-gradient(800px 700px at 8% 105%, rgba(79,214,160,.05), transparent 55%);
+}
+::selection{background:var(--amber);color:#1a1206}
+
+.app{display:flex;flex-direction:column;min-height:100vh;max-width:560px;
+  margin:0 auto;padding:0 18px}
+
+/* header */
+.apphead{display:flex;align-items:center;gap:12px;
+  padding:max(18px,env(safe-area-inset-top)) 0 14px;flex:none}
+.apphead .t{font-family:var(--font-display);font-size:23px;font-weight:400;
+  letter-spacing:-.01em;display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.apphead .t .dot{width:8px;height:8px;border-radius:50%;background:var(--amber);
+  box-shadow:0 0 9px var(--amber);flex:none;transition:.3s}
+.apphead .t .dot.bad{background:var(--coral);box-shadow:0 0 9px var(--coral)}
+.apphead .who{font-size:11px;letter-spacing:.16em;color:var(--slate);text-transform:uppercase}
+
+/* form */
+.form{display:flex;flex-direction:column;gap:18px;padding:8px 0 28px}
+.form[hidden]{display:none}
+.lbl{font-family:var(--mono);font-size:11px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--dim);display:block}
+
+textarea#idea{
+  width:100%;
+  /* Mobile keyboards are big — leave the textarea generous but not tall
+     enough to push the submit off-screen with the keyboard up. */
+  min-height:148px;
+  background:linear-gradient(165deg,var(--panel),var(--ink-2));
+  color:var(--text);border:1px solid var(--line-2);border-radius:14px;
+  padding:14px 15px;font-family:var(--mono);font-size:17px;line-height:1.45;
+  resize:vertical;
+  /* 16px+ font-size on iOS prevents the auto-zoom-on-focus jank. */
+}
+textarea#idea:focus{outline:none;border-color:var(--amber);
+  box-shadow:0 0 0 2px var(--amber-glow)}
+.hint{font-size:12px;color:var(--faint);margin-top:-10px}
+
+/* workspace picker */
+.picker{position:relative}
+.picker::after{
+  content:'▾';position:absolute;right:14px;top:50%;transform:translateY(-50%);
+  color:var(--slate);pointer-events:none;font-size:14px
+}
+select#workspace{
+  width:100%;min-height:var(--tap);
+  background:linear-gradient(165deg,var(--panel),var(--ink-2));
+  color:var(--text);border:1px solid var(--line-2);border-radius:12px;
+  padding:0 36px 0 14px;font-family:var(--mono);font-size:16px;
+  -webkit-appearance:none;appearance:none;cursor:pointer
+}
+select#workspace:focus{outline:none;border-color:var(--amber);
+  box-shadow:0 0 0 2px var(--amber-glow)}
+select#workspace:disabled{opacity:.55;cursor:not-allowed}
+
+/* preset chooser — radio-as-card; the whole card is the touch target */
+.presets{border:none;display:flex;flex-direction:column;gap:10px}
+.presets legend{margin-bottom:8px}
+.preset{
+  display:grid;grid-template-columns:24px 1fr;grid-template-rows:auto auto;
+  gap:2px 12px;align-items:center;
+  min-height:var(--tap);
+  background:linear-gradient(165deg,var(--panel),var(--ink-2));
+  border:1px solid var(--line);border-radius:14px;
+  padding:13px 14px;cursor:pointer;
+  transition:border-color .15s, background .15s
+}
+.preset input[type=radio]{
+  grid-row:1 / span 2;grid-column:1;
+  appearance:none;-webkit-appearance:none;
+  width:20px;height:20px;border-radius:50%;
+  border:2px solid var(--slate);background:transparent;
+  position:relative;cursor:pointer;flex:none;margin:0
+}
+.preset input[type=radio]:checked{border-color:var(--amber)}
+.preset input[type=radio]:checked::after{
+  content:'';position:absolute;inset:3px;border-radius:50%;
+  background:var(--amber);box-shadow:0 0 8px var(--amber-glow)
+}
+.preset:has(input:checked){
+  border-color:rgba(255,180,84,.4);
+  background:linear-gradient(155deg,rgba(255,180,84,.10),rgba(255,180,84,.01))
+}
+.preset .ptitle{grid-column:2;grid-row:1;font-family:var(--font-display);
+  font-size:17px;color:#fff;letter-spacing:-.005em}
+.preset .psub{grid-column:2;grid-row:2;font-size:13px;color:var(--dim);line-height:1.4}
+
+/* submit */
+.submit{
+  min-height:54px; /* well above the 44px floor — Brian taps with a thumb */
+  width:100%;
+  background:linear-gradient(165deg,var(--amber),#e89a3a);
+  color:#1a1206;border:none;border-radius:14px;
+  font-family:var(--mono);font-size:16px;font-weight:600;letter-spacing:.04em;
+  text-transform:uppercase;cursor:pointer;
+  box-shadow:0 14px 30px -16px rgba(255,180,84,.6);
+  margin-top:6px
+}
+.submit:disabled{opacity:.4;cursor:not-allowed;box-shadow:none;
+  background:var(--panel-2);color:var(--dim)}
+.submit:active:not(:disabled){transform:translateY(1px)}
+
+.errline{color:var(--coral);font-size:13px;line-height:1.5;margin-top:4px;
+  font-family:var(--mono)}
+
+/* confirmation pane */
+.confirm{display:flex;flex-direction:column;align-items:center;
+  padding:42px 8px 28px;text-align:center;gap:14px}
+.confirm[hidden]{display:none}
+.confirm .seal{
+  width:64px;height:64px;border-radius:50%;
+  background:linear-gradient(165deg,var(--mint),#2da97a);color:#062318;
+  font-size:34px;font-weight:600;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 16px 36px -16px rgba(79,214,160,.6)
+}
+.confirm h2{font-family:var(--font-display);font-size:28px;font-weight:400;
+  letter-spacing:-.01em;color:#fff}
+.confirm .ack{font-size:14px;color:var(--dim);line-height:1.55;max-width:420px}
+.confirm .receipt{font-size:12px;color:var(--faint);font-family:var(--mono);
+  word-break:break-all}
+.cta{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;width:100%;
+  margin-top:6px}
+.btn{
+  min-height:var(--tap);min-width:140px;
+  display:inline-flex;align-items:center;justify-content:center;
+  padding:0 18px;border-radius:12px;cursor:pointer;text-decoration:none;
+  font-family:var(--mono);font-size:13px;letter-spacing:.08em;text-transform:uppercase;
+  border:1px solid var(--line-2);background:var(--panel);color:var(--text)
+}
+.btn.primary{background:linear-gradient(165deg,var(--amber),#e89a3a);
+  color:#1a1206;border:none;font-weight:600;
+  box-shadow:0 14px 30px -16px rgba(255,180,84,.6)}
+.btn:active{transform:translateY(1px)}
+
+/* footer */
+.foot{margin-top:auto;padding:18px 0 max(20px,env(safe-area-inset-bottom));
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  font-size:11px;color:var(--faint);letter-spacing:.06em}
+.foot .sep{color:var(--faint)}
+.foot .navlink{color:var(--dim);text-decoration:none;
+  /* keep nav links easily tappable even in the footer */
+  min-height:var(--tap);display:inline-flex;align-items:center;padding:0 2px}
+.foot .navlink:active{color:var(--amber)}
+
+/* toast */
+.pop{position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(18px + env(safe-area-inset-bottom));
+  background:var(--panel-2);border:1px solid var(--line-2);color:var(--text);
+  padding:11px 16px;border-radius:11px;font-size:13px;
+  opacity:0;pointer-events:none;transition:opacity .25s;z-index:9}
+.pop.on{opacity:1}
+
+/* No hover-only states (I1 spec). We expose every affordance without :hover. */
+@media (hover:hover) and (pointer:fine){
+  .preset:hover{border-color:var(--line-2)}
+  .btn:hover{border-color:var(--slate)}
+  .foot .navlink:hover{color:var(--amber)}
+}

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Beads Runner — Intake</title>
+<!--
+  I1 (claude-tools-tbl) — phone INTAKE: UX-DESIGN Flow A.
+  "You (phone): one text box + project picker (or let it pick) + tap an
+  entry-intent preset." Tap the icon, type one sentence, tap Submit — ~5
+  seconds of effort.
+
+  Cloudflare Pages app shell. No build step. Reuses the T6a/T6b visual
+  language (same tokens, fonts) so this is the SAME product, not a third
+  look — anti-drift. The §9.1 chokepoint lives in functions/api/* (workspaces
+  read; intake write). The browser holds NO secret and never picks the
+  principal/op (§9.1/§9.2). The single WRITE call is the I2 POST /api/intake.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./intake.css">
+</head>
+<body>
+  <main class="app" id="app" aria-live="polite">
+    <header class="apphead">
+      <div class="t"><span class="dot" id="dot"></span>Intake</div>
+      <div class="who" id="who" title="§9.1 constant principal (AD6; C7 later)">—</div>
+    </header>
+
+    <form class="form" id="form" novalidate>
+      <!-- ONE text box: the idea. -->
+      <label class="lbl" for="idea">Your idea</label>
+      <textarea id="idea" name="idea" rows="4"
+        autocomplete="off"
+        autocapitalize="sentences"
+        spellcheck="true"
+        placeholder="One sentence. The runner figures out the rest."
+        aria-describedby="idea-hint"></textarea>
+      <p id="idea-hint" class="hint">One sentence is enough — the enricher fills in the dossier.</p>
+
+      <!-- Project picker — populated from /api/workspaces. -->
+      <label class="lbl" for="workspace">Workspace</label>
+      <div class="picker">
+        <select id="workspace" name="workspace" aria-describedby="ws-hint">
+          <option value="" disabled selected>Loading workspaces…</option>
+        </select>
+      </div>
+      <p id="ws-hint" class="hint" hidden></p>
+
+      <!-- Preset chooser — UX-DESIGN Flow A two named presets, extensible. -->
+      <fieldset class="presets">
+        <legend class="lbl">Entry intent</legend>
+        <label class="preset">
+          <input type="radio" name="preset" value="autonomous-until-stuck" checked>
+          <span class="ptitle">Send it down the pipeline</span>
+          <span class="psub">…until it gets reasonably stuck.</span>
+        </label>
+        <label class="preset">
+          <input type="radio" name="preset" value="collaborative-stage">
+          <span class="ptitle">Go over the UI with me</span>
+          <span class="psub">I want to collaborate at the stage where it lands.</span>
+        </label>
+      </fieldset>
+
+      <button class="submit" id="submit" type="submit" disabled>
+        <span id="submit-label">Submit</span>
+      </button>
+
+      <p class="errline" id="errline" hidden></p>
+    </form>
+
+    <!-- Confirmation pane (after a successful submit). The Board will reflect
+         the new bead within seconds (per the I1 ACCEPTANCE criterion). -->
+    <section class="confirm" id="confirm" hidden>
+      <div class="seal">✓</div>
+      <h2>Submitted.</h2>
+      <p class="ack">The enricher will pick it up on its next sweep. Watch
+        the Board — the bead lands within seconds.</p>
+      <p class="receipt" id="receipt"></p>
+      <div class="cta">
+        <button class="btn primary" id="another" type="button">Another</button>
+        <a class="btn" id="goboard" href="/board">Open Board</a>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span>one text box · one tap · ~5 seconds</span>
+      <span class="sep">·</span>
+      <a class="navlink" href="/board">Board</a>
+      <span class="sep">·</span>
+      <a class="navlink" href="/inbox">Inbox</a>
+    </footer>
+  </main>
+
+  <div class="pop" id="pop"><span id="popmsg"></span></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
