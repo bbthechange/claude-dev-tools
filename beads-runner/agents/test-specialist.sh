@@ -8,8 +8,10 @@
 #     dossier-builder} all dispatch.
 #   • System-prompt resolution: missing <kind>.system.md is a hard reject.
 #   • Permission discipline by kind:
-#       dossier-builder ⇒ Write/Edit/NotebookEdit AND Bash disallowed
-#                          (B2 read-only surface), --permission-mode default
+#       dossier-builder ⇒ Write/Edit/NotebookEdit disallowed, Bash KEPT
+#                          (B2 surface; B6 claude-tools-lhc — the B1 prompt
+#                          requires `bd show`/`bd notes`/`git log` for Step 1
+#                          breadth-first context-gathering), --permission-mode default
 #       reconciler|enricher ⇒ Write/Edit/NotebookEdit disallowed, Bash kept
 #                              (M6/I3 — bd subprocess writes to .beads)
 #       ux|design|impl|docs|tests ⇒ --permission-mode acceptEdits, writes kept
@@ -141,11 +143,16 @@ stream_for() {
 DB=$(stream_for dossier-builder)
 # M6 (claude-tools-4iy) broadens the no-code-edits set from
 # `Write Edit NotebookEdit` to `Write Edit MultiEdit NotebookEdit BashWriteEdits`.
-# dossier-builder additionally forbids Bash entirely (B2 pure reader).
-if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteEdits Bash" <<<"$DB"; then
-  pass "dossier-builder: full M6 no-code-edits set + Bash disallowed (B2 read-only)"
+# B6 (claude-tools-lhc) fix: dossier-builder KEEPS bare Bash — the B1 prompt
+# (dossier-builder.system.md) instructs the agent to run `bd show`/`bd notes`/
+# `git log`/`git diff --stat` in Step 1 for breadth-first context-gathering.
+# Same posture as reconciler/enricher: no file writes outside .beads, but the
+# bd CLI + read-only git are reachable via Bash.
+if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteEdits" <<<"$DB" \
+   && ! grep -qE -- "--disallowedTools .* Bash([[:space:]]|$)" <<<"$DB"; then
+  pass "dossier-builder: full M6 no-code-edits set forbidden, bare Bash kept (B6 — bd + read-only git for prompt Step 1)"
 else
-  fail "dossier-builder: expected …Write Edit MultiEdit NotebookEdit BashWriteEdits Bash on --disallowedTools"
+  fail "dossier-builder: expected Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits forbidden AND bare Bash kept"
 fi
 grep -q -- "--permission-mode default" <<<"$DB" \
   && pass "dossier-builder: --permission-mode default" \

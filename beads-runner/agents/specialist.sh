@@ -19,7 +19,15 @@
 #   visible failure (not a quiet default).
 #
 # PERMISSION DISCIPLINE BY KIND (task spec):
-#   dossier-builder : reads, no Bash, no file writes (B2 surface).
+#   dossier-builder : reads + Bash for `bd show`/`bd notes`/`git log`/`git
+#                     diff --stat`/etc., no file writes outside .beads
+#                     (B2 surface). Bash is REQUIRED — the B1 prompt's Step 1
+#                     instructs the agent to walk the bd graph and recent
+#                     commits as breadth-first context-gathering; without
+#                     Bash it cannot follow its own prompt (B6,
+#                     claude-tools-lhc). File writes still blocked via
+#                     NO_CODE_EDITS — the dossier is emitted on stdout, the
+#                     hosted engine is the writer.
 #   reconciler      : reads + Bash for `bd`, no file writes outside .beads
 #                     (M6 surface; the bd subprocess is the .beads writer).
 #   enricher        : reads + Bash for `bd`, no file writes outside .beads
@@ -130,8 +138,16 @@ NO_CODE_EDITS=(Write Edit MultiEdit NotebookEdit BashWriteEdits)
 
 case "$KIND" in
   dossier-builder)
-    # B2: pure reader — Read/Glob/Grep/LS are enough; no Bash, no writes.
-    DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}" Bash)
+    # B2 surface, B6 (claude-tools-lhc) fix: Bash is REQUIRED. The B1 prompt
+    # (dossier-builder.system.md) explicitly grants Read/Grep/Glob/Bash and
+    # its Step 1 tells the agent to run `bd show`, `bd notes`, `git log`,
+    # `git diff --stat`, etc. as breadth-first context-gathering. Same
+    # posture as reconciler/enricher: bd + read-only git via Bash, no file
+    # writes outside .beads (the dossier is emitted on stdout; the hosted
+    # engine is the writer). NO_CODE_EDITS still covers Write/Edit/Multi/
+    # NotebookEdit/BashWriteEdits so the agent physically cannot mutate
+    # files outside .beads.
+    DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}")
     PERMISSION_MODE=(--permission-mode default)
     ;;
   reconciler|enricher)
