@@ -374,6 +374,14 @@ check_usage() {
 # to in_progress (and lets us release the lease cleanly when the daemon
 # says no, instead of claiming a task we cannot run).
 #
+# C2 (claude-tools-oil) — spare-only mode gate. The optional second arg is
+# the workspace's desired-state (running|paused|spare-cycles|stopped). When
+# it is `spare-cycles`, ONLY `low_priority` cost-class pickups are allowed
+# (the machine-wide ramp gate then additionally bounds them by today's
+# day-of-week × SPARE_RAMP_PER_DAY ceiling — that math lives in the daemon
+# at usage-poll.sh:_usage_poll_spare_ramp_pct). When the arg is absent /
+# any other value, behaviour is unchanged (BC: pre-C2 callers keep working).
+#
 # Return contract:
 #   0 — allowed (proceed to claim)
 #   1 — denied (caller releases lease, sleeps CAPACITY_DENY_BACKOFF, retries)
@@ -381,10 +389,10 @@ check_usage() {
 #
 # Stdout: a short single-token reason ("ok", "5h_hard_ceiling",
 # "7d_hard_ceiling", "spare_cycles_today_exhausted", "cost_class_not_allowed",
-# "daemon_unreachable") — the runner logs this verbatim so the failure mode
-# is observable (the C1 acceptance criterion).
+# "spare_only_standard_disallowed", "daemon_unreachable") — the runner logs
+# this verbatim so the failure mode is observable (the C1/C2 acceptance).
 daemon_ask_capacity() {
-  local cost_class="${1:-standard}" cached pct_5h pct_7d ramp allowed
+  local cost_class="${1:-standard}" desired_state="${2:-}" cached pct_5h pct_7d ramp allowed
   command -v la__capacity_via_daemon >/dev/null 2>&1 || {
     printf 'daemon_unreachable'
     return 2
@@ -397,6 +405,16 @@ daemon_ask_capacity() {
   pct_7d=$(printf '%s' "$cached" | jq -r '.pct_7d // 0' 2>/dev/null) || pct_7d=0
   ramp=$(printf '%s'  "$cached" | jq -r '.spare_ramp_today // 100' 2>/dev/null) || ramp=100
   allowed=$(printf '%s' "$cached" | jq -r '.allowed_cost_classes[]?' 2>/dev/null)
+
+  # C2: spare-only workspaces forbid any non-low_priority pickup, regardless
+  # of how much slack the machine-wide gate has. Checked BEFORE the cache's
+  # allowed-classes lookup so the reason is the WHY (spare-only), not the
+  # downstream symptom (cost_class_not_allowed when standard is globally fine).
+  if [[ "$desired_state" == "spare-cycles" ]] && [[ "$cost_class" != "low_priority" ]]; then
+    printf 'spare_only_standard_disallowed'
+    return 1
+  fi
+
   if printf '%s\n' "$allowed" | grep -qx "$cost_class"; then
     printf 'ok'
     return 0
@@ -414,6 +432,42 @@ daemon_ask_capacity() {
     printf 'cost_class_not_allowed'
   fi
   return 1
+}
+
+# ── C2 (claude-tools-oil) — workspace desired-state resolver ─────────────────
+# Resolves the workspace's current desired-state for the spare-only gate.
+# Best-effort, fail-OPEN (empty echo ⇒ caller treats as `running` — same
+# posture runner.sh's st_reconcile takes when the engine is unreachable).
+# Cached for DESIRED_STATE_CACHE_SECONDS so a per-pickup gate does not hammer
+# the coordinator the way the loop-top check_usage cache shields the usage
+# API. Sources coordinator.sh + co-http-transport.sh only if available
+# (standalone runs without a coordinator return empty ⇒ no spare-only gate
+# applies, which is the correct posture).
+DESIRED_STATE_CACHE_SECONDS=${DESIRED_STATE_CACHE_SECONDS:-30}
+DESIRED_STATE_CACHE_VALUE=""
+DESIRED_STATE_CACHE_TIME=0
+workspace_desired_state() {
+  local now age
+  now=$(date +%s 2>/dev/null || echo 0)
+  age=$(( now - DESIRED_STATE_CACHE_TIME ))
+  if [[ -n "$DESIRED_STATE_CACHE_VALUE" ]] && [[ "$age" -lt "$DESIRED_STATE_CACHE_SECONDS" ]]; then
+    printf '%s' "$DESIRED_STATE_CACHE_VALUE"
+    return 0
+  fi
+  command -v co_request >/dev/null 2>&1 || { printf ''; return 0; }
+  [[ -n "${PROJECT_REF:-}" ]] || { printf ''; return 0; }
+  local bearer resp desired
+  bearer="${COORDINATOR_TOKEN:-bearer-runner-c2}"
+  resp="$(co_request "$bearer" poll "$PROJECT_REF" 2>/dev/null)" || resp=""
+  [[ -n "$resp" ]] || { printf ''; return 0; }
+  desired="$(printf '%s' "$resp" | jq -r 'if type=="object" then (.desired // "") else "" end' 2>/dev/null)" || desired=""
+  case "$desired" in
+    running|paused|spare-cycles|stopped) ;;
+    *) desired="" ;;
+  esac
+  DESIRED_STATE_CACHE_VALUE="$desired"
+  DESIRED_STATE_CACHE_TIME="$now"
+  printf '%s' "$desired"
 }
 
 # ── Task selection ───────────────────────────────────────────────────────────
@@ -828,6 +882,8 @@ while true; do
 
   TASK_TITLE=$(echo "$TASK_JSON" | jq -r '.[0].title')
   TASK_DESC=$(echo "$TASK_JSON" | jq -r '.[0].description')
+  TASK_PRIORITY=$(echo "$TASK_JSON" | jq -r '.[0].priority // 2' 2>/dev/null)
+  TASK_PRIORITY=${TASK_PRIORITY:-2}
 
   # Read model from label (model:sonnet, model:opus), default to configured model
   TASK_MODEL=$(bd label list "$TASK_ID" --json 2>/dev/null | jq -r '.[] | select(startswith("model:")) | sub("model:"; "")' 2>/dev/null)
@@ -884,12 +940,25 @@ while true; do
   # leaves the bead open for another env / another moment). Fail-OPEN per
   # BC-34: a daemon-unreachable verdict falls back to the local
   # la_capacity_check (which itself fails OPEN on every keychain/API error).
-  TASK_COST_CLASS="${TASK_COST_CLASS:-standard}"
-  CAP_REASON=$(daemon_ask_capacity "$TASK_COST_CLASS"); CAP_RC=$?
+  #
+  # C2 (claude-tools-oil): map task priority → cost-class so the spare-only
+  # gate has something to bite on. UX 0.A: "Low-priority tasks run only when
+  # there are spare cycles" — priority ≥ 3 (P3, P4) is low_priority; P0/P1/
+  # P2 stays standard. A project that exports TASK_COST_CLASS overrides this
+  # mapping wholesale (escape hatch for project-specific cost policies).
+  WORKSPACE_DESIRED=$(workspace_desired_state)
+  if [[ -z "${TASK_COST_CLASS:-}" ]]; then
+    if [[ "${TASK_PRIORITY:-2}" -ge 3 ]]; then
+      TASK_COST_CLASS="low_priority"
+    else
+      TASK_COST_CLASS="standard"
+    fi
+  fi
+  CAP_REASON=$(daemon_ask_capacity "$TASK_COST_CLASS" "$WORKSPACE_DESIRED"); CAP_RC=$?
   case "$CAP_RC" in
-    0) echo "  Capacity (via daemon): $TASK_COST_CLASS allowed" ;;
+    0) echo "  Capacity (via daemon): $TASK_COST_CLASS allowed (desired=${WORKSPACE_DESIRED:-running}, prio=${TASK_PRIORITY:-2})" ;;
     1)
-      echo "  Capacity DENIED by daemon for $TASK_ID (cost=$TASK_COST_CLASS, reason=$CAP_REASON) — releasing lease, sleeping ${CAPACITY_DENY_BACKOFF}s."
+      echo "  Capacity DENIED by daemon for $TASK_ID (cost=$TASK_COST_CLASS, desired=${WORKSPACE_DESIRED:-running}, prio=${TASK_PRIORITY:-2}, reason=$CAP_REASON) — releasing lease, sleeping ${CAPACITY_DENY_BACKOFF}s."
       lease_release_seam "$TASK_ID"
       sleep "$CAPACITY_DENY_BACKOFF"
       continue

@@ -103,6 +103,19 @@ _usage_poll_spare_ramp_pct() {
   printf '%s' "${ramp:-100}"
 }
 
+# _usage_poll_spare_ramp_day — the day-of-week index (1..7) the current ramp
+# was computed against. Same SPARE_DAY_INDEX override the pct function takes,
+# so a test that pins day=3 sees both the pct and the day line up.
+_usage_poll_spare_ramp_day() {
+  if [[ -n "${SPARE_DAY_INDEX:-}" ]]; then
+    printf '%s' "$SPARE_DAY_INDEX"
+    return 0
+  fi
+  local now
+  now=$(date +%s 2>/dev/null || echo 0)
+  printf '%s' $(( (now / 86400) % 7 + 1 ))
+}
+
 # _usage_poll_read_token — read Anthropic OAuth token via macOS Keychain.
 # Same BC-34 contract as la__anthropic_token (lib/local-agent.sh) but
 # inlined here so the daemon does not need to source local-agent.sh just
@@ -263,7 +276,11 @@ daemon_usage_poll_once() {
   _usage_poll_emit_capacity_report "$std_v" standard
   _usage_poll_emit_capacity_report "$lp_v"  low_priority
 
-  _usage_poll_log "M2 usage-poll: 5h=${five}% 7d=${seven}% ramp=${ramp}% allowed=[$allowed] (cache TTL=${USAGE_POLL_TTL_SECONDS}s)"
+  # C2 (claude-tools-oil): log the daily-ramp FORMULA, not just the result,
+  # so the UX 0.A math (day-of-week × SPARE_RAMP_PER_DAY%) is auditable from
+  # the daemon's logs. e.g. ramp=42% (day=3 × 14.2%).
+  local ramp_day; ramp_day="$(_usage_poll_spare_ramp_day)"
+  _usage_poll_log "M2 usage-poll: 5h=${five}% 7d=${seven}% ramp=${ramp}% (day=${ramp_day} × ${USAGE_POLL_SPARE_RAMP_PER_DAY}%) allowed=[$allowed] (cache TTL=${USAGE_POLL_TTL_SECONDS}s)"
   return 0
 }
 
