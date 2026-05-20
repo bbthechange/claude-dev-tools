@@ -52,6 +52,12 @@ DESIRED_STATE_POLL_INTERVAL="${BEADS_DAEMON_DESIRED_STATE_POLL_INTERVAL:-60}"
 # the runner can pick up within ~60s end-to-end (cf claude-tools-06i
 # acceptance).
 INTAKE_POLL_INTERVAL="${BEADS_DAEMON_INTAKE_POLL_INTERVAL:-30}"
+# P1: Flow F stage-change observer poll cadence (claude-tools-3pq). 60s
+# default — the trigger (a bd task with stage:design closing) is a low-rate
+# event; the dossier-builder dispatch is synchronous + can be slow, so a
+# tight cadence buys nothing. Matches the M3 desired-state cadence so the
+# daemon's per-workspace bd reads cluster at the same beat.
+FLOW_F_POLL_INTERVAL="${BEADS_DAEMON_FLOW_F_POLL_INTERVAL:-60}"
 # M2: Anthropic-usage poll cadence (claude-tools-8mz). Default tracks
 # §0.5 USAGE_CACHE_SECONDS so the daemon's cache refresh rate matches the
 # constant the runner-side cache used to honour. One central poll per
@@ -86,6 +92,13 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # as the M3 poll above — strict no-op until the main loop calls into it.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/intake-dispatch-poll.sh"
+# P1 (claude-tools-3pq): Flow F stage-change observer — when a bd task with
+# stage:design closes, dispatch a dossier-builder (B-track) and push the
+# result as a timed-fyi (24h auto-proceed) overview dossier. Defines
+# daemon_flow_f_poll_once + daemon_flow_f_* helpers. Strict no-op until the
+# main loop calls into it.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/flow-f-overview-poll.sh"
 # M2 (claude-tools-8mz): the Anthropic-usage poll — one Keychain read +
 # one API call per machine per USAGE_POLL_INTERVAL, with the verdict
 # published atomically to $DAEMON_CACHE_DIR/capacity.json (UX 0.A "one
@@ -218,7 +231,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -238,6 +251,7 @@ main() {
   local _last_hosted_poll=0
   local _last_desired_poll=0
   local _last_intake_poll=0
+  local _last_flow_f_poll=0
   local _last_usage_poll=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
@@ -273,6 +287,17 @@ main() {
     if [ "$((_now - _last_intake_poll))" -ge "$INTAKE_POLL_INTERVAL" ] || [ "$_last_intake_poll" -eq 0 ]; then
       _last_intake_poll="$_now"
       daemon_intake_poll_once || true
+    fi
+    # P1 (claude-tools-3pq): on cadence, walk every registered workspace for
+    # closed beads carrying the watched stage label (default stage:design)
+    # and dispatch a Flow F overview-dossier build for any not yet observed.
+    # First-run backlog suppression: the seed flag at $DAEMON_FLOW_F_SEED_FLAG
+    # marks the existing closed-at-stage backlog as already-fired WITHOUT
+    # dispatching, so a fresh install does not dump historical closes onto
+    # the phone in one shot.
+    if [ "$((_now - _last_flow_f_poll))" -ge "$FLOW_F_POLL_INTERVAL" ] || [ "$_last_flow_f_poll" -eq 0 ]; then
+      _last_flow_f_poll="$_now"
+      daemon_flow_f_poll_once || true
     fi
     # M2 (claude-tools-8mz): on cadence, refresh the machine-level
     # Anthropic-usage cache so workspaces' la__capacity_via_daemon picks
