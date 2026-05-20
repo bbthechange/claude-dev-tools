@@ -152,7 +152,7 @@ printf '%s' "$gi" | jq -e 'type=="object"' >/dev/null 2>&1 && ok "C1: gi is a JS
 eq "$(printf '%s' "$gi" | jq -r '.id')"        "overview-claude-tools-zzz" "C2: gi.id == deterministic dossier id"
 eq "$(printf '%s' "$gi" | jq -r '.bead_ref')"  "claude-tools-zzz"          "C3: gi.bead_ref"
 eq "$(printf '%s' "$gi" | jq -r '.kind')"      "overview"                  "C4: gi.kind == overview (C2 OPEN discriminator)"
-eq "$(printf '%s' "$gi" | jq -r '.trigger')"   "stage_design_close"        "C5: gi.trigger derived from stage label"
+eq "$(printf '%s' "$gi" | jq -r '.trigger')"   "stage_gate"                "C5: gi.trigger == stage_gate (the §4.1 enum value; INTERFACE.md line 242)"
 eq "$(printf '%s' "$gi" | jq -r '.tier')"      "timed-fyi"                 "C6: gi.tier == timed-fyi (24h auto-proceed)"
 eq "$(printf '%s' "$gi" | jq -r '.timer_fire_at')" "null"                   "C7: timer_fire_at left null — tf_arm computes it"
 eq "$(printf '%s' "$gi" | jq -r '.source.tldr')" "the deep body"            "C8: source.tldr preserved from builder body"
@@ -161,10 +161,14 @@ eq "$(printf '%s' "$gi" | jq -r '.source.sections|length')" "1"             "C10
 eq "$(printf '%s' "$gi" | jq -r '.items|length')"  "1"                      "C11: items[] preserved"
 eq "$(printf '%s' "$gi" | jq -r '.items[0].kind')" "fyi-objectable"         "C12: item kind preserved as fyi-objectable"
 
-# Stage-label override drives the trigger value (other closing stages reuse
-# the same observer shape without code change).
+# Stage-label override is preserved as a daemon-side observation knob (e.g.,
+# extending to stage:impl), but the §4.1 trigger field is the FROZEN enum
+# value `stage_gate` regardless of which stage tripped the observer — the
+# stage-granular info travels via the bead's labels + bead_ref, never the
+# trigger field (P2/claude-tools-0wy: the dossier substrate refuses an
+# out-of-enum trigger; nothing downstream branches on the value).
 gi2="$(DAEMON_FLOW_F_STAGE_LABEL='stage:impl' daemon_flow_f__build_generation_input "overview-claude-tools-zzz" "claude-tools-zzz" "$builder_out")"
-eq "$(printf '%s' "$gi2" | jq -r '.trigger')" "stage_impl_close" "C13: stage label override ⇒ trigger=stage_impl_close"
+eq "$(printf '%s' "$gi2" | jq -r '.trigger')" "stage_gate" "C13: trigger stays stage_gate across stage-label overrides"
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART D — seed-on-first-run does NOT dispatch; it just lays markers
@@ -290,7 +294,7 @@ eq "$(cat "$captured_ws" 2>/dev/null)" "$WS_DIR" "E2: engine override was called
 eq "$(jq -r '.id'      "$captured_gi" 2>/dev/null)" "overview-claude-tools-cc3" "E3: gi.id is the deterministic dossier id"
 eq "$(jq -r '.kind'    "$captured_gi" 2>/dev/null)" "overview"                  "E4: gi.kind == overview"
 eq "$(jq -r '.tier'    "$captured_gi" 2>/dev/null)" "timed-fyi"                 "E5: gi.tier == timed-fyi"
-eq "$(jq -r '.trigger' "$captured_gi" 2>/dev/null)" "stage_design_close"        "E6: gi.trigger == stage_design_close"
+eq "$(jq -r '.trigger' "$captured_gi" 2>/dev/null)" "stage_gate"                "E6: gi.trigger == stage_gate (§4.1 enum)"
 eq "$(jq -r '.bead_ref' "$captured_gi" 2>/dev/null)" "claude-tools-cc3"         "E7: gi.bead_ref"
 eq "$(jq -r '.items[0].kind' "$captured_gi" 2>/dev/null)" "fyi-objectable"     "E8: item kind preserved as fyi-objectable"
 

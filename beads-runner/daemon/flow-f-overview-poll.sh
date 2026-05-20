@@ -227,18 +227,24 @@ daemon_flow_f__build_builder_input() {
 #   shape (dg_generate's `generation_input`) for a Flow F overview dossier:
 #     kind   = "overview"            (C2 open discriminator; first-class
 #                                     profile per DESIGN AD7 / §5.2.1)
-#     trigger= "stage_design_close"  (Flow F seed trigger; reuses shape for
-#                                     other closing-stages without code
-#                                     change — the env-overridable
-#                                     DAEMON_FLOW_F_STAGE_LABEL drives this)
+#     trigger= "stage_gate"          (the §4.1 enum value covering Flow F's
+#                                     stage-close trigger — INTERFACE.md line
+#                                     242 lists stage_gate as a Flow B/F
+#                                     trigger. P2 caught the original
+#                                     `stage_${stage}_close` was outside the
+#                                     frozen enum and the §4.1 validator
+#                                     refused the write; the stage-granular
+#                                     info lives on the bead's labels +
+#                                     bead_ref, never the trigger field —
+#                                     nothing downstream branches on the
+#                                     trigger value.)
 #     tier   = "timed-fyi"           (Flow F rides §0.B / D5 24h auto-proceed)
 #     source = body fields           (so dg__author preserves the polished
 #                                     four-tier body the builder authored)
 #     items  = builder.items[]       (zero or all-fyi-objectable per AD7)
 daemon_flow_f__build_generation_input() {
   local did="${1:-}" bref="${2:-}" out="${3:-}"
-  local stage="${DAEMON_FLOW_F_STAGE_LABEL#stage:}"
-  local trigger="stage_${stage}_close"
+  local trigger="stage_gate"
   printf '%s' "$out" | jq -c \
     --arg did "$did" \
     --arg b   "$bref" \
