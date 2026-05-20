@@ -1,6 +1,6 @@
 # Beads Runner — UX Design
 
-Status: draft (§11-amended 2026-05-20: Flows A/D/F bound to daemon + write-proxies + enricher hat per epic claude-tools-kie) · Scope: user flows, not implementation/architecture
+Status: draft (§11-amended 2026-05-20: Flows A/D/F bound to daemon + write-proxies + enricher hat; specialist hats named as one-binary kind-selected model per epic claude-tools-kie) · Scope: user flows, not implementation/architecture
 Owner: Brian · Last updated: 2026-05-20
 
 > **§11 amendment ledger (this document).**
@@ -9,6 +9,7 @@ Owner: Brian · Last updated: 2026-05-20
 > | Date | Change | Authorization |
 > |---|---|---|
 > | 2026-05-20 | Flows A / D / F bound to the post-8bm shape (per-machine daemon, `/api/set-desired` + `/api/intake` write proxies, enricher as the 7th specialist hat, Flow F trigger = bd stage transition + overview profile + `timed-fyi` 24h tier). UX semantics unchanged; the amends are doc→code traceability so a future reader can find the wiring from §4 flows to the M / S / I / F / P tracks under epic claude-tools-kie. | Brian, epic claude-tools-kie scope (children D3/D4) |
+> | 2026-05-20 | Specialist agents named as a closed set of **6 hats** (`ux`, `design`, `impl`, `docs`, `tests`, `reconciler`) realized by **one binary with a kind-selected system prompt**, not 5+ separate codebases. Enricher (Flow A) is the 7th hat in the same model. §2 personas table updated; new §2.1 "The hat model" added with kind enum + 6 starter prompts in Brian's voice + firing triggers (ux/design/impl/docs/tests on stage transitions from Flow F; reconciler on freeform/edited Flow B responses). UX semantics unchanged. | Brian, epic claude-tools-kie scope (child D3) |
 
 This document maps the **user experience** of expanding the beads-runner from a
 single-machine headless task loop into a system that runs your idea→test
@@ -154,12 +155,114 @@ never have to look at directly.
 | Central coordinator | Capacity authority + control plane + sync backbone | only via Board status strip |
 | Per-project runners | Today's script, generalized + remotely controllable | only as a state/toggle on the Board |
 | Worker agents | Ephemeral task executors | never |
-| Specialist agents | Intake-enricher, dossier-builder, stage agents (ux/design/impl/docs/test) | never directly |
+| Specialist agents (the **hats**) | Six named hats — `ux` · `design` · `impl` · `docs` · `tests` · `reconciler` — plus the `enricher` hat from Flow A. One binary, kind-selected system prompt (see §2.1) | never directly |
 
 Both surfaces are routes in **one responsive web app**, mobile-friendly,
 rendering over the beads read model plus a thin control/notify channel.
 
 Design rule: if a flow forces you onto a third surface, the flow is wrong.
+
+---
+
+## 2.1 The hat model (specialist agents)
+
+> **§11 amend 2026-05-20.** This section names the specialist-agent model that
+> Flows A, B, and F all bind to. It is the authoritative reference for hat
+> names, the kind enum, and where each hat fires; downstream implementation
+> tracks (S1 = the shim binary, S2 = per-hat starter prompts) bind to this
+> section.
+
+The five stage agents (`ux`, `design`, `impl`, `docs`, `tests`), the
+post-answer `reconciler`, and the Flow A `enricher` are **not** five-to-seven
+separate codebases. v1 ships them as **one shim binary** that launches a fresh
+`claude -p` session inside the chosen workspace with a **`kind`-selected
+system prompt**. Adding a hat = adding one starter prompt + one row to the
+kind enum. Splitting any hat out into its own binary later is a non-breaking
+change (the shim becomes a dispatcher).
+
+**Kind enum** (closed set; the wire contract for the daemon dispatcher and the
+S-track shim):
+
+```
+kind ∈ { ux, design, impl, docs, tests, reconciler, enricher }
+```
+
+The first six are the §2 personas table; `enricher` is the Flow A hat (covered
+in §4 Flow A §11 amend). Order is documentation-only — the daemon dispatches
+by exact match on the `kind` string.
+
+**Where each hat fires** (binding to the flows above):
+
+| Hat | Fires when | Trigger source |
+|---|---|---|
+| `ux` | A bd task with `stage = ux` is picked up (or a `collaborative-stage` intake lands at ux) | Stage entry on Board (Flow F-style trigger) |
+| `design` | A bd task with `stage = design` is picked up | Stage entry on Board |
+| `impl` | A bd task with `stage = impl` is picked up | Stage entry on Board |
+| `docs` | A bd task with `stage = docs` is picked up | Stage entry on Board |
+| `tests` | A bd task with `stage = tests` is picked up | Stage entry on Board |
+| `reconciler` | A Flow B dossier response comes back with **freeform text or edits to the recommendation** (not a clean checkbox) | Flow B step 5 (§4) — replaces the legacy "interpreting agent" |
+| `enricher` | A new `intake-request` row lands (phone hit `/api/intake`, Flow A) | Daemon observes the row, picks the workspace from the project ref, launches the hat |
+
+Stage-entry triggers ride the same observer the daemon uses for Flow F
+proactive dossiers (P-track). Reconciler runs in-process to the Flow B
+response handler; it is the only hat whose firing condition is "human input
+shape," not "bead state changed."
+
+**Starter prompts (v1, Brian's voice).** Track **S2** owns the actual
+production prompts; what follows is the seed — short, plain, and the floor
+that S2 cannot regress below. Each one is what Brian would say if he were
+handing the task to a person.
+
+- **`ux`** — "You're the UX hat. The bead is about the *user's experience* of
+  this thing — flows, surfaces, what they tap, what they read. Don't design
+  the database. Don't pick libraries. Stop at the UX boundary; where a UX
+  requirement forces an architecture choice, **flag the decision, don't make
+  it**. Output: updated flows / surfaces / touchpoints in the same shape as
+  UX-DESIGN.md."
+
+- **`design`** — "You're the design hat. UX is decided; the bead is the
+  *technical design* that realizes it — data shapes, interfaces, the small
+  number of decisions that downstream impl will hard-code against. Write it
+  the way DESIGN.md / INTERFACE.md are written: decisions log, change
+  protocol, traceability. Don't write code. **Cite the UX requirement each
+  decision serves** so a future reader can audit it."
+
+- **`impl`** — "You're the impl hat. UX and design are decided; the bead is to
+  *make the code match the design*. Smallest diff that satisfies the
+  acceptance criteria. Don't redesign. If you hit a real fork the design
+  didn't cover, **stop and escalate** (Flow B dossier), don't guess."
+
+- **`docs`** — "You're the docs hat. The behavior is built; the bead is to
+  write the docs a *future agent or new collaborator* needs to use this thing
+  correctly. Audience first: who reads this, what do they need to do, what
+  will trip them up. Keep it skimmable (TL;DR → headings → drill-down).
+  Expand acronyms on first use."
+
+- **`tests`** — "You're the tests hat. The behavior is built; the bead is to
+  *protect it from regressing*. Unit + integration + an e2e a future agent
+  can rerun headlessly + a manual-e2e checklist for the human. Test the
+  *acceptance criteria*, not your implementation guesses. If something can't
+  be tested headlessly, **say so explicitly** and write the manual step."
+
+- **`reconciler`** — "You're the reconciler hat. A Flow B dossier came back
+  with freeform text or an edit, not a clean checkbox. Read the original
+  options + pre-declared consequences, read what the human actually said, and
+  decide: does this map onto one of the pre-declared options (apply its
+  consequence block), or did they open a **new question** (emit a follow-up
+  dossier)? Never silently invent a new option. When in doubt, **kick it back
+  as a follow-up**, don't guess."
+
+(`enricher` starter prompt lives with Flow A — see §4 Flow A §11 amend
+binding and track S3.)
+
+**Why one binary, not five.** Five separate codebases would mean five
+release surfaces, five test matrices, and five places to fix a bug in the
+shared launch / cwd / `--add-dir` / workspace-`CLAUDE.md` plumbing. The hat
+is the *prompt*, not the *process*; the prompt is what changes per stage,
+everything around it is the same shim. v1 keeps that honest. (If a future
+hat genuinely needs a different launcher — different tool surface, different
+sandbox — splitting it out at that point is a kind-enum addition plus a
+dispatcher branch, not a rewrite.)
 
 ---
 
