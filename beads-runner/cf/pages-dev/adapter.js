@@ -89,6 +89,17 @@ function argsForPost(op, body) {
     const d = b.desired && typeof b.desired === "object" ? b.desired : {};
     return [b.project_ref, d.state, d.actor];
   }
+  // I2 (claude-tools-x9u) — Flow A intake. The §2.1 `put` op takes positional
+  // [type, id, jsonStr]; the proxy sends the named-JSON-body {type, id,
+  // record} where `record` is the §4 object to persist. The adapter
+  // re-stringifies it because opPut's third arg is a JSON STRING (it parses
+  // inside the engine — matches co__store_put's `jq -e .` over a literal).
+  // The proxy is responsible for hard-coding the legal type/op pair; the
+  // adapter is still dumb plumbing and the engine still owns the schema gate.
+  if (op === "put") {
+    const rec = b.record && typeof b.record === "object" ? b.record : null;
+    return [b.type, b.id, rec === null ? "" : JSON.stringify(rec)];
+  }
   return null; // unmapped write op — caller emits 400
 }
 

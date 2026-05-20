@@ -273,6 +273,40 @@ it("CF.1 substrate is behaviour-identical to coordinator.sh + test-coordinator.s
     putPrec.status !== 200 && putPrec.body && putPrec.body.code === "unknown_type"
   );
 
+  // ── I2 (claude-tools-x9u) intake-request §4 type — additive surface ──
+  // The /api/intake proxy hard-codes op=put + type=intake-request; the engine
+  // accepts it via the SAME _writeRecord chokepoint as every other §4 record,
+  // which means the §9.1 principal stamp + §0.3 schema gate apply identically.
+  // The daemon (I3, claude-tools-06i) polls for these records on its own cadence
+  // — the engine stays a dumb store here, no special handler.
+  const irBody = JSON.stringify({
+    schema_version: 1,
+    id: "intake-2026-05-20T07-00-00Z-abc",
+    idea_text: "let the runner pick this up tomorrow",
+    project_ref: "thirsty",
+    preset: "autonomous-until-stuck",
+    processed: false,
+    submitted_at: "2026-05-20T07:00:00Z",
+    principal: "someone-else", // chokepoint MUST overwrite this — C7
+  });
+  const irPut = await call(GOOD, "put", [
+    "intake-request",
+    "intake-2026-05-20T07-00-00Z-abc",
+    irBody,
+  ]);
+  ck("intake-request put accepted (§4 round-trip)", irPut.status === 200 && irPut.body && irPut.body.ok === true);
+  const irRec = await getRecord("intake-request", "intake-2026-05-20T07-00-00Z-abc");
+  ck("intake-request round-trips with idea_text intact", !!irRec && irRec.idea_text === "let the runner pick this up tomorrow");
+  ck("intake-request principal stamped PRINCIPAL_V1 (C7 — client literal overwritten)", !!irRec && irRec.principal === "brian");
+  ck("intake-request preset round-trips verbatim", !!irRec && irRec.preset === "autonomous-until-stuck");
+  // §0.3 — higher schema_version for intake-request is rejected (substrate binds v1).
+  const irHi = await call(GOOD, "put", [
+    "intake-request",
+    "intake-hi",
+    '{"schema_version":2,"idea_text":"x","project_ref":"y","preset":"z"}',
+  ]);
+  ck("intake-request schema_version 2 ⇒ rejected", irHi.status !== 200 && irHi.body && irHi.body.ok === false);
+
   // eslint-disable-next-line no-console
   console.log(`\n══ CF.1 differential (vs coordinator.sh): PASS=${PASS} FAIL=${FAIL} ══`);
   if (FAIL > 0) {

@@ -27,6 +27,12 @@ const SCHEMA_VERSIONS = {
   notification: 1,   // §4.3 Notification (creation/dispatch = CF.9)
   lease: 1,          // §4.4 Lease (arbitration/fencing = CF.2)
   work_snapshot: 1,  // §4.5 work-snapshot (projection producer = CF.3)
+  // I2 (claude-tools-x9u) — Flow A intake queue record. The /api/intake proxy
+  // writes one of these per submission; the daemon (I3, claude-tools-06i)
+  // polls for them and dispatches the enricher hat. The record IS the queue
+  // marker (no separate intake-pending type); the daemon flips a `processed`
+  // flag once it has spawned the enricher. v1.
+  "intake-request": 1,
 };
 
 export function schemaVersion(type) {

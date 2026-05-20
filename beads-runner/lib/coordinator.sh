@@ -129,6 +129,7 @@ co__schema_version() {
     notification)  echo 1 ;;   # §4.3 Notification
     lease)         echo 1 ;;   # §4.4 Lease (arbitration = T4.2)
     work_snapshot) echo 1 ;;   # §4.5 work-snapshot (projection render = T6a)
+    intake-request) echo 1 ;;  # I2 (claude-tools-x9u) — Flow A intake queue record (daemon I3 polls; the record IS the queue marker)
     *)             echo "" ;;  # unknown type
   esac
 }
