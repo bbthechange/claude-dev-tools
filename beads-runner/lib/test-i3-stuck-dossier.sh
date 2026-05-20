@@ -362,6 +362,28 @@ else
       echo "IB_itk=$(printf '%s' "$inbox" | jq -r '.items[0].kind' 2>/dev/null)"
       echo "IB_tier=$(printf '%s' "$inbox" | jq -r '.tier' 2>/dev/null)"
       echo "IB_hasbody=$(printf '%s' "$inbox" | jq -e '.body|type=="object"' >/dev/null 2>&1 && echo yes || echo no)"
+      # claude-tools-4xe RESIDUAL — "conformant-write-does-NOT-over-reject":
+      # the §5.1-CORE WRITE GATE (co__dossier_write_body_ok / dossierWriteBodyOk,
+      # wired into co__store_put / _writeRecord) must REJECT a non-conformant
+      # body without OVER-rejecting a conformant one. PART B exercises the EXACT
+      # production codepath against the BYTE-IDENTICAL engine (same adapter,
+      # same Coordinator DO, same D1 query shape — wrangler.pages-dev.toml fronts
+      # cf/src/index.js via pages-dev/adapter.js, identical to a53's production
+      # build). The §7.2 path here writes a fresh §5-conformant body, so the
+      # body the engine PERSISTED + returns over the deployed-Inbox read front
+      # MUST carry the §5.1 conformance markers the gate enforces. If any one
+      # of these is missing/wrong, either the gate over-rejected (would have
+      # failed the write upstream — caught by T_did/T_nrc above) OR the gate
+      # permitted a malformed body through (caught here as a write-side bug).
+      # The mirror live-deploy assertion is PART C (token-gated → I5 hop).
+      echo "IB_bsv=$(printf '%s' "$inbox" | jq -r '.body.dossier_schema_version' 2>/dev/null)"
+      echo "IB_bsv_t=$(printf '%s' "$inbox" | jq -r '.body.dossier_schema_version|type' 2>/dev/null)"
+      echo "IB_bdct=$(printf '%s' "$inbox" | jq -r '.body.diagrams|type' 2>/dev/null)"
+      echo "IB_bdn=$(printf '%s' "$inbox"  | jq -r '.body.diagrams|length' 2>/dev/null)"
+      # first diagram's content head — the §5.1 Mermaid-source check (the
+      # gate's co__is_mermaid accepts a Mermaid keyword on line 1).
+      echo "IB_bd0head=$(printf '%s' "$inbox" | jq -r '(.body.diagrams[0].content // "")[0:9]' 2>/dev/null)"
+      echo "IB_btldr_ne=$(printf '%s' "$inbox" | jq -e '(.body.tldr // "") | length > 0' >/dev/null 2>&1 && echo yes || echo no)"
 
       # the §4.3 Notification persisted to the hosted engine (the I3 deliverable)
       n="$(co_request "$GOOD" get notification "$nid" 2>/dev/null)"; echo "T_ngetrc=$?"
@@ -391,6 +413,15 @@ else
     eq "$(bg IB_itk)"  "pick-option"   "deployed-Inbox read front: the §5.2.1 Item is a pick-option (the human's decision)"
     eq "$(bg IB_hasbody)" "yes"        "deployed-Inbox read front: the §5 body is present (renderable on the phone — content quality is the I5 gate)"
     eq "$(bg IB_tier)" "blocking"      "deployed-Inbox read front: tier=blocking (a STUCK fork blocks)"
+    # claude-tools-4xe RESIDUAL — conformant-write-does-NOT-over-reject (the
+    # §5.1-CORE WRITE GATE PASS path, byte-identical engine; the live-deploy
+    # mirror is PART C, token-gated → I5):
+    eq "$(bg IB_bsv)"     "2"          "4xe write gate did NOT over-reject: body.dossier_schema_version persisted == bound (2) on the byte-identical engine"
+    eq "$(bg IB_bsv_t)"   "number"     "4xe write gate did NOT over-reject: body.dossier_schema_version persisted as a JSON integer (§5.1 'int' / §0.3)"
+    eq "$(bg IB_bdct)"    "array"      "4xe write gate did NOT over-reject: body.diagrams persisted as an array (§5.1/AD7)"
+    eq "$(bg IB_bdn)"     "1"          "4xe write gate did NOT over-reject: the §7.2 decision-fork synthesis produced exactly ONE diagram (one fork ⇒ one decision graph)"
+    eq "$(bg IB_bd0head)" "flowchart"  "4xe write gate did NOT over-reject: diagrams[0].content begins with 'flowchart' — the §11/vkc Mermaid-source the gate's co__is_mermaid accepts"
+    eq "$(bg IB_btldr_ne)" "yes"       "4xe write gate did NOT over-reject: body.tldr persisted non-empty (the §5.1-core mandatory tier survives the write)"
     # the notification reached the hosted engine + mirrors the dossier:
     eq "$(bg T_ngetrc)" "0"            "the §4.3 Notification is READABLE from the hosted engine (it persisted, not just attempted)"
     eq "$(bg T_ndref)" "stuck-$FIXTURE" "the Notification.dossier_ref points at the genuine Dossier (C3 binding)"
