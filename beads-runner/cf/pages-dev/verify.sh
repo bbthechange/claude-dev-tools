@@ -212,7 +212,12 @@ echo ""
 echo "── EXIT-4: no FROZEN edit (proxies / engine / INTERFACE) — additive wiring only ──"
 DIRTY="$(cd "$CF_DIR/../.." && git status --porcelain -- beads-runner/web beads-runner/cf/src beads-runner/cf/wrangler.toml beads-runner/INTERFACE.md 2>/dev/null | grep -E '^( M|MM|AM|D )' || true)"
 ck "web/ + cf/src + cf/wrangler.toml + INTERFACE.md UNMODIFIED"     test -z "$DIRTY"
-ck "the re-frame adapter never names a write op as a code literal" hasnt "'set-desired'" "$(cat "$HERE/adapter.js")"
+# Flow D (F1, claude-tools-49w) legitimized set-desired as the Board-side
+# write proxy, so the adapter NOW names it as a mapped write op — the prior
+# "no set-desired literal" CF.10-era assertion has been REPLACED with a
+# positive mapping check (the proxy file owns the validation; this just
+# asserts the adapter has the unwrap to the engine's positional args).
+ck "adapter maps set-desired writes (Flow D Board-side, F1)"        has "\"set-desired\"" "$(cat "$HERE/adapter.js")"
 ck "the adapter never holds/injects a bearer (copies header thru)" hasnt "Bearer " "$(cat "$HERE/adapter.js")"
 
 echo ""

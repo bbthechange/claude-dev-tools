@@ -61,6 +61,8 @@ function jerr(msg, status) {
 //   item-apply     (did, iid, resp)   — dossier.js itemApply(co,pr,a0,a1,a2)
 //   forensic-fetch (blobId)           — forensic.js forensicFetch(co,pr,a0)
 //   forensic-dismiss (blobId)         — forensic.js forensicDismiss(co,pr,a0)
+//   set-desired    (proj,state,actor) — coordinator.js opSetDesired(pr,a0,a1,a2)
+//                                       (F1, Board-side of UX-DESIGN Flow D)
 function argsForGet(op, url) {
   const q = url.searchParams;
   if (op === "work-snapshot") {
@@ -77,6 +79,16 @@ function argsForPost(op, body) {
   const b = body && typeof body === "object" ? body : {};
   if (op === "item-apply") return [b.dossier_id, b.item_id, b.response];
   if (op === "forensic-dismiss") return [b.id];
+  // F1 (claude-tools-49w) — Board-side of UX-DESIGN Flow D. The proxy carries
+  // the named-JSON-body shape {project_ref, desired:{state,actor}}; here it
+  // unwraps to opSetDesired's positional `[proj, state, actor]` (the same
+  // `co_request set-desired <proj> <state> <actor>` order the bash oracle
+  // uses). The state validation is the PROXY's job (set-desired.js); this
+  // adapter is dumb plumbing and stays that way.
+  if (op === "set-desired") {
+    const d = b.desired && typeof b.desired === "object" ? b.desired : {};
+    return [b.project_ref, d.state, d.actor];
+  }
   return null; // unmapped write op — caller emits 400
 }
 
