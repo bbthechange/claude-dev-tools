@@ -38,12 +38,21 @@ DAEMON_ROTATION_MARKER="$DAEMON_LOG_DIR/.rotation-marker"
 WORKSPACES_JSON="$DAEMON_CONFIG_DIR/workspaces.json"
 
 HEARTBEAT_INTERVAL="${BEADS_DAEMON_HEARTBEAT_INTERVAL:-10}"
+# M4: hosted-resolution poll cadence. ~30s default, the AD8 latency promise
+# (Brian answers the dossier ⇒ ≤60s to the resume-answer file lands in the
+# workspace store), well-bounded against a long `claude -p` in any workspace.
+HOSTED_RESOLUTION_POLL_INTERVAL="${BEADS_DAEMON_HOSTED_RESOLUTION_POLL_INTERVAL:-30}"
 
 # ─── source the per-machine library (DESIGN §3.2 retraction-of-topology
 # is about TIER, not about the library — the daemon still source's it) ────
 DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/workspace-registry.sh"
+# M4: per-workspace hosted-resolution poll (claude-tools-8jb). Defines
+# daemon_poll_workspace_hosted_resolution + the runner-state classifier the
+# M5/M6 dispatch branches off. Strict no-op until the main loop calls into it.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/hosted-resolution-poll.sh"
 
 log() {
   # one-line log helper; stdout is redirected to daemon-logs/stdout.log by
@@ -116,6 +125,30 @@ on_exit() {
   release_pidfile
 }
 
+# ─── M4 hosted-resolution poll driver (claude-tools-8jb) ─────────────────
+# Iterate REGISTRY_<arrays> and call the per-workspace poll for each. The
+# poll itself is in hosted-resolution-poll.sh (`daemon_poll_workspace_hosted_
+# resolution`); this driver is what binds it to the daemon's main loop and
+# turns a per-workspace observed-count into a single observable-not-silent
+# log line ("daemon observed N answered fork(s) across M workspace(s)") —
+# the §7.3/AD8 surface the operator looks at.
+run_hosted_resolution_poll() {
+  local count workspaces total=0
+  workspaces="$(registry_count 2>/dev/null || echo 0)"
+  [ "$workspaces" -gt 0 ] 2>/dev/null || return 0
+  local i=0
+  while [ "$i" -lt "$workspaces" ]; do
+    count="$(daemon_poll_workspace_hosted_resolution "$i" 2>/dev/null || echo 0)"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    total=$((total + count))
+    i=$((i + 1))
+  done
+  if [ "$total" -gt 0 ]; then
+    log "hosted-resolution poll (§7.3/AD8/M4): observed $total answered fork(s) across $workspaces workspace(s) — answer file(s) captured into the workspace store(s); resume dispatch decision logged per task_ref above"
+  fi
+  return 0
+}
+
 # ─── main ────────────────────────────────────────────────────────────────
 main() {
   trap on_exit EXIT
@@ -126,7 +159,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -134,12 +167,26 @@ main() {
   if registry_load "$WORKSPACES_JSON"; then
     log "workspace registry loaded ($(registry_count) workspaces)"
   else
-    log "WARN: no workspace registry yet at $WORKSPACES_JSON (continuing — M1 has no work to do anyway)"
+    log "WARN: no workspace registry yet at $WORKSPACES_JSON (continuing — M1/M4 have nothing to poll until a registry exists)"
   fi
 
-  # Empty main loop with a 10s heartbeat. Job logic lands here in M2-M6.
+  # Main loop. Heartbeat every HEARTBEAT_INTERVAL; the M4 hosted-resolution
+  # poll runs every HOSTED_RESOLUTION_POLL_INTERVAL (per-workspace, AD8 §3.2
+  # job 5). Other M2/M3/M5/M6 jobs land here in their own issues.
+  local _last_hosted_poll=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
+    # M4 (claude-tools-8jb): on cadence, poll every registered workspace for
+    # answered dossiers and capture the resume-answer into the workspace's
+    # local store. This is the "always listening" piece — the old
+    # runner-side sr_poll_hosted_resolution call only fired BETWEEN tasks,
+    # so a long claude -p stalled observation. The daemon polls regardless.
+    local _now
+    _now="$(date +%s 2>/dev/null || echo 0)"
+    if [ "$((_now - _last_hosted_poll))" -ge "$HOSTED_RESOLUTION_POLL_INTERVAL" ]; then
+      _last_hosted_poll="$_now"
+      run_hosted_resolution_poll || true
+    fi
     # `sleep` is interruptible by signals; the loop condition is re-checked
     # immediately after wake.
     sleep "$HEARTBEAT_INTERVAL" &

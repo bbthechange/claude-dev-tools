@@ -722,34 +722,45 @@ while true; do
     done
   done
 
-  # ── I4 FEEDBACK RETURN PATH — the PARKED runner observes Brian's phone
-  #    answer in the HOSTED engine and lifts the fork back into the ready set
-  #    (claude-tools-ryz; epic 8bm). The closed loop's return leg ───────────────
-  # §7.3 PARKED the fork (sr__raise_bfh {resolved:false} + bead blocked) and
-  # the runner moved on (§7.5). Each loop iteration — BEFORE selecting the next
-  # task, while the runner is otherwise busy on other beads — it now:
-  #   1. sr_poll_hosted_resolution: READ each parked Dossier back over the SAME
-  #      §2.1 `co_request get dossier` surface the I1 transport carries (→ the
-  #      HOSTED deployed engine when COORDINATOR_URL is set). When Brian
-  #      answered on the phone the deployed Inbox `/api/respond` proxy already
-  #      POSTed the FROZEN `item-apply` op upstream, so the Item is
-  #      answered|applied IN THE ENGINE — the runner captures that decision and
-  #      flips the S-2 record resolved:true.
-  #   2. sr_reconcile_blocked_for_human: the existing S-2 control→work step then
-  #      lifts the work-plane block (bead → open ⇒ re-enters `bd ready`).
-  # The very next next_task can re-pick it and the prompt-build splice (below)
-  # hands the captured decision to the resumed agent so it ACTS on the answer.
-  # Identical OPTIONAL/guarded/observable-not-silent posture as the §7.3 stuck
-  # block + the §8.2 la_* calls: absent libs ⇒ no-op; hosted unreachable/401/
-  # not-yet-answered ⇒ the fork stays PARKED (it must not rot AND must not
-  # falsely resume); NEVER aborts the loop (a poll/reconcile is best-effort).
-  if command -v sr_poll_hosted_resolution >/dev/null 2>&1 \
-     && command -v sr_reconcile_blocked_for_human >/dev/null 2>&1; then
+  # ── I4 FEEDBACK RETURN PATH — observe phone-answered dossiers + lift the
+  #    fork back into the ready set (claude-tools-ryz; epic 8bm).
+  #    M4 (claude-tools-8jb; epic kie) MOVED the AWAIT into the per-machine
+  #    daemon (DESIGN §3.2 job 5 / AD8) so observation happens CONTINUOUSLY,
+  #    not only between tasks: a long `claude -p` no longer stalls the
+  #    daemon's poll. The block below is the FALLBACK for a standalone runner
+  #    that is NOT being supervised by the daemon (no daemon pidfile alive) —
+  #    so a `bash run-beads-tasks.sh` without `daemon/install.sh` still polls
+  #    on its own loop top as it did pre-M4. ───────────────────────────────
+  # When the daemon owns the poll, the runner only does the RECONCILE (the
+  # control→work bead-lift): the daemon has already captured the resume-answer
+  # file and flipped the S-2 bfh record to resolved:true, so the next reconcile
+  # here lifts the bead → open and the prompt-build splice (below) hands the
+  # captured decision to the resumed agent. Identical OPTIONAL/guarded/
+  # observable-not-silent posture as the §7.3 stuck block + the §8.2 la_*
+  # calls: absent libs ⇒ no-op; NEVER aborts the loop.
+  DAEMON_PIDFILE_PATH="${BEADS_DAEMON_PIDFILE:-$HOME/.cache/claude-tools/daemon.pid}"
+  DAEMON_ALIVE=0
+  if [[ -f "$DAEMON_PIDFILE_PATH" ]]; then
+    DAEMON_PID_VAL="$(cat "$DAEMON_PIDFILE_PATH" 2>/dev/null || echo "")"
+    if [[ -n "$DAEMON_PID_VAL" ]] && kill -0 "$DAEMON_PID_VAL" 2>/dev/null; then
+      DAEMON_ALIVE=1
+    fi
+  fi
+  if command -v sr_reconcile_blocked_for_human >/dev/null 2>&1; then
     : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
-    SR_RESUMED="$(sr_poll_hosted_resolution "${SR_BEARER:-bearer-runner-stuck}" 2>/dev/null || echo 0)"
+    SR_RESUMED=0
+    # FALLBACK: the daemon is absent (no live pidfile). Run the poll inline as
+    # the pre-M4 runner did so a standalone runner still works.
+    if [[ "$DAEMON_ALIVE" -eq 0 ]] && command -v sr_poll_hosted_resolution >/dev/null 2>&1; then
+      SR_RESUMED="$(sr_poll_hosted_resolution "${SR_BEARER:-bearer-runner-stuck}" 2>/dev/null || echo 0)"
+    fi
     SR_LIFTED="$(sr_reconcile_blocked_for_human "${SR_BEARER:-bearer-runner-stuck}" 2>/dev/null || echo 0)"
     if [[ "${SR_RESUMED:-0}" != "0" || "${SR_LIFTED:-0}" != "0" ]]; then
-      echo "  FEEDBACK RETURN (§7.3/S-2/I4): observed ${SR_RESUMED:-0} answered fork(s) in the hosted engine; reconciled ${SR_LIFTED:-0} blocked-for-human bead(s) — a fork Brian answered on his phone is back in the ready set and will RESUME with the decision spliced in."
+      if [[ "$DAEMON_ALIVE" -eq 1 ]]; then
+        echo "  FEEDBACK RETURN (§7.3/S-2/I4) [M4 daemon-owned]: reconciled ${SR_LIFTED:-0} blocked-for-human bead(s) — the daemon captured the answer continuously; this loop top just lifted the bead to open so the splice below resumes the agent with the decision."
+      else
+        echo "  FEEDBACK RETURN (§7.3/S-2/I4) [M4 fallback, daemon absent]: observed ${SR_RESUMED:-0} answered fork(s) inline; reconciled ${SR_LIFTED:-0} blocked-for-human bead(s) — a fork Brian answered on his phone is back in the ready set and will RESUME with the decision spliced in."
+      fi
     fi
   fi
 

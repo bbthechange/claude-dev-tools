@@ -23,11 +23,13 @@ hosted-resolution / resume dispatch, work-snapshot publish — land in
 
 | File | Purpose |
 |---|---|
-| `daemon.sh` | the supervisor process: pidfile, signal handlers, heartbeat loop |
+| `daemon.sh` | the supervisor process: pidfile, signal handlers, heartbeat loop, M4 hosted-resolution poll driver |
 | `workspace-registry.sh` | library: load & parse `~/.config/claude-tools/workspaces.json` |
+| `hosted-resolution-poll.sh` | library: M4 per-workspace hosted-resolution poll (claude-tools-8jb; AD8 §3.2 job 5). Captures phone-answered dossiers into each workspace's local store + classifies M5 vs M6 dispatch |
 | `launchd-plist.template` | the LaunchAgent definition (token-substituted by `install.sh`) |
 | `install.sh` | writes the plist into `~/Library/LaunchAgents/` and `launchctl bootstrap`s it |
 | `uninstall.sh` | `launchctl bootout` and remove the plist |
+| `test-m4-hosted-resolution-poll.sh` | focused acceptance: per-workspace poll captures answer + flips bfh; runner-state classifier; M5 vs M6 dispatch decision |
 
 ## On-disk layout
 
@@ -113,7 +115,16 @@ kill -HUP "$(cat ~/.cache/claude-tools/daemon.pid)"
 - **No spawning of workspace runners.** M3 wires the desired-state
   reconciler to spawn/kill workspace runners. Until then this daemon
   just heartbeats.
-- **No hosted-resolution poll / `bd-surgery` dispatch.** That's M4
-  (claude-tools-8jb / the AD8 build pointer).
+- **Hosted-resolution poll: M4 LANDED (claude-tools-8jb).** The daemon
+  now polls every registered workspace on a ~30s cadence (env
+  `BEADS_DAEMON_HOSTED_RESOLUTION_POLL_INTERVAL`), reads each parked
+  dossier back over the §2.1 surface, captures the resume-answer file
+  into the workspace's local store, and flips the S-2 bfh record. The
+  workspace runner's old loop-top `sr_poll_hosted_resolution` call now
+  runs ONLY as a fallback when the daemon is absent (so a standalone
+  `run-beads-tasks.sh` still works backwards-compat). The DISPATCH side
+  — M5 idle/parked workspace (just splice) vs M6 busy on a different
+  task (bd-surgery agent) — is classified + logged here; the actual
+  dispatch lands in claude-tools-0ll (M5) and claude-tools-4iy (M6).
 - **No log rotation policy.** Currently we append a start marker on
-  every boot but never truncate. Rotation lands with M5.
+  every boot but never truncate. Rotation lands later.
