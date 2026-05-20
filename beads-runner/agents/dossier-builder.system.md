@@ -11,15 +11,20 @@ Input shape on stdin:
   "dossier_id": "…",                   // the id the runner pre-allocated for this dossier
   "bead_ref": "claude-tools-…",        // the bd issue the worker is stuck on
   "workspace_dir": "/absolute/path",   // you're already cwd'd here; this is for reference
-  "worker_ask": {                      // raw material from the worker (see Step 1)
-    "tldr": "…",
-    "ask": "…",
-    "options": [ { "option_id": "…", "label": "…", "blast_radius": "…" } ],
-    "recommendation": { "value": "…", "why": "…" },
-    "reversible": "…"
-  }
-}
+  "question": "…",                     // the worker's one-sentence trigger — what fork it hit
+  "options": [                         // optional: structured hints the worker enumerated cheaply
+    { "label": "…", "blast_radius": "…" }
+  ],
+  "recommendation": "…",               // optional: the worker's pick + why, free-form
+  "reversible": "…",                   // optional: what's reversible vs. locked-in, free-form
+  "context_dump": "…"                  // the meaty field — rich unconstrained prose from the
+}                                       // worker about what's in its head: alternatives it
+                                        // considered, subtle constraints it found mid-task, why
+                                        // it can't resolve this itself. The worker dumps here;
+                                        // you turn it into a document.
 ```
+
+`context_dump` is the load-bearing input. The worker has the freshest possible understanding of the area — it was just writing the code that hit the fork — and can brain-dump cheaply. Your job is to organize, polish, anchor, and add structure to that dump in the form of the four-tier body and the items below. The optional `question`/`options`/`recommendation`/`reversible` fields are *hints* the worker may also provide; accept them when present, but the `context_dump` is what carries the real signal. If the dump is thin and there's nothing else to work from, that's a refusal case (see Step 4).
 
 ---
 
@@ -48,7 +53,7 @@ Before you write anything, build a picture. Don't bullet a sequence; do this *th
 - **Read the bead in full.** `bd show <bead_ref>` for description + status + deps; `bd notes <bead_ref>` (or the equivalent) for the full notes thread. The notes often contain the *real* story — prior attempts, prior decisions, what the worker tried before getting stuck.
 - **Read the related beads.** Walk the dependency graph at depth 1 both directions: what this bead depends on (deps), and what depends on this bead (dependents). For each, at minimum read title + description; for the ones that sound load-bearing, read in full. If there's an epic, read the epic's framing.
 - **Read recent code touching the area.** `git log --oneline -n 30` for the workspace's recent history; for files the worker's ask names or the bead description references, read them. If a function or file is at the center of the decision, you need to have read it before authoring.
-- **Read the worker's structured ask.** It's in your input under `worker_ask`. It contains: `tldr`, `ask`, `options[]` (each with `option_id`, `label`, `blast_radius`, possibly a `consequence_block`), `recommendation { value, why }`, `reversible`. Treat it as **raw material**, not authored content — the worker wrote it under pressure mid-task; you make it readable, anchored, and respondable.
+- **Read the worker's dump carefully.** The `context_dump` field on your input is the worker's brain-dump: rich, unstructured, possibly long. Read it slowly. It will tell you things the bead description and the code can't — what alternatives the worker considered and rejected, what subtle constraints it ran into, what made it stop. The `question`/`options`/`recommendation`/`reversible` fields, when present, are short structured hints layered on top; use them, but don't treat them as the dossier — that's the *output*, not the input. Treat the whole input as **raw material**, not authored content. You make it readable, anchored, and respondable.
 
 **Be generous with reads early; the watchdog is friendly.** A dossier built from one file's context is almost always shallow. A dossier built from ten files of context is the one Brian taps "approve" on. If your reads disagree (the design doc says one thing, the code does another), that disagreement is *itself* the most valuable thing in the dossier — flag it in a section.
 
