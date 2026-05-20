@@ -1,7 +1,14 @@
 # Beads Runner — UX Design
 
-Status: draft · Scope: user flows, not implementation/architecture
-Owner: Brian · Last updated: 2026-05-15
+Status: draft (§11-amended 2026-05-20: Flows A/D/F bound to daemon + write-proxies + enricher hat per epic claude-tools-kie) · Scope: user flows, not implementation/architecture
+Owner: Brian · Last updated: 2026-05-20
+
+> **§11 amendment ledger (this document).**
+> Per INTERFACE.md §11 change-protocol discipline applied to UX-DESIGN:
+>
+> | Date | Change | Authorization |
+> |---|---|---|
+> | 2026-05-20 | Flows A / D / F bound to the post-8bm shape (per-machine daemon, `/api/set-desired` + `/api/intake` write proxies, enricher as the 7th specialist hat, Flow F trigger = bd stage transition + overview profile + `timed-fyi` 24h tier). UX semantics unchanged; the amends are doc→code traceability so a future reader can find the wiring from §4 flows to the M / S / I / F / P tracks under epic claude-tools-kie. | Brian, epic claude-tools-kie scope (children D3/D4) |
 
 This document maps the **user experience** of expanding the beads-runner from a
 single-machine headless task loop into a system that runs your idea→test
@@ -223,6 +230,35 @@ Two interaction modes fall out of the presets and both must be first-class:
 Enricher edge cases route to the Inbox as **one** tiny question, never a guess:
 ambiguous project, looks-like-a-duplicate, too vague to scope.
 
+**Binding to implementation (§11 amend 2026-05-20).** The intake path above is
+realized by three concrete pieces, end-to-end:
+
+1. **Phone-UI intake page** — a third route in the web app at `/intake` (a
+   sibling of Board and Inbox): one text-area + a project picker
+   ("or let it pick") + an entry-intent preset chooser. Mobile-friendly,
+   ~5s of effort. (Track **I1**, e.g. `claude-tools-tbl`.)
+2. **`/api/intake` write proxy** — a server-side Pages Function (modeled on the
+   existing inbox-respond proxy) that holds the bearer, accepts
+   `{idea_text, project_ref|null, preset}`, and writes an `intake-request` row
+   to the engine. The phone never holds the engine bearer; the proxy does.
+   (Track **I2**, e.g. `claude-tools-x9u`.)
+3. **The enricher agent** — a *fresh `claude -p` session* launched **inside
+   the chosen workspace** (cwd + `--add-dir` + workspace `CLAUDE.md`
+   available), with **kind = `enricher`**. This is the **7th specialist hat
+   (added to D3's list of 6)** — the same one-binary, kind-selected-system-prompt
+   model as the ux/design/impl/docs/tests/reconciler hats; the enricher hat is
+   the dedup + context-gather + structured-proposal step described in the
+   diagram above, and it produces the `bd create` call (title, why, entry
+   stage from the preset, acceptance, deps, priority). Dispatch is owned by
+   the per-machine daemon (Flow D / M-track), which observes `intake-request`
+   the same way it observes desired-state and hosted-resolution rows. Tracks
+   **I3** (dispatch, e.g. `claude-tools-06i`) and **S3** (the enricher hat
+   itself, e.g. `claude-tools-bnq`).
+
+The two named presets (autonomous-until-stuck, collaborative-stage) are the
+seed catalog; preset extensibility is track **I4** (`claude-tools-vvh`). Both
+reduce to (entry stage, gate aggressiveness) per §7.
+
 ---
 
 ### Flow B — The decision loop (the heart)
@@ -297,10 +333,10 @@ TRIGGER: bd `human` flag · worker hits a fork it can't resolve ·
 
 ### Flow D — Remote runner control
 
-Each project is a controllable unit, state ∈
-`{running, paused, spare-only, stopped}`, settable by **you** (Board toggle) or
-**an agent in that workspace** (e.g. analysis agent: "blocked on a human
-decision → pause this runner, save cycles").
+Each project is a controllable unit, **`desired` ∈
+`{running, paused, spare-only, stopped}`** per workspace, settable by **you**
+(Board toggle) or **an agent in that workspace** (e.g. analysis agent: "blocked
+on a human decision → pause this runner, save cycles").
 
 Two UX requirements that are easy to get wrong:
 
@@ -312,6 +348,54 @@ Two UX requirements that are easy to get wrong:
   / intervene in a running task." Serve it with: **escalate this task to a
   decision dossier** (reuses Flow B entirely) as the primary path, and an
   attach-mode hand-off (tmux/ssh) as a secondary, later option.
+
+**Binding to implementation (§11 amend 2026-05-20).** "Remote start/stop"
+(§0.A) is realized by a closed loop between the phone, a write proxy, the
+engine, and the per-machine daemon. Each step has a named owner so a future
+reader can trace the flow from UX to code:
+
+1. **Phone → write proxy.** The Board toggle POSTs to
+   **`/api/set-desired`**, a Pages Function modeled on the existing
+   inbox-respond proxy (server-side bearer; HARD-CODED literal `op =
+   'set-desired'`). Payload: `{project_ref, desired:{state, actor}}`.
+   The phone never holds the engine bearer; the proxy does. (Track **F1**,
+   e.g. `claude-tools-49w`.)
+2. **Engine: set-desired op.** The proxy invokes the engine's **`set-desired`**
+   operation, which writes the new `desired` value into the per-workspace
+   `runner_state` row (a single write; the engine returns the new
+   `runner_state` JSON for the Board to render).
+3. **Daemon honors the desired state on its poll.** The per-machine daemon
+   (M-track) polls each registered workspace's `runner_state` on a fixed
+   interval and **converges actual → desired** by spawning or killing the
+   workspace runner process it owns:
+   - `desired = running` → the daemon **spawns** the workspace runner if it is
+     not already alive (`run-beads-tasks.sh` in that workspace).
+   - `desired = paused` → the daemon stops handing the workspace new tasks
+     (the in-flight task finishes; no new pickup) — runner process stays up
+     so it can resume cheaply.
+   - `desired = spare-only` → like `paused` for `full`-mode work but the
+     runner keeps picking up tasks that fit today's spare-cycles envelope
+     (Flow C math).
+   - `desired = stopped` → the daemon **kills** the workspace runner cleanly
+     (drains the current task, then exits the runner process; nothing is left
+     on the machine spinning).
+
+   Tracks **M1** (`claude-tools-gim`, daemon skeleton + launchd plist),
+   **M3** (`claude-tools-cgh`, the desired-state poll itself), and **F3**
+   (`claude-tools-6mx`, the end-to-end honors-transitions check).
+4. **Board re-renders honestly.** The Board reads the same `runner_state`
+   projection (Flow E) and shows `desired` separately from `actual`. A toggle
+   that has been written but not yet honored shows `stopping…` / `starting…`
+   — never optimistic, never out-of-sync with what the daemon is actually
+   doing. (Track **F2**, e.g. `claude-tools-8fh`.)
+
+**Why this binding matters.** Pre-amend, "remote start/stop" was structurally
+impossible: the Local Agent was a library sourced *into* each workspace
+runner, so a stopped workspace had nothing left on the machine to restart it.
+The §0.A "one central runner per computer" requirement is what justifies
+promoting the Local Agent to a real per-machine daemon process, and the
+daemon is what makes Flow D's `stopped → running` round-trip possible at all.
+(Background: epic claude-tools-kie, audit point #2.)
 
 ---
 
@@ -341,6 +425,43 @@ Same dossier machinery as Flow B, different trigger and tier: when a stage like
 `design` completes, the system proactively builds a "here's how this is going
 to fit together" dossier and pushes it as **timed-fyi** ("object within 24h or
 it proceeds"). Architectural visibility without going to ask.
+
+**Binding to implementation (§11 amend 2026-05-20).** Three named pieces, all
+already-present surface — Flow F is mostly *wiring*, not new machinery:
+
+- **Trigger = a bd task transitioning.** Concretely: a bd task with
+  `stage = design` closing fires the trigger (until the L-track adds `stage`
+  as a first-class field, label-based detection on `stage:design` is the
+  floor; same observable). The trigger enqueues a dossier-build request
+  with `profile = overview` and `tier = timed-fyi`. Other stage transitions
+  (e.g. impl closing, a milestone closing) reuse the same trigger shape;
+  the design-closing case is the seed. (Track **P1**, e.g.
+  `claude-tools-3pq`.) The observer ideally lives in the per-machine
+  daemon (M-track) so it fires even when no workspace runner is on the
+  bead; an interim hook in `run-beads-tasks.sh`'s post-task path is
+  acceptable as a stopgap.
+- **Dossier profile = "deep body + zero or all-`fyi-objectable` items."**
+  This is a first-class profile already named in DESIGN AD7 / INTERFACE
+  §5.2.1 (not a tier variant): a deep `tldr` + `sections[]` +
+  `diagrams[]` (Mermaid per the §11 v2 amend) + `full_detail`, with either
+  no `items[]` (pure FYI) or items all of kind `fyi-objectable` (each
+  individually objectable inside the 24h window). The B-track
+  dossier-builder agent (e.g. `claude-tools-bvj`) emits this profile
+  unchanged — no new schema, no new code path.
+- **Tier = the existing `timed-fyi` 24h tier (auto-proceeds on silence).**
+  Flow F dossiers ride the §0.B / D5 tier as-is: global 24h default,
+  reversible, **auto-proceeds if Brian doesn't object** within the window.
+  No special handling — silence is a valid input (cross-cutting principle 6)
+  here exactly as it is for ordinary Flow B `timed-fyi` items. Notification
+  stays one-per-dossier per principle 2. (Track **P2**, e.g.
+  `claude-tools-0wy`, integrates Flow F dossiers with the existing tier
+  mechanism without modifying it.)
+
+So the full chain: **bd task closes (P1 observer) → daemon enqueues an
+overview-profile dossier-build (B-track) → dossier lands on Brian's phone
+as `timed-fyi` (P2) → 24h silence auto-proceeds.** Brian gets architectural
+visibility "without going to ask" (§0.A); the pipeline does not deadlock if
+he doesn't read it.
 
 Three notification tiers, used everywhere:
 
