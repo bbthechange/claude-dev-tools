@@ -9,3 +9,9 @@
 # of beads-runner/cf/.gitignore for the CF.10 pages-dev serve, which runs
 # `wrangler pages dev` inside the FROZEN web/board + web/inbox trees.
 .wrangler/
+
+tmp/
+
+beads-runner/mocks/
+
+.beads/runner-logs/

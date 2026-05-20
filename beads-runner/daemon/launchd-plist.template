@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  beads-runner LaunchAgent.
+
+  Per DESIGN.md §3.2 (AD1 §11 amend 2026-05-20), the Local Agent on macOS
+  is a per-user LaunchAgent, NOT a system-wide LaunchDaemon. It runs in the
+  logged-in user's GUI session so it has access to the macOS Keychain and
+  the user's network reachability — same security boundary as the existing
+  BC-34 keychain-only-token posture.
+
+  Install: `daemon/install.sh` substitutes the placeholder tokens (DAEMON_SH,
+  LOG_DIR, HOME — each wrapped in double-at-signs in the template body) and
+  writes the result to ~/Library/LaunchAgents/com.beads-runner.daemon.plist.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.beads-runner.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@@DAEMON_SH@@</string>
+  </array>
+
+  <!-- KeepAlive=true: relaunch on crash. The Local Agent SPOF mitigation
+       (DESIGN §3 AD1) explicitly relies on launchd KeepAlive. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- RunAtLoad=true: start as soon as launchctl loads the plist (i.e.
+       immediately on `launchctl load`, and on every subsequent user login). -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Throttle restarts to avoid a crash-loop hammering the system. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>@@LOG_DIR@@/stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>@@LOG_DIR@@/stderr.log</string>
+
+  <!-- Inherit a minimal PATH; tools (jq, security) live under /usr/bin and
+       /usr/local/bin or /opt/homebrew/bin on Apple Silicon. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>@@HOME@@</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>@@HOME@@</string>
+
+  <!-- Process type "Interactive" matches a foreground supervisor that
+       interacts with the GUI session (Keychain prompts, notifications).
+       Not "Background" — that's for indexers / batch jobs. -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>
