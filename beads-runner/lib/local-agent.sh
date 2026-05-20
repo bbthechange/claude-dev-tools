@@ -97,6 +97,46 @@ la_coordinator_token() {
   printf '%s' "$tok"
 }
 
+# ── M2 (claude-tools-8mz) — consult the daemon's machine-level cache ─────────
+# Before M2, every workspace runner did its OWN Keychain read + Anthropic
+# API call (la__anthropic_token + la__usage_json). With the daemon up, that
+# work moves to ONE central poll per machine (beads-runner/daemon/usage-
+# poll.sh), publishing $DAEMON_CACHE_DIR/capacity.json on a TTL. The
+# workspace's la_capacity_check consults this cache first; if it's missing
+# or stale, the workspace falls back to its direct path (BC-34 fail-OPEN
+# preserved — daemon down ⇒ workspace still safe).
+#
+# CACHE LOCATION
+#   Same env contract as the daemon: BEADS_DAEMON_CACHE_DIR override,
+#   defaulting to $HOME/.cache/claude-tools. The cache file is the formal
+#   "GET /capacity" surface (UX 0.A) — currently file-backed because the
+#   blast radius matches a UDS socket (local user FS only) without the
+#   listener/server complexity. If we ever swap to a real UDS or local
+#   HTTP server, that change lives entirely inside la__capacity_via_daemon.
+la__daemon_cache_dir() { printf '%s' "${BEADS_DAEMON_CACHE_DIR:-$HOME/.cache/claude-tools}"; }
+la__daemon_capacity_file() { printf '%s/capacity.json' "$(la__daemon_cache_dir)"; }
+
+# la__capacity_via_daemon — read the daemon's cached verdict. Echoes the
+# raw JSON on success; returns nonzero (caller falls back) if:
+#   • the cache file does not exist
+#   • the cache file is older than la__USAGE_CACHE_SECONDS * 2 (we accept a
+#     1× drift over the daemon's own TTL — the daemon's "refresh imminent"
+#     window — but past that we treat the cache as dead and fall open)
+#   • the cache file is unparseable JSON
+la__capacity_via_daemon() {
+  local f mtime now age limit json
+  f="$(la__daemon_capacity_file)"
+  [[ -f "$f" ]] || return 1
+  mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+  now=$(date +%s 2>/dev/null || echo 0)
+  age=$(( now - mtime ))
+  limit=$(( $(la__USAGE_CACHE_SECONDS) * 2 ))
+  [[ "$age" -lt "$limit" ]] || return 1
+  json=$(cat "$f" 2>/dev/null) || return 1
+  printf '%s' "$json" | jq -e . >/dev/null 2>&1 || return 1
+  printf '%s' "$json"
+}
+
 # ── BC-34 credential path + §6.3 coarse capacity verdict ─────────────────────
 # la__anthropic_token — read the Anthropic OAuth token from the macOS Keychain
 # (the BC-34 credential path). Returns:
@@ -175,6 +215,38 @@ la_capacity_check() {
     return 0
   fi
 
+  # M2 (claude-tools-8mz): consult the daemon's machine-level cache first.
+  # When the daemon is up and the cache is fresh, the workspace runner makes
+  # ZERO direct Anthropic API calls — the acceptance criterion of M2 (UX
+  # 0.A "one central runner per computer that checks Claude capacity").
+  # The daemon also emits the §1.1 capacity report once per machine, so the
+  # workspace MUST NOT also call la_report_capacity here (would produce N
+  # reports per cycle, defeating the centralisation).
+  local cached
+  if cached=$(la__capacity_via_daemon 2>/dev/null); then
+    local pct_5h pct_7d allowed verdict
+    pct_5h=$(printf '%s' "$cached" | jq -r '.pct_5h // 0' 2>/dev/null) || pct_5h=0
+    pct_7d=$(printf '%s' "$cached" | jq -r '.pct_7d // 0' 2>/dev/null) || pct_7d=0
+    allowed=$(printf '%s' "$cached" | jq -r '.allowed_cost_classes[]?' 2>/dev/null)
+    if printf '%s\n' "$allowed" | grep -qx "$cost_class"; then
+      verdict=ok
+      echo "  Usage (via daemon): 5h=${pct_5h}% 7d=${pct_7d}% — $cost_class allowed"
+      return 0
+    else
+      verdict=over
+      echo "  Usage (via daemon): 5h=${pct_5h}% 7d=${pct_7d}% — $cost_class over"
+      return 1
+    fi
+  fi
+
+  # ── Fallback path: daemon unreachable / cache missing/stale (BC-34 §6.2
+  # fail-OPEN posture preserved). Reads Keychain + hits Anthropic API
+  # directly, exactly as the pre-M2 runner did. Per the M2 spec, the
+  # workspace runner does NOT emit a §1.1 capacity report on this path
+  # either ("per-workspace runners stop reporting capacity") — the daemon
+  # owns the upstream report. If the daemon is down for an extended
+  # window, capacity reports go silent; the next daemon poll cycle resumes
+  # them. Workspaces remain locally gated by the verdict below.
   local token usage five seven five_i seven_i verdict="ok"
   token=$(la__anthropic_token) || { return 0; }            # §6.2 fail-OPEN
   usage=$(la__usage_json "$token") || { return 0; }         # §6.2 fail-OPEN
@@ -202,7 +274,6 @@ la_capacity_check() {
     echo "  Usage: 5h=${five}% 7d=${seven}%"
   fi
 
-  la_report_capacity "$cost_class" "$verdict" || true
   [[ "$verdict" == "over" ]] && return 1
   return 0
 }

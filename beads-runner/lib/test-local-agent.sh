@@ -72,7 +72,13 @@ export PATH="$FAKEBIN:$PATH"
 
 export LOG_DIR="$WORK/.beads/runner-logs"
 export RUNNER_ID="test-runner-7"
-mkdir -p "$LOG_DIR"
+# M2 (claude-tools-8mz): point the daemon-cache lookup at an EMPTY temp
+# directory so this hermetic test never accidentally consults a real
+# daemon's capacity.json on a developer machine that happens to be
+# running one. Tests of the M2 daemon-cache PATH live in the daemon's
+# own test rig (beads-runner/daemon/test-m2-usage-poll.sh).
+export BEADS_DAEMON_CACHE_DIR="$WORK/empty-daemon-cache"
+mkdir -p "$LOG_DIR" "$BEADS_DAEMON_CACHE_DIR"
 # shellcheck source=/dev/null
 source "$LIB"
 

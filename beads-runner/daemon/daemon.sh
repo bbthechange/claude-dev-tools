@@ -47,6 +47,13 @@ HOSTED_RESOLUTION_POLL_INTERVAL="${BEADS_DAEMON_HOSTED_RESOLUTION_POLL_INTERVAL:
 # observes desired-state mutations at the same rate the runner used to
 # self-reconcile, and the AD8/Flow-D loop closes within ~60s end-to-end.
 DESIRED_STATE_POLL_INTERVAL="${BEADS_DAEMON_DESIRED_STATE_POLL_INTERVAL:-60}"
+# M2: Anthropic-usage poll cadence (claude-tools-8mz). Default tracks
+# §0.5 USAGE_CACHE_SECONDS so the daemon's cache refresh rate matches the
+# constant the runner-side cache used to honour. One central poll per
+# machine; workspaces consult $DAEMON_CACHE_DIR/capacity.json via
+# la__capacity_via_daemon (lib/local-agent.sh) instead of hitting the
+# Keychain+API themselves.
+USAGE_POLL_INTERVAL="${BEADS_DAEMON_USAGE_POLL_INTERVAL:-${USAGE_CACHE_SECONDS:-300}}"
 
 # ─── source the per-machine library (DESIGN §3.2 retraction-of-topology
 # is about TIER, not about the library — the daemon still source's it) ────
@@ -69,6 +76,13 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # state machine. Defines daemon_m3_reconcile_all + daemon_m3_* helpers.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/desired-state-poll.sh"
+# M2 (claude-tools-8mz): the Anthropic-usage poll — one Keychain read +
+# one API call per machine per USAGE_POLL_INTERVAL, with the verdict
+# published atomically to $DAEMON_CACHE_DIR/capacity.json (UX 0.A "one
+# central runner per computer"). Defines daemon_usage_poll_once +
+# daemon_usage_drain.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/usage-poll.sh"
 
 log() {
   # one-line log helper; stdout is redirected to daemon-logs/stdout.log by
@@ -150,6 +164,13 @@ on_exit() {
   if declare -F daemon_m6_kill_all >/dev/null 2>&1; then
     daemon_m6_kill_all || true
   fi
+  # M2 (claude-tools-8mz): clear the capacity cache so a workspace that
+  # checks $DAEMON_CACHE_DIR/capacity.json during the daemon-down window
+  # falls back to its own direct Keychain+API path (BC-34 fail-OPEN
+  # preserved) instead of trusting a stale verdict from a previous run.
+  if declare -F daemon_usage_drain >/dev/null 2>&1; then
+    daemon_usage_drain || true
+  fi
   release_pidfile
 }
 
@@ -187,7 +208,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -201,9 +222,12 @@ main() {
   # Main loop. Heartbeat every HEARTBEAT_INTERVAL; the M4 hosted-resolution
   # poll runs every HOSTED_RESOLUTION_POLL_INTERVAL (per-workspace, AD8 §3.2
   # job 5); the M3 desired-state poll runs every DESIRED_STATE_POLL_INTERVAL
-  # (per-workspace spawn/SIGTERM state machine, §3.2 job 2+3).
+  # (per-workspace spawn/SIGTERM state machine, §3.2 job 2+3); the M2 usage
+  # poll runs every USAGE_POLL_INTERVAL (one Keychain read + one Anthropic
+  # API call per machine, §3.2 job 1).
   local _last_hosted_poll=0
   local _last_desired_poll=0
+  local _last_usage_poll=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
     # M4 (claude-tools-8jb): on cadence, poll every registered workspace for
@@ -228,6 +252,17 @@ main() {
     if [ "$((_now - _last_desired_poll))" -ge "$DESIRED_STATE_POLL_INTERVAL" ] || [ "$_last_desired_poll" -eq 0 ]; then
       _last_desired_poll="$_now"
       daemon_m3_reconcile_all || true
+    fi
+    # M2 (claude-tools-8mz): on cadence, refresh the machine-level
+    # Anthropic-usage cache so workspaces' la__capacity_via_daemon picks
+    # up a fresh verdict. The first iteration runs at boot (when both
+    # _last_usage_poll and _now are within INTERVAL) — intentional: the
+    # cache is empty at startup, and workspaces would otherwise fall back
+    # to their direct Keychain+API path for the first INTERVAL seconds,
+    # defeating the purpose of M2.
+    if [ "$((_now - _last_usage_poll))" -ge "$USAGE_POLL_INTERVAL" ] || [ "$_last_usage_poll" -eq 0 ]; then
+      _last_usage_poll="$_now"
+      daemon_usage_poll_once || true
     fi
     # `sleep` is interruptible by signals; the loop condition is re-checked
     # immediately after wake.
