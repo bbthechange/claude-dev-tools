@@ -49,19 +49,15 @@
       </div>
       <p id="ws-hint" class="hint" hidden></p>
 
-      <!-- Preset chooser — UX-DESIGN Flow A two named presets, extensible. -->
-      <fieldset class="presets">
+      <!-- Preset chooser — populated at run-time from /api/intake-presets
+           (I4, claude-tools-vvh). The canonical catalog is
+           agents/intake-presets.json; the Pages-side mirror is
+           functions/api/_presets-catalog.js. Adding a preset is the
+           one-PR playbook in agents/intake-presets.md — no edit to
+           this HTML is required. -->
+      <fieldset class="presets" id="presets">
         <legend class="lbl">Entry intent</legend>
-        <label class="preset">
-          <input type="radio" name="preset" value="autonomous-until-stuck" checked>
-          <span class="ptitle">Send it down the pipeline</span>
-          <span class="psub">…until it gets reasonably stuck.</span>
-        </label>
-        <label class="preset">
-          <input type="radio" name="preset" value="collaborative-stage">
-          <span class="ptitle">Go over the UI with me</span>
-          <span class="psub">I want to collaborate at the stage where it lands.</span>
-        </label>
+        <p class="hint" id="presets-loading">Loading entry intents…</p>
       </fieldset>
 
       <button class="submit" id="submit" type="submit" disabled>

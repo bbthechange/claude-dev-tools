@@ -51,10 +51,11 @@ For a genuinely new bead, produce a `bd create` call with these fields. **All of
 - **`--description`** — the **why** before the **what**. Open with one paragraph that says *what problem this solves and for whom*, in Brian's voice (he's the user; the runner is the user too). Then the *what to build*: the concrete acceptance angle (a UI screen, a CLI flag, a record-type field, a daemon loop). Then the *acceptance* — how a reviewer will know it's done. Cite the intake (`Intake: <intake_id> (<preset>)`) so the bead carries its provenance.
 - **`--type`** — one of `task`, `bug`, `feature`. Use `bug` when the idea is *"X is broken"*; `feature` when it's a meaningful new user-visible capability; `task` for everything else (the common case for project work).
 - **`--priority`** — `0..4` (or `P0..P4`). Default `2` (medium). Bump to `1` if the intake idea is *clearly* blocking something already in motion (it names a bead, it names a current incident); bump to `3` if it's clearly "nice to have, not now." Don't fabricate urgency. P0 is reserved for a real fire; the enricher almost never sets it.
-- **Entry stage label** — derived from the preset, applied after create:
-  - `autonomous-until-stuck` → `bd label add <id> stage:impl` (no human gate; the runner picks it up; it stops only if a worker hits a real fork).
-  - `collaborative-stage` → `bd label add <id> stage:ux` (enters at the ux hat; the ux session is *with Brian*, scheduled into the Inbox per UX-DESIGN Flow A — it is **not** runner-autonomous).
-  - If a future preset arrives in `idea_text` that you don't recognize, **don't invent a stage**; refuse via Step 4.
+- **Entry stage + preset labels** — derived from the preset, applied after create. The canonical preset catalog is `agents/intake-presets.json` (I4, `claude-tools-vvh`); every row reduces to `(entry_stage, gate_aggressiveness)`. **Before you label, `Read` the catalog** — that file is the single source of truth and a new preset may have shipped since this prompt was last edited. Apply two labels: `stage:<entry_stage>` (from the catalog row) AND `preset:<preset>` (so `gate-policy.sh` can route the bead correctly at pickup). The v1 resolution table (in lockstep with the catalog):
+  - `autonomous-until-stuck` → `bd label add <id> stage:impl` + `bd label add <id> preset:autonomous-until-stuck` (gate: `auto-advance` — no human gate at pickup; the runner picks it up; it stops only if a worker hits a real fork).
+  - `collaborative-stage` → `bd label add <id> stage:ux` + `bd label add <id> preset:collaborative-stage` (gate: `gate-human` — enters at the ux hat; the ux session is *with Brian*, scheduled into the Inbox per UX-DESIGN Flow A — it is **not** runner-autonomous).
+  - **For any preset above:** read the catalog row, label `stage:<entry_stage>` + `preset:<value>`. Adding a new preset is the one-PR playbook in `agents/intake-presets.md`; the bullet you would append here mirrors the catalog row 1-for-1.
+  - If `preset` from the context JSON does not match any catalog row, **don't invent a stage**; refuse via Step 4. (The `gate-policy.sh` L2 lookup will already fail-CLOSED with `gate-human:unknown-preset` if a stray preset label slips through, but the enricher should never be the source of one.)
 - **Deps** — apply with `bd dep add <new> <other> --type=parent|related|blocks` AFTER create. If the idea fits under a clear epic, link it as `--type=parent` to that epic. If it has a structural prerequisite, link it as `--type=related` (blocks/blocked-by only when you're *sure* — don't pretend at a dependency just to put one in).
 - **`intake` label** — always: `bd label add <id> intake-<intake_id>`. This is the audit thread that lets the daemon (and later, Brian) connect the bead back to the phone tap.
 - **Provenance line in notes** — `bd update <id> --append-notes="Intake <intake_id> (preset=<preset>, project_ref=<project_ref>) submitted <submitted_at>: <verbatim idea_text>"`. This preserves the original sentence in Brian's voice, so a future agent isn't guessing what he meant.
@@ -63,10 +64,11 @@ For an augmentation (Step 2 outcome 1), skip create and emit only the `--append-
 
 **Order of operations** when creating a new bead:
 1. `bd create … --title=… --description=… --type=… --priority=…` → capture the new bead id.
-2. `bd label add <id> stage:<entry-stage>` (from the preset).
-3. `bd label add <id> intake-<intake_id>`.
-4. `bd update <id> --append-notes="Intake <intake_id> …"` (with the verbatim `idea_text`).
-5. `bd dep add` calls for parent / related links (each one a separate call; do not pack them into a single command).
+2. `bd label add <id> stage:<entry-stage>` (resolved from the catalog row for `<preset>`).
+3. `bd label add <id> preset:<preset>` (so L2 `gate-policy.sh` routes correctly at pickup).
+4. `bd label add <id> intake-<intake_id>`.
+5. `bd update <id> --append-notes="Intake <intake_id> …"` (with the verbatim `idea_text`).
+6. `bd dep add` calls for parent / related links (each one a separate call; do not pack them into a single command).
 
 Each `bd` invocation should be a real, callable command — print them as you go (so the launcher's stream log records them) and run them via Bash. If a `bd` call fails (non-zero exit), **stop** — don't try to "recover" by skipping a step that would make the bead invalid; it's better to leave a partially-formed bead and a clear error than to ship a bead missing its stage label.
 

@@ -60,6 +60,68 @@
     });
   }
 
+  // ── preset radio cards (I4 · claude-tools-vvh) ────────────────────────────
+  // Rendered at run-time from /api/intake-presets so the radio set is
+  // catalog-driven (agents/intake-presets.json → _presets-catalog.js →
+  // /api/intake-presets). The browser does NOT carry a hard-coded preset
+  // list; adding a preset to the catalog ships a new radio on next deploy
+  // with no client edit.
+  var presetsLoaded = false;
+  function loadPresets() {
+    var box = el('presets');
+    if (!box) return;  // DOM regression — fail safely (Submit stays disabled).
+    var loading = el('presets-loading');
+    // Defensive: if loadPresets() ever runs twice (a wiring regression or a
+    // future "retry" affordance), wipe previously-rendered radio labels so
+    // we never paint duplicates. The <legend> stays so screen-reader
+    // semantics survive the re-render.
+    Array.prototype.slice.call(box.querySelectorAll('label.preset'))
+      .forEach(function (n) { n.parentNode.removeChild(n); });
+    getJSON('/api/intake-presets').then(function (d) {
+      var ps = d && Array.isArray(d.presets) ? d.presets : [];
+      if (ps.length === 0) {
+        // Honest empty: the catalog file has no rows. A submit is
+        // impossible without a preset, so we leave the loading line
+        // visible (changed) and never enable Submit. (This should never
+        // happen in practice; the catalog has a v1 default.)
+        if (loading) loading.textContent = 'No entry intents configured.';
+        presetsLoaded = true;
+        refreshSubmit();
+        return;
+      }
+      if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+      ps.forEach(function (p, i) {
+        if (!p || typeof p.value !== 'string') return;
+        var lbl = document.createElement('label');
+        lbl.className = 'preset';
+        var radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'preset';
+        radio.value = p.value;
+        if (i === 0) radio.checked = true;
+        radio.addEventListener('change', refreshSubmit);
+        var t = document.createElement('span');
+        t.className = 'ptitle';
+        t.textContent = p.label || p.value;
+        var s = document.createElement('span');
+        s.className = 'psub';
+        s.textContent = p.sublabel || '';
+        lbl.appendChild(radio);
+        lbl.appendChild(t);
+        lbl.appendChild(s);
+        box.appendChild(lbl);
+      });
+      presetsLoaded = true;
+      refreshSubmit();
+    }).catch(function (e) {
+      // Don't fabricate a preset list. Surface the honest reason and
+      // leave Submit disabled — there is no safe default to inline here
+      // (the engine-side allowlist may have changed).
+      if (loading) loading.textContent = 'Cannot load entry intents: ' + e.message;
+      el('dot').classList.add('bad');
+    });
+  }
+
   // ── workspace dropdown ────────────────────────────────────────────────────
   var workspacesLoaded = false;
   function loadWorkspaces() {
@@ -133,7 +195,7 @@
     var idea = el('idea').value.trim();
     var ws = el('workspace').value;
     var preset = selectedPreset();
-    var ok = !!idea && !!ws && !!preset && workspacesLoaded;
+    var ok = !!idea && !!ws && !!preset && workspacesLoaded && presetsLoaded;
     el('submit').disabled = !ok;
   }
 
@@ -210,10 +272,11 @@
     el('form').addEventListener('submit', onSubmit);
     el('idea').addEventListener('input', refreshSubmit);
     el('workspace').addEventListener('change', refreshSubmit);
-    document.querySelectorAll('input[name="preset"]').forEach(function (r) {
-      r.addEventListener('change', refreshSubmit);
-    });
+    // Note: preset radios are rendered by loadPresets() and bind their
+    // own change handlers there — no static document.querySelectorAll
+    // sweep here, since the radio set is run-time-rendered (I4).
     el('another').addEventListener('click', resetForAnother);
+    loadPresets();
     loadWorkspaces();
     refreshSubmit();
   });

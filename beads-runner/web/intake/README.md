@@ -27,6 +27,7 @@ No build step. No dependencies.
 - `intake.css` — `--tap: 44px` floor, no hover-only states, 16px+ font sizes
   to dodge iOS auto-zoom, layout that survives the on-screen keyboard.
 - `app.js` — browser glue only. Two network calls:
+  - `GET  /api/intake-presets` once on load (catalog → preset radios).
   - `GET  /api/workspaces` once on load (populates the picker).
   - `POST /api/intake` on submit (the I2 write proxy).
 - `functions/api/workspaces.js` — Pages Function read proxy. `onRequestGet`
@@ -34,27 +35,41 @@ No build step. No dependencies.
   down to a sorted list of `project_ref` strings.
 - `functions/api/intake.js` — I2 (claude-tools-x9u) write proxy.
   `onRequestPost` only; upstream op hard-coded to `put`; record type
-  hard-coded to `intake-request`; preset allowlist frozen here. Already
-  shipped by I2 — this app is its first caller.
+  hard-coded to `intake-request`; preset allowlist imported from the I4
+  catalog mirror (`_presets-catalog.js`) so the UI and the write
+  validator cannot drift.
+- `functions/api/intake-presets.js` — I4 (claude-tools-vvh) catalog
+  read proxy. `onRequestGet` only; serves the preset catalog the UI
+  renders its radio cards from. No engine round-trip; the data lives
+  entirely in `_presets-catalog.js`.
+- `functions/api/_presets-catalog.js` — I4 (claude-tools-vvh)
+  Pages-side mirror of `agents/intake-presets.json` (the canonical
+  catalog). Underscore-prefixed → non-routable; imported by both
+  proxies above.
 
 ## The preset list
 
-UX-DESIGN Flow A names two presets; both are exposed as radio cards (the
-default selection is `autonomous-until-stuck`):
+The catalog is **catalog-driven, not hard-coded**. The UI fetches
+`/api/intake-presets` on page load and renders one radio card per row.
+The canonical source of truth is
+**`beads-runner/agents/intake-presets.json`**; this directory carries a
+1-for-1 mirror at `functions/api/_presets-catalog.js` that both proxies
+import.
 
-| value | label | meaning |
-|---|---|---|
-| `autonomous-until-stuck` | Send it down the pipeline | …until it gets reasonably stuck. |
-| `collaborative-stage` | Go over the UI with me | I want to collaborate at the stage where it lands. |
+v1 catalog (see `beads-runner/agents/intake-presets.md` for the full
+table and the add-a-preset playbook):
 
-The list is intentionally **extensible**. Adding a new preset is a
-deliberate two-step code change:
+| `value` | label | `entry_stage` | `gate_aggressiveness` |
+|---|---|---|---|
+| `autonomous-until-stuck` (default) | Send it down the pipeline | `impl` | `auto-advance` |
+| `collaborative-stage` | Go over the UI with me | `ux` | `gate-human` |
 
-1. Append the value to `ALLOWED_PRESETS` in
-   `functions/api/intake.js` (proxy-side allowlist — typo'd presets get
-   422'd before the engine burns a round-trip).
-2. Add a radio card to `index.html`. Update the enricher hat so it knows
-   what to do with the new value.
+**Adding a preset is a documented one-PR change** — see
+`beads-runner/agents/intake-presets.md` "Adding a preset — the one-PR
+playbook". The playbook is: one row in the JSON, one mirror row here in
+`_presets-catalog.js`, one bullet in `agents/enricher.system.md`, (one
+entry in `gate-policy.sh` `PRESET_ENUM`). No edit to `index.html` is
+required — the radios re-render from the catalog on next deploy.
 
 ## Deliberately NOT here (anti-drift)
 

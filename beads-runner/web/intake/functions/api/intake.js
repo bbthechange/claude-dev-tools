@@ -29,18 +29,21 @@
  * §0.3 (schema_version int; the engine enforces).
  */
 
+import { ALLOWED_PRESET_VALUES } from './_presets-catalog.js';
+
 const COORDINATOR_OP = 'put';                    // §2.1 — FROZEN here.
 const RECORD_TYPE = 'intake-request';            // §4 v1 — FROZEN here.
 const RECORD_SCHEMA_VERSION = 1;                 // §0.3 / §4 — bound to engine SCHEMA_VERSIONS.
 
-// Preset allowlist (UX-DESIGN Flow A). Pinned as a frozen literal so a UI
-// typo is a 422 here, BEFORE the engine burns a round-trip. Extensible per
-// the I1 spec: append to this list when a new entry-intent ships (and update
-// the enricher hat so it knows what to do with it).
-const ALLOWED_PRESETS = [
-  'autonomous-until-stuck',   // "Send it down the pipeline until it gets reasonably stuck"
-  'collaborative-stage'       // "I need to go over the UI with an agent"
-];
+// Preset allowlist (UX-DESIGN Flow A). Sourced from the I4 catalog mirror
+// (`_presets-catalog.js`), which is the same module the `/api/intake-presets`
+// read proxy serves to the browser. A UI typo'd preset is a 422 here,
+// BEFORE the engine burns a round-trip — and a UI / proxy drift on the
+// allowlist is impossible by construction (one mirror, two importers).
+// Adding a preset = a row in `agents/intake-presets.json` + a mirror row
+// in `_presets-catalog.js` + a bullet in `agents/enricher.system.md`
+// (the one-PR playbook in `agents/intake-presets.md`).
+const ALLOWED_PRESETS = ALLOWED_PRESET_VALUES;
 
 // project_ref format gate. Same shape as the engine's safeKey (the store-owner
 // input hygiene gate in cf/src/schema.js): non-empty, no '..' segment, only
