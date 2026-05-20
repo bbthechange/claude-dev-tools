@@ -1,6 +1,6 @@
 # Beads Runner — Architecture & Decisions
 
-Status: draft (v2 — adversarial review integrated; AD7 §11-amended 2026-05-17: `diagrams[].content` = Mermaid, Dossier schema `1→2`; AD7 §11-amended 2026-05-20: v1 dossier-item author surface committed to the worker itself via the `ask-brian` MCP tool — see §3.1) · Scope: **architecture/design only** (deliberately *not* UX) · Owner: Brian · Last updated: 2026-05-20
+Status: draft (v2 — adversarial review integrated; AD7 §11-amended 2026-05-17: `diagrams[].content` = Mermaid, Dossier schema `1→2`; AD7 §11-amended 2026-05-20: v1 dossier-item author surface committed to the worker itself via the `ask-brian` MCP tool — see §3.1; AD1/§2/§7 §11-amended 2026-05-20: Local Agent is a per-machine daemon process (launchd LaunchAgent on macOS / systemd user service on linux), NOT a library sourced into the workspace runner — see §3.2; new AD8 — resume dispatch and parallel-work boundary, see §3.3) · Scope: **architecture/design only** (deliberately *not* UX) · Owner: Brian · Last updated: 2026-05-20
 
 This is the architecture counterpart to `UX-DESIGN.md`. That doc is user-flows
 only and is the authoritative source for requirement provenance (its §0). This
@@ -15,6 +15,14 @@ doc records the **design decisions and the extension seams**, and binds to:
 > **v2 note:** §2 reintroduces the per-computer **Local Agent** tier (a §0.A
 > requirement the v1 draft silently dropped). Many decisions below resolve at
 > that tier — read §2 first.
+>
+> **§11 amend 2026-05-20 (AD1/§2/§7):** the Local Agent is a per-machine
+> **daemon process** (launchd LaunchAgent on macOS / systemd user service on
+> linux), NOT a library sourced into the workspace runner. v1 wording that
+> allowed a sourced library to claim it satisfied the tier is retracted —
+> see §3.2. New AD8 (§3.3) names the resume-dispatch + bd-surgery parallel-
+> work boundary the daemon makes possible. Both amends are doc-only; M-track
+> tasks under epic [[claude-tools-kie]] own the behavior.
 
 ---
 
@@ -40,7 +48,7 @@ machine's Keychain or its true rate-limit state. So three tiers:
 | Tier | What it owns | Consistency | Where |
 |---|---|---|---|
 | **Work plane** | beads/Dolt — issues, deps, notes, labels | eventual | Dolt (unchanged) |
-| **Local Agent** (one per computer) | Keychain + real usage poll + **BC-34 fail-open**; runner **process supervision incl. exit-code observation (BC-21)**; bounded **local lease fallback** (C-2); reports capacity + terminal-reason **upward** | strong, machine-local | the Mac (and any other runner host) |
+| **Local Agent** (one per computer, **a per-machine daemon process** — §11 amend 2026-05-20, see §3.2) | A long-lived supervisor process distinct from every workspace runner (`pid_daemon ≠ pid_any_runner`), owning: (1) **Keychain + real usage poll** — *one* Anthropic-API caller per machine, not N (no per-workspace duplication of the BC-34 query); (2) **workspace registry** — the durable list of workspaces this machine is responsible for + their `desired`/`actual` snapshot; (3) **desired-state poll per workspace** — the §7-S5 reconcile-desired-state job runs in the daemon, not in each workspace runner, so `stopped → running` / `paused → running` round-trips survive a dead/absent runner (Flow D); (4) **runner supervisor** — spawn / kill / restart the workspace runner subprocess; observes its exit code (BC-21) and writes the terminal-reason record (§8) **before** the runner is gone; (5) **hosted-resolution poll** — observes Coordinator-side answered dossiers and drives resume dispatch into the affected workspace (AD8); (6) **BC-34 fail-open** + bounded **local lease fallback** (C-2). Reports capacity + terminal-reason + heartbeat **upward** (§7). | strong, machine-local | the Mac (launchd LaunchAgent — AD1) / linux host (systemd user service) |
 | **Coordinator** (hosted) | global lease arbitration across machines; Decision DOs + durable timers; RunnerState (desired/actual/**liveness**); Notification; **work-snapshot projection** | strong | Cloudflare (AD1) |
 | **Board** | a projection joining Work + Coordinator | read-only | derived |
 
@@ -55,7 +63,7 @@ eliminates a durable command queue (desired-state mutation, not a queued msg).
 
 | # | Decision | Rationale / consequence |
 |---|---|---|
-| **AD1** | **Topology = Cloudflare hosted Coordinator + a per-computer Local Agent (§2).** Coordinator = Workers + Durable Objects + D1 + Pages. | $0 at this workload; a **DO-per-dossier-Item (AD7)** makes the per-item consequence applier idempotent *by construction* (single-threaded — supports partial/iterative dossier resolution), and `setAlarm()` is the `timed-fyi` timer. **SPOF acknowledged:** the singleton Coordinator DO is a single point of failure on free-tier infra with non-contractual alarm reliability; mitigated by the C-2 unreachable posture and the S-6 timer backstop, not waved away. |
+| **AD1** | **Topology = Cloudflare hosted Coordinator + a per-computer Local Agent (§2).** Coordinator = Workers + Durable Objects + D1 + Pages. **Local Agent = a per-machine *supervisor process* (NOT a library)** — concretely a **launchd LaunchAgent on macOS** (the only mechanism that satisfies the §0.A "reachable while the laptop is logged in but the user is away from keyboard + auto-restart on crash" promise; a launchd LaunchAgent runs in the user's GUI session, restarts on crash via `KeepAlive`, and is the supported way to keep a per-user supervisor alive without root). The portable abstraction is *"per-machine supervisor process";* on linux the same role rides a **systemd user service** (`systemctl --user`). The daemon has its own pidfile (`~/.beads-runner/daemon.pid`), its own logs, and its own lifecycle independent of every workspace runner it spawns. **§11 amend 2026-05-20 (see §3.2):** v1's §2 wording allowed `lib/local-agent.sh` (a pure sourced bash library) to claim it satisfied "one central runner per computer" — that close (claude-tools-3al) is now retracted as topology; the library remains useful and the daemon `source`s it, but the Local Agent **tier** is the daemon process, never the library. | $0 at this workload; a **DO-per-dossier-Item (AD7)** makes the per-item consequence applier idempotent *by construction* (single-threaded — supports partial/iterative dossier resolution), and `setAlarm()` is the `timed-fyi` timer. **SPOF acknowledged:** the singleton Coordinator DO is a single point of failure on free-tier infra with non-contractual alarm reliability; mitigated by the C-2 unreachable posture and the S-6 timer backstop, not waved away. **A second SPOF is acknowledged at the Local Agent tier:** if the daemon dies, every workspace on that machine goes dark for new desired-state transitions until launchd/systemd restarts it (`KeepAlive=true` / `Restart=always` is the mitigation; the daemon's own crash-loop trip is logged but does NOT escalate to the Coordinator beyond a heartbeat-absence — by design, because a Local-Agent-down machine is structurally unable to report up). |
 | **AD2** | **Coordinator lease = global exclusivity + orphan recovery. Capacity = a separate, deliberately coarse gate.** Plus the two sub-decisions below. | Resolves BC-04 multi-runner race *only if* the lease is consulted on every pickup and the binding/unreachable rules below hold. |
 | **AD2.1** | **Lease ↔ beads-status binding.** Acquire the lease **before** `bd update --status=in_progress`; lease release/expiry maps to `--status=open` (binds the strong-plane authority onto the eventual-plane SCAR transitions BC-15/BC-09/BC-35). **Precedence on disagreement:** lease wins for *exclusivity* (who may run it); beads status wins for *work truth* (done/blocked/open). | Removes the dual-source-of-truth ambiguity: ownership = lease; work state = beads. Neither store alone answers both. |
 | **AD2.2** | **Unreachable posture (split by plane).** *Capacity* check fails **open** (a one-task overshoot is noise; BC-34 intent). *Lease* fails **degraded-closed with a bounded local fallback:** on Coordinator-unreachable a runner may continue **only** a task whose lease it *already holds and is still valid* (Local Agent enforces; lease TTL ≫ expected blip + poll interval), and may **not** claim a *new* task without a fresh lease. | This is the highest-blast-radius decision. It preserves BC-34 (in-flight work survives a blip) without reintroducing BC-04 (no new unsynchronized claims). Not left to implementation. |
@@ -70,6 +78,7 @@ eliminates a durable command queue (desired-state mutation, not a queued msg).
 | **AD5** | **Scope cuts (§4).** | Correction: the per-computer Local Agent tier (§2) is a **restoration of a §0.A requirement**, not a cut — the v1 draft's "scope cuts touch nothing in §0.A/§0.B" was wrong about topology. Scope cuts C1–C7 otherwise stand. |
 | **AD6** | **Auth = single-user v1 over a principal-based seam.** One human credential + per-runner bearer tokens, all resolved through one `authenticate(request) → principal` chokepoint; every control-plane record carries `principal` (constant in v1). **Token lifecycle:** long-lived static secrets in v1, stored via the **same machine secure-store as BC-34's credential path** (Local Agent owns it); rotation/revocation deferred, but the storage location is **not** deferred. | Same chokepoint as C4 — one seam serves asymmetric-trust *and* multi-user (C7). |
 | **AD7** | **Dossier model = a depth-tiered body ⊃ N independently-respondable Items.** The Inbox unit is a **Dossier**, not "a Decision." It has: (1) a **body** with first-class progressive-disclosure tiers — `tldr` · `sections[]` (skimmable headers) · `diagrams[]` · `full_detail` (enough prose to stand alone when skimming is insufficient); none optional, the generator must produce all tiers. **`diagrams[].content` MUST be Mermaid source** (v2 §11 amendment, Brian-ratified 2026-05-17): the §0.A "diagrams" requirement is a *rendered diagram a human sees on a phone*, not a renderable-someday string — so the contract constrains it to a text diagram language (Mermaid: LLM-authorable, deterministic SVG, git-friendly), the generator rejects non-Mermaid (prose/ASCII) exactly as it rejects a contextless `context_anchor`, and the renderer paints it as SVG, never a `<pre>` of source. The Dossier bound schema version is `2` (the §5.1 `dossier_schema_version`, §4.1 envelope `schema_version`, and §5.3 `cb_schema_version` track ONE registry source — INTERFACE §0.5/§0.3 — so the §11 bump moves the whole artifact `1 → 2` in one edit). (2) **`items[]`**, each `{id, kind ∈ approve-reject \| pick-option \| approve-recommendation \| freeform-edit \| fyi-objectable, framing, context_anchor, options?, recommendation?, consequence_block, state}`. **Partial/iterative resolution is first-class:** a dossier may be left partly answered (approve 6, edit 3, feedback 2, return later) without blocking unanswered items or the pipeline. **Self-contained-context invariant:** every item's `framing` MUST carry a `context_anchor` (link/expansion into where it sits in the lifecycle/design) — a contextless ask like *"reached the auth boundary, pick one"* is a contract violation, not just poor wording. **Profiles:** a decision dossier = body + decision items; a UX/design review = body + many mixed items; the proactive **Flow F "understand how it fits" overview = a deep body + zero or all-`fyi-objectable` items** (a first-class profile — UX §0.A "trigger proactively to give him an understanding"; *core, not a tier variant*). Notification stays one-per-dossier (C3 holds; principle 2 — the notification is terse, the **dossier body is not**). | This is the §0.A "strong human-interaction support / multi-step doc-gen / inline-edit + approval-checkboxes / proactive understanding" requirement made precise. The v1 C5 schema (single `consequence_block`) **could not express** a 15-item mixed-affordance review or a standalone design overview; AD7 is the corrected schema T0 must freeze. Per-Item DO (AD1) makes partial application idempotent; deterministic-vs-reconciler (Flow B step 5) runs per-Item; "your no as cheap as your yes" (principle 3) = approve-the-good / feedback-the-rest in one pass. |
+| **AD8** | **Resume dispatch and the parallel-work boundary** (§11 amend 2026-05-20, see §3.3). When the daemon's hosted-resolution poll (§2 Local-Agent job 5) observes an answered dossier whose `task_ref` belongs to a workspace this machine owns: **(a) if the workspace runner is idle/parked** (no `claude -p` in flight; the runner is between tasks or has cleanly exited per BC-05), the daemon writes the resume-answer file to the workspace's resume directory as today and lets the runner re-dispatch in-band (the existing AD3.1 / §3.1 mechanism). **(b) If the workspace runner is busy** running a different task (a long worker is mid-flight), the daemon launches a **fresh `claude -p` IN the workspace cwd in `bd-surgery` mode** to apply the answered dossier's `consequence_block` side-effects. `bd-surgery` mode = `--add-dir` scoped to the workspace, but the workspace's source tree mounted **read-only outside `.beads/`** (the surgical session can read context for grounding, can write `bd`/dossier/notes, but cannot edit code). **Why the boundary.** We deliberately do **not** run code-editing work in parallel against the same workspace — we lack git-worktree machinery to fan out edit branches and merge back, and parallel writes to the same tree are a category of foot-gun the v1 scope refuses to take on. The honest scope of "parallel work" in v1 is therefore: *one code-editing worker per workspace at a time, plus N concurrent bd-surgery sessions that can answer dossiers, file follow-ups, update stage, and record decisions without touching code.* This is not a workaround — it is the contract: bd-surgery is the named, bounded affordance for "answer this while something else is running." | The §0.A "remote control" + AD7 "partial/iterative dossier resolution" requirements demand that an answered dossier-Item can be **applied promptly**, not buffered until the workspace runner happens to be idle. Without (b), every answer for a workspace with a running long task waits behind that task — which collapses the dossier latency promise. The bd-surgery read-only-outside-`.beads/` constraint is what makes (b) safe without a worktree: the surgical session physically cannot create a divergent edit against the in-flight worker's tree. **Build pointer:** the M-track owns implementation (`claude-tools-cgh` desired-state poll, `claude-tools-gim` daemon skeleton, plus a new M-track issue for the bd-surgery mode wrapper); this AD is doc-only — the behavior is the M-track's. |
 
 ---
 
@@ -155,6 +164,162 @@ positive R1 path (MCP `ask-brian`) and the negative-path backstops are the
 update lives under epic `claude-tools-kie` track B (e.g. the
 `B1-dossier-builder` and `B4-worker-stuck` beads cited in the R1 contract);
 this DESIGN amend is doc-only — track B owns the behavior change.
+
+---
+
+## 3.2 AD1 §11 amend — Local Agent is a per-machine daemon process, not a library (2026-05-20)
+
+> **§11 amendment, Brian-ratified 2026-05-20.** AD1 and §2 are explicitly
+> retracted **only as to mechanism** — the *topology* (three tiers; Local
+> Agent as the machine-local measurement & supervision authority) stands
+> unchanged. What is retracted is the v1 wording's permissiveness about
+> *what physically realizes* that tier: a sourced bash library is **not** a
+> per-machine supervisor, because it has no independent lifecycle — when
+> the workspace runner exits, the "Local Agent" exits with it, and Flow D's
+> `stopped → running` round-trip becomes structurally impossible.
+> Bound to epic [[claude-tools-kie]] audit; supersedes the close artifact of
+> claude-tools-3al (the T3 "per-computer Local Agent" task) **as a topology
+> claim** — see "Retraction" below.
+
+**Commit: the Local Agent tier is a per-machine daemon process** —
+concretely a **launchd LaunchAgent on macOS** (the only supported,
+restart-on-crash, runs-in-the-user-GUI-session-without-root mechanism
+that satisfies §0.A "central runner per computer + reachable while away
+from keyboard"); on linux the same role rides a **systemd user service**
+(`systemctl --user`). The portable abstraction stays *"per-machine
+supervisor process"* — the OS-specific realization is the appendix
+detail, exactly as the Coordinator's Cloudflare realization is appendix
+detail.
+
+**Concretely the daemon owns (mirrors the §2 table row):**
+
+- **The Anthropic-API usage poll** — *one* caller per machine, not N.
+  The §6.3 capacity verdict is computed by the daemon's poll loop with
+  the §0.5 `USAGE_CACHE_SECONDS` TTL; workspace runners ask the *daemon*
+  for the verdict, never the Anthropic API directly. (Closes the
+  pre-amend foot-gun where N concurrent runner processes could each
+  source `lib/local-agent.sh` and each fire its own usage probe.)
+- **The workspace registry** — durable list of `{workspace_id, path,
+  desired, actual, last_heartbeat_at}` rows, one per workspace this
+  machine supervises. The registry is what makes a Local Agent
+  *machine-scoped* rather than workspace-scoped; without it there is no
+  place to say "this machine owns workspaces A, B, C."
+- **Desired-state poll per workspace** — §7 job 4 (`reconcile-desired-
+  state`) now runs in the daemon, not in the workspace runner. The
+  daemon polls the Coordinator at `CONTROL_POLL_INTERVAL` for each
+  registered workspace's `RunnerState.desired` and acts on it
+  (spawn / kill / pause / spare-cycles). This is what makes Flow D
+  work end-to-end: a `stopped → running` transition is observed by
+  the daemon even though no workspace runner exists at that moment.
+- **Runner supervisor** — spawn / kill / restart the workspace runner
+  subprocess (`run-beads-tasks.sh` per workspace); observes the runner
+  process exit code (BC-21) and writes the §8 terminal-reason
+  control-plane record **before** the runner is gone.
+- **Hosted-resolution poll** — observes Coordinator-side answered
+  dossiers and drives resume dispatch into the affected workspace, per
+  AD8 (idle → resume-answer file; busy → bd-surgery `claude -p`).
+- **BC-34 fail-open + bounded local lease fallback (C-2)** — unchanged
+  in semantics; just lives in the daemon now.
+
+**The library `lib/local-agent.sh` remains useful — and the daemon
+`source`s it.** The library is the per-machine functions
+(`la__USAGE_THRESHOLD`, `la__capacity_verdict`, `la__report_terminal_reason`, etc.)
+factored out of the daemon for testability. The retraction is about
+**topology** ("the per-machine supervisor process is a real process with
+its own pidfile and lifecycle, distinct from every workspace runner"),
+not about the library's existence. The §3 BC-21 / §8 re-home contract is
+unchanged at the **abstraction** level — only the binding moves: it is
+the daemon's exit-code observation, not "a sourced helper called from
+inside the runner."
+
+**Retraction (named and bounded).** Task `claude-tools-3al` (T3:
+"per-computer Local Agent") was closed on `lib/local-agent.sh` — a pure
+sourced bash library. The conformance gates that close passed (BC-21 /
+BC-34 derivatives) were gates on **behavior**, not on the **existence of
+a per-machine supervisor process**, so the topology promise slipped
+through. The library work is **kept**; the topology claim that it
+satisfied §0.A "one central runner per computer" is **retracted**.
+M-track tasks under epic [[claude-tools-kie]] (`claude-tools-gim` daemon
+skeleton + launchd plist, `claude-tools-cgh` desired-state poll, et al.)
+are the honest realization of the tier and they alone close the §0.A
+topology requirement. **Conformance addendum:** the M-track must add an
+assertion of the form *"there exists a daemon process whose pid is in
+`~/.beads-runner/daemon.pid` and is not equal to the pid of any
+registered workspace runner"* — a topology gate at last, so this class
+of misinterpretation cannot pass behavior-only gates again. The
+assertion is M-track's to write; this §3.2 binds it as a
+contract-attached gate, not a nice-to-have.
+
+**What this means for the rest of the document.**
+
+- **§2 table row "Local Agent"** is amended above to enumerate the
+  daemon's responsibilities (the five-job list).
+- **AD1** (above) names the launchd LaunchAgent / systemd user service
+  realization explicitly and acknowledges the second SPOF
+  (Local-Agent-down).
+- **§6 conformance gate** below adds: a Local-Agent-process-exists
+  topology assertion (M-track owns; this §3.2 makes it normative).
+- **§7 "the runner's six jobs"** is amended below to move
+  *report-terminal-reason* + *heartbeat-actual-state* explicit
+  ownership to the daemon. Jobs 1 (claim-lease) and 2 (ask-capacity)
+  remain initiated by the workspace runner against the daemon (the
+  runner is the requester; the daemon is the per-machine answerer);
+  job 4 (reconcile-desired-state) moves wholly into the daemon, since
+  it must run even when no runner is up.
+
+**Bind / build pointers.** M-track skeleton + plist:
+`claude-tools-gim`. Desired-state poll: `claude-tools-cgh`. End-to-end
+Flow D honors-transitions check: `claude-tools-6mx`. Workspace registry:
+new M-track issue under [[claude-tools-kie]]. This §3.2 is doc-only —
+the behavior change is the M-track's.
+
+---
+
+## 3.3 AD8 §11 — resume dispatch and the bd-surgery parallel-work boundary (2026-05-20)
+
+> **§11 amendment, Brian-ratified 2026-05-20.** New AD8 (above) is added
+> as a §11 amendment in the same batch as §3.2: the §3.2 daemon is what
+> *makes* the §3.3 / AD8 affordance physically realizable (a process
+> outside the workspace runner can spawn a sibling `claude -p` into the
+> workspace cwd; a sourced library inside the runner could not). AD8 is
+> the **boundary statement** for what "parallel work" honestly means in
+> v1, given that we lack git-worktree machinery.
+
+**The two-case dispatch (AD8 restated).**
+
+1. *Runner idle/parked:* daemon writes the resume-answer file to the
+   workspace's resume directory; the runner picks it up on its next
+   tick and re-dispatches in-band. This is **the existing path** (AD3.1
+   / §3.1's MCP-author path's natural completion); §3.3 just names it
+   as case (a).
+2. *Runner busy:* daemon spawns a fresh `claude -p` in the workspace
+   cwd, with the workspace's `CLAUDE.md` and `.beads/` writable and the
+   rest of the source tree mounted **read-only**. This `bd-surgery`
+   session applies the answered dossier-Item's `consequence_block`
+   side-effects (bd updates, decisions, dossier acks, notes, follow-ups)
+   without ever editing code. It exits when the consequence-block
+   application is done.
+
+**Why read-only outside `.beads/`.** This is the load-bearing
+constraint, not a stylistic preference. The in-flight worker on the
+busy runner has a live working tree it is editing; a parallel
+code-editing session against the same tree creates merge conflict
+states the v1 has no machinery to resolve. By **mechanically forbidding**
+the surgical session from writing outside `.beads/` (filesystem-level,
+not policy-level — `--add-dir` + a chrooted-style read-only mount or an
+LSM hook), we make the parallel-safety property an enforced contract,
+not a hoped-for behavior. *Worktrees would lift this constraint;
+they are out of scope for v1.* When git-worktree machinery lands, AD8
+case (b) widens to allow code edits inside a worktree branch; the
+constraint is real, the scope is bounded.
+
+**Build pointers.** M-track owns the daemon side (spawn, sandbox); a
+new M-track issue under [[claude-tools-kie]] for the `bd-surgery` mode
+wrapper itself (the `claude -p` invocation profile + the read-only
+mount machinery). A B-track follow-up may extend the worker-prompt
+system message for surgical sessions (a thinner prompt, since
+surgical sessions apply pre-decided side-effects rather than authoring
+new ones). This §3.3 is doc-only.
 
 ---
 
@@ -264,7 +429,16 @@ heartbeat-absence channel structurally cannot distinguish AUTH=3 from clean=0),
 **BC-27** (security boundary; AD4), **BC-10/11** (classification precedence —
 now includes `STUCK_NEEDS_HUMAN`, AD3.2), **BC-13/14** (retry asymmetry —
 `STUCK_NEEDS_HUMAN` is breaker/retry-exempt, AD3.2), **BC-34** (fail-open —
-lives in the Local Agent; AD2.2 split posture). **O-1 probe:** AD3's
+lives in the Local Agent; AD2.2 split posture). **§11 amend 2026-05-20 — Local
+Agent *topology* gate (§3.2):** a new conformance assertion must verify that
+the Local Agent exists as a **distinct process** on the machine
+(`pid_daemon = $(cat ~/.beads-runner/daemon.pid)` is alive **and**
+`pid_daemon ≠ pid_any_registered_workspace_runner`). This closes the
+behavior-only-gate loophole that allowed claude-tools-3al's library close to
+pass while delivering nothing that would survive a workspace runner exiting
+(M-track owns implementation; this gate is the contract binding so a
+behavior-only pass cannot ever again be conflated with a topology promise).
+**O-1 probe:** AD3's
 `--disallowedTools`/`permission_denials[]`/`"Entered plan mode."` assumptions
 are undocumented and version-pinned (claude 2.1.142); the conformance harness
 includes a probe re-asserted on every `claude` upgrade (the research doc's
@@ -291,14 +465,20 @@ current task" remains the task-*completion* semantic (don't kill mid-work,
 BC-33's other half); "stop *requested*" must be **detected ≤60s** so the Board
 honestly renders `stopping…` immediately (Flow D).
 
-**The runner's six jobs (per loop / per the cadences above):** claim-lease ·
-ask-capacity · heartbeat-actual-state(+liveness) · reconcile-desired-state ·
-publish-work-snapshot · **report-terminal-reason** (a last durable write of the
-BC-21 class + `STUCK_NEEDS_HUMAN` *before* exit, via the Local Agent which sees
-the process exit code — so "exited because AUTH(3)" is a control-plane record,
-not an unobservable process code; S-7). Board reads one surface (the
-Coordinator); the work-snapshot is a read-only projection (Dolt remains work
-truth — no plane-split violation).
+**The six jobs (per loop / per the cadences above) — ownership split by tier
+(§11 amend 2026-05-20, see §3.2):**
+
+| # | Job | Owner | Notes |
+|---|---|---|---|
+| 1 | **claim-lease** | workspace runner (requester) → daemon (answerer) → Coordinator | The runner asks the daemon for a lease before `bd update --status=in_progress` (AD2.1); the daemon proxies to the Coordinator and enforces the bounded local fallback (AD2.2 / C-2) without re-implementing global arbitration. |
+| 2 | **ask-capacity** | workspace runner → **daemon (one Anthropic-API caller per machine)** | The runner does not call the Anthropic usage API directly; it asks the daemon for the §6.3 coarse cost-class verdict. The daemon owns the poll + the §0.5 `USAGE_CACHE_SECONDS` TTL + BC-34 fail-open. |
+| 3 | **heartbeat-actual-state(+liveness)** | **daemon (per workspace)** | The daemon writes `RunnerState.actual` + `last_heartbeat_at` upward for every workspace it supervises, every `HEARTBEAT_INTERVAL`. This is in the daemon because the heartbeat must continue while the workspace runner is restarting / between tasks / parked — a runner-owned heartbeat would silently lapse during exactly those transitions. |
+| 4 | **reconcile-desired-state** | **daemon (per workspace)** | The daemon polls each workspace's `RunnerState.desired` at `CONTROL_POLL_INTERVAL`, acts on `paused/stopped/spare-cycles/running` (spawn / kill / restart the workspace runner subprocess). **This is the load-bearing reason the Local Agent must be a real daemon process, not a sourced library** (§3.2): a sourced library cannot observe a desired-state change when the workspace runner is `stopped`, because there is no runner to source it. Flow D's `stopped → running` round-trip lives here. |
+| 5 | **publish-work-snapshot** | workspace runner → daemon → Coordinator | The runner produces the §4.5 read-only projection; the daemon forwards it (so the publish surface is unified per machine). |
+| 6 | **report-terminal-reason** | **daemon (observes BC-21 exit code of the runner subprocess + the `WORKER_STUCK_EXIT` / `STUCK_NEEDS_HUMAN` sentinel)** | A last durable write of the BC-21 class + `STUCK_NEEDS_HUMAN` *before* the runner is gone, via the daemon which sees the process exit code (S-7). "Exited because AUTH(3)" becomes a control-plane record, not an unobservable process code. **This job moves to the daemon by force of physics:** the actor that observes "the runner just exited with code N" must be a *different* process than the runner itself. A sourced helper inside the runner dies the same moment the runner does and cannot make the durable write. |
+
+Board reads one surface (the Coordinator); the work-snapshot is a read-only
+projection (Dolt remains work truth — no plane-split violation).
 
 **Status: foundational architecture closed (v2).** Open work is contract spec +
 build, not decisions. **Build sequence + anti-drift** is the beads epic (see the
