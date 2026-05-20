@@ -89,13 +89,19 @@ export async function onRequestGet(context) {
   }
 
   const text = await resp.text();
+  // Forward the upstream content-free TTL header so the client can render the
+  // "self-destructs in X" countdown. The header carries ids+timestamps only
+  // (§10.3 audit shape) — no plaintext / ciphertext / key.
+  const hdrs = {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-forensic': 'redacted-transient'
+  };
+  const exp = resp.headers.get('x-forensic-expires-epoch');
+  if (exp) hdrs['x-forensic-expires-epoch'] = exp;
   return new Response(text, {
     status: resp.ok ? 200 : 502,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-      'x-forensic': 'redacted-transient'
-    }
+    headers: hdrs
   });
 }
 

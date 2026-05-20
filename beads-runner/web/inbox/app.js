@@ -505,7 +505,10 @@
       if (v.summary.runner_notes.length === 0) fn.appendChild(mk('div', 'dim', 'No Runner: notes in the synced metadata.'));
       v.summary.runner_notes.forEach(function (n) { fn.appendChild(mk('div', 'rnote', 'Runner: ' + n)); });
       el('f-forensic-note').textContent = v.forensic.note;
-      el('f-redout').hidden = true;
+      el('f-redbox').hidden = true;
+      el('f-redout').textContent = '';
+      var ttl = el('f-ttl'); if (ttl) { ttl.textContent = ''; ttl.classList.remove('expired'); }
+      clearForensicTtlTimer();
       el('f-dismiss').hidden = true;
       var fb = el('f-fetch');
       fb.disabled = false;
@@ -521,14 +524,75 @@
 
   // §10.3: explicit, authed, on-demand. The blob id is correlated by bead_ref
   // (a presentation key — the Coordinator is the authority; a gone/expired
-  // blob returns an honest 410, never a fabricated body).
+  // blob returns an honest 410, never a fabricated body). The redacted body
+  // is the §10.2-shape JSON produced AT THE RUNNER (AD4): file bodies are
+  // already stripped to {redacted, byte_length, sha256_prefix} BEFORE
+  // transit; the tool_use sequence + errors + last assistant turn survive.
+  // This tier renders it; it never re-derives redaction.
+  var forensicTtlTimer = null;
+  function clearForensicTtlTimer() {
+    if (forensicTtlTimer) { clearInterval(forensicTtlTimer); forensicTtlTimer = null; }
+  }
+  function renderForensicTtl(expiresEpoch) {
+    var ttl = el('f-ttl');
+    if (!ttl) return;
+    clearForensicTtlTimer();
+    if (!expiresEpoch || !isFinite(expiresEpoch)) {
+      ttl.textContent = 'self-destructs server-side at its TTL (§10.3)';
+      return;
+    }
+    function tick() {
+      var rem = Math.max(0, Math.floor(expiresEpoch - Date.now() / 1000));
+      if (rem <= 0) {
+        ttl.textContent = '✗ self-destructed — hard-deleted server-side (§10.3)';
+        ttl.classList.add('expired');
+        clearForensicTtlTimer();
+        return;
+      }
+      var mins = Math.floor(rem / 60);
+      var secs = rem % 60;
+      var s = mins > 0
+        ? 'self-destructs in ' + mins + ' min' + (mins === 1 ? '' : 's') +
+          (mins < 5 ? ' ' + secs + 's' : '')
+        : 'self-destructs in ' + secs + 's';
+      ttl.textContent = '⏳ ' + s + ' — hard-deleted server-side at TTL (§10.3)';
+    }
+    tick();
+    forensicTtlTimer = setInterval(tick, 1000);
+  }
+  function prettyForensic(text) {
+    if (typeof text !== 'string') return JSON.stringify(text, null, 2);
+    var t = text.trim();
+    if (!t) return '(empty body)';
+    try { return JSON.stringify(JSON.parse(t), null, 2); }
+    catch (e) { return text; } // not JSON — show verbatim (§10.2 is opaque here)
+  }
   function fetchForensic(beadRef) {
     var fb = el('f-fetch');
     fb.disabled = true; fb.textContent = 'Pulling over the authed channel…';
-    getJSON('/api/forensic?id=' + encodeURIComponent(beadRef)).then(function (blob) {
+    fetch('/api/forensic?id=' + encodeURIComponent(beadRef), {
+      method: 'GET',
+      headers: { accept: 'application/json' }
+    }).then(function (r) {
+      var expHdr = r.headers.get('x-forensic-expires-epoch');
+      var expEpoch = expHdr ? Number(expHdr) : null;
+      return r.text().then(function (t) {
+        if (!r.ok) {
+          // honest pass-through of the proxy's structured error (gone/expired)
+          var msg;
+          try { var j = JSON.parse(t); msg = (j && j.error) || ('HTTP ' + r.status); }
+          catch (e) { msg = 'HTTP ' + r.status; }
+          throw new Error(msg);
+        }
+        return { body: t, expEpoch: expEpoch };
+      });
+    }).then(function (res) {
+      var det = el('f-redbox');
       var out = el('f-redout');
-      out.hidden = false;
-      out.textContent = typeof blob === 'string' ? blob : JSON.stringify(blob, null, 2);
+      out.textContent = prettyForensic(res.body);
+      det.hidden = false;
+      det.open = true;
+      renderForensicTtl(res.expEpoch);
       fb.textContent = '✓ Redacted log fetched · transient, not persisted client-side';
       el('f-dismiss').hidden = false;
     }).catch(function (e) {
@@ -538,7 +602,8 @@
   }
   function dismissForensic(beadRef) {
     postJSON('/api/forensic', { id: beadRef }).then(function () {
-      el('f-redout').hidden = true;
+      clearForensicTtlTimer();
+      el('f-redbox').hidden = true;
       el('f-dismiss').hidden = true;
       el('f-fetch').textContent = '✓ Dismissed — hard-deleted server-side (§10.3)';
       el('f-fetch').disabled = true;

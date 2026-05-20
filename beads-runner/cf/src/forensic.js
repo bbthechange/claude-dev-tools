@@ -355,7 +355,11 @@ async function forensicFetch(co, principal, blobId) {
   if (!keyB64) return { rc: 1 };
   const plain = await forensicDecrypt(keyB64, blob.ciphertext);
   if (plain === null) return { rc: 1 };
-  return { rc: 0, plaintext: plain };
+  // expires_epoch is content-free meta (§10.3 audit shape: ids+timestamps
+  // only). Surfaced for the Flow-G UI's "self-destructs in X" countdown so
+  // the human sees the TTL bound without a second probe. NOT in the
+  // plaintext body (the §10.2 contract — stdout stays byte-identical).
+  return { rc: 0, plaintext: plain, expires_epoch: exp };
 }
 
 // co__forensic_dismiss — the explicit user "dismiss / done with forensic"
@@ -461,7 +465,19 @@ export async function handleForensicOp(co, op, args, principal) {
     }
     if (op === "forensic-fetch") {
       const r = await co._serialize(() => forensicFetch(co, principal, a[0]));
-      if (r.rc === 0) return textRes(r.plaintext); // the ONE crossing
+      if (r.rc === 0) {
+        // The ONE crossing. Body stays the §10.2 plaintext blob (the contract
+        // — test-coordinator-forensic.sh + forensic.spec.js read this verbatim).
+        // The expires_epoch is surfaced as a CONTENT-FREE header (ids+timestamps
+        // only, §10.3 audit shape) so the Inbox can render the "self-destructs
+        // in X" countdown without a second probe. The header carries no
+        // plaintext / ciphertext / key.
+        const h = { "content-type": "text/plain" };
+        if (r.expires_epoch != null) {
+          h["x-forensic-expires-epoch"] = String(r.expires_epoch);
+        }
+        return new Response(r.plaintext, { status: 200, headers: h });
+      }
       if (r.rc === 2) return textRes("", 422); // unsafe/missing — empty + nonzero
       return textRes("", 404); // gone/expired/decrypt-fail — EMPTY, no tombstone
     }

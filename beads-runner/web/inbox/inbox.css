@@ -241,6 +241,24 @@ body{
   border-radius:10px;padding:14px;font-family:var(--mono);font-size:11.5px;
   color:var(--amber-soft);white-space:pre-wrap;line-height:1.55;overflow-x:auto;
   max-height:340px;overflow-y:auto}
+.redbox{margin-top:12px;border:1px solid var(--line-2);border-radius:11px;
+  background:rgba(255,180,84,.04);padding:0;list-style:none}
+.redbox > summary{cursor:pointer;list-style:none;padding:11px 13px;display:flex;
+  align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--amber-soft)}
+.redbox > summary::-webkit-details-marker{display:none}
+.redbox > summary::before{content:'▸';display:inline-block;margin-right:8px;
+  transition:transform .15s ease;color:var(--faint)}
+.redbox[open] > summary::before{transform:rotate(90deg)}
+.rb-h{flex:1;min-width:0}
+.rb-ttl{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;
+  color:var(--dim);text-transform:none;padding:3px 9px;border-radius:999px;
+  border:1px solid var(--line);background:#0a0b0f;white-space:nowrap}
+.rb-ttl.expired{color:var(--coral);border-color:rgba(255,107,107,.4)}
+.rb-sub{font-family:var(--font-read);font-size:12px;color:var(--faint);
+  line-height:1.55;padding:0 13px 8px;margin:0}
+.redbox .redout{margin:0 13px 13px}
 
 .errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
   background:rgba(255,107,107,.08);border-radius:14px;padding:18px}

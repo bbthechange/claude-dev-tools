@@ -96,7 +96,14 @@
           <p id="f-forensic-note"></p>
           <button class="btn" id="f-fetch" type="button">Fetch redacted forensic log</button>
           <button class="btn ghost" id="f-dismiss" type="button" hidden>Dismiss (hard-delete now)</button>
-          <pre class="redout" id="f-redout" hidden></pre>
+          <details class="redbox" id="f-redbox" hidden open>
+            <summary>
+              <span class="rb-h">Redacted forensic log</span>
+              <span class="rb-ttl" id="f-ttl"></span>
+            </summary>
+            <p class="rb-sub">Runner-redacted before transit (§10.2/AD4): tool_use sequence + errors + last assistant turn kept; file bodies stripped to {byte_length, sha256_prefix}. Transient: not persisted client-side, hard-deleted server-side at the earlier of its TTL or your dismiss (§10.3).</p>
+            <pre class="redout" id="f-redout"></pre>
+          </details>
         </div>
       </section>
 
