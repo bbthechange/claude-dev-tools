@@ -47,6 +47,11 @@ HOSTED_RESOLUTION_POLL_INTERVAL="${BEADS_DAEMON_HOSTED_RESOLUTION_POLL_INTERVAL:
 # observes desired-state mutations at the same rate the runner used to
 # self-reconcile, and the AD8/Flow-D loop closes within ~60s end-to-end.
 DESIRED_STATE_POLL_INTERVAL="${BEADS_DAEMON_DESIRED_STATE_POLL_INTERVAL:-60}"
+# I3: intake-request poll cadence. ~30s default per the task spec, so an
+# intake tap on the phone lands ⇒ enricher fires ⇒ a new bd task appears
+# the runner can pick up within ~60s end-to-end (cf claude-tools-06i
+# acceptance).
+INTAKE_POLL_INTERVAL="${BEADS_DAEMON_INTAKE_POLL_INTERVAL:-30}"
 # M2: Anthropic-usage poll cadence (claude-tools-8mz). Default tracks
 # §0.5 USAGE_CACHE_SECONDS so the daemon's cache refresh rate matches the
 # constant the runner-side cache used to honour. One central poll per
@@ -76,6 +81,11 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # state machine. Defines daemon_m3_reconcile_all + daemon_m3_* helpers.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/desired-state-poll.sh"
+# I3 (claude-tools-06i): intake-request poll + enricher dispatch. Defines
+# daemon_intake_poll_once + daemon_intake_* helpers. Same sourcing posture
+# as the M3 poll above — strict no-op until the main loop calls into it.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/intake-dispatch-poll.sh"
 # M2 (claude-tools-8mz): the Anthropic-usage poll — one Keychain read +
 # one API call per machine per USAGE_POLL_INTERVAL, with the verdict
 # published atomically to $DAEMON_CACHE_DIR/capacity.json (UX 0.A "one
@@ -208,7 +218,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -227,6 +237,7 @@ main() {
   # API call per machine, §3.2 job 1).
   local _last_hosted_poll=0
   local _last_desired_poll=0
+  local _last_intake_poll=0
   local _last_usage_poll=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
@@ -252,6 +263,16 @@ main() {
     if [ "$((_now - _last_desired_poll))" -ge "$DESIRED_STATE_POLL_INTERVAL" ] || [ "$_last_desired_poll" -eq 0 ]; then
       _last_desired_poll="$_now"
       daemon_m3_reconcile_all || true
+    fi
+    # I3 (claude-tools-06i): on cadence (~30s), scan the engine for unprocessed
+    # intake-request records and dispatch the enricher hat in the chosen
+    # workspace for each one whose project_ref is registered on this machine.
+    # The acceptance contract is end-to-end ≤60s from phone tap → new bd task
+    # the runner can pick up, so a 30s cadence keeps the worst-case under 60s
+    # (poll discovery + the enricher's bd create both fit inside the budget).
+    if [ "$((_now - _last_intake_poll))" -ge "$INTAKE_POLL_INTERVAL" ] || [ "$_last_intake_poll" -eq 0 ]; then
+      _last_intake_poll="$_now"
+      daemon_intake_poll_once || true
     fi
     # M2 (claude-tools-8mz): on cadence, refresh the machine-level
     # Anthropic-usage cache so workspaces' la__capacity_via_daemon picks

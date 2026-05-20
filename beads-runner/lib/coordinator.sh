@@ -369,6 +369,47 @@ co__store_get() {
   cat "$path" 2>/dev/null || return 1
 }
 
+# ── I3 (claude-tools-06i) intake-pending — list unprocessed intake-request ────
+# co__intake_pending  → echo a JSON ARRAY of intake-request records whose
+#   `.processed == false`. Pure read (no §4 write). Empty array if none.
+#
+# WHY a dedicated op (not a general scan): the engine has no list/scan surface
+# (get requires a specific id). I3's daemon needs to discover NEW intake taps
+# without holding/learning every id the I2 proxy generates. A NARROW per-type
+# "pending queue" op (intake-request only, processed=false only) is the minimum
+# extra surface: it cannot be turned into a generic listing — type is hard-coded
+# to `intake-request` and the filter is hard-coded to `processed:false`, so an
+# accidental call cannot exfiltrate other §4 record bodies.
+#
+# Order: lexicographic by id (intake_id starts with an ISO-ish timestamp, so
+# this gives the daemon roughly-monotonic FIFO order across taps).
+co__intake_pending() {
+  local d records=() f rec processed
+  d="$(co__ensure_store)/records"
+  [[ -d "$d" ]] || { printf '[]\n'; return 0; }
+  for f in "$d"/intake-request.*.json; do
+    [[ -e "$f" ]] || continue
+    rec="$(cat "$f" 2>/dev/null)"
+    [[ -n "$rec" ]] || continue
+    # Filter: processed must be exactly boolean false (not missing, not true,
+    # not a string "false"). A missing/garbage processed flag is treated as
+    # ALREADY PROCESSED on the conservative side — better to leak one stuck
+    # record than re-dispatch every malformed record forever.
+    processed="$(printf '%s' "$rec" | jq -r 'if type=="object" and (.processed|type)=="boolean" then (.processed|tostring) else "true" end' 2>/dev/null)" || processed="true"
+    [[ "$processed" == "false" ]] || continue
+    records+=("$rec")
+  done
+  if [[ "${#records[@]}" -eq 0 ]]; then
+    printf '[]\n'; return 0
+  fi
+  # Build the JSON array. Use jq -s to slurp + sort by .id for deterministic order.
+  printf '%s\n' "${records[@]}" | jq -cs 'sort_by(.id // "")' 2>/dev/null || {
+    # If jq fails for some reason, emit empty array rather than malformed JSON.
+    printf '[]\n'
+    return 0
+  }
+}
+
 # ── §2.2 durable one-shot timer — CAPABILITY SURFACE ONLY ─────────────────────
 # fire(id)@T plus the S-6 backstop: a missed fire MUST degrade to
 # fire-on-next-poll. The skeleton has no alarm daemon (capability surface
@@ -535,7 +576,8 @@ co_request() {
     heartbeat)        co__heartbeat "$principal" "${1:-}" ;;
     reconcile)        co__reconcile "$principal" "${1:-}" "${2:-}" ;;
     work-snapshot)    co__work_snapshot "$principal" "${1:-}" "${2:-}" ;;
-    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot)" >&2; return 2 ;;
+    intake-pending)   co__intake_pending ;;  # I3 (claude-tools-06i) — daemon scan of unprocessed intake-request records
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot; I3: intake-pending)" >&2; return 2 ;;
   esac
 }
 

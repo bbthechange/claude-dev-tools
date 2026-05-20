@@ -346,11 +346,16 @@ export class Coordinator {
           return await this.opTimerAck(args[0]);
         case "capabilities":
           return text(CAPABILITIES);
+        case "intake-pending":
+          // I3 (claude-tools-06i) — daemon scan of unprocessed intake-request
+          // records. Hard-coded type + processed=false filter (cannot be
+          // turned into a generic listing surface).
+          return await this.opIntakePending();
         default:
           return json(
             {
               error:
-                "co: unknown op (substrate §2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack|capabilities)",
+                "co: unknown op (substrate §2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack|capabilities|intake-pending)",
             },
             400
           );
@@ -423,6 +428,31 @@ export class Coordinator {
     const r = await this._writeRecord(principal, type, id, obj);
     if (!r.ok) return json({ ok: false, code: r.code, error: r.msg }, 422);
     return json({ ok: true });
+  }
+
+  // I3 (claude-tools-06i) — list unprocessed intake-request records as a JSON
+  // array, ordered lexicographically by id (which is timestamp-prefixed, so
+  // this is FIFO across phone taps). NARROW by construction: hard-coded type
+  // `intake-request` + hard-coded `processed=false` filter — cannot be turned
+  // into a generic listing surface. A record whose `processed` flag is missing
+  // or non-boolean is treated as ALREADY PROCESSED (conservative: better to
+  // leak one stuck record than re-dispatch every malformed record forever).
+  async opIntakePending() {
+    const rows = await this.db
+      .prepare("SELECT json FROM records WHERE type = ? ORDER BY id ASC")
+      .bind("intake-request")
+      .all();
+    const out = [];
+    const list = (rows && rows.results) || [];
+    for (const row of list) {
+      try {
+        const r = JSON.parse(row.json);
+        if (r && typeof r === "object" && r.processed === false) out.push(r);
+      } catch {
+        // skip corrupt row
+      }
+    }
+    return text(JSON.stringify(out));
   }
 
   // §2.1 / §4: get — echo the stored record, or 404 (reachable, just empty).

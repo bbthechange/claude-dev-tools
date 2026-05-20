@@ -307,6 +307,81 @@ it("CF.1 substrate is behaviour-identical to coordinator.sh + test-coordinator.s
   ]);
   ck("intake-request schema_version 2 ⇒ rejected", irHi.status !== 200 && irHi.body && irHi.body.ok === false);
 
+  // ── I3 (claude-tools-06i) intake-pending — narrow per-machine queue read ──
+  // The daemon polls the engine for unprocessed intake-request records via the
+  // `intake-pending` op. Returns a JSON ARRAY filtered to processed===false,
+  // ordered lexicographically by id (timestamp-prefixed ⇒ rough FIFO across
+  // taps). Hard-coded type + filter — cannot be turned into a generic listing.
+  // Seed a second pending + a processed record alongside the abc record above.
+  const irBody2 = JSON.stringify({
+    schema_version: 1,
+    id: "intake-2026-05-20T07-01-00Z-def",
+    idea_text: "second pending tap",
+    project_ref: "thirsty",
+    preset: "collaborative-stage",
+    processed: false,
+    submitted_at: "2026-05-20T07:01:00Z",
+  });
+  await call(GOOD, "put", ["intake-request", "intake-2026-05-20T07-01-00Z-def", irBody2]);
+  const irBodyDone = JSON.stringify({
+    schema_version: 1,
+    id: "intake-2026-05-20T07-02-00Z-ghi",
+    idea_text: "already enriched",
+    project_ref: "thirsty",
+    preset: "autonomous-until-stuck",
+    processed: true,
+    submitted_at: "2026-05-20T07:02:00Z",
+    enricher_bd_id: "thirsty-001",
+  });
+  await call(GOOD, "put", ["intake-request", "intake-2026-05-20T07-02-00Z-ghi", irBodyDone]);
+
+  const irPending = await call(GOOD, "intake-pending", []);
+  ck("intake-pending returns 200", irPending.status === 200);
+  let irList = null;
+  try {
+    irList = JSON.parse(irPending.raw);
+  } catch {
+    irList = null;
+  }
+  ck("intake-pending returns a JSON array", Array.isArray(irList));
+  ck("intake-pending returns exactly the 2 processed=false records", Array.isArray(irList) && irList.length === 2);
+  ck(
+    "intake-pending skips the processed=true record (ghi)",
+    Array.isArray(irList) && !irList.some(r => r && r.id === "intake-2026-05-20T07-02-00Z-ghi")
+  );
+  ck(
+    "intake-pending is ordered by id ASC (abc before def — FIFO)",
+    Array.isArray(irList) &&
+      irList.length === 2 &&
+      irList[0].id === "intake-2026-05-20T07-00-00Z-abc" &&
+      irList[1].id === "intake-2026-05-20T07-01-00Z-def"
+  );
+
+  // Round-trip: after the daemon re-PUTs def with processed=true, the next
+  // intake-pending must drop it from the queue (the I3 mark-processed loop).
+  const irDefRec = JSON.parse(irBody2);
+  irDefRec.processed = true;
+  irDefRec.enricher_bd_id = "thirsty-002";
+  irDefRec.enricher_outcome = "created";
+  await call(GOOD, "put", [
+    "intake-request",
+    "intake-2026-05-20T07-01-00Z-def",
+    JSON.stringify(irDefRec),
+  ]);
+  const irPending2 = await call(GOOD, "intake-pending", []);
+  const irList2 = (() => {
+    try {
+      return JSON.parse(irPending2.raw);
+    } catch {
+      return null;
+    }
+  })();
+  ck("intake-pending after mark-processed re-put drops the record", Array.isArray(irList2) && irList2.length === 1);
+  ck(
+    "remaining pending is the still-unprocessed abc record",
+    Array.isArray(irList2) && irList2.length === 1 && irList2[0].id === "intake-2026-05-20T07-00-00Z-abc"
+  );
+
   // eslint-disable-next-line no-console
   console.log(`\n══ CF.1 differential (vs coordinator.sh): PASS=${PASS} FAIL=${FAIL} ══`);
   if (FAIL > 0) {

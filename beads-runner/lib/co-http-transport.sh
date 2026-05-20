@@ -107,7 +107,9 @@ co_http__op_is_data() {
   case "$1" in
     # ask-capacity is body-passthrough too, but its rc is token-derived
     # (over⇒1) — handled as an explicit special case in the 2xx arm, NOT here.
-    get|timer-due|poll|reconcile|work-snapshot|capabilities|forensic-fetch|forensic-audit) return 0 ;;
+    # I3 (claude-tools-06i) — `intake-pending` returns a JSON array of records;
+    # the daemon poll consumes that stdout verbatim, so it is DATA-200 too.
+    get|timer-due|poll|reconcile|work-snapshot|capabilities|forensic-fetch|forensic-audit|intake-pending) return 0 ;;
     *) return 1 ;;
   esac
 }
