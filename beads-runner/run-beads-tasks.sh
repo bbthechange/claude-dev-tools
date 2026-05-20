@@ -520,11 +520,33 @@ validate_task() {
     return 1
   fi
 
-  # Check if this is a parent/container task with children
-  # Note: bd show --children includes the task itself in the result, so filter it out
+  # Epics are containers by definition — never workable. Skip them up front so
+  # an epic with no formal parent-child links (text-only "Epic: ..." references
+  # in child descriptions) doesn't sail past the child-count check and get
+  # picked up as a regular task.
+  # Note: `bd show --json` wraps the task object in a one-element array AND
+  # names the type field `issue_type` (whereas `bd list --json` uses `type`
+  # at the top level — bd is inconsistent here). Be defensive and accept both
+  # shapes / both field names so a future bd update can't silently regress.
+  local task_type
+  task_type=$(bd show "$task_id" --json 2>/dev/null \
+              | jq -r '(if type == "array" then .[0] else . end) | (.issue_type // .type // "")' 2>/dev/null \
+              || echo "")
+  if [[ "$task_type" == "epic" ]]; then
+    echo "  Skipping: epic (containers are not workable; see children for actual work)"
+    return 1
+  fi
+
+  # Check if this is a parent/container task with formal children.
+  # bd v1.x returns {<parent-id>: [child_objects]} — an OBJECT keyed by parent
+  # id, with the children array as its sole value. Flatten that to just the
+  # children array; if the format is ever an array directly, handle that too.
+  # Fail closed on any jq error (treat as zero children rather than fail open).
   local children
   children=$(bd show "$task_id" --children --json 2>/dev/null || echo "[]")
-  children=$(echo "$children" | jq --arg id "$task_id" '[.[] | select(.id != $id)]')
+  children=$(echo "$children" | jq --arg id "$task_id" '
+    ((if type == "object" then [.[] | .[]?] else . end) | map(select(.id? != $id)))
+  ' 2>/dev/null || echo "[]")
   local child_count
   child_count=$(echo "$children" | jq 'length' 2>/dev/null || echo "0")
   if [[ "${child_count:-0}" -gt 0 ]]; then
