@@ -307,6 +307,74 @@ ckn "§9.1 — dg_generate with NO bearer ⇒ REJECTED" \
 ckn "§9.1 — nothing written on the auth-failed generate"    co_request "$GOOD" get dossier noTok
 
 echo ""
+echo "── Flow G — dg_from_analysis_task: runner-killed bead ⇒ analysis dossier (G2 / claude-tools-vez) ──"
+# A runner-killed bead with a realistic Runner: note timeline (tool-errors
+# folded under the next terminal classification line). The G2 contract: one
+# §5 dossier with a deep body (incl. a "Runner timeline" section grouped by
+# attempt + timestamps) and ONE approve-recommendation Item to ack the
+# queued analysis bead. trigger=human_flag, tier=blocking, diagrams[]=[]
+# (non-structural: a failure summary has no fork to diagram).
+A_INPUT='{
+  "task_title":"add the spare-only ramp gate",
+  "reason":"task_not_closed",
+  "classification":"TASK_NOT_CLOSED",
+  "analysis_task_id":"claude-tools-zzz",
+  "analysis_desc":"Investigate why the worker exited 0 without closing the bead. Check git log/diff, decide whether to split or retry on a fresh context.",
+  "runner_notes":[
+    "Runner: tool-error permission-denied (×3)",
+    "Runner: TASK_NOT_CLOSED at 19:42:55Z — no stream preserved",
+    "Runner: tool-error mcp-unavailable (×1)",
+    "Runner: WATCHDOG_KILL at 19:48:12Z — log: .beads/logs/foo.jsonl"
+  ]
+}'
+AID="analysis-claude-tools-xyz"
+A_BEAD="claude-tools-xyz"
+RID="$(dg_from_analysis_task "$GOOD" "$AID" "$A_BEAD" "$A_INPUT")"; ARC=$?
+ck "dg_from_analysis_task accepts a well-formed analysis input"  eq "$ARC" "0"
+ck "returns the dossier id (deterministic id passed in)"         eq "$RID" "$AID"
+ck "envelope persisted through the T5.1 store"                   eq "$(JF "$AID" '.id')" "$AID"
+ck "trigger=human_flag (closest fit for runner-flagged analysis)" eq "$(JF "$AID" '.trigger')" "human_flag"
+ck "tier=blocking"                                               eq "$(JF "$AID" '.tier')" "blocking"
+ck "bead_ref preserved (the failed bead)"                        eq "$(JF "$AID" '.bead_ref')" "$A_BEAD"
+ck "diagrams[]=[] valid (non-structural failure summary)"        eq "$(JF "$AID" '.body.diagrams|length')" "0"
+ck "§5.1 sections[] has ≥3 entries (what/timeline/plan)"         test "$(JF "$AID" '.body.sections|length')" -ge 3
+ck "Runner timeline section is present"                          eq "$(JF "$AID" '[.body.sections[]|select(.heading=="Runner timeline")]|length')" "1"
+TL="$(JF "$AID" '[.body.sections[]|select(.heading=="Runner timeline")][0].prose')"
+WHATFAIL="$(JF "$AID" '[.body.sections[]|select(.heading=="What failed")][0].prose')"
+PLAN="$(JF "$AID" '[.body.sections[]|select(.heading=="Analysis plan")][0].prose')"
+ck "timeline groups by attempt — Attempt 1 line present"         grep -q "Attempt 1" <<<"$TL"
+ck "timeline groups by attempt — Attempt 2 line present"         grep -q "Attempt 2" <<<"$TL"
+ck "timeline carries the first attempt's timestamp"              grep -q "19:42:55Z" <<<"$TL"
+ck "timeline carries the second attempt's timestamp"             grep -q "19:48:12Z" <<<"$TL"
+ck "timeline carries the terminal classifications"               grep -q "TASK_NOT_CLOSED" <<<"$TL"
+ck "timeline carries the watchdog kill classification"           grep -q "WATCHDOG_KILL" <<<"$TL"
+ck "tool-error folded under the FIRST attempt (intra-attempt)"   grep -q "permission-denied" <<<"$TL"
+ck "tool-error folded under the SECOND attempt (intra-attempt)"  grep -q "mcp-unavailable" <<<"$TL"
+ck "human plain-English class summary in 'What failed' section"  grep -q "Exited clean but left the bead open" <<<"$WHATFAIL"
+ck "Analysis plan section carries the analysis_desc"             grep -q "Investigate why the worker exited 0" <<<"$PLAN"
+ck "exactly ONE item (the approve-recommendation ack)"           eq "$(JF "$AID" '.items|length')" "1"
+ck "item kind=approve-recommendation (Brian ack/kickoff)"        eq "$(JF "$AID" '.items[0].kind')" "approve-recommendation"
+ck "item context_anchor.where non-empty (AD7 mandatory)"         ne "$(JF "$AID" '.items[0].context_anchor.where')" ""
+ck "item context_anchor.expansion non-empty (AD7 mandatory)"     ne "$(JF "$AID" '.items[0].context_anchor.expansion')" ""
+ck "item recommendation{value,why} present (§5.2 approve-rec)"   eq "$(JF "$AID" '.items[0].recommendation|(has("value") and has("why"))')" "true"
+ck "item consequence_block stamped (=bound; §0.3 / §5.3)"        eq "$(JF "$AID" '.items[0].consequence_block.cb_schema_version')" "$(do__bound_sv)"
+ck "item starts in clean §4.1.1 state=open"                      eq "$(JF "$AID" '.items[0].state')" "open"
+# Idempotent re-trigger — same id ⇒ overwrites with the same content (T5.5
+# task_ref dedup is the upper layer; the deterministic id from the runner
+# already gives us one-dossier-per-failed-bead under same-input retries).
+ck "re-run with same id ⇒ still succeeds (idempotent)"           dg_from_analysis_task "$GOOD" "$AID" "$A_BEAD" "$A_INPUT"
+# Reject paths.
+ckn "missing dossier_id ⇒ REJECTED"                              dg_from_analysis_task "$GOOD" "" "$A_BEAD" "$A_INPUT"
+ckn "missing bead_ref ⇒ REJECTED"                                dg_from_analysis_task "$GOOD" "analysis-x" "" "$A_INPUT"
+ckn "non-object analysis input ⇒ REJECTED"                       dg_from_analysis_task "$GOOD" "analysis-x" "$A_BEAD" 'not-json'
+# Empty runner_notes — still produces a valid dossier (a freshly-failed bead
+# may have only one note; the dossier must still surface).
+EMPTY_NOTES='{"task_title":"t","reason":"unknown","runner_notes":[]}'
+ck "empty runner_notes ⇒ dossier still valid (fresh failure)"    dg_from_analysis_task "$GOOD" "analysis-empty" "bd-empty" "$EMPTY_NOTES"
+ETL="$(JF analysis-empty '[.body.sections[]|select(.heading=="Runner timeline")][0].prose')"
+ck "empty-notes timeline carries an honest 'no notes' placeholder" grep -q "No Runner" <<<"$ETL"
+
+echo ""
 echo "── ANTI-DRIFT (structural — sibling surfaces untouched) ──"
 ck "T4 §4 registry: dossier⇒2 (v2 §11 Mermaid amend bump; NOT a T5.2 drift — T5.2 added NO §4 record type)" \
    eq "$(co__schema_version dossier)" "2"

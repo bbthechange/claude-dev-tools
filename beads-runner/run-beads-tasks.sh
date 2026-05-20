@@ -677,6 +677,66 @@ EOF
 
   echo "  Created analysis task: $analysis_id (blocks $task_id)"
   bd update "$task_id" --append-notes="Failed ($reason). Analysis task: $analysis_id" 2>/dev/null || true
+
+  # ── G2 (claude-tools-vez): runner-killed bead ⇒ Inbox analysis dossier ─────
+  # Best-effort, guarded-optional (same discipline as the §7.3 stuck-routing
+  # block — absent libs ⇒ runner unchanged; failure here NEVER blocks the
+  # analysis bead, which is the substrate). The dossier surfaces a
+  # human-readable failure summary + the Runner: note timeline grouped by
+  # attempt, plus one approve-recommendation Item for Brian to ack the
+  # queued analysis. Deterministic id = "analysis-<task_id>" ⇒ one dossier
+  # per failed bead, idempotent under same-input retries.
+  if command -v dg_from_analysis_task >/dev/null 2>&1; then
+    : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
+    local notes_json classification did analysis_input
+    local bearer="${SR_BEARER:-bearer-runner-stuck}"
+    # Pull current notes from the bead (newline-separated text field; only the
+    # `--long --json` form includes the `notes` key, verified against current
+    # bd). Filter to Runner: lines only — the timeline is built from those
+    # alone. A missing/changed shape falls back to "[]" so the dossier still
+    # renders, just with the honest "no notes" placeholder.
+    notes_json=$(bd show "$task_id" --long --json 2>/dev/null \
+      | jq -c '
+          [ ((.[0].notes // "") | split("\n") | .[]
+             | select(test("^Runner: "))) ]' 2>/dev/null) || notes_json="[]"
+    [[ -n "$notes_json" ]] || notes_json="[]"
+    # Derive a normalized classification from the reason for the inbox-view.js
+    # CLASS_PLAIN lookup (the renderer's class→plain-English map). Take the
+    # leading token (up to first whitespace or ASCII dash), uppercase it.
+    # Unknown tokens fall through to a generic "see analysis task for details"
+    # line in dg_from_analysis_task — never invents details. Avoids regex
+    # multi-byte traps by splitting on a plain ASCII class only.
+    classification=$(printf '%s' "$reason" \
+      | awk '{n=split($0, a, /[ \t-]/); print toupper(a[1])}' 2>/dev/null \
+      | tr -cd 'A-Z0-9_:' )
+    [[ -n "$classification" ]] || classification="UNKNOWN_FAILURE"
+    analysis_input=$(jq -cn \
+      --arg title "$task_title" \
+      --arg reason "$reason" \
+      --arg class "$classification" \
+      --arg atid "$analysis_id" \
+      --arg adesc "$analysis_desc" \
+      --argjson notes "$notes_json" '
+      { task_title:$title, reason:$reason, classification:$class,
+        analysis_task_id:$atid, analysis_desc:$adesc,
+        runner_notes:$notes }' 2>/dev/null) || analysis_input=""
+    if [[ -n "$analysis_input" ]]; then
+      did=$(dg_from_analysis_task "$bearer" \
+        "analysis-$task_id" "$task_id" "$analysis_input" 2>/dev/null || true)
+      if [[ -n "$did" ]]; then
+        echo "  Inbox analysis dossier: $did (bead $task_id)"
+        # §4.3/C3 — pair with the SINGLE Notification at creation if no_emit is
+        # available (mirrors the §7.3 stuck path's I3 wiring); idempotent on a
+        # re-trigger, never blocking. A failure is observable, not silent.
+        if command -v no_emit >/dev/null 2>&1; then
+          no_emit "$bearer" "$did" >/dev/null 2>&1 \
+            || echo "  WARN: analysis dossier '$did' persisted but the §4.3 no_emit FAILED (idempotent — safe to re-emit later)"
+        fi
+      else
+        echo "  WARN: analysis dossier write deferred for $task_id (best-effort; the analysis bead is the substrate and is already queued)"
+      fi
+    fi
+  fi
 }
 
 # ── Post-mortem: visibility helpers ──────────────────────────────────────────

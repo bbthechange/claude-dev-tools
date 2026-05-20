@@ -639,3 +639,166 @@ dg_from_worker_ask() {
   [[ -n "$gi" ]] || { echo "dossier-gen: reject — could not build generation input from the §7.2 ask" >&2; return 3; }
   dg_generate "$bearer" "$gi"
 }
+
+# ════════════════════════════════════════════════════════════════════════════
+# Flow G — runner-killed bead → analysis dossier (G2 / claude-tools-vez)
+# ════════════════════════════════════════════════════════════════════════════
+# dg_from_analysis_task <bearer> <dossier_id> <bead_ref> <analysis_input_json>
+#   Flow G step 2: a runner failure that triggers create_analysis_task ALSO
+#   writes ONE §5 dossier so the failed bead surfaces in the Inbox as a
+#   human-readable failure summary, not just a queued analysis bead. The
+#   dossier shape is EMERGENT (§5.2.1 — no schema branch): a deep body with a
+#   "Runner timeline" section grouped by attempt, plus ONE
+#   `approve-recommendation` Item so Brian can ack the analysis.
+#
+#   analysis_input_json:
+#     { task_title, reason, classification?, analysis_task_id?, analysis_desc?,
+#       runner_notes: [ "Runner: …", … ] }
+#
+#   trigger="human_flag" (the runner is flagging this bead for human review —
+#   the closest fit in the §4.1 trigger enum; analysis ISN'T a separate
+#   trigger). tier="blocking". diagrams[]=[] is permissible (§5.1 AD7: a
+#   failure summary is non-structural — there is no fork to diagram).
+#
+#   The Item's consequence_block is the zero-effect shape — approving is just
+#   an acknowledgement; the actual analysis bead has already been created by
+#   the caller (run-beads-tasks.sh `create_analysis_task`). No auto-applied
+#   side effects beyond the ack itself.
+dg_from_analysis_task() {
+  local bearer="${1:-}" did="${2:-}" bref="${3:-}" ai="${4:-}" gi
+  printf '%s' "$ai" | jq -e 'type=="object"' >/dev/null 2>&1 || {
+    echo "dossier-gen: reject — analysis input not a JSON object" >&2; return 2; }
+  [[ -n "$did" && -n "$bref" ]] || {
+    echo "dossier-gen: reject — need <dossier_id> <bead_ref>" >&2; return 2; }
+
+  # Group runner_notes[] into ATTEMPTS for the timeline section. Each terminal
+  # classification line (not `tool-error`) closes an attempt; intervening
+  # `tool-error` lines fold under the next attempt as intra-attempt errors.
+  # Output: a prose string like
+  #   "Attempt 1 — 19:42:55Z · TASK_NOT_CLOSED — no stream preserved
+  #    Attempt 2 — 19:48:12Z · WATCHDOG_KILL — log: .beads/logs/foo.jsonl
+  #        tool errors: permission-denied (×3); mcp-unavailable (×1)"
+  local timeline
+  timeline=$(printf '%s' "$ai" | jq -r '
+    def parse_line:
+      . as $raw
+      | capture("^Runner:\\s+(?<rest>.*)$"; "x") // null
+      | if . == null then null
+        else .rest as $r
+          | if ($r | test("^tool-error\\s+"; "x")) then
+              { kind:"tool", text: ($r | sub("^tool-error\\s+"; "")) }
+            else
+              # Terminal classification: "<CLASS> at <HH:MM:SSZ> [— <tail>]"
+              # The class token is the leading uppercase-or-underscore run; the
+              # tail is anything after the timestamp (em-dash, ASCII dash, or
+              # bare). Whatever lives there is rendered verbatim.
+              ( $r | capture("^(?<cls>[A-Z][A-Z0-9_:]*)\\s+at\\s+(?<ts>\\S+)(?:[\\s—-]+(?<tail>.*))?$"; "x") ) as $m
+              | if $m then { kind:"term", cls:$m.cls, ts:$m.ts,
+                             tail:(($m.tail // "") | sub("^\\s+";"") | sub("\\s+$";"")) }
+                else { kind:"term", cls:"UNCLASSIFIED", ts:"", tail:$r }
+                end
+            end
+        end;
+    ( .runner_notes // []
+      | map( select(type=="string") | parse_line )
+      | map(select(. != null)) ) as $events
+    | reduce $events[] as $e ([{attempts:[], pending:[]}];
+        if $e.kind == "tool" then
+          .[0].pending += [$e.text] | .
+        else
+          .[0].attempts += [ { ts:$e.ts, cls:$e.cls, tail:$e.tail, tools:.[0].pending } ]
+          | .[0].pending = []
+          | .
+        end )
+    | .[0] as $g
+    | ( $g.attempts | to_entries
+        | map(
+            ( "Attempt " + ((.key+1)|tostring)
+              + " — " + (if .value.ts != "" then .value.ts else "(no timestamp)" end)
+              + " · " + .value.cls
+              + (if .value.tail != "" then " — " + .value.tail else "" end)
+            )
+            + ( if (.value.tools|length) > 0
+                then "\n    tool errors during this attempt: " + (.value.tools | join("; "))
+                else "" end )
+          )
+        | join("\n") ) as $body
+    | ( if ($g.pending|length) > 0
+        then ( if $body == "" then "" else $body + "\n" end )
+             + "Intra-attempt tool errors after the last terminal line: "
+             + ($g.pending | join("; "))
+        else $body end )
+    | if . == "" then "No Runner: notes recorded yet on this bead." else . end
+  ' 2>/dev/null) || timeline="(timeline unavailable — runner_notes failed to parse)"
+
+  # Plain-English class summary mirrors the inbox-view.js CLASS_PLAIN map so
+  # the human sees the same words on phone and in this body. Kept here (NOT
+  # imported) because dossier-gen.sh is bash + jq and cannot share JS; the
+  # mapping is short and stable. An unknown class passes through verbatim.
+  local plain_summary
+  plain_summary=$(printf '%s' "$ai" | jq -r '
+    ( .classification // .reason // "UNKNOWN_FAILURE" ) as $c
+    | { AUTH_FAILURE: "Auth is broken — the runner is dead until you fix it.",
+        BILLING_ERROR: "Billing failed — the runner is dead until you fix it.",
+        STUCK_NEEDS_HUMAN: "A worker hit a fork it must not decide — it needs you.",
+        CONTEXT_OVERFLOW: "Ran out of context — an analysis task will re-scope to remaining work.",
+        MAX_OUTPUT_TOKENS: "Hit the output ceiling — an analysis task will split the work.",
+        SERVER_ERROR: "Upstream server error after retries — needs eyes.",
+        WATCHDOG_KILL: "Stuck with no output — the watchdog killed it.",
+        RATE_LIMIT: "Rate-limited — routine; backs off and retries.",
+        UNKNOWN_FAILURE: "Failed for an unclassified reason — analysis will investigate.",
+        TASK_NOT_CLOSED: "Exited clean but left the bead open — looked green, isn’t."
+      } as $m
+    | ($m[$c] // ($c + " — see analysis task for details."))' 2>/dev/null) || plain_summary="Failure details — see analysis task."
+
+  # Build the generation-input. The §5 schema requires sections[]≥1 with non-
+  # empty heading+prose; the source's `sections` array is consumed by
+  # dg__author verbatim (line 451). diagrams:[] is valid for non-structural.
+  gi=$(printf '%s' "$ai" | jq -c \
+        --arg did "$did" --arg bref "$bref" \
+        --arg plain "$plain_summary" --arg timeline "$timeline" '
+        . as $a
+        | ( .task_title // $bref ) as $title
+        | ( .reason // .classification // "unknown" ) as $reason
+        | ( .analysis_task_id // "" ) as $atid
+        | ( .analysis_desc // "" ) as $adesc
+        | ( "Runner-killed bead " + $bref + " — " + $reason
+            + (if $atid != "" then ". Analysis task " + $atid + " is queued." else "." end) ) as $tldr
+        | ( "What failed: " + $plain
+            + (if $atid != ""
+               then "\n\nAn analysis task (" + $atid + ") has been created and depends on "
+                    + $bref + ". A fresh agent will inspect the failure and propose next steps "
+                    + "(split, redesign, retry, or re-scope) before " + $bref + " runs again."
+               else "\n\nA fresh-context analysis is recommended before retrying this bead." end)
+          ) as $full
+        | [ { heading:"What failed",
+              prose:($plain
+                + "\n\nClassification: " + $reason
+                + ".\nBead: " + $bref + " (" + $title + ").") },
+            { heading:"Runner timeline",
+              prose:$timeline },
+            { heading:"Analysis plan",
+              prose:( if $adesc != "" then $adesc
+                      else "An analysis task has been queued (or will be queued) to investigate this failure with a fresh agent on a clean context window. Approving below acknowledges the analysis is in flight; no other action is required." end ) }
+          ] as $sections
+        | { id:$did, kind:"decide", trigger:"human_flag",
+            bead_ref:$bref, tier:"blocking", timer_fire_at:null,
+            source:{ tldr:$tldr,
+                     ask:("Acknowledge the analysis on " + $bref + "?"),
+                     sections:$sections,
+                     diagrams:[],
+                     full_detail:$full,
+                     structural:false },
+            items:[ { id:($did + "-ack"),
+                      kind:"approve-recommendation",
+                      framing:{ ask:("Approve the analysis on " + $bref + "?"),
+                                why:"The runner could not complete this bead unattended; a fresh-context analysis is the next safe step. Approving is an acknowledgement — the analysis task is already queued." },
+                      context_anchor:{ where:("Runner-killed bead " + $bref + " — " + $reason),
+                                       expansion:("The runner classified this failure as " + $reason + ". " + $plain + " The Runner: note timeline above shows what each attempt did before the runner gave up.") },
+                      recommendation:{ value:"acknowledge",
+                                       why:"Acknowledge the queued analysis so the failure stops looking silent on the Board." },
+                      reversible:"Fully reversible — acknowledgement applies no consequence on the work plane; the analysis bead is already independent of this dossier.",
+                      consequence_block:{ creates:[], unblocks:[], labels:[], status_changes:[] } } ] }' 2>/dev/null) || gi=""
+  [[ -n "$gi" ]] || { echo "dossier-gen: reject — could not build analysis-task generation input" >&2; return 3; }
+  dg_generate "$bearer" "$gi"
+}
