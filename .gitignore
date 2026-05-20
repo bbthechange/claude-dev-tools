@@ -15,3 +15,6 @@ tmp/
 beads-runner/mocks/
 
 .beads/runner-logs/
+
+# B5 (claude-tools-uu1) MCP-server SIGKILL probe sandbox — local, throwaway
+.b5-probe/

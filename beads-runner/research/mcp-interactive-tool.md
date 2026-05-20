@@ -313,26 +313,184 @@ build for the safety net.
 
 ---
 
-## Q6 — What if the MCP server crashes mid-call?
+## Q6 — What if the MCP server crashes mid-call? (SIGKILL probe, B5)
 
-Not directly tested but worth pre-empting in the contract. The expected
-behaviors based on the SDK and on what *was* observed:
+**Answer (now evidence-backed): the tool_result is `is_error: true` with
+`content: "MCP error -32000: Connection closed"` (a *string*, not the usual
+`content[]` array), the model is then free to retry, claude's MCP client
+**auto-respawns the stdio server process** on the retry, and the session ends
+with a normal `result` envelope (`subtype: success, is_error: false,
+stop_reason: end_turn, permission_denials: []`, exit 0) regardless of whether
+the retry succeeded or the model gave up.** R1's prediction was directionally
+right but materially incomplete on three points (model-decided retry, automatic
+server respawn, no non-zero exit) — corrections inline below.
 
-- **Server SIGSEGV / process exit mid-tool-call**: stdio EOF reaches the
-  claude-side MCP client; the in-flight `tools/call` resolves with an error
-  tool_result (model-visible). Behavior should match the soft-fail shape from
-  [[headless-stuck-signal]] but with an MCP-specific error string — runner-side
-  detection should treat any `is_error: true` on `mcp__askbrian__*` as a
-  STUCK-equivalent failure that needs a restart cycle, not a content failure to
-  hand back to the model.
-- **Server hangs (no stdout, no stderr, no exit)**: this is exactly the
-  SIGSTOP case from Q5a — claude waits forever. The daemon-resume path is the
-  backstop here, gated on wall-clock-since-question-written rather than on any
-  signal claude itself emits.
+Performed against B5's probe sandbox (`/Users/brianbutler/code/claude-tools/.b5-probe`):
+same shape as R1 — single stdio MCP server `ask-brian`, writes
+`question.txt`, polls `answer.txt`, returns answer; same `claude 2.1.142`;
+model `claude-opus-4-7[1m]`; `--strict-mcp-config --permission-mode acceptEdits
+--allowedTools "mcp__askbrian__ask-brian" "Bash"`.
 
-Recommendation: B4 implementer should **explicitly test SIGKILL of the MCP
-server mid-call once** before shipping, to capture the precise tool_result
-shape on this path; doing it now would expand scope beyond R1.
+### Probe matrix
+
+| Probe | When the SIGKILL lands | What we observed | Final `result` envelope | exit |
+|---|---|---|---|---|
+| **p1-kill-mid** | ~10s into the poll loop, server pid known via pidfile, no answer ever planted | Error tool_result → model retried → claude **auto-respawned** the server (new pid, fresh `STARTED`/`CONNECTED` lines ~3s later) → retry polled indefinitely → after coordinator-imposed wall-clock SIGTERM, second call also resolved as `Connection closed` → model produced a brief text and ended | `subtype: success, is_error: false, stop_reason: end_turn, num_turns: 4, duration_ms: 322229, permission_denials: []` | 0 |
+| **p2-retry-recovers** | ~10s into the poll loop, then `answer.txt` planted as soon as the respawn appeared | First call errored → model retried → respawned server got the (re-written) question and the planted answer → normal text tool_result back → Bash echo → end | `subtype: success, is_error: false, stop_reason: end_turn, num_turns: 5, duration_ms: 22995, permission_denials: []` | 0 |
+| **p3-kill-early** | Before `question.txt` was ever written (server held in a pre-write sleep, killed ~2s in) | Same error tool_result → **model chose not to retry** ("The `mcp__askbrian__ask-brian` tool failed with 'MCP error -32000: Connection closed' — the MCP server appears to be down, so there's no answer to echo.") → end turn | `subtype: success, is_error: false, stop_reason: end_turn, num_turns: 3, duration_ms: 15087, permission_denials: []` | 0 |
+
+The answerer-process variant from the bead's spec was skipped — the engine-side
+answer surface is not plumbed into the probe (R1 didn't need it either), and
+the variants above already isolate the stdio-EOF path the engine-write failure
+would reduce to.
+
+### Precise shape of the failed `tool_result` (the load-bearing fact for B2)
+
+From every probe, byte-for-byte the same shape:
+
+```jsonc
+{"type":"user",
+ "message":{
+   "role":"user",
+   "content":[{
+     "type":"tool_result",
+     "tool_use_id":"toolu_01McHFFAraosjxqzVdaspD17",
+     "content":"MCP error -32000: Connection closed",   // ← string, not [{type:"text",text:"..."}]
+     "is_error":true
+   }]
+ },
+ // sibling field, sibling of message:
+ "tool_use_result":"Error: MCP error -32000: Connection closed",
+ ...
+}
+```
+
+Three details B2 should not get wrong:
+
+1. **`is_error: true` literally** — not `null`, not `false`, not absent. This is
+   the inverse of the Q1 success shape (`is_error: null`) and the inverse of
+   native-tool success (`is_error: false`). The `null`/`true`/`false` triple
+   is real and must all be handled by `scan_stream_for_tool_errors`.
+2. **`content` is a JSON *string*, not an array of typed blocks.** A successful
+   MCP call returns `content:[{type:"text",text:"…"}]`; a failed MCP call
+   returns `content:"MCP error -32000: …"`. A jq path that assumes `content[0].text`
+   will throw on the failure path. Use `if (.content|type)=="string" then .content
+   else .content[0].text end`, or scan `.content|tostring` for the literal
+   `"Connection closed"` substring.
+3. **The sibling `tool_use_result` is a *string* on this path** (`"Error: MCP
+   error -32000: Connection closed"`), not an object like on success. Same
+   caveat for any jq path that assumed `.tool_use_result.<something>`.
+
+The error code (`-32000`) and message (`Connection closed`) are
+JSON-RPC-2.0-shaped — they come from the MCP SDK's client-side detection of
+stdio EOF on an in-flight `tools/call`, not from our server.
+
+### Three behaviors that overturn the R1 prediction
+
+R1 §Q6 (now this section's old body) said: *"runner-side detection should
+treat any `is_error: true` on `mcp__askbrian__*` as a STUCK-equivalent failure
+that needs a restart cycle, not a content failure to hand back to the model."*
+The probes show that contract is **too simple** on three axes:
+
+- **Claude already runs a "restart cycle" of its own.** On the retry attempt
+  in p1 and p2, the MCP client respawned the stdio server process from scratch
+  — new pid, new `STARTED`/`CONNECTED`/`CALL` lifecycle in the server log,
+  about 3s after the SIGKILL. The runner does **not** have to kill the
+  session and re-dispatch to "restart" the server; claude does it for us. The
+  runner-level restart cycle is only needed when claude's own respawn does not
+  produce a final success — i.e. when the *session* has irrecoverably failed,
+  not when the *call* failed once.
+- **Whether the model retries at all is non-deterministic.** Same model
+  (`claude-opus-4-7`), same probe scaffold, same MCP error string: p1 and p2
+  retried, p3 did not. Treat retry-vs-give-up as a model-policy variable, not
+  a harness guarantee. The B2 contract must not depend on "claude will retry";
+  it must look at *what actually happened in the stream*.
+- **The session never exits non-zero on MCP failure.** All three probes end
+  with `result.is_error: false`, `stop_reason: end_turn`, exit 0 — even when
+  the model gave up because the tool truly stayed broken (p3) and even when
+  the wall-clock had to be cut by an external SIGTERM (p1). `permission_denials`
+  stays `[]` in every case. The two backstop signals the runner already relies
+  on for headless-stuck detection (non-zero exit, populated
+  `permission_denials[]`) **do not fire on MCP failure**. R1's "treat is_error
+  true as STUCK" instinct was right; the *mechanism* must be a stream scan,
+  not an exit-code or permission-denials check.
+
+### Corrected runner-side detection contract (for B2)
+
+Scan the stream-json for tool_result events whose tool corresponds to an
+`mcp__*` tool call (resolve via `tool_use_id`) **and** match either:
+
+- `is_error: true` with `content` (as string) containing
+  `MCP error -32000: Connection closed`, OR
+- any future MCP-transport error code in the `-32xxx` range with `is_error: true`
+  and `content` as a bare string (i.e. the MCP-SDK transport-error shape, not a
+  tool-body-emitted content error).
+
+Then classify by **what happened next in the same stream** for that tool name:
+
+| Subsequent same-tool result in stream | Classification | Action |
+|---|---|---|
+| A later `is_error: false` (or `null`) MCP tool_result with a normal `content[]` text array | **Self-healed** (claude's auto-respawn + model retry worked) | Log a transient-failure warning; do **not** kill the session. Idempotency note for the engine: the MCP server's first-action dossier write ran twice — the engine writer must be replay-safe by content hash or write-once, since R1's contract §1 made the dossier write the server's first action. |
+| Another `Connection closed` error, then the session ends with `stop_reason: end_turn` | **Model gave up cleanly** | Treat as STUCK-equivalent: the worker's bead has a question in flight cloud-side; daemon-resume must catch the eventual answer and re-dispatch the worker. Do *not* close the bead as completed just because exit is 0. |
+| Stream ends with no further same-tool event AND no `result` envelope | **Session hung** (the `mcp__askbrian__ask-brian` retry is blocked, no signal) | Wall-clock cap from outside; treat as STUCK-equivalent and SIGTERM the session. Observed once (p1 before our coordinator's SIGTERM at 240s of dead-retry waiting). |
+| Stream ends with `result.is_error: false stop_reason: end_turn` and the only same-tool result was the `Connection closed` one (no retry attempted) | **Model declined to retry** | Same as "model gave up cleanly" — daemon-resume is the recovery path. |
+
+The detection cannot live in `scan_stream_for_tool_errors`'s current shape (which
+only flags the *first* tool failure) — it has to keep state per `tool_use_id`
+across the whole stream. The simplest implementation is a single jq pass at
+session end that walks all `tool_result` events tagged `mcp__*` and classifies
+the *last* one per tool-name.
+
+### Side observations
+
+- **Server log evidence of the auto-respawn** (p1, abridged): pid `25753`
+  `STARTED → CONNECTED → CALL → STILL_WAITING` → SIGKILL by us → ~3s later
+  pid `25808` `STARTED → CONNECTED → CALL → WROTE_QUESTION → STILL_WAITING…`
+  No reconnect signal was visible in the stream-json — the new connection is a
+  fresh process invisible to the model and detectable only by externally
+  observing the OS-level pid lifecycle. **Implication for B2**: the MCP
+  server's `tools/call` handler MUST be safe to run twice in quick succession
+  (idempotent dossier write), because claude's retry will invoke a fresh
+  process that has none of the first process's state.
+- **`run-*.log` (claude's own stderr) is empty on all three failure paths.**
+  No MCP transport warning to stderr, no "respawning server" log line, no
+  exit-time complaint. The only externally-visible signal of the failure is
+  the stream-json itself — which makes the stream-scan detection above the
+  *only* runner-side mechanism that can see what happened.
+- **No transport-level "init" reconnection event in stream-json.** The
+  `system/init` event with `mcp_servers: [{status: "connected"}]` only fires
+  once at session start. The respawn is silent in the stream — `tools/call`
+  is reissued on the fresh pipe and either succeeds or errors again, no
+  separate "server reconnected" signal. This is a contrast with how the runner
+  might naively probe MCP health post-failure.
+
+### What the daemon-resume backstop still needs to catch
+
+Two cases from the matrix where the worker session ended cleanly (exit 0) but
+the dossier remained unanswered cloud-side:
+
+- p3 (model declined to retry): worker session is done; the cloud has a
+  dossier with no answer yet. Daemon's existing resume-with-context flow
+  triggers when the answer arrives and re-dispatches the worker. **Same shape
+  as the parked-tool-call backstop from Q5a — the case has not actually
+  changed; only the trigger went from "30-min envelope exceeded" to "model
+  gave up early on transport failure."**
+- p1 (model retried, retry hung past wall-clock): when an outer mechanism
+  (the worker bead's hard wall-clock cap, or a `bd` watchdog) eventually
+  SIGTERMs the worker, the second MCP call resolves as `Connection closed`,
+  the model ends with `end_turn`, exit 0. Same recovery path as p3.
+
+So: **runner does not need a new restart mechanism**; it needs (a) the
+stream-scan classifier above, and (b) the dossier-write idempotency note
+forwarded to B2 so the cloud engine handles the duplicate write on auto-retry.
+The daemon-resume path stays exactly as designed.
+
+### Artifacts
+
+Probe scripts, stream-json captures, and server logs are in
+`/Users/brianbutler/code/claude-tools/.b5-probe/` (local to this repo, gitignored).
+The throwaway sandbox was used in lieu of `/tmp/mcp-probe*` because this
+session's tool sandbox declined to write under `/tmp`.
 
 ---
 
