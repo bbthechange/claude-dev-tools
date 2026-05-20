@@ -53,6 +53,13 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # M5/M6 dispatch branches off. Strict no-op until the main loop calls into it.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/hosted-resolution-poll.sh"
+# M6 (claude-tools-4iy): bd-surgery dispatch — launch a fresh `claude -p` in
+# the workspace cwd when an answered dossier lands while the runner is busy
+# on a DIFFERENT task. Sourced AFTER hosted-resolution-poll.sh so the busy-
+# branch in daemon_dispatch_for_state finds daemon_m6_dispatch_busy at call
+# time. Drain hook (daemon_m6_kill_all) wired into on_exit below.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/m6-dispatch.sh"
 
 log() {
   # one-line log helper; stdout is redirected to daemon-logs/stdout.log by
@@ -122,6 +129,13 @@ handle_sighup() {
 
 on_exit() {
   log "daemon exiting"
+  # M6 (claude-tools-4iy): SIGTERM any in-flight bd-surgery agents the daemon
+  # spawned. They are short-lived (a few minutes) and self-terminate, but the
+  # daemon OWNS their lifecycle per the M6 spec — a daemon shutdown must not
+  # leave orphan claude -p children running against a workspace.
+  if declare -F daemon_m6_kill_all >/dev/null 2>&1; then
+    daemon_m6_kill_all || true
+  fi
   release_pidfile
 }
 

@@ -217,7 +217,7 @@ _daemon_reconcile_one() {
 #   exactly once per captured answer.
 daemon_dispatch_for_state() {
   local ws="${1:-}" state="${2:-}" adir="${3:-}" newlist="${4:-}"
-  local busy_task fname tref decision
+  local busy_task fname tref decision branch did iid
   busy_task=""
   case "$state" in busy:*) busy_task="${state#busy:}";; esac
   [[ -d "$adir" ]] || return 0
@@ -227,20 +227,35 @@ daemon_dispatch_for_state() {
     [[ -f "$adir/$fname" ]] || continue
     tref="$(jq -r '.task_ref // ""' "$adir/$fname" 2>/dev/null)" || tref=""
     [[ -n "$tref" ]] || continue
+    branch=""
     if [[ "$state" == "absent" || "$state" == "idle" ]]; then
       decision="M5 (idle/parked): the workspace runner is idle or absent; the existing prompt-splice path in run-beads-tasks.sh picks it up on its next loop top"
+      branch="M5"
     elif [[ -n "$busy_task" && "$busy_task" == "$tref" ]]; then
       decision="M5 (busy on the parked task): the workspace runner is currently on $tref itself — splice will pick the answer up at the next iteration; no surgery needed"
+      branch="M5"
     elif [[ -n "$busy_task" ]]; then
       decision="M6 (busy on a DIFFERENT task $busy_task): a bd-surgery agent must apply the answer to $tref in parallel (AD8 (b)) — M6 dispatch needed"
+      branch="M6"
     else
       decision="M5/M6 (unknown runner state): defaulting to M5 splice path"
+      branch="M5"
     fi
     if declare -F log >/dev/null 2>&1; then
       log "M4 dispatch: workspace=$ws task_ref=$tref runner_state=$state ⇒ $decision"
     else
       printf '%s M4 dispatch: workspace=%s task_ref=%s runner_state=%s ⇒ %s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$ws" "$tref" "$state" "$decision"
+    fi
+    # M6 (claude-tools-4iy): on the busy-on-DIFFERENT-task branch, actually
+    # launch the bd-surgery agent. The dispatch function is loaded by
+    # daemon.sh alongside this file (when present); guard with declare -F so
+    # this poll lib still tests cleanly in isolation (PART C of the M4
+    # acceptance does NOT spawn a real agent).
+    if [[ "$branch" == "M6" ]] && declare -F daemon_m6_dispatch_busy >/dev/null 2>&1; then
+      did="$(jq -r '.dossier_id // ""' "$adir/$fname" 2>/dev/null)" || did=""
+      iid="$(jq -r '.item_id    // ""' "$adir/$fname" 2>/dev/null)" || iid=""
+      daemon_m6_dispatch_busy "$ws" "$tref" "$did" "$iid" "$adir/$fname" || true
     fi
   done <<< "$newlist"
   return 0

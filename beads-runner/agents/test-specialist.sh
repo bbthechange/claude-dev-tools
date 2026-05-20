@@ -139,29 +139,35 @@ stream_for() {
 }
 
 DB=$(stream_for dossier-builder)
-if grep -q -- "--disallowedTools .* Write Edit NotebookEdit Bash" <<<"$DB"; then
-  pass "dossier-builder: writes AND Bash disallowed (B2 read-only)"
+# M6 (claude-tools-4iy) broadens the no-code-edits set from
+# `Write Edit NotebookEdit` to `Write Edit MultiEdit NotebookEdit BashWriteEdits`.
+# dossier-builder additionally forbids Bash entirely (B2 pure reader).
+if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteEdits Bash" <<<"$DB"; then
+  pass "dossier-builder: full M6 no-code-edits set + Bash disallowed (B2 read-only)"
 else
-  fail "dossier-builder: expected …Write Edit NotebookEdit Bash on --disallowedTools"
+  fail "dossier-builder: expected …Write Edit MultiEdit NotebookEdit BashWriteEdits Bash on --disallowedTools"
 fi
 grep -q -- "--permission-mode default" <<<"$DB" \
   && pass "dossier-builder: --permission-mode default" \
   || fail "dossier-builder: expected --permission-mode default"
 
 REC=$(stream_for reconciler)
-if grep -q -- "--disallowedTools .* Write Edit NotebookEdit" <<<"$REC" \
-   && ! grep -q -- "--disallowedTools .* Bash" <<<"$REC"; then
-  pass "reconciler: writes forbidden, Bash kept (M6 bd subprocess)"
+# After M6: full no-code-edits set, but Bash itself is KEPT (the `bd` subprocess
+# is invoked through Bash). BashWriteEdits ≠ Bash; check the bare-token Bash is
+# absent by requiring whitespace boundaries on both sides.
+if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteEdits" <<<"$REC" \
+   && ! grep -qE -- "--disallowedTools .* Bash([[:space:]]|$)" <<<"$REC"; then
+  pass "reconciler: full M6 no-code-edits set forbidden, bare Bash kept (M6 bd subprocess + read-only git)"
 else
-  fail "reconciler: expected Write/Edit/NotebookEdit forbidden AND Bash kept"
+  fail "reconciler: expected Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits forbidden AND bare Bash kept"
 fi
 
 ENR=$(stream_for enricher)
-if grep -q -- "--disallowedTools .* Write Edit NotebookEdit" <<<"$ENR" \
-   && ! grep -q -- "--disallowedTools .* Bash" <<<"$ENR"; then
-  pass "enricher: writes forbidden, Bash kept (I3 bd subprocess)"
+if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteEdits" <<<"$ENR" \
+   && ! grep -qE -- "--disallowedTools .* Bash([[:space:]]|$)" <<<"$ENR"; then
+  pass "enricher: full M6 no-code-edits set forbidden, bare Bash kept (I3 bd subprocess)"
 else
-  fail "enricher: expected Write/Edit/NotebookEdit forbidden AND Bash kept"
+  fail "enricher: expected Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits forbidden AND bare Bash kept"
 fi
 
 IMPL=$(stream_for impl)

@@ -122,18 +122,26 @@ fi
 # ── per-kind permission discipline ───────────────────────────────────────────
 # Common §7.6 guardrail (defense-in-depth behind the §7.2(a) instructed prompt).
 GUARDRAIL=(AskUserQuestion EnterPlanMode ExitPlanMode)
-WRITE_TOOLS=(Write Edit NotebookEdit)
+# No-code-edits set for read-only hats. M6 spec (claude-tools-4iy) is explicit:
+# Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits cover "anything that mutates
+# files outside .beads". Real-work hats (ux/design/impl/docs/tests) do NOT
+# disallow these; they need them.
+NO_CODE_EDITS=(Write Edit MultiEdit NotebookEdit BashWriteEdits)
 
 case "$KIND" in
   dossier-builder)
     # B2: pure reader — Read/Glob/Grep/LS are enough; no Bash, no writes.
-    DISALLOWED=("${GUARDRAIL[@]}" "${WRITE_TOOLS[@]}" Bash)
+    DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}" Bash)
     PERMISSION_MODE=(--permission-mode default)
     ;;
   reconciler|enricher)
-    # M6/I3: bd subprocess via Bash, no file writes (the bd CLI writes to
-    # .beads on its own; tool-level "outside .beads" is not enforceable).
-    DISALLOWED=("${GUARDRAIL[@]}" "${WRITE_TOOLS[@]}")
+    # M6/I3: bd subprocess via Bash + read-only git status/log/diff allowed;
+    # NO file writes outside .beads (the bd CLI writes to .beads on its own).
+    # Disallowed list explicitly covers Write/Edit/MultiEdit/NotebookEdit AND
+    # BashWriteEdits — the M6 spec is precise about this so the bd-surgery
+    # agent physically cannot edit code or commit (AD8 read-only-outside-
+    # .beads/ contract).
+    DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}")
     PERMISSION_MODE=(--permission-mode default)
     ;;
   ux|design|impl|docs|tests)
