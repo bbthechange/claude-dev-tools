@@ -1335,8 +1335,18 @@ $PROMPT"
   # ── Watchdog ─────────────────────────────────────────────────────────────
 
   (
+    # claude-tools-t7i: defense in depth so the watchdog can't outlive its
+    # claude child. Three guards: (a) re-check `kill -0 $CLAUDE_PID` immediately
+    # after sleep (the `while` check alone only fires at the next iteration,
+    # and a PID-recycle race after the parent reaps the zombie could otherwise
+    # keep the loop ticking against a freshly-reassigned PID); (b) honor
+    # `.stop-beads` from inside the loop so a graceful stop kills the watchdog
+    # within one tick; (c) the parent's reap below escalates to SIGKILL +
+    # pkill -P, so a watchdog mid-sleep cannot block the runner.
     while kill -0 "$CLAUDE_PID" 2>/dev/null; do
       sleep 15
+      kill -0 "$CLAUDE_PID" 2>/dev/null || break
+      [[ -f "$STOP_FILE" ]] && break
       if [[ -f "$ACTIVITY_FILE" ]]; then
         LAST=$(cat "$ACTIVITY_FILE")
         NOW=$(date +%s)
@@ -1394,9 +1404,26 @@ $PROMPT"
 
   wait "$CLAUDE_PID" 2>/dev/null && CLAUDE_EXIT=0 || CLAUDE_EXIT=$?
   sleep 1
-  kill "$TAIL_PID" "$WATCHDOG_PID" 2>/dev/null || true
+  # claude-tools-t7i: bounded watchdog reap. The subshell may be mid-`sleep`,
+  # so a pid-only SIGTERM can race (the in-flight `sleep` grandchild outlives
+  # the subshell, and an unconditional `wait $WATCHDOG_PID` can then block the
+  # runner forever — stranding it past the next .stop-beads check). SIGTERM
+  # the subshell + its sleep child, give a 2s grace, escalate to SIGKILL, then
+  # `wait` only AFTER the kill confirmation so we never block.
+  kill -TERM "$WATCHDOG_PID" 2>/dev/null || true
+  pkill -P "$WATCHDOG_PID" 2>/dev/null || true   # in-flight `sleep` grandchild
+  for _ in 1 2; do
+    kill -0 "$WATCHDOG_PID" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+    pkill -KILL -P "$WATCHDOG_PID" 2>/dev/null || true
+    kill -KILL "$WATCHDOG_PID" 2>/dev/null || true
+  fi
+  kill "$TAIL_PID" 2>/dev/null || true
   pkill -P "$TAIL_PID" 2>/dev/null || true  # kill tail -f child that outlives subshell
-  wait "$TAIL_PID" "$WATCHDOG_PID" 2>/dev/null || true
+  wait "$TAIL_PID" 2>/dev/null || true
+  wait "$WATCHDOG_PID" 2>/dev/null || true
   echo ""
 
   CLASSIFICATION=$(classify_failure "$SIGNAL_FILE" "$TASK_ID" "$CLAUDE_EXIT")
