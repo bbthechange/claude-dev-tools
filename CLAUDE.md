@@ -67,3 +67,22 @@ _Add a brief overview of your project architecture_
 ## Conventions & Patterns
 
 _Add your project-specific conventions here_
+
+## Web/Pages task-acceptance discipline (lesson from claude-tools-bgw)
+
+Any bd task that touches `beads-runner/web/board/**` or `beads-runner/web/inbox/**` is **not done when the code is committed** — it is done when the deployed Cloudflare Pages site serves the new bytes. `bd close` without a deploy is the exact failure mode that bit F1/F2/F3/G1/L3 (closed-but-not-shipped) and that [claude-tools-bgw] exists to prevent.
+
+**Required steps before `bd close` on a web-track task:**
+
+1. **Deploy** the affected Pages project(s):
+   ```bash
+   (cd beads-runner/web/board && npx wrangler pages deploy . --project-name claude-wrangler-board)
+   (cd beads-runner/web/inbox && npx wrangler pages deploy . --project-name claude-wrangler-inbox)
+   ```
+2. **Verify** the deploy landed — deployed bytes must match committed bytes:
+   ```bash
+   bash beads-runner/web/verify-pages-deploy.sh board   # or: inbox
+   ```
+   A passing run prints `mismatches=0`. Any `DRIFT` line means the deploy did not land; re-deploy and re-verify before closing.
+
+This is "a child closes on what Brian experiences, never on a passing weak contract check" applied to the web tracks. Local tests passing + code committed is **not** acceptance — `mismatches=0` against the live host is.
