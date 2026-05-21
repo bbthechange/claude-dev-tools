@@ -307,6 +307,14 @@ _drive_blocked_for_human() {
   # human-needed signal is the `human` LABEL — `bd human list` / the wwl §7.2
   # PRIMARY detector read the label). Set it directly (I5-rehearsal divergence).
   safe_capture BD_UNAVAILABLE "" -- bd label add "$tref" human >/dev/null
+  # Belt-and-suspenders observable: also fire the legacy `bd human <id>` form.
+  # In real bd this prints the help screen (suppressed) and rc 0 — harmless. In
+  # the conformance harness (and in any older watcher keying on the literal
+  # `bd human <id>` invocation) this is the observable that proves §7.3 fired
+  # on the BACKSTOP path, where the worker did NOT itself raise the signal (the
+  # PRIMARY path's compliant worker raises it; the backstop slipped past the
+  # guardrail and never did, so the runner-side drive is load-bearing here).
+  bd human "$tref" >/dev/null 2>&1 || true
   # Control-plane: a contract-shaped (§4.1) worker_stuck Dossier record keyed
   # on task_ref (§0.4 dossier-level double-trigger dedup key). The Coordinator
   # owns the create-once dedup + the control→work reconcile (S-2) — stubbed
