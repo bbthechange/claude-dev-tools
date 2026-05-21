@@ -180,6 +180,60 @@ mkdir -p "$LOG_DIR" 2>/dev/null || { echo "specialist.sh: reject — could not c
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 STREAM_FILE="$LOG_DIR/specialist-$KIND-$TS.jsonl"
 SUMMARY_LOG="$LOG_DIR/specialist.log"
+WRONG_NODE_LOG="$LOG_DIR/wrong-node-crash.log"
+
+# ── claude-tools-3kd path-prime: spawn claude under nvm's node, not system v25
+#
+# The bug: a daemon-launched specialist.sh inherits a stripped PATH that
+# resolves `claude` to a system install running under /usr/local/bin/node
+# (currently v25.2.1). Node v25 is incompatible with the claude CLI — it
+# crashes at startup with `TypeError: Cannot read properties of undefined
+# (reading 'prototype')` from cli.js. The crash output (Node stack trace +
+# version banner) lands in $STREAM_FILE as if it were the agent's reply, the
+# shim's exit code is nonzero, and the caller's jq fallback silently kicks
+# in — every dossier-builder spawn degrades to the deterministic baseline
+# with nobody the wiser.
+#
+# The fix: if `node` on PATH is v25+, find the nvm default version and
+# prepend its bin dir to PATH so the spawned claude binds to nvm's node
+# (v23.11.1 today). The wrong-Node detector below is a backstop — even after
+# this prepend, an unforeseen launch environment could re-introduce the
+# crash, and we want it surfaced loudly rather than silently degrading.
+#
+# Non-invasive by design: if the current node is already < v25 (interactive
+# session, test fixture, an OS without nvm) we change nothing. Tests can also
+# set SPECIALIST_SKIP_NVM_PRIME=1 to force-skip.
+if [[ "${SPECIALIST_SKIP_NVM_PRIME:-0}" != "1" ]]; then
+  node_major="$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')"
+  if [[ -n "$node_major" && "$node_major" -ge 25 ]]; then
+    NVM_DIR_RESOLVED="${NVM_DIR:-$HOME/.nvm}"
+    if [[ -d "$NVM_DIR_RESOLVED/versions/node" ]]; then
+      _ver=""
+      _alias_file="$NVM_DIR_RESOLVED/alias/default"
+      if [[ -f "$_alias_file" ]]; then
+        _ver="$(head -1 "$_alias_file" 2>/dev/null)"
+        # Follow alias chain (e.g. default -> lts/iron -> 23.11.1) — bounded hops.
+        for _ in 1 2 3 4 5; do
+          [[ -n "$_ver" && -f "$NVM_DIR_RESOLVED/alias/$_ver" ]] || break
+          _ver="$(head -1 "$NVM_DIR_RESOLVED/alias/$_ver" 2>/dev/null)"
+        done
+      fi
+      _ver="${_ver#v}"
+      # If alias resolution didn't yield an X.Y.Z literal, pick the highest
+      # installed version that is NOT itself in the wrong-node range (v25+).
+      if [[ ! "$_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        _ver="$(ls -1 "$NVM_DIR_RESOLVED/versions/node" 2>/dev/null \
+                  | sed 's/^v//' \
+                  | awk -F. '$1 < 25' \
+                  | sort -V | tail -1)"
+      fi
+      if [[ -n "$_ver" && -d "$NVM_DIR_RESOLVED/versions/node/v$_ver/bin" ]]; then
+        PATH="$NVM_DIR_RESOLVED/versions/node/v$_ver/bin:$PATH"
+        export PATH
+      fi
+    fi
+  fi
+fi
 
 log_event() {
   local event="$1" exit_code="${2:-}" rec
@@ -227,6 +281,44 @@ log_event start
 CLAUDE_EXIT=$?
 
 log_event end "$CLAUDE_EXIT"
+
+# ── claude-tools-3kd wrong-Node crash detector (LOUD, never silent) ──────────
+# If claude exits nonzero AND the stream carries the Node v25+ × claude-CLI
+# prototype TypeError, surface it explicitly: a structured event in the
+# summary log, a clearly-marked stderr message, AND a sticky line in
+# wrong-node-crash.log. We do NOT mutate $CLAUDE_EXIT — the caller's existing
+# rc!=0 path still runs (so any downstream fallback still fires), but the
+# silent-degradation we're killing is now impossible: the crash leaves visible
+# fingerprints in three places. Even after the path-prime above, an unforeseen
+# launch environment could reintroduce the wrong-Node case (system claude
+# wrapper, NVM_DIR moved, custom $CLAUDE_BIN); this detector is the backstop
+# that ensures we hear about it instantly instead of weeks later.
+if [[ "$CLAUDE_EXIT" -ne 0 && -s "$STREAM_FILE" ]]; then
+  # Bounded scan so a multi-MB stream doesn't stall the shim.
+  _head_blob="$(head -c 16384 "$STREAM_FILE" 2>/dev/null)"
+  _tail_blob="$(tail -c 4096  "$STREAM_FILE" 2>/dev/null)"
+  if printf '%s%s' "$_head_blob" "$_tail_blob" \
+       | grep -qE "TypeError: Cannot read properties of undefined \(reading 'prototype'\)" 2>/dev/null \
+     && printf '%s' "$_tail_blob" \
+       | grep -qE "Node\.js v(2[5-9]|[3-9][0-9])\." 2>/dev/null; then
+    _node_seen="$(printf '%s' "$_tail_blob" | grep -oE "Node\.js v[0-9.]+" | tail -1)"
+    log_event wrong_node_crash "$CLAUDE_EXIT"
+    {
+      printf '%s\n' "specialist.sh: WRONG-NODE CRASH — '$KIND' claude CLI crashed at startup."
+      printf '  detected: %s (the claude CLI is incompatible with Node v25+; see claude-tools-3kd)\n' "${_node_seen:-<unknown>}"
+      printf '  stream:   %s\n' "$STREAM_FILE"
+      printf '  fix:      ensure $NVM_DIR/versions/node/<lts>/bin is first in PATH for the launching process,\n'
+      printf '            or set $CLAUDE_BIN to an explicit nvm-managed claude path.\n'
+      printf '            specialist.sh already prepends nvm bin when node --version is v25+; the wrong-Node\n'
+      printf '            detection firing means even that prepend did not resolve the right binary.\n'
+    } >&2
+    {
+      printf '%s\twrong_node_crash\t%s\t%s\t%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")" \
+        "$KIND" "${_node_seen:-unknown}" "$STREAM_FILE"
+    } >> "$WRONG_NODE_LOG" 2>/dev/null || true
+  fi
+fi
 
 # Output extraction: the final assistant `result` text (callers that want the
 # full stream read $STREAM_FILE). Line-by-line because the merged stderr can

@@ -271,6 +271,98 @@ grep -q '"exit_code":0' "$LOG_DIR/specialist.log" \
   && pass "summary log records exit_code" \
   || fail "summary log missing exit_code field"
 
+# ── wrong-Node crash detector (claude-tools-3kd) ─────────────────────────────
+# When the spawned claude crashes under Node v25+ at startup, the shim MUST
+# surface it loudly (specialist.log event + stderr message + sticky marker)
+# rather than letting the caller silently degrade to its jq fallback. The
+# detector is a backstop behind the path-prime — even after we prepend nvm's
+# bin, an unforeseen launch environment could still resolve a system claude;
+# we want the noise to fire instantly when that happens.
+echo '── wrong-Node crash detector (claude-tools-3kd) ──'
+# Use a dedicated workspace so this test's stream file is unambiguous.
+WS3="$WORK/ws-wrong-node"
+mkdir -p "$WS3/.beads"
+
+# Swap in a fake-claude that mimics the Node v25 × claude-CLI prototype crash:
+# a TypeError stack from cli.js followed by the Node version banner, exit 1.
+cat > "$FAKE_BIN/claude" <<'CLAUDE_NODE25_EOF'
+#!/usr/bin/env bash
+cat <<'CRASH'
+file:///usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js:489
+some.minified(token).boundary
+
+TypeError: Cannot read properties of undefined (reading 'prototype')
+    at file:///usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js:489:25504
+    at file:///usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js:7:402
+
+Node.js v25.2.1
+CRASH
+exit 1
+CLAUDE_NODE25_EOF
+chmod +x "$FAKE_BIN/claude"
+
+# Force-skip the path-prime so the test's fake claude (not the user's real
+# nvm-managed claude) is what runs. Without this the shim would prepend
+# $NVM_DIR/versions/node/v<X>/bin and resolve the REAL claude, defeating the
+# test fixture.
+SPECIALIST_SKIP_NVM_PRIME=1 \
+  bash "$SHIM" --kind=dossier-builder --workspace="$WS3" <<<'{"ask":"node25-repro"}' \
+  >"$WORK/wn.stdout" 2>"$WORK/wn.stderr"
+WN_RC=$?
+
+[[ "$WN_RC" -ne 0 ]] \
+  && pass "wrong-Node: shim exits nonzero (caller's fallback can still run)" \
+  || fail "wrong-Node: expected nonzero exit, got $WN_RC"
+
+grep -q "WRONG-NODE CRASH" "$WORK/wn.stderr" \
+  && pass "wrong-Node: stderr carries the loud WRONG-NODE CRASH message" \
+  || fail "wrong-Node: stderr missing WRONG-NODE CRASH (got: $(head -c 200 "$WORK/wn.stderr"))"
+
+grep -q "Node\.js v25" "$WORK/wn.stderr" \
+  && pass "wrong-Node: stderr names the detected node version" \
+  || fail "wrong-Node: stderr missing node version detail"
+
+grep -q '"event":"wrong_node_crash"' "$WS3/.beads/runner-logs/specialist.log" \
+  && pass "wrong-Node: summary log carries a wrong_node_crash event" \
+  || fail "wrong-Node: specialist.log missing wrong_node_crash event"
+
+[[ -f "$WS3/.beads/runner-logs/wrong-node-crash.log" ]] \
+  && grep -q "wrong_node_crash" "$WS3/.beads/runner-logs/wrong-node-crash.log" \
+  && pass "wrong-Node: sticky marker file (wrong-node-crash.log) written" \
+  || fail "wrong-Node: sticky marker file missing/empty"
+
+# Negative case: a generic claude failure (no TypeError + no Node v25 banner)
+# must NOT trip the wrong-Node detector. Otherwise we'd over-classify every
+# genuine refusal as a wrong-Node crash and the loud signal would lose meaning.
+WS4="$WORK/ws-generic-fail"
+mkdir -p "$WS4/.beads"
+cat > "$FAKE_BIN/claude" <<'CLAUDE_GENERIC_FAIL_EOF'
+#!/usr/bin/env bash
+printf '{"type":"result","result":"refusal text","is_error":true,"stop_reason":"end_turn"}\n'
+exit 1
+CLAUDE_GENERIC_FAIL_EOF
+chmod +x "$FAKE_BIN/claude"
+
+SPECIALIST_SKIP_NVM_PRIME=1 \
+  bash "$SHIM" --kind=dossier-builder --workspace="$WS4" <<<'{"ask":"generic-fail"}' \
+  >/dev/null 2>"$WORK/gf.stderr"
+
+! grep -q "WRONG-NODE CRASH" "$WORK/gf.stderr" \
+  && pass "wrong-Node: generic claude failure does NOT trip the detector" \
+  || fail "wrong-Node: detector falsely fired on a generic non-Node failure"
+
+! grep -q '"event":"wrong_node_crash"' "$WS4/.beads/runner-logs/specialist.log" \
+  && pass "wrong-Node: generic failure does NOT emit a wrong_node_crash event" \
+  || fail "wrong-Node: false-positive wrong_node_crash event on generic failure"
+
+# Restore the success fake so nothing downstream is surprised.
+cat > "$FAKE_BIN/claude" <<'CLAUDE_OK2_EOF'
+#!/usr/bin/env bash
+printf '{"type":"result","result":"ok-from-fake-claude","is_error":false,"stop_reason":"end_turn"}\n'
+exit 0
+CLAUDE_OK2_EOF
+chmod +x "$FAKE_BIN/claude"
+
 echo
 if [[ $FAILED -eq 0 ]]; then
   echo "ALL_PASS (S1 shim acceptance — claude-tools-bk6)"
