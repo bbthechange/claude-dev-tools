@@ -57,6 +57,14 @@ USAGE_CACHE_SECONDS=${USAGE_CACHE_SECONDS:-300}  # cache usage API response (avo
 CAPACITY_DENY_BACKOFF=${CAPACITY_DENY_BACKOFF:-60} # C1: per-pickup daemon ask-capacity denied ⇒ release lease + sleep N before retry
 export WORKER_STUCK_EXIT=${WORKER_STUCK_EXIT:-7} # §7.2/§8.1 worker deliberate-stuck sentinel exit (≠ BC-21 0–4; INTERFACE.md v1 constants). Exported: a stuck-aware worker wrapper reads it; the §7.2 detection below keys on it.
 IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}                # seconds of stream silence before watchdog kills (env-overridable)
+# claude-tools-idg — while a Task subagent is in-flight (task_notification
+# in_progress without a terminal task_updated yet) the parent stream goes
+# byte-silent: the subagent is an IN-API construct, not an OS child the
+# parser can see. Stretch (don't pause) the threshold so legitimate 30-min
+# subagents survive but a genuine deadlock (D5 hung bg-Bash that registered
+# as in-flight) still eventually gets killed. Default 6× ⇒ 1h on a stock
+# 600s IDLE_TIMEOUT.
+IDLE_TIMEOUT_INFLIGHT_MULT=${IDLE_TIMEOUT_INFLIGHT_MULT:-6}  # multiplier while ≥1 Task subagent is in-flight
 LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-14}     # rotation: delete runner-logs older than this
 LOG_DIR=".beads/runner-logs"                     # post-mortem artifacts (stream-json, ps/lsof snapshots, incidents.log)
 
@@ -1199,6 +1207,10 @@ $PROMPT"
 
   ACTIVITY_FILE=$(mktemp)
   SIGNAL_FILE=$(mktemp)
+  # claude-tools-idg: TASK_INFLIGHT_FILE holds one task_id per line for each
+  # Task subagent currently in-flight. Maintained by the stream parser below;
+  # read by the watchdog to stretch IDLE_TIMEOUT instead of false-positive kill.
+  TASK_INFLIGHT_FILE=$(mktemp)
   date +%s > "$ACTIVITY_FILE"
 
   (
@@ -1230,6 +1242,27 @@ $PROMPT"
               server_error)         echo "SERVER_ERROR=${ERROR_STATUS:-500}" >> "$SIGNAL_FILE" ;;
               max_output_tokens)    echo "MAX_OUTPUT_TOKENS=1" >> "$SIGNAL_FILE" ;;
             esac
+          elif [[ "$SUBTYPE" == "task_notification" || "$SUBTYPE" == "task_updated" ]]; then
+            # claude-tools-idg: track Task subagent lifecycle to inform the
+            # watchdog. status comes top-level (task_notification) or nested
+            # under patch (task_updated); we read both.
+            TASK_ID=$(echo "$line" | jq -r '.task_id // empty' 2>/dev/null)
+            TASK_STATUS=$(echo "$line" | jq -r '.status // .patch.status // empty' 2>/dev/null)
+            echo "  [$TS] [system:$SUBTYPE] task_id=$TASK_ID status=$TASK_STATUS"
+            if [[ -n "$TASK_ID" ]]; then
+              case "$TASK_STATUS" in
+                in_progress)
+                  grep -qxF "$TASK_ID" "$TASK_INFLIGHT_FILE" 2>/dev/null || \
+                    echo "$TASK_ID" >> "$TASK_INFLIGHT_FILE"
+                  ;;
+                completed|stopped|killed|failed|cancelled)
+                  if [[ -f "$TASK_INFLIGHT_FILE" ]]; then
+                    grep -vxF "$TASK_ID" "$TASK_INFLIGHT_FILE" > "${TASK_INFLIGHT_FILE}.tmp" 2>/dev/null \
+                      && mv "${TASK_INFLIGHT_FILE}.tmp" "$TASK_INFLIGHT_FILE"
+                  fi
+                  ;;
+              esac
+            fi
           else
             echo "  [$TS] [system:$SUBTYPE] $(echo "$line" | jq -c '.' 2>/dev/null)"
           fi
@@ -1272,8 +1305,23 @@ $PROMPT"
         LAST=$(cat "$ACTIVITY_FILE")
         NOW=$(date +%s)
         IDLE=$((NOW - LAST))
-        if [[ $IDLE -ge $IDLE_TIMEOUT ]]; then
-          echo "  Killing after ${IDLE}s idle — likely stuck"
+        # claude-tools-idg: stretch (don't pause) the kill threshold while a
+        # Task subagent is in-flight. The parser maintains TASK_INFLIGHT_FILE
+        # from task_notification/task_updated stream events; the kill backstop
+        # is preserved (a genuinely-deadlocked bg-Bash that registered as
+        # in-flight still dies eventually) just at IDLE_TIMEOUT × MULT.
+        INFLIGHT=0
+        if [[ -f "$TASK_INFLIGHT_FILE" ]]; then
+          INFLIGHT=$(wc -l < "$TASK_INFLIGHT_FILE" 2>/dev/null | tr -d ' ')
+          INFLIGHT=${INFLIGHT:-0}
+        fi
+        if [[ "$INFLIGHT" -gt 0 ]]; then
+          EFFECTIVE_TIMEOUT=$(( IDLE_TIMEOUT * IDLE_TIMEOUT_INFLIGHT_MULT ))
+        else
+          EFFECTIVE_TIMEOUT=$IDLE_TIMEOUT
+        fi
+        if [[ $IDLE -ge $EFFECTIVE_TIMEOUT ]]; then
+          echo "  Killing after ${IDLE}s idle — likely stuck (in-flight subagents=$INFLIGHT, threshold=${EFFECTIVE_TIMEOUT}s)"
           echo "WATCHDOG_KILL=1" >> "$SIGNAL_FILE"
 
           # Snapshot the stuck process before signalling: ps for state/CPU/mem,
@@ -1281,7 +1329,7 @@ $PROMPT"
           # vs child-pipe-blocked). Must run BEFORE SIGINT — lsof on a dying
           # process returns nothing useful.
           {
-            echo "=== ps (idle ${IDLE}s, IDLE_TIMEOUT=${IDLE_TIMEOUT}) ==="
+            echo "=== ps (idle ${IDLE}s, IDLE_TIMEOUT=${IDLE_TIMEOUT}, inflight_subagents=${INFLIGHT}, effective_threshold=${EFFECTIVE_TIMEOUT}s) ==="
             ps -o pid,stat,etime,pcpu,pmem,command -p "$CLAUDE_PID" 2>&1 || true
             echo ""
             echo "=== lsof (TCP/IPv/PIPE) ==="
@@ -1430,7 +1478,7 @@ $PROMPT"
       record_incident "$TASK_ID" "AUTH_FAILURE" "-"
       notify_user "beads-runner: auth failure" "$TASK_ID — runner stopped"
       runner_cleanup
-      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
+      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
       print_incidents_summary
       lease_release_seam "$TASK_ID"   # §6.1 release ⇒ bead open (fatal exit)
@@ -1448,7 +1496,7 @@ $PROMPT"
       record_incident "$TASK_ID" "BILLING_ERROR" "-"
       notify_user "beads-runner: billing error" "$TASK_ID — runner stopped"
       runner_cleanup
-      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
+      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
       echo "Results: $COMPLETED completed, $FAILED failed"
       print_incidents_summary
       lease_release_seam "$TASK_ID"   # §6.1 release ⇒ bead open (fatal exit)
@@ -1550,7 +1598,7 @@ $PROMPT"
     echo "  Stopping to avoid closing healthy tasks as skipped."
     notify_user "beads-runner: stopped" "$MAX_CONSECUTIVE_FAILURES consecutive failures"
     runner_cleanup
-    rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
+    rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
     echo "Results: $COMPLETED completed, $FAILED failed"
     print_incidents_summary
     lease_release_seam "${TASK_ID:-}"   # §6.1 release ⇒ bead open (fatal exit)
@@ -1564,7 +1612,7 @@ $PROMPT"
   # --status=open above) — release pairs the acquire so the lease never
   # outlives the work (release/expiry ⇒ bead open; orphan recovery = expiry).
   lease_release_seam "$TASK_ID"
-  rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$SIGNAL_FILE"
+  rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE"
   CLAUDE_PID=""
   CURRENT_TASK_ID=""
   echo ""

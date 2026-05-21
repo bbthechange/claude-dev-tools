@@ -79,6 +79,17 @@ RUNNER_TICK="${RUNNER_TICK:-1}"                        # during-task poll granul
 IDLE_TIMEOUT="${IDLE_TIMEOUT:-600}"                    # §0.5 / BC-22 — idle-progress kill threshold (env-overridable)
 WATCHDOG_POLL=15                                       # BC-22 SCAR — HARDCODED poll cadence (not env-tunable)
 WATCHDOG_SOFT_WARN=180                                 # BC-22 SCAR — HARDCODED soft-warn tier (not env-tunable)
+# claude-tools-idg — Task subagents are IN-API constructs inside the claude
+# process, not OS-level children: a parent waiting on a slow subagent shows
+# zero stream growth AND can be CPU-idle (the API request is sitting on the
+# Anthropic side). Tree-progress alone can't tell "stuck" from "patiently
+# waiting on a 30-minute subagent." The stream itself carries the signal —
+# task_notification (start) and task_updated (terminal) events with task_id —
+# so the watchdog tracks in-flight subagents and STRETCHES (not pauses) the
+# threshold while ≥1 is in-flight. Stretching keeps the kill backstop for
+# genuine deadlocks (the D5 hung-bg-Bash case: in-flight but truly stuck)
+# while protecting legitimate long subagents (R1's 30-min SIGSTOP probes).
+IDLE_TIMEOUT_INFLIGHT_MULT="${IDLE_TIMEOUT_INFLIGHT_MULT:-6}"  # multiplier while ≥1 Task subagent is in-flight
 
 # ── Minimal runtime config (skeleton). The full BC-37 config seam — sourced
 #    allowlist, --yolo, runner_setup/runner_cleanup hooks — is NOT T2.1's owned
@@ -875,15 +886,46 @@ _tree_cpu_secs() {
   echo "$total"
 }
 
+# _inflight_tasks <stream_file> — count Task subagents currently in-flight by
+# replaying task_notification (start) and task_updated (state change) events
+# from the stream. claude-tools-idg: a Task subagent is an IN-API construct,
+# not an OS child — neither stream growth nor tree CPU reliably reflects it
+# while the parent waits on the model. The stream itself carries task_id +
+# status events; we reduce them to a live set. The regex picks up both
+# top-level "status":"..." (task_notification) and nested "patch":{"status":
+# "..."} (task_updated) — the substring `"status":"<val>"` matches either.
+# Robust to multi-task scenarios; an unmatched terminal silently no-ops.
+_inflight_tasks() {
+  local stream="$1"
+  [[ -n "$stream" && -r "$stream" ]] || { echo 0; return 0; }
+  grep -E '"(task_notification|task_updated)"' "$stream" 2>/dev/null | awk '
+    {
+      tid=""; st=""
+      if (match($0, /"task_id":"[^"]+"/)) tid = substr($0, RSTART+11, RLENGTH-12)
+      if (match($0, /"status":"[^"]+"/)) st  = substr($0, RSTART+10, RLENGTH-11)
+      if (tid == "") next
+      if (st == "in_progress") inflight[tid] = 1
+      else if (st == "completed" || st == "stopped" || st == "killed" \
+            || st == "failed"    || st == "cancelled") delete inflight[tid]
+    }
+    END { n=0; for (t in inflight) n++; print n }'
+}
+
 # _watchdog_loop <claude_pid> <stream_file> <signal_file> <proc_snapshot>
 # Polls every WATCHDOG_POLL while the worker is alive. Liveness = progress
 # since the last poll, where progress is (stream-file GREW) OR (tree CPU
 # ADVANCED). idle = seconds since the last observed progress (init at spawn,
 # BC-22). Soft-warn at WATCHDOG_SOFT_WARN; KILL at IDLE_TIMEOUT with
 # snapshot-BEFORE-signal then staged SIGINT→(≤10×1s)→SIGKILL.
+# claude-tools-idg: when ≥1 Task subagent is in-flight (counted from the
+# stream's task_notification/task_updated events) the effective kill
+# threshold STRETCHES to IDLE_TIMEOUT × IDLE_TIMEOUT_INFLIGHT_MULT — the kill
+# is preserved (a genuinely deadlocked bg-Bash that registers as in-flight
+# still dies eventually), only deferred for legitimately-slow subagents.
 _watchdog_loop() {
   local pid="$1" stream="$2" sig="$3" snap="$4"
   local now last_progress prev_bytes prev_cpu bytes cpu idle warned=0
+  local inflight effective_timeout
   now="$(date +%s)"; last_progress="$now"
   prev_bytes="$(wc -c < "$stream" 2>/dev/null | tr -d ' ')"; prev_bytes="${prev_bytes:-0}"
   prev_cpu="$(_tree_cpu_secs "$pid" 2>/dev/null)"; prev_cpu="${prev_cpu:-0}"
@@ -899,14 +941,21 @@ _watchdog_loop() {
     fi
     prev_bytes="$bytes"; prev_cpu="$cpu"
     idle=$(( now - last_progress ))
-    if [[ "$idle" -ge "$IDLE_TIMEOUT" ]]; then
-      echo "  Killing after ${idle}s idle — no CPU or output progress in the agent+child-process tree (likely stuck)"
+    # Effective threshold: stretch (don't pause) while ≥1 subagent is in-flight.
+    inflight="$(_inflight_tasks "$stream")"; inflight="${inflight:-0}"
+    if [[ "$inflight" -gt 0 ]]; then
+      effective_timeout=$(( IDLE_TIMEOUT * IDLE_TIMEOUT_INFLIGHT_MULT ))
+    else
+      effective_timeout="$IDLE_TIMEOUT"
+    fi
+    if [[ "$idle" -ge "$effective_timeout" ]]; then
+      echo "  Killing after ${idle}s idle — no CPU or output progress in the agent+child-process tree (likely stuck; in-flight subagents=$inflight, threshold=${effective_timeout}s)"
       # BC-22/BC-40: emit the marker for the classifier (T2.2 owns precedence).
       echo "WATCHDOG_KILL=1" >> "$sig"
       # Snapshot the WHOLE stuck tree BEFORE any signal — lsof on a dying
       # process returns nothing useful, so order is load-bearing (BC-22 SCAR).
       {
-        echo "=== ps (tree, idle ${idle}s, IDLE_TIMEOUT=${IDLE_TIMEOUT}, signal=child-tree-progress) ==="
+        echo "=== ps (tree, idle ${idle}s, IDLE_TIMEOUT=${IDLE_TIMEOUT}, inflight_subagents=${inflight}, effective_threshold=${effective_timeout}s, signal=child-tree-progress) ==="
         ps -o pid,ppid,stat,etime,pcpu,pmem,time,command -p \
            "$(_tree_pids "$pid" | tr '\n' ',' | sed 's/,$//')" 2>&1 || true
         echo ""

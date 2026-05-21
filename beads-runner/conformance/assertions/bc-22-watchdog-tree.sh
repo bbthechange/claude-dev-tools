@@ -30,7 +30,7 @@ RUNNER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/runner.sh"
 # no CPU-burn-child behavior and is T1a-owned; per the bc-01 precedent a rig
 # may ship its own claude stub shadowing it via PATH (prepended AFTER
 # H_init_test). $1 selects the scenario.
-_install_rig_claude() { # mode=hang|busychild
+_install_rig_claude() { # mode=hang|busychild|inflight_subagent
   local mode="$1" RIG_BIN="$WORKDIR/.rigbin"
   mkdir -p "$RIG_BIN"
   cat > "$RIG_BIN/claude" <<REC
@@ -58,6 +58,21 @@ if [[ "$mode" == "hang" ]]; then
   # runner reaches its BC-21 exit-0 terminal (BC-24 "kill then retry" shape).
   [[ -n "\$bead_id" ]] && bd close "\$bead_id" >/dev/null 2>&1
   echo '{"type":"result","result":"recovered on retry","is_error":false,"stop_reason":"end_turn"}'
+  exit 0
+fi
+
+if [[ "$mode" == "inflight_subagent" ]]; then
+  # claude-tools-idg repro: a Task subagent is in-flight per the stream
+  # (task_notification status=in_progress) but the PARENT stream then goes
+  # byte-silent AND there is no CPU/child progress in the tree — the exact
+  # shape that fooled the pre-fix watchdog into killing a legitimate long
+  # subagent. Post-fix: while inflight>0, threshold is stretched to
+  # IDLE_TIMEOUT × IDLE_TIMEOUT_INFLIGHT_MULT, so this MUST drain cleanly.
+  echo '{"type":"system","subtype":"task_notification","task_id":"sub1","status":"in_progress","summary":"long subagent"}'
+  sleep "\${WD_INFLIGHT:-22}"
+  echo '{"type":"system","subtype":"task_updated","task_id":"sub1","patch":{"status":"completed"}}'
+  [[ -n "\$bead_id" ]] && bd close "\$bead_id" >/dev/null 2>&1
+  echo '{"type":"result","result":"subagent completed","is_error":false,"stop_reason":"end_turn"}'
   exit 0
 fi
 
@@ -133,5 +148,30 @@ bc22tree_busychild() {
   H_cleanup
 }
 
+# ── C · parent silent + tree CPU-idle BUT Task subagent in-flight ⇒ NOT killed
+#       (claude-tools-idg). With IDLE_TIMEOUT=1 the pre-fix watchdog kills at
+#       the next 15s poll; the fix stretches by IDLE_TIMEOUT_INFLIGHT_MULT
+#       while ≥1 task is in-flight so a legitimate 22s subagent survives. ─────
+bc22tree_inflight_subagent() {
+  H_init_test "bc22tree-inflight-subagent"
+  _install_rig_claude inflight_subagent
+  # 22s subagent ≫ IDLE_TIMEOUT=1; MULT=60 ⇒ effective 60s ≫ 22s ⇒ survives.
+  export WD_INFLIGHT=22 IDLE_TIMEOUT_INFLIGHT_MULT=60
+  bd_seed wd2 "subagent in-flight, parent stream + tree silent" \
+              "emits task_notification then sleeps with no children"
+  RUN_TIMEOUT=70 run_runner
+
+  local ld="$WORKDIR/.beads/runner-logs" o; o="$(out)"
+  _expect "BC-22" "§2.5" "claude-tools-idg: in-flight Task subagent stretches IDLE_TIMEOUT × MULT — legitimate long subagent NOT killed"
+  _need "watchdog did NOT print a kill"          notcontains "$o" "Killing after"
+  _need "no proc snapshot written (watchdog never fired)" \
+        bash -c '! ls "'"$ld"'"/*.proc.txt >/dev/null 2>&1'
+  _need "subagent completed and bead closed"     test "$(bd_status wd2)" = closed
+  _need "runner drained exit 0 (not SIGKILLed mid-subagent)" test "${RUN_EXIT:-1}" -eq 0
+  _emit
+  H_cleanup
+}
+
 bc22tree_stuck
 bc22tree_busychild
+bc22tree_inflight_subagent

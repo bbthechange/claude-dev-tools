@@ -179,6 +179,12 @@ where `MAX_OUTPUT_TOKENS` matches any of three markers: `MAX_OUTPUT_TOKENS=`, `R
 **Classification:** **SCAR.** Snapshot-before-SIGINT and SIGINT-before-SIGKILL are explicitly hard-won (post-mortem evidence is destroyed if you signal first; SDK retry state is only flushed on graceful interrupt). The 180s-vs-IDLE_TIMEOUT two-tier and the 15s poll cadence are tuned values. **SCAFFOLDING:** the bash subshell/`kill -0` loop mechanism itself.
 **Note:** "Idle" proxies "stuck" via *stream silence*. A long single tool call that emits no stream lines looks idle — this is why the default timeout is a generous 600s. A rewrite must preserve "silence ⇒ stuck after a long grace period", not a tighter heartbeat that would kill legitimately-slow tools.
 
+### BC-22 addendum — Task-subagent-aware idle (claude-tools-idg)
+**Assertion:** Task tool subagents are IN-API constructs inside the `claude` process — neither stream growth nor process-tree CPU reliably reflects their progress while the parent waits on the model. The stream itself carries the signal: `{"type":"system","subtype":"task_notification","task_id":"…","status":"in_progress",…}` on start and `{"type":"system","subtype":"task_updated","task_id":"…","patch":{"status":"completed|stopped|killed|failed|cancelled"}}` on terminal. The watchdog replays those events to maintain a live in-flight set; when `inflight > 0` the effective kill threshold is `IDLE_TIMEOUT × IDLE_TIMEOUT_INFLIGHT_MULT` (env-overridable, default 6 ⇒ 1h on stock 600s). The kill is **stretched, not paused** — a genuinely deadlocked bg-Bash that registered as in-flight (the D5 2026-05-20 case) still dies eventually.
+**Repro:** Emit a `task_notification status=in_progress`, then silence with no tree CPU; observe NO kill at `IDLE_TIMEOUT` (the legitimate long-subagent case). Emit a terminal `task_updated`, then silence; observe the kill resumes at the unstretched `IDLE_TIMEOUT` (the stuck case after subagent finished).
+**Source:** `runner.sh` (`_inflight_tasks`, `_watchdog_loop`); `run-beads-tasks.sh` (parser `task_notification|task_updated` branch + watchdog `EFFECTIVE_TIMEOUT`); `conformance/assertions/bc-22-watchdog-tree.sh::bc22tree_inflight_subagent`.
+**Classification:** **SCAR.** Stretch-not-pause is the load-bearing discipline — paused-on-inflight loses the backstop entirely, which would re-introduce the failure mode the watchdog exists to prevent.
+
 ---
 
 ## 8. Analysis-task escalation
