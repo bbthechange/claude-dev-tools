@@ -1,6 +1,6 @@
 # Beads Runner — Architecture & Decisions
 
-Status: draft (v2 — adversarial review integrated; AD7 §11-amended 2026-05-17: `diagrams[].content` = Mermaid, Dossier schema `1→2`; AD7 §11-amended 2026-05-20: v1 dossier-item author surface committed to the worker itself via the `ask-brian` MCP tool — see §3.1; AD1/§2/§7 §11-amended 2026-05-20: Local Agent is a per-machine daemon process (launchd LaunchAgent on macOS / systemd user service on linux), NOT a library sourced into the workspace runner — see §3.2; new AD8 — resume dispatch and parallel-work boundary, see §3.3) · Scope: **architecture/design only** (deliberately *not* UX) · Owner: Brian · Last updated: 2026-05-20
+Status: draft (v2 — adversarial review integrated; AD7 §11-amended 2026-05-17: `diagrams[].content` = Mermaid, Dossier schema `1→2`; AD7 §11-amended 2026-05-20: v1 dossier-item author surface committed to a fresh **dossier-builder agent dispatched by the `ask-brian` MCP server**, with the worker's rich `context_dump` as raw material — see §3.1 (this amend **supersedes** an in-flight earlier 2026-05-20 amend that misstated the author as the worker itself in-session; that amend is reverted as a design correction, see §3.1 historical note); AD1/§2/§7 §11-amended 2026-05-20: Local Agent is a per-machine daemon process (launchd LaunchAgent on macOS / systemd user service on linux), NOT a library sourced into the workspace runner — see §3.2; new AD8 — resume dispatch and parallel-work boundary, see §3.3) · Scope: **architecture/design only** (deliberately *not* UX) · Owner: Brian · Last updated: 2026-05-20
 
 This is the architecture counterpart to `UX-DESIGN.md`. That doc is user-flows
 only and is the authoritative source for requirement provenance (its §0). This
@@ -82,88 +82,139 @@ eliminates a durable command queue (desired-state mutation, not a queued msg).
 
 ---
 
-## 3.1 AD7 §11 amend — v1 dossier-author surface committed (2026-05-20)
+## 3.1 AD7 §11 amend — v1 dossier-author surface committed (2026-05-20, re-amended)
 
-> **§11 amendment, Brian-ratified 2026-05-20.** AD7 (and §5 C5 below) had
-> deliberately left the dossier *producer* swappable behind the schema seam.
-> This block **commits** the v1 producer and demotes the existing jq path to
-> fallback. Bound to research outcome [[research/mcp-interactive-tool.md]]
-> (epic claude-tools-kie, child R1 = claude-tools-59o); supersedes the pre-R1
-> "real `claude -p` agent as a separate post-hoc process" sketch.
+> **§11 amendment, Brian-ratified 2026-05-20 (re-amended same-day).** AD7
+> (and §5 C5 below) had deliberately left the dossier *producer* swappable
+> behind the schema seam. This block **commits** the v1 producer and demotes
+> the existing jq path to fallback. Bound to research outcome
+> [[research/mcp-interactive-tool.md]] (epic claude-tools-kie, child R1 =
+> claude-tools-59o); supersedes the pre-R1 "real `claude -p` agent as a
+> separate post-hoc process" sketch.
+>
+> **Historical note (in-flight design correction).** A first version of this
+> amend (commit `4ece326`, child claude-tools-9zk, 2026-05-20 03:55) wrongly
+> committed the author surface to *the worker itself, in-session*. That
+> framing was overruled the same day on token-economics grounds before the
+> implementation tracks (B1/B2/B4) bound to it; the implementation tracks
+> shipped the correct architecture (see "Why a separate builder, dispatched
+> by the MCP server" below) and the bd memory
+> `architecture-refinement-brian-2026-05-20-the-mcp` records the rationale.
+> This re-amend reverts the misstatement so DESIGN.md matches what was
+> actually built (`mcp-askbrian/server.mjs` + `beads-runner/agents/dossier-
+> builder.system.md` + the B4 worker prompt in `beads-runner/lib/run-beads-
+> tasks.sh`). The seam and the schema were never affected; only the
+> *producer-identity* line is corrected.
 
-**Commit: the v1 dossier-item author is the worker itself, in-session, via the
-`ask-brian` MCP tool.** The worker is already a fresh `claude -p` session
-launched inside the workspace cwd (with `--add-dir` to the workspace and the
-workspace's `CLAUDE.md` available — Flow B trigger context). When it hits a
-fork it must not resolve, it calls `mcp__askbrian__ask-brian` with the
-structured ask `{question, options?, recommendation?, why?}`; the MCP server's
-*first action* is to write that ask, as an AD7 `items[]` entry, durably to the
-hosted engine (the dossier write), and then it polls the answer surface and
-returns Brian's answer to the worker as the tool_result. The worker continues
-in-session with the answer. Per R1 this blocks cleanly for ≥30 min wall-clock
-with no observable ceiling; SIGSTOP / lid-close survives because the dossier
-was written *before* the poll loop, so a daemon-resume backstop can splice the
-answer into a re-dispatch if the tool call is ever killed. Concretely:
+**Commit: the v1 dossier-item author is a fresh `claude -p` dossier-builder
+agent dispatched by the `ask-brian` MCP server before the engine write, with
+the worker's rich `context_dump` as raw material.** The worker is a fresh
+`claude -p` session running the bd task inside the workspace cwd. When it
+hits a fork it must not resolve, it calls `mcp__askbrian__ask-brian` with a
+structured ask whose load-bearing field is `context_dump` (rich, unconstrained
+prose: code paths inspected, alternatives considered, related decisions, why
+the worker can't resolve this itself). The MCP server's handler then runs the
+five steps from claude-tools-bvj (B2) in order: **(1) authoring dispatch** —
+spawn a fresh `claude -p` running the dossier-builder agent system prompt
+(`beads-runner/agents/dossier-builder.system.md`, B1) with the worker's input
+on stdin, time-budgeted (`BUILDER_TIMEOUT_MS`; default 90s), `--add-dir` to
+the workspace so the builder can `Read`/`Grep`/`Glob` the actual code and
+docs; **(2) write to the hosted engine first** — engine-bridge writes the
+builder's polished `{body, items[]}` (or the B3 jq fallback shape on builder
+failure) durably cloud-side **before** the poll loop starts; **(3) notify the
+phone**; **(4) poll for answer** every `POLL_INTERVAL_MS` until any item moves
+to `answered`/`applied`; **(5) return the answer to the worker** as the
+tool_result, so the worker continues in-session with Brian's decision. Per R1
+this blocks cleanly for ≥30 min wall-clock with no observable ceiling;
+SIGSTOP / lid-close survives because the dossier was written *before* the
+poll loop, so a daemon-resume backstop can splice the answer into a
+re-dispatch if the tool call is ever killed. Concretely:
 
-- **Author = the worker (a fresh `claude -p` agent in the workspace cwd).** No
-  separate "dossier-builder agent as a downstream process." The worker has the
-  full task context already; R1 establishes that it can author the structured
-  ask in-session without exiting.
+- **Author = a fresh `claude -p` dossier-builder agent (small context,
+  ~30–50k) dispatched by the MCP server before the engine write, with the
+  worker's `context_dump` as raw material.** The builder reads the project's
+  design docs, `CLAUDE.md`, the bead and its dependency graph, and recent code
+  touching the area (see `beads-runner/agents/dossier-builder.system.md` Step
+  1) to author a polished four-tier body (`tldr` / `sections[]` / Mermaid
+  `diagrams[]` / `full_detail`) plus per-item `consequence_block`s. The
+  builder is **not** the worker, and **not** a post-hoc agent re-launched
+  after the worker exits — it runs concurrently with the (now-blocked) worker,
+  inside the same MCP tool call, and exits when its single JSON envelope is on
+  stdout.
+- **Why a separate builder, dispatched by the MCP server.** A 600k-context
+  worker doing the full author job (read docs, perfect Mermaid, polished
+  headers, conformant dossier shape) costs more total budget than splitting
+  the work: (a) the worker dumps rich context cheaply — it's already great at
+  *"what do I know"* and has the freshest possible understanding of the fork
+  it just hit; (b) a fresh small-context builder agent does focused authoring
+  with that dump + targeted reads as input. Separation of concerns is
+  preserved (the worker doesn't switch hats mid-task) **and** the worker
+  session is preserved (the same agent that hit the fork is the same agent
+  that acts on the answer — no 600k of context lost to a re-spawn). This is
+  the rationale recorded in the bd memory
+  `architecture-refinement-brian-2026-05-20-the-mcp`; it is also strictly
+  better than the post-hoc-reconstructive design (which was the pre-R1
+  framing) because the builder has the worker's brain-dump rather than
+  exit-time crumbs.
 - **Write surface = the `ask-brian` MCP server.** Single stdio MCP tool,
   registered at user scope so every `claude -p` invocation has it. The tool
-  body owns the durable engine write + the poll loop.
-- **Schema bound = AD7 v2.** The MCP `inputSchema` writes into a v2 dossier
-  `items[]` entry (one item per call); the dossier `body` (`tldr` / `sections[]`
-  / `diagrams[]` / `full_detail`) tiers are present-but-minimal for
-  worker-stuck dossiers in v1 (a deterministic stub derived from the bd task
-  title + the worker's ask + the project-context anchor — *not* a four-tier
-  authored narrative). The four-tier body is the **proactive Flow F overview**
-  profile's center of gravity; for stuck-signal dossiers, the body is the
-  navigational frame around an item-driven ask.
-- **jq `dg__author` = the fallback / shape-coercer.** It is **not** the v1
-  primary author. It runs on two cases: (a) the worker slipped to a forbidden
-  interactive tool and never made an MCP call (the
-  [[research/headless-stuck-signal]] `permission_denials[]` backstop fires and
-  must still produce a dossier from the bd task + the slipped `tool_input` —
-  jq does that minimally); (b) the MCP write succeeded but the resulting
-  dossier missed a required AD7 shape (jq coerces it into conforming shape so
-  the §5.1-core WRITE gate passes). The agent's failure is the fallback's
-  success case — the pipeline degrades gracefully to a thin dossier rather
-  than silently dropping the ask.
+  body owns the builder dispatch + the durable engine write + the notify +
+  the poll loop + the answer return — the five steps above.
+- **`inputSchema` as built in B2:**
+  `{ question: string, context_dump: string, bead_ref: string, options?:
+  [{label, blast_radius}], recommendation?: string, reversible?: string }`,
+  with `question` + `context_dump` + `bead_ref` required. `context_dump` is
+  the **load-bearing field**, not a hint: it carries the worker's 600k of
+  context cheaply so the small-context builder can author from it. The
+  optional `question` / `options` / `recommendation` / `reversible` fields are
+  structured hints layered on top of the dump, not substitutes for it. (See
+  `mcp-askbrian/server.mjs` `ListToolsRequestSchema` handler for the
+  authoritative shape.)
+- **Schema bound = AD7 v2.** The MCP path produces one v2 dossier per call —
+  the builder authors a full four-tier `body` plus `items[]` (one item per
+  worker call in v1; the builder may emit several if the worker's ask
+  factors). The body tiers are first-class for worker-stuck dossiers, not a
+  thin stub — the builder system prompt makes "all four tiers mandatory" a
+  contract (`beads-runner/agents/dossier-builder.system.md`, "Stakes" §3).
+- **jq `dg__author` = the fallback / shape-coercer (B3).** It is **not** the
+  v1 primary author. It runs on two cases: (a) the builder dispatch fails
+  (timeout / non-zero exit / malformed JSON envelope) — the MCP server falls
+  back to the jq shape-coercer so the engine write still lands and the worker
+  is not left hanging; (b) the worker slipped to a forbidden interactive tool
+  and never made an MCP call (the [[research/headless-stuck-signal]]
+  `permission_denials[]` backstop fires runner-side and must still produce a
+  dossier from the bd task + the slipped `tool_input` — jq does that
+  minimally). The agent's failure is the fallback's success case — the
+  pipeline degrades gracefully to a thin dossier rather than silently
+  dropping the ask.
 - **Flow F overview dossiers (the deep-body profile) keep their own author
   surface, named separately.** The Flow F trigger (a bd stage transition,
   e.g. `stage = design` closing — UX-DESIGN Flow F §11 amend, P-track) fires
-  a one-shot enricher pass that *does* author a deep four-tier body around
-  zero or all-`fyi-objectable` items. Whether that pass is a fresh `claude -p`
-  in the workspace or a thinner enricher is a v1.1 decision tracked under the
-  P-track (e.g. `claude-tools-bvj`); the AD7 schema is unchanged either way.
-
-**Why "the worker itself, via MCP" is the honest v1 answer.** Pre-R1, the
-sketch was a separate post-hoc `claude -p` reconstructing the dossier from
-exit-time crumbs (worker dropped a stuck-signal, runner re-dispatched a new
-agent to author). R1 (claude-tools-59o) demonstrated that the worker can stay
-in-session and author the ask itself via an MCP tool that blocks cleanly —
-which removes the reconstruction step entirely. The worker has strictly more
-context than any post-hoc reconstructive agent could; "author in-session"
-beats "reconstruct from crumbs" on faithfulness, latency, and code volume. The
-pre-R1 shape now lives only as a degraded fallback for worker-slip cases.
+  a one-shot enricher pass that authors a deep four-tier body around zero or
+  all-`fyi-objectable` items. That pass is structurally similar to the
+  ask-brian builder (small-context `claude -p`, AD7 v2 output, same engine
+  write path) but the trigger and the prompt are separate; the AD7 schema is
+  unchanged either way.
 
 **The worker-stuck signal mechanism stays unchanged.** Instruct + guardrail
 (`--disallowedTools AskUserQuestion EnterPlanMode ExitPlanMode`) +
 `permission_denials[]` backstop + EnterPlanMode-tool_result stream scan are
 correct per [[research/headless-stuck-signal]] (AD3 / AD3.3 / AD3.5) and are
-not modified by this amend. The change is in **what happens after the worker
-emits the signal**: instead of handing off to a post-hoc reconstructive agent
-(pre-R1), the runner now treats the slip as the degraded-fallback case and
-the jq shape-coercer authors the minimal dossier. The primary path is the
-positive R1 path (MCP `ask-brian`) and the negative-path backstops are the
-*defense in depth* for when the worker slips, not the main producer.
+not modified by this amend. The primary path is the positive R1 path (worker
+calls `ask-brian` → MCP dispatches builder → builder authors → MCP writes
+engine → MCP returns answer) and the negative-path backstops are *defense in
+depth* for when the worker slips, not the main producer.
 
 **Bind / build pointers.** R1: `claude-tools-59o` (closed; research in
-`research/mcp-interactive-tool.md`). Build of the MCP server + worker-prompt
-update lives under epic `claude-tools-kie` track B (e.g. the
-`B1-dossier-builder` and `B4-worker-stuck` beads cited in the R1 contract);
-this DESIGN amend is doc-only — track B owns the behavior change.
+`beads-runner/research/mcp-interactive-tool.md`) — the MCP-blocking primitive
+this whole flow depends on. Builder system prompt: `claude-tools-n34` (B1) →
+`beads-runner/agents/dossier-builder.system.md`. MCP server: `claude-tools-bvj`
+(B2) → `mcp-askbrian/server.mjs`. Worker prompt update teaching the worker to
+call `ask-brian` with a rich `context_dump`: `claude-tools-cf6` (B4) →
+`beads-runner/lib/run-beads-tasks.sh`. jq fallback: `claude-tools-95m` (B3).
+Rationale of record: bd memory
+`architecture-refinement-brian-2026-05-20-the-mcp`. This DESIGN amend is
+doc-only — the B-track owns the behavior, and the behavior is what shipped.
 
 ---
 
@@ -393,12 +444,16 @@ passes* is the tradeable 0.C mechanism; the *schema and its item-granularity*
 are §0.A and not tradeable. **MUST NOT** ship a decision-singular schema (one
 `consequence_block`) — it cannot express a multi-item review or a standalone
 design overview (the regression this revision fixes). **§11 amend 2026-05-20
-(see §3.1):** the v1 *producer* is now committed — for worker-stuck dossiers,
-the producer is **the worker itself, in-session, via the `ask-brian` MCP
-tool** (per R1, `claude-tools-59o` / `research/mcp-interactive-tool.md`); for
-Flow F overview dossiers, the producer is a separately-named enricher pass at
-the trigger point. jq `dg__author` is demoted to the fallback / shape-coercer.
-The seam stays — only the v1 choice is committed.
+(see §3.1; re-amended same-day, see §3.1 historical note):** the v1
+*producer* is now committed — for worker-stuck dossiers, the producer is **a
+fresh `claude -p` dossier-builder agent dispatched by the `ask-brian` MCP
+server before the engine write, with the worker's rich `context_dump` as raw
+material** (per R1, `claude-tools-59o` / `beads-runner/research/mcp-
+interactive-tool.md`; per B1/B2/B4, `claude-tools-n34` / `claude-tools-bvj` /
+`claude-tools-cf6`); for Flow F overview dossiers, the producer is a
+separately-named enricher pass at the trigger point. jq `dg__author` is
+demoted to the fallback / shape-coercer. The seam stays — only the v1 choice
+is committed.
 
 ### C6 — Honest-state: backbone + **liveness is data**
 **v1 MUST** carry, in the control-plane store, not just `desired`+`actual` but a
