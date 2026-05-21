@@ -138,16 +138,20 @@ measurement & supervision authority (strong, machine-local). The
   material, or any provider primitive. Forensic content crosses only via the
   §10 redacted-blob path, runner→Coordinator, redacted *before* transit.
 
-**§1.2 Empty-queue is not project death (reconciles BC-05 with UX §0.A).**
-The runner *process* preserves BC-05/BC-21 verbatim: a drained `bd ready`
-exits **0**. UX §0.A ("runner keeps running when out of tasks; picks tasks up
-once added") is satisfied **at the Local Agent tier, not by changing the exit
-contract**: on a clean exit-0 drain the Local Agent keeps the project eligible
-and re-launches the runner when new ready work appears, polling every
-`RECLAIM_POLL_INTERVAL`, **unless** `RunnerState.desired ∈ {paused, stopped}`.
-The exit-0 supervisor signal (BC-21) is therefore preserved and the requirement
-is met without contradiction. The relaunch mechanism is T3's; this clause fixes
-only the *contract*: exit-0-on-drain ≠ stop the project.
+**§1.2 Empty-queue is not project death (UX §0.A — claude-tools-giu).**
+The runner *process* now idles in place on a drained `bd ready`: it reports
+`actual=idle` and re-polls `bd ready` every `IDLE_POLL_INTERVAL` /
+`RECLAIM_POLL_INTERVAL` seconds, picking up new ready work **without** an
+external respawn. Inside the idle wait the runner still honors `.stop-beads`
+and Coordinator `desired=stopped` (both end the runner cleanly within one
+poll interval); `desired=paused` is folded into the regular `st_reconcile`
+hold path. This collapses the v1 design that satisfied UX §0.A by exiting
+on drain and relying on the Local Agent to relaunch (each cycle paid the
+claude+lib startup cost, was perceptible churn, and broke whenever the
+relaunch path drifted). The BC-21 exit-code table (drain ⇒ 0) is preserved
+as a testable SCAR via `RUNNER_EXIT_ON_DRAIN=1` — the conformance harness
+sets this so the exit-code contract is still exercised; any external
+supervisor that depended on exit 0 ≡ drained can opt in the same way.
 
 ---
 

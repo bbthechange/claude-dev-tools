@@ -1208,6 +1208,7 @@ st_claim() {
   # T2.1 state machine's.)
   CURRENT_TASK_ID="$CANDIDATE_ID"
   safe_capture BD_UNAVAILABLE "" -- bd update "$CANDIDATE_ID" --status=in_progress >/dev/null
+  IDLE_ANNOUNCED=""   # claude-tools-giu: leaving idle — next drain re-announces
   transition RUN_TASK
 }
 
@@ -1548,15 +1549,38 @@ st_post_task() {
   transition RECONCILE                          # back to the ONE reconcile point
 }
 
-# §1.2: a drained `bd ready` exits 0. exit-0-on-drain ≠ stop the project — UX
-# §0.A "keep the project eligible / relaunch on new work" is satisfied at the
-# Local Agent tier (T3), NOT by changing this exit contract. This clause fixes
-# only the contract here.
+# §1.2 / UX §0.A (claude-tools-giu): empty queue is NOT project death. The
+# runner stays alive, reports idle, polls for new ready work every
+# RECLAIM_POLL_INTERVAL seconds, and resumes on the next `bd ready` hit
+# WITHOUT requiring an external respawn (the T3 daemon is still authoritative
+# for desired-state; an idle-poll just avoids burning the claude+lib startup
+# cost on every drain cycle). Reconcile-on-each-tick is delegated to
+# st_reconcile (which already honors STOP_FILE, desired=stopped, and
+# desired=paused) — st_drained just paces the cadence and the heartbeat. The
+# IDLE_ANNOUNCED guard keeps logs to one line per idle spell; st_claim clears
+# it when a task is finally picked up.
+#
+# RUNNER_EXIT_ON_DRAIN=1 opts INTO the legacy BC-05/BC-21 SCAR (drain ⇒ exit 0
+# verbatim). The conformance harness sets this so the historical exit-code
+# table is still exercised end-to-end (the contract is preserved for tests +
+# any external coordinator that still treats exit 0 as "queue drained"). The
+# production default — unset — is the UX §0.A idle-loop.
 st_drained() {
-  echo ""
-  echo "runner: no ready tasks — draining (§1.2: exit-0-on-drain ≠ stop project)"
-  TERMINAL_CLASS="CLEAN"; EXIT_CODE=0
-  transition TERMINAL
+  if [[ -n "${RUNNER_EXIT_ON_DRAIN:-}" ]]; then
+    echo ""
+    echo "runner: no ready tasks — draining (RUNNER_EXIT_ON_DRAIN=1; BC-05/BC-21 legacy contract)"
+    TERMINAL_CLASS="CLEAN"; EXIT_CODE=0
+    transition TERMINAL
+    return
+  fi
+  if [[ -z "${IDLE_ANNOUNCED:-}" ]]; then
+    echo ""
+    echo "runner: no ready tasks — idling (poll every ${RECLAIM_POLL_INTERVAL}s for new work; UX §0.A)"
+    IDLE_ANNOUNCED=1
+  fi
+  job_heartbeat idle "" "" >/dev/null      # §4.2: honestly idle, not gone
+  sleep "$RECLAIM_POLL_INTERVAL"
+  transition RECONCILE
 }
 
 st_stopping() {

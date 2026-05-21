@@ -43,6 +43,11 @@ H_init_test() {
   export IDLE_TIMEOUT=99999         # watchdog silent unless a BC-22 test opts in
   export MAX_RETRIES=2
   export MAX_CONSECUTIVE_FAILURES=3
+  # claude-tools-giu: opt INTO the legacy BC-05/BC-21 exit-on-drain SCAR for
+  # the conformance harness so the historical exit-code table is still
+  # exercised end-to-end. The production runner default (env unset) is the
+  # UX §0.A idle-on-drain loop; the SCAR remains testable via this opt-in.
+  export RUNNER_EXIT_ON_DRAIN=1
   unset HARNESS_BD_SHOW_STATUS_EMPTY HARNESS_KEYCHAIN HARNESS_USAGE HARNESS_HANG_SECONDS 2>/dev/null || true
 }
 

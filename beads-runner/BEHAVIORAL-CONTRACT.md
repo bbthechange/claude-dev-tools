@@ -55,11 +55,13 @@ After the orphan list is exhausted, fall through to `bd ready` (or `[]` if that 
 **Classification:** **SCAR.** The re-check is a TOCTOU defense; the keep-on-bad-`bd show` and one-per-loop draining are deliberate.
 **Precise scope of the race this closes (honest limitation, not a redesign):** The recheck closes the window where an orphan *no longer needs work* (closed/advanced by something else between the startup snapshot and the — potentially 30-minute, usage-gated — first loop). It does **not** prevent two runners from both resuming the *same still-`in_progress` orphan* (both observe `in_progress`). The seed's phrasing "closes the snapshot→first-loop race" is correct only for the status-changed case; the two-runners-one-orphan race is residual and uncharacterized by any guard in this script.
 
-### BC-05 — Empty `bd ready` terminates the run cleanly
-**Assertion:** When no orphan and no ready task is available, the runner prints "No more ready tasks." and exits 0.
-**Repro:** Run with an empty/all-blocked queue.
-**Source:** 271 (`bd ready … || echo "[]"`), 554–560 (empty `TASK_ID` ⇒ `break`), 927–930 (fall off end ⇒ exit 0).
-**Classification:** **SCAR.** "Drain the queue then stop" is the contract. Note the exit code (0) is part of the external contract — see BC-21.
+### BC-05 — Empty `bd ready`: idle-on-drain by default (UX §0.A), legacy exit-0 opt-in
+**Assertion:** When no orphan and no ready task is available, the **default** behavior (UX §0.A) is to **idle**: print one "idling…" line, heartbeat `idle`, poll every `IDLE_POLL_INTERVAL` / `RECLAIM_POLL_INTERVAL` seconds, and pick up new ready work without an external respawn. `.stop-beads` and Coordinator `desired=stopped` end the runner cleanly within one poll interval. The legacy SCAR — drain ⇒ exit 0 — is opt-in via `RUNNER_EXIT_ON_DRAIN=1` (the conformance harness sets this so the BC-21 exit-code table is still exercised end-to-end).
+**Repro (default):** Run with an empty/all-blocked queue and `RUNNER_EXIT_ON_DRAIN` unset → runner stays alive, logs `idling`, and picks up tasks added after the drain.
+**Repro (legacy SCAR):** Same setup with `RUNNER_EXIT_ON_DRAIN=1` → runner prints "No more ready tasks." and exits 0.
+**Source (rewrite):** `runner.sh` `st_drained` — opt-in legacy path goes to `TERMINAL`; default path heartbeats idle, sleeps `RECLAIM_POLL_INTERVAL`, transitions back to `RECONCILE` (which already honors `STOP_FILE` and `desired=stopped`). `IDLE_ANNOUNCED` keeps the log to one line per idle spell; `st_claim` clears it.
+**Source (v1):** `run-beads-tasks.sh` main loop — empty `TASK_ID` either `break` (legacy opt-in) or enters the idle-poll loop that checks `.stop-beads` + `workspace_desired_state` every `IDLE_POLL_INTERVAL`.
+**Classification:** **SCAR.** The "drain ⇒ exit 0" code path is the *outward* contract a coordinator depends on (BC-21) and must remain testable. The behavioral contract Brian protects (UX §0.A: "Runner keeps running when out of tasks and picks tasks up once added.") is the *default* in production; the legacy exit is preserved as an opt-in for conformance + any external supervisor that still treats exit 0 as "drained." Issue: claude-tools-giu.
 
 ---
 

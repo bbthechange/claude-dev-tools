@@ -993,10 +993,46 @@ while true; do
   TASK_ID=$(echo "$TASK_JSON" | jq -r '.[0].id // empty')
 
   if [[ -z "$TASK_ID" ]]; then
-    echo ""
-    echo "No more ready tasks."
-    hb idle   # §4.2: last actual before the clean drain — honestly idle, not gone
-    break
+    # UX 0.A (claude-tools-giu): runner stays alive when the queue drains —
+    # honestly idle to the engine, polling for new ready work, and picks up
+    # any task added afterward WITHOUT requiring an external respawn. The
+    # daemon's M3 desired-state poll is still authoritative: a desired=stopped
+    # OR a .stop-beads here ends the runner cleanly within IDLE_POLL_INTERVAL.
+    # RUNNER_EXIT_ON_DRAIN=1 opts into the legacy BC-05 SCAR (drain ⇒ exit 0)
+    # so conformance tests can still verify the historical exit-code contract.
+    if [[ -n "${RUNNER_EXIT_ON_DRAIN:-}" ]]; then
+      echo ""
+      echo "No more ready tasks."
+      echo "  (RUNNER_EXIT_ON_DRAIN=1 — BC-05 legacy exit-on-drain contract)"
+      hb idle
+      break
+    fi
+    if [[ "${IDLE_NOTIFIED:-0}" != "1" ]]; then
+      echo ""
+      echo "No more ready tasks — idling (poll every ${IDLE_POLL_INTERVAL:-60}s for new work)."
+      IDLE_NOTIFIED=1
+    fi
+    hb idle   # §4.2: actual=idle (the engine sees an idle, alive runner)
+    while true; do
+      if [[ -f "$STOP_FILE" ]]; then
+        echo "Stop file detected ($STOP_FILE) — stopping gracefully."
+        rm -f "$STOP_FILE"
+        break 2
+      fi
+      # Honor desired=stopped from the Coordinator (e.g. phone toggle) within
+      # IDLE_POLL_INTERVAL — same posture as runner.sh's idle reconcile.
+      IDLE_DESIRED=$(workspace_desired_state)
+      if [[ "$IDLE_DESIRED" == "stopped" ]]; then
+        echo "Coordinator desired=stopped observed while idle — stopping gracefully."
+        break 2
+      fi
+      sleep "${IDLE_POLL_INTERVAL:-60}"
+      TASK_JSON=$(next_task)
+      TASK_ID=$(echo "$TASK_JSON" | jq -r '.[0].id // empty')
+      [[ -n "$TASK_ID" ]] && break
+    done
+    IDLE_NOTIFIED=0
+    continue
   fi
 
   TASK_TITLE=$(echo "$TASK_JSON" | jq -r '.[0].title')
