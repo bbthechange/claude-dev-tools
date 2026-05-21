@@ -395,6 +395,128 @@ ck "emitted Items: response=null, applied_at=null (substrate owns lifecycle)" \
    eq "$(JF mix '[.items[]|select(.response==null and .applied_at==null)]|length')" "5"
 
 echo ""
+echo "── B3 (claude-tools-95m) — jq fallback is explicit, observable, badged ──"
+# Isolate the audit log per-test so we don't pollute the user's real cache and
+# can assert on specific lines deterministically.
+export DG_AUDIT_LOG="$WORK/dossier-author-audit.jsonl"
+rm -f "$DG_AUDIT_LOG"
+unset DG_AUTHOR_CMD 2>/dev/null || true
+
+# (1) DG_AUTHOR_CMD UNSET ⇒ jq fallback fires, body stamped, audit logged.
+ck "no DG_AUTHOR_CMD ⇒ dg_generate still succeeds (jq fallback runs)" \
+   dg_generate "$GOOD" "$(gi b3unset worker_stuck blocking "$SRC_STRUCT" "[$(item_po d1)]")"
+ck "fallback stamps body.authored_by='fallback'" \
+   eq "$(JF b3unset '.body.authored_by')" "fallback"
+ck "fallback stamps body.authored_by_reason='no_DG_AUTHOR_CMD'" \
+   eq "$(JF b3unset '.body.authored_by_reason')" "no_DG_AUTHOR_CMD"
+ck "fallback dossier still passes the SAME frozen §5 gate (badge is opaque to it)" \
+   dg__validate_dossier "$(GET b3unset)"
+ck "audit log was created" test -f "$DG_AUDIT_LOG"
+ck "audit log carries a no_DG_AUTHOR_CMD line for b3unset" \
+   grep -q '"dossier_id":"b3unset".*"reason":"no_DG_AUTHOR_CMD"' "$DG_AUDIT_LOG"
+
+# (2) DG_AUTHOR_CMD set to a script that EXITS NONZERO ⇒ agent_unavailable
+#     reason, fallback fires, dossier still produced.
+FAIL_AUTHOR="$WORK/fail-author.sh"
+cat > "$FAIL_AUTHOR" <<'EOF'
+#!/bin/bash
+echo "simulated agent crash" >&2
+exit 17
+EOF
+chmod +x "$FAIL_AUTHOR"
+DG_AUTHOR_CMD="$FAIL_AUTHOR" dg_generate "$GOOD" \
+   "$(gi b3fail worker_stuck blocking "$SRC_STRUCT" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "agent exit nonzero ⇒ jq fallback fires, dossier persisted" \
+   eq "$(JF b3fail '.id')" "b3fail"
+ck "agent failure ⇒ body.authored_by='fallback'" \
+   eq "$(JF b3fail '.body.authored_by')" "fallback"
+ck "agent failure ⇒ body.authored_by_reason='agent_unavailable'" \
+   eq "$(JF b3fail '.body.authored_by_reason')" "agent_unavailable"
+ck "audit log carries an agent_unavailable line for b3fail" \
+   grep -q '"dossier_id":"b3fail".*"reason":"agent_unavailable"' "$DG_AUDIT_LOG"
+
+# (3) DG_AUTHOR_CMD set to a script that emits NON-JSON output ⇒
+#     agent_invalid_output reason, fallback fires.
+JUNK_AUTHOR="$WORK/junk-author.sh"
+cat > "$JUNK_AUTHOR" <<'EOF'
+#!/bin/bash
+echo "I refuse to author this — Brian, please clarify"
+exit 0
+EOF
+chmod +x "$JUNK_AUTHOR"
+DG_AUTHOR_CMD="$JUNK_AUTHOR" dg_generate "$GOOD" \
+   "$(gi b3junk worker_stuck blocking "$SRC_STRUCT" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "agent emits non-JSON ⇒ jq fallback fires, dossier persisted" \
+   eq "$(JF b3junk '.id')" "b3junk"
+ck "agent invalid output ⇒ body.authored_by_reason='agent_invalid_output'" \
+   eq "$(JF b3junk '.body.authored_by_reason')" "agent_invalid_output"
+ck "audit log carries an agent_invalid_output line for b3junk" \
+   grep -q '"dossier_id":"b3junk".*"reason":"agent_invalid_output"' "$DG_AUDIT_LOG"
+
+# (4) DG_AUTHOR_CMD set to a script that emits VALID {body,items} JSON ⇒
+#     agent path, body.authored_by='agent', audit logs agent_ok (NOT a fallback
+#     fire — record_incident is NOT triggered for the success path).
+GOOD_AUTHOR="$WORK/good-author.sh"
+cat > "$GOOD_AUTHOR" <<'EOF'
+#!/bin/bash
+jq -cn '{ body:{ dossier_schema_version:2, tldr:"agent-authored tldr",
+            sections:[{heading:"S","prose":"agent prose"}],
+            diagrams:[{caption:"c","content":"flowchart TD\n  X --> Y"}],
+            full_detail:"agent full detail." },
+          items:[ { id:"a1", kind:"approve-reject",
+            framing:{ask:"agent ask",why:"agent why"},
+            context_anchor:{where:"agent where","expansion":"agent expansion"},
+            reversible:"agent reversible",
+            consequence_block:{cb_schema_version:2,creates:[],unblocks:[],labels:[],status_changes:[]} } ] }'
+EOF
+chmod +x "$GOOD_AUTHOR"
+DG_AUTHOR_CMD="$GOOD_AUTHOR" dg_generate "$GOOD" \
+   "$(gi b3ok worker_stuck blocking "$SRC_STRUCT" "[$(item_ar d1)]")" >/dev/null 2>&1
+ck "agent success ⇒ dossier persisted with the AGENT's body"  eq "$(JF b3ok '.body.tldr')" "agent-authored tldr"
+ck "agent success ⇒ body.authored_by='agent'"                  eq "$(JF b3ok '.body.authored_by')" "agent"
+ck "agent success ⇒ body.authored_by_reason='agent_ok'"        eq "$(JF b3ok '.body.authored_by_reason')" "agent_ok"
+ck "audit log carries an agent_ok line for b3ok" \
+   grep -q '"dossier_id":"b3ok".*"reason":"agent_ok"' "$DG_AUDIT_LOG"
+
+# (5) record_incident is wired when the runner has it; here we just check the
+#     hook doesn't break dg__audit_fallback. Define a fake record_incident that
+#     appends to a marker file; trigger a fallback; assert the marker landed.
+INCIDENT_MARKER="$WORK/incident-marker.log"
+record_incident() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$INCIDENT_MARKER"; }
+export -f record_incident
+unset DG_AUTHOR_CMD
+dg_generate "$GOOD" "$(gi b3hook worker_stuck blocking "$SRC_STRUCT" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "record_incident hook fires on a fallback (runner failure-visibility surface)" \
+   grep -q '^b3hook|DOSSIER_FALLBACK:no_DG_AUTHOR_CMD|' "$INCIDENT_MARKER"
+unset -f record_incident
+
+# (6) Daily-rollup metric script reads the audit log we just populated.
+METRIC="$(cd "$(dirname "$LIB")" && pwd)/dg-author-metric.sh"
+ck "metric script exists + executable" test -x "$METRIC"
+ROLL_JSON=$(DG_AUDIT_LOG="$DG_AUDIT_LOG" "$METRIC" --all --json 2>/dev/null)
+ck "metric --json emits at least one daily row"     test -n "$ROLL_JSON"
+ck "metric --json row carries agent + fallback counts" \
+   eq "$(printf '%s' "$ROLL_JSON" | jq -r '[(.agent + .fallback)>0] | all' 2>/dev/null)" "true"
+# We pushed >0 agent (b3ok) and >0 fallback (b3unset/b3fail/b3junk/b3hook) into
+# the SAME UTC day; the daily rollup must reflect both populations.
+ck "metric --json shows the agent population for today"    test "$(printf '%s' "$ROLL_JSON" | jq -r '.agent')"    -ge 1
+ck "metric --json shows the fallback population for today" test "$(printf '%s' "$ROLL_JSON" | jq -r '.fallback')" -ge 4
+
+# (7) ANTI-DRIFT: the existing "swapped author" test (line ~286) keeps passing
+#     — the agent stamp does not clobber a fixture-set authored_by, but a
+#     fixture that omits it MUST still get the stamp. We re-run the EXIT-5
+#     fixture under a fresh did to assert the stamp lands.
+DG_AUTHOR_CMD="$WORK/fake-author.sh" dg_generate "$GOOD" \
+   "$(gi b3swap human_flag blocking "$SRC_STRUCT" "[$(item_ar ignored)]")" >/dev/null 2>&1
+ck "swapped agent fixture (omitting authored_by) is stamped='agent'" \
+   eq "$(JF b3swap '.body.authored_by')" "agent"
+ck "swapped agent fixture preserves its own body.tldr verbatim" \
+   eq "$(JF b3swap '.body.tldr')" "swapped-author tldr"
+
+# Clean up so later test runs / metric scripts don't see this run's noise.
+unset DG_AUTHOR_CMD DG_AUDIT_LOG
+
+echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-dossier-gen (T5.2, claude-tools-9gt):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"

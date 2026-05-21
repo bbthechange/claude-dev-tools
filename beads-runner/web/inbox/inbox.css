@@ -84,6 +84,18 @@ body{
 .badge.t-blocking{color:var(--amber-soft);border-color:rgba(255,180,84,.4);background:var(--amber-glow)}
 .badge.t-timed-fyi{color:var(--sky);border-color:rgba(116,168,255,.4)}
 .dmodebar .d-meta{flex:1;min-width:0}
+/* B3 (claude-tools-95m) — DEGRADED-AUTHOR badge. Distinct from the tier badge
+   (which is informational) and from the .dgerr in-body notice (which can be
+   scrolled past); this is the at-a-glance signal that the dossier-builder
+   agent did NOT author this one. */
+.d-author-badge{margin-left:8px;font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;padding:3px 9px;border-radius:6px;
+  color:var(--amber-soft,#d2a24c);border:1px solid rgba(255,180,84,.4);
+  background:var(--amber-glow,rgba(255,180,84,.06))}
+.d-author-note{margin:0 14px 14px;padding:10px 14px;border-radius:11px;
+  border:1px solid rgba(255,180,84,.3);background:rgba(255,180,84,.06);
+  color:var(--amber-soft,#d2a24c);font-family:var(--font-read);font-size:13px;
+  line-height:1.5}
 .density{display:inline-flex;border:1px solid var(--line-2);border-radius:7px;overflow:hidden}
 .density button{background:none;border:none;color:var(--slate);
   font-family:var(--mono);font-size:10px;letter-spacing:.12em;padding:5px 11px;cursor:pointer}

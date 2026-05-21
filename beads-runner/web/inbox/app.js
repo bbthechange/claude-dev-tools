@@ -219,6 +219,24 @@
         'Shown best-effort — some parts were incomplete: ' + v.degraded.join(' '));
       secs.appendChild(dn);
     }
+    // B3 (claude-tools-95m) — DEGRADED-AUTHOR badge. A distinct small badge in
+    // the meta bar + an honest notice in the body so Brian sees at a glance
+    // that the dossier-builder agent did NOT author this one (the jq
+    // deterministic shape-coercer ran instead). Kept separate from the
+    // generic .degraded notice above so a fallback-authored dossier is never
+    // just rendered as if it were normal.
+    if (v.body && v.body.authored_by === 'fallback') {
+      var meta = el('d-meta');
+      if (meta && !meta.querySelector('.d-author-badge')) {
+        var ab = mk('span', 'd-author-badge',
+          v.body.authored_by_reason === 'no_DG_AUTHOR_CMD' ? 'fallback author' : 'degraded author');
+        ab.title = v.body.authored_by_note || 'Authored by the deterministic fallback.';
+        meta.appendChild(ab);
+      }
+      if (v.body.authored_by_note) {
+        secs.appendChild(mk('div', 'dgerr d-author-note', v.body.authored_by_note));
+      }
+    }
     v.body.sections.forEach(function (s) {
       var d = mk('div', 'dsec');
       d.appendChild(mk('h2', null, s.heading));

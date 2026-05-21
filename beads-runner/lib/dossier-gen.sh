@@ -436,16 +436,70 @@ dg__validate_dossier() {
 #   `context_anchor` (that omission is a CONTRACT VIOLATION the §5.2 gate
 #   REJECTS — papering it over would defeat the self-contained-context
 #   invariant).
+#
+# B3 (claude-tools-95m): The jq path is the EXPLICIT FALLBACK / shape-coercer
+# for B2's `DG_AUTHOR_CMD` agent shim. If the shim is unset, errors, times out,
+# or produces output that is not a `{body, items[]}` object, the jq path runs
+# instead so the worker still gets a contract-valid (if lower-quality) dossier.
+# Every fallback fire writes an audit record AND records an incident — silent
+# fallback would mask the agent being broken, which is the bug we're killing.
+# A `body.authored_by` field ("agent" | "fallback") + `body.authored_by_reason`
+# is stamped into the output so the Inbox renderer can badge degraded-author
+# dossiers (claude-tools-95m: "lower-quality, not just renders as if normal").
 dg__author() {
   local gi="${1:-}" sv; sv="$(dg__sv)"
+  local did reason out rc t0 elapsed_ms timeout_sec
+  did="$(printf '%s' "$gi" | jq -r '.id // ""' 2>/dev/null)" || did=""
   if [[ -n "${DG_AUTHOR_CMD:-}" ]]; then
     # Provider-agnostic swap (§0.2): a real model emits the same §5 CONTENT.
     # Still ONE call; output goes through the SAME frozen §5 gate downstream.
-    printf '%s' "$gi" | "${DG_AUTHOR_CMD}" 2>/dev/null
-    return $?
+    # B3: capture rc + stdout, bound runtime, validate shape, fall through to
+    # the jq path on ANY failure — agent_unavailable / agent_timeout /
+    # agent_invalid_output. Each fallback fire is audited + incidented so we
+    # see when the agent is silently broken vs. genuinely working.
+    timeout_sec="${DG_AUTHOR_TIMEOUT_SEC:-90}"
+    t0=$(date +%s 2>/dev/null || echo 0)
+    if command -v timeout >/dev/null 2>&1; then
+      out=$(printf '%s' "$gi" | timeout "${timeout_sec}s" "${DG_AUTHOR_CMD}" 2>/dev/null); rc=$?
+    elif command -v gtimeout >/dev/null 2>&1; then
+      out=$(printf '%s' "$gi" | gtimeout "${timeout_sec}s" "${DG_AUTHOR_CMD}" 2>/dev/null); rc=$?
+    else
+      out=$(printf '%s' "$gi" | "${DG_AUTHOR_CMD}" 2>/dev/null); rc=$?
+    fi
+    elapsed_ms=0
+    if [[ "$t0" -gt 0 ]]; then
+      local t1; t1=$(date +%s 2>/dev/null || echo "$t0")
+      elapsed_ms=$(( (t1 - t0) * 1000 ))
+    fi
+    # rc=124 is the GNU `timeout` SIGTERM-fired exit; treat anything ≥124 as a
+    # timeout to also catch the SIGKILL escalation (137).
+    if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+      reason="agent_timeout"
+    elif [[ "$rc" -ne 0 ]]; then
+      reason="agent_unavailable"
+    elif ! printf '%s' "$out" | jq -e 'type=="object" and (.body|type)=="object" and (.items|type)=="array"' >/dev/null 2>&1; then
+      reason="agent_invalid_output"
+    else
+      # Agent path succeeded. Stamp authored_by="agent" so the renderer knows
+      # this dossier is NOT degraded. Use //= so a fixture that already set it
+      # wins (lets tests prove specific values round-trip).
+      dg__audit_fallback "agent_ok" "$did" "$gi" "$elapsed_ms" || true
+      printf '%s' "$out" | jq -c '
+        .body = ( (.body // {})
+                  | (.authored_by //= "agent")
+                  | (.authored_by_reason //= "agent_ok") )' 2>/dev/null
+      return 0
+    fi
+    # Falling through — agent failed. Audit + incident (loud, not silent).
+    dg__audit_fallback "$reason" "$did" "$gi" "$elapsed_ms" || true
+  else
+    reason="no_DG_AUTHOR_CMD"
+    dg__audit_fallback "$reason" "$did" "$gi" "0" || true
   fi
   # Default single-pass deterministic transform of the §7.2 raw material.
-  printf '%s' "$gi" | jq -c --argjson sv "$sv" '
+  # Stamps body.authored_by="fallback" + the specific reason so the Inbox can
+  # badge "degraded author" (B3 / claude-tools-95m).
+  printf '%s' "$gi" | jq -c --argjson sv "$sv" --arg reason "$reason" '
     .source as $s
     | ($s.tldr // $s.ask // "Decision required.") as $tldr
     | ( if ($s.sections|type)=="array" and ($s.sections|length)>0 then $s.sections
@@ -464,7 +518,8 @@ dg__author() {
         // ( ($s.ask // $tldr)
              + (if ($s.reversible|type)=="string" then "\n\nReversibility: " + $s.reversible else "" end) ) ) as $full
     | { body: { dossier_schema_version:$sv, tldr:$tldr, sections:$sections,
-                diagrams:$diagrams, full_detail:$full },
+                diagrams:$diagrams, full_detail:$full,
+                authored_by:"fallback", authored_by_reason:$reason },
         items: [ (.items // [])[]
                  | . + { consequence_block:
                            ( if .kind=="pick-option" then (.consequence_block // {})
@@ -473,6 +528,66 @@ dg__author() {
                  | if .kind=="pick-option" and (.options|type)=="array"
                      then .options |= map(.consequence_block |= (if type=="object" then (.cb_schema_version //= $sv) else . end))
                      else . end ] }' 2>/dev/null
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# B3 (claude-tools-95m) — fallback-fire AUDIT: never silent, always observable
+# ════════════════════════════════════════════════════════════════════════════
+# dg__audit_fallback <reason> <dossier_id_or_blank> <generation_input> <elapsed_ms>
+#   Writes ONE JSON line to $DG_AUDIT_LOG (default
+#   $HOME/.cache/claude-tools/dossier-author-audit.jsonl). The line carries
+#   ts / id / reason / gi_size_bytes / gi_hash + the elapsed_ms for the agent
+#   call (0 for the no-agent / fall-through paths). The generation input is
+#   NOT stored verbatim — only a redacted short slice plus its sha256 prefix
+#   (the worker dump can be megabytes and may carry secrets). On a workspace
+#   that has the runner's record_incident wired (it sources runner.sh or
+#   run-beads-tasks.sh), the fallback ALSO records an incident so it surfaces
+#   in the runner's per-run incident summary. Best-effort: a failure to write
+#   the audit/incident NEVER fails the author call — silent observability is
+#   a worse bug than a missed log line.
+dg__audit_fallback() {
+  local reason="${1:-unknown}" did="${2:-}" gi="${3:-}" elapsed_ms="${4:-0}"
+  local log_path="${DG_AUDIT_LOG:-$HOME/.cache/claude-tools/dossier-author-audit.jsonl}"
+  local dir="${log_path%/*}"
+  [[ -n "$dir" && "$dir" != "$log_path" ]] && mkdir -p "$dir" 2>/dev/null || true
+  local ts gi_size gi_hash gi_redact line
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  gi_size=$(printf '%s' "$gi" | wc -c 2>/dev/null | awk '{print $1}')
+  [[ -z "$gi_size" ]] && gi_size=0
+  if command -v shasum >/dev/null 2>&1; then
+    gi_hash=$(printf '%s' "$gi" | shasum -a 256 2>/dev/null | awk '{print substr($1,1,16)}')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    gi_hash=$(printf '%s' "$gi" | sha256sum 2>/dev/null | awk '{print substr($1,1,16)}')
+  else
+    gi_hash=""
+  fi
+  # Redacted slice: the bead_ref + trigger + tier + tldr (first 120 chars) —
+  # forensically useful for "which dossier failed and which fork" without
+  # leaking the worker brain-dump. Falls back to "" if jq is missing fields.
+  gi_redact=$(printf '%s' "$gi" | jq -c '{
+      bead_ref:(.bead_ref // ""),
+      trigger:(.trigger // ""),
+      tier:(.tier // ""),
+      tldr:((.source.tldr // .source.ask // "") | tostring | .[0:120]),
+      item_count:((.items // []) | length)
+    }' 2>/dev/null) || gi_redact='{}'
+  line=$(jq -cn \
+    --arg ts "$ts" --arg id "$did" --arg reason "$reason" \
+    --arg gi_hash "$gi_hash" --argjson gi_size "$gi_size" \
+    --argjson gi_redact "${gi_redact:-{\}}" --argjson elapsed_ms "${elapsed_ms:-0}" \
+    --arg cmd "${DG_AUTHOR_CMD:-}" '
+    { ts:$ts, dossier_id:$id, reason:$reason, elapsed_ms:$elapsed_ms,
+      author_cmd_set:(($cmd|length)>0),
+      gi_size_bytes:$gi_size, gi_hash:$gi_hash, gi_redact:$gi_redact }' 2>/dev/null) \
+    || line='{"ts":"","reason":"'"$reason"'","note":"audit-line-build-failed"}'
+  printf '%s\n' "$line" >> "$log_path" 2>/dev/null || true
+  # Runner-side incident: only on a real fallback fire (NOT on agent_ok). The
+  # incident summary surfaces this at the end of every runner sweep so a
+  # silently-broken agent is loud.
+  if [[ "$reason" != "agent_ok" ]] && command -v record_incident >/dev/null 2>&1; then
+    record_incident "${did:--}" "DOSSIER_FALLBACK:$reason" "$log_path" 2>/dev/null || true
+  fi
+  return 0
 }
 
 # ════════════════════════════════════════════════════════════════════════════

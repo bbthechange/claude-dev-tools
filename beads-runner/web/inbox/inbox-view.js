@@ -469,6 +469,32 @@
       if (!nonEmptyStr(body.full_detail)) degraded.push('No full write-up was provided.');
     }
 
+    // B3 (claude-tools-95m) — DEGRADED-AUTHOR badge. dg__author stamps
+    // `body.authored_by` ("agent" | "fallback") + `body.authored_by_reason`
+    // when it runs. A "fallback" stamp means the dossier-builder agent was
+    // unavailable / errored / timed out / produced invalid output, and the
+    // jq deterministic shape-coercer ran instead. The Inbox surfaces this
+    // distinctly (not just as a generic .degraded note) so Brian sees at a
+    // glance that this dossier is lower-quality — never just rendered as if
+    // it were normal. An ABSENT field is treated as "unknown" (legacy /
+    // pre-B3 dossiers), NOT as fallback, so old records render cleanly.
+    var bodyForAuthor = bodyRaw || {};
+    var authoredBy = nonEmptyStr(bodyForAuthor.authored_by) ? bodyForAuthor.authored_by : 'unknown';
+    var authoredByReason = nonEmptyStr(bodyForAuthor.authored_by_reason) ? bodyForAuthor.authored_by_reason : null;
+    var authoredByNote = null;
+    if (authoredBy === 'fallback') {
+      var reasonPhrase;
+      switch (authoredByReason) {
+        case 'no_DG_AUTHOR_CMD':     reasonPhrase = 'the dossier-builder agent wasn’t configured for this run'; break;
+        case 'agent_unavailable':    reasonPhrase = 'the dossier-builder agent errored'; break;
+        case 'agent_timeout':        reasonPhrase = 'the dossier-builder agent timed out'; break;
+        case 'agent_invalid_output': reasonPhrase = 'the dossier-builder agent returned malformed output'; break;
+        default:                     reasonPhrase = 'the dossier-builder agent did not run';
+      }
+      authoredByNote = 'Authored by the deterministic fallback (' + reasonPhrase +
+        ') — this dossier is lower-quality than usual; the answer affordance is unchanged.';
+    }
+
     // §5.2 items — ALWAYS answerable (deriveItem never refuses; claude-tools-4xe).
     var items = asArray(d.items).map(function (raw, i) { return deriveItem(raw, i).item; });
     items.forEach(function (x) {
@@ -496,7 +522,12 @@
         tldr: tldr,
         sections: sections,
         diagrams: diagrams,
-        full_detail: fullDetail
+        full_detail: fullDetail,
+        // B3 (claude-tools-95m) — passthrough so the app's badge renderer can
+        // distinguish "agent" from "fallback" without re-reading `dossier`.
+        authored_by: authoredBy,
+        authored_by_reason: authoredByReason,
+        authored_by_note: authoredByNote
       },
       items: items,
       rollup: {
