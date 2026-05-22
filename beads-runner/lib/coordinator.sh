@@ -1425,11 +1425,33 @@ co__work_snapshot() {
        '[(.items // [])[] | select((.state // "open")
           | (. != "applied" and . != "expired"))] | length' 2>/dev/null) || open_items=0
     if [[ "${open_items:-0}" =~ ^[0-9]+$ ]] && [[ "${open_items:-0}" -ge 1 ]]; then
-      woy=$(printf '%s' "$woy" | jq -c --argjson d "$dj" --argjson n "$open_items" \
-         '. + [{dossier_ref:($d.id // ""), bead_ref:($d.bead_ref // ""),
-                tier:($d.tier // ""), open_item_count:$n}]' 2>/dev/null) || woy='[]'
+      # claude-tools-56h — join skim fields (tldr/created_at/kind/item_count +
+      # dossier_id synonym) so the Inbox lane can render a real preview,
+      # timestamp, and badge instead of N identical "N things need you" rows.
+      local total_items=0
+      total_items=$(printf '%s' "$dj" | jq -r '(.items // []) | length' 2>/dev/null) || total_items=0
+      woy=$(printf '%s' "$woy" | jq -c --argjson d "$dj" \
+         --argjson n "$open_items" --argjson tot "$total_items" \
+         '. + [{dossier_ref:($d.id // ""),
+                dossier_id:($d.id // ""),
+                bead_ref:($d.bead_ref // ""),
+                tier:($d.tier // ""),
+                kind:(if ($d.kind|type)=="string" then $d.kind else "" end),
+                tldr:(if ($d.body|type)=="object"
+                        and (($d.body.tldr|type)=="string")
+                       then $d.body.tldr else "" end),
+                created_at:(if ($d.created_at|type)=="string"
+                             then $d.created_at else null end),
+                item_count:$tot,
+                open_item_count:$n}]' 2>/dev/null) || woy='[]'
     fi
   done
+  # Newest-first by created_at within the lane (claude-tools-56h). ISO-8601
+  # lexical order ≡ chronological; null sinks to the bottom.
+  woy=$(printf '%s' "$woy" | jq -c \
+     'sort_by(if .created_at == null then "" else .created_at end) | reverse
+      | (map(select(.created_at != null)) + map(select(.created_at == null)))' \
+     2>/dev/null) || woy='[]'
   # The join + the lifecycle columns. Each card: title·stage·priority·runner
   # state·age·the one thing it waits on (INTERFACE §4.5). Failure metadata is
   # carried from the work-truth read (Flow G tiers 1–2): class + retry-state +

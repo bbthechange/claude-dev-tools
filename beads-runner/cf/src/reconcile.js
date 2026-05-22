@@ -469,14 +469,36 @@ async function workSnapshot(co, principal, proj, beadsStr) {
       return st !== "applied" && st !== "expired";
     }).length;
     if (openItems >= 1) {
+      // claude-tools-56h — the projection had been bead_ref/tier/open_item_count
+      // ONLY, so the Inbox list rendered N indistinguishable rows ("9 things
+      // need you · claude-tools-txj" × 9). Skim fields (tldr/created_at/kind)
+      // come from the same dossier object we're already iterating — passing
+      // them through costs nothing and lets the UI surface a real preview.
+      const body = d.body && typeof d.body === "object" && !Array.isArray(d.body) ? d.body : null;
+      const tldr = body && typeof body.tldr === "string" ? body.tldr : "";
       waiting_on_you.push({
         dossier_ref: d.id ?? "",
+        dossier_id: d.id ?? "",
         bead_ref: d.bead_ref ?? "",
         tier: d.tier ?? "",
+        kind: typeof d.kind === "string" ? d.kind : "",
+        tldr,
+        created_at: typeof d.created_at === "string" ? d.created_at : null,
+        item_count: items.length,
         open_item_count: openItems,
       });
     }
   }
+  // Sort newest-first by created_at (ISO-8601 lexical order ≡ chronological).
+  // Items with no created_at sink to the bottom (honest: undated = stale-ish).
+  waiting_on_you.sort((a, b) => {
+    const ax = a.created_at || "";
+    const bx = b.created_at || "";
+    if (ax === bx) return 0;
+    if (!ax) return 1;
+    if (!bx) return -1;
+    return bx < ax ? -1 : 1;
+  });
 
   // The join + the lifecycle columns. Each card: title·stage·priority·runner
   // state·age·the one thing it waits on (INTERFACE §4.5). Failure metadata is

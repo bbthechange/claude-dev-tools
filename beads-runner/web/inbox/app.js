@@ -84,7 +84,7 @@
     show('loading'); el('loading').hidden = false;
     getJSON('/api/inbox').then(function (snap) {
       lastSnapshot = snap;
-      var v = IV.deriveInboxList(snap);
+      var v = IV.deriveInboxList(snap, Date.now());
       if (!v.ok) { showError('Cannot render the Inbox', v.error); return; }
       el('who').textContent = v.principal;
       el('title').textContent = 'Inbox';
@@ -99,11 +99,25 @@
       v.items.forEach(function (it) {
         var a = mk('a', 'inrow t-' + it.tier);
         a.setAttribute('href', it.dossier_href || '#/');
+        // claude-tools-56h — tier strip now carries bead_ref + time-ago + an
+        // item-count badge (when > 1). Without these, 9 dossiers on the same
+        // bead were visually identical and the user had to tap each one to
+        // tell them apart.
         var tier = mk('div', 'tier');
         tier.appendChild(mk('span', 'tg', it.tier));
-        tier.appendChild(mk('span', 'ref', it.bead_ref || it.dossier_ref));
+        var refTxt = it.bead_ref || it.dossier_ref || '';
+        if (it.time_ago) refTxt = refTxt ? refTxt + ' · ' + it.time_ago : it.time_ago;
+        if (it.dossier_short) refTxt = refTxt ? refTxt + ' · #' + it.dossier_short : '#' + it.dossier_short;
+        tier.appendChild(mk('span', 'ref', refTxt));
+        if (it.count_badge) {
+          var cnt = mk('span', 'cnt', it.count_badge + (it.item_count === 1 ? ' item' : ' items'));
+          tier.appendChild(cnt);
+        }
         a.appendChild(tier);
-        a.appendChild(mk('div', 'h', it.label));
+        // Title prefers the dossier's tldr (the skim entry point — AD7); falls
+        // back to the legacy "N things need you" phrase for any item the
+        // producer couldn't enrich (older snapshot / body-less dossier).
+        a.appendChild(mk('div', 'h', it.tldr || it.label));
         a.appendChild(mk('div', 'd', it.auto_proceeds
           ? 'Read-mostly — auto-proceeds on silence (reversible). Open to skim or object.'
           : 'Open the dossier — skim it, then resolve in any mix. Your “no” is one tap.'));

@@ -142,6 +142,30 @@
   function asArray(x) { return Array.isArray(x) ? x : []; }
   function nonEmptyStr(x) { return typeof x === 'string' && x.trim().length > 0; }
 
+  /* timeAgo(isoStr, nowMs) → short human relative time ("3m", "2h", "5d").
+   * claude-tools-56h: the WAITING-ON-YOU lane was unskimmable without dates —
+   * Brian saw 9 identical "claude-tools-txj · 1 thing needs you" rows and
+   * could not tell which dossier was which. Returns '' for missing / unparseable
+   * input so the renderer can just skip the slot (never fabricate a time). */
+  function timeAgo(isoStr, nowMs) {
+    if (!nonEmptyStr(isoStr)) return '';
+    var t = Date.parse(isoStr);
+    if (!isFinite(t)) return '';
+    var now = typeof nowMs === 'number' && isFinite(nowMs) ? nowMs : Date.now();
+    var s = Math.round((now - t) / 1000);
+    if (s < 0) return 'just now';
+    if (s < 60) return s + 's ago';
+    var m = Math.round(s / 60);
+    if (m < 60) return m + 'm ago';
+    var h = Math.round(m / 60);
+    if (h < 24) return h + 'h ago';
+    var d = Math.round(h / 24);
+    if (d < 30) return d + 'd ago';
+    var mo = Math.round(d / 30);
+    if (mo < 12) return mo + 'mo ago';
+    return Math.round(d / 365) + 'y ago';
+  }
+
   /* ── §0.3 shared schema gate ──────────────────────────────────────────────
    * Returns null when the integer version is present and ≤ bound; otherwise
    * an honest error string. Never best-effort-parses an unknown higher
@@ -185,7 +209,7 @@
    * IS in §4.5 (class + retry-state + Runner: notes). The §10 forensic stream
    * is structurally absent here (anti-drift). §0.3: an unknown HIGHER
    * snapshot schema_version is refused. */
-  function deriveInboxList(snapshot) {
+  function deriveInboxList(snapshot, nowMs) {
     var snap = snapshot && typeof snapshot === 'object' ? snapshot : {};
     var err = schemaGate(snap.schema_version, SUPPORTED_SNAPSHOT_SCHEMA,
       'work-snapshot schema_version', '§4.5');
@@ -194,28 +218,65 @@
     var rawWoy = asArray(snap.waiting_on_you);
     var items = rawWoy.map(function (w) {
       var n = typeof w.open_item_count === 'number' ? w.open_item_count : 0;
+      var itemTotal = typeof w.item_count === 'number' ? w.item_count : n;
       var tier = w.tier || 'blocking';
+      // claude-tools-56h — the producer now joins skim fields onto each lane
+      // entry (tldr / created_at / kind / item_count). The renderer prefers
+      // the dossier's own tldr as the row title; if the producer is older or
+      // the dossier is body-less, we honestly fall back to the count phrase.
+      var tldr = nonEmptyStr(w.tldr) ? w.tldr.trim() : '';
+      var label = tldr || (n + (n === 1 ? ' thing needs you' : ' things need you'));
+      var dossierId = w.dossier_id || w.dossier_ref || '';
+      // claude-tools-56h — short dossier-id badge so duplicate-on-same-bead
+      // dossiers stay distinguishable (Brian's 9 i1-live-* rows had identical
+      // tldr/created_at/bead_ref; only the id told them apart). Tail after
+      // the last '-' captures the random/sequence suffix kebab-cased ids
+      // already encode; for an id with no dash we fall back to the last 8 chars.
+      var dossierShort = '';
+      if (dossierId) {
+        var dash = dossierId.lastIndexOf('-');
+        dossierShort = dash >= 0 && dash < dossierId.length - 1
+          ? dossierId.slice(dash + 1)
+          : dossierId.slice(-8);
+      }
       return {
-        dossier_ref: w.dossier_ref || '',
+        dossier_ref: w.dossier_ref || dossierId,
+        dossier_id: dossierId,
+        dossier_short: dossierShort,
         bead_ref: w.bead_ref || '',
         tier: tier,
+        kind: typeof w.kind === 'string' ? w.kind : '',
+        tldr: tldr,
+        created_at: typeof w.created_at === 'string' ? w.created_at : '',
+        time_ago: timeAgo(w.created_at, nowMs),
+        item_count: itemTotal,
         open_item_count: n,
-        // Notification triage line ONLY — the dossier body is NOT here
-        // (principle 2: notifications never carry content; §4.5 carries none).
-        label: n + (n === 1 ? ' thing needs you' : ' things need you'),
+        // Triage-line fallback kept for back-compat with anything that still
+        // reads `.label` (principle 2: this carries no dossier body content).
+        label: label,
+        count_badge: itemTotal > 1 ? String(itemTotal) : '',
         auto_proceeds: tier === 'timed-fyi',
-        // Deep-link target this app opens (the dossier render fetches the §4
-        // record separately — the lane itself stays a pointer).
-        dossier_href: w.dossier_ref ? '#/d/' + w.dossier_ref : null
+        dossier_href: dossierId ? '#/d/' + dossierId : null
       };
     });
-    // tier rank: blocking first, then timed-fyi, then digest; stable within.
+    // Sort: tier rank first (blocking, timed-fyi, digest), then NEWEST-FIRST
+    // by created_at within each tier (claude-tools-56h — previously stable
+    // insertion order, which buried fresh asks under stale ones). Items with
+    // no created_at sink to the bottom of their tier.
     var rank = { blocking: 0, 'timed-fyi': 1, digest: 2 };
     items = items.map(function (it, i) { return { it: it, i: i }; })
       .sort(function (a, b) {
         var ra = rank[a.it.tier] == null ? 1 : rank[a.it.tier];
         var rb = rank[b.it.tier] == null ? 1 : rank[b.it.tier];
-        return ra - rb || a.i - b.i;
+        if (ra !== rb) return ra - rb;
+        var ax = a.it.created_at || '';
+        var bx = b.it.created_at || '';
+        if (ax !== bx) {
+          if (!ax) return 1;
+          if (!bx) return -1;
+          return bx < ax ? -1 : 1;
+        }
+        return a.i - b.i;
       })
       .map(function (x) { return x.it; });
 

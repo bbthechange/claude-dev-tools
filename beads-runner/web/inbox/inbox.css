@@ -61,6 +61,8 @@ body{
   padding:2px 8px;border-radius:5px}
 .inrow.t-timed-fyi .tier .tg{color:var(--sky);border-color:rgba(116,168,255,.4)}
 .inrow .tier .ref{color:var(--slate)}
+.inrow .tier .cnt{margin-left:auto;color:var(--dim);border:1px solid var(--line-2);
+  padding:2px 8px;border-radius:5px;font-size:9.5px}
 .inrow .h{font-family:var(--font-display);font-size:19px;line-height:1.25;
   color:#fff;letter-spacing:-.01em;margin-bottom:7px}
 .inrow .d{font-family:var(--font-read);font-size:14px;color:var(--dim);line-height:1.5}
