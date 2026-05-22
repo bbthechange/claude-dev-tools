@@ -43,6 +43,12 @@ PERMISSION_FLAGS=(
     # ── non-Bash tools the task instructions explicitly require ──────────────
     "Task"                  # T0 review subagent; T2/T4/T5 self-decomposition validation
     "WebFetch" "WebSearch"  # Cloudflare Workers/DO docs (T4/T5); O-1 probe research pattern
+    # ── ask-brian MCP (claude-tools-qxz) ─────────────────────────────────────
+    # The fork-routing tool MUST be in the allowlist for non-interactive
+    # `claude -p` workers to actually invoke it. `claude mcp add --scope user`
+    # only makes the tool VISIBLE; without this line every fork falls through
+    # to the bd-notes/human-label fallback and no dossier is ever produced.
+    'mcp__askbrian__ask-brian'
 )
 
 # --add-dir: epic 8bm I1/I2 wire & verify a runner in the SECOND workspace
