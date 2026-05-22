@@ -17,6 +17,7 @@
 # Concrete examples of WRONG output (these have all happened in production):
 #   ❌  "**Recommendation: A — but with a clarification...**"
 #   ❌  "The user does not have permission to grant this tool"
+#   ❌  "The user dismissed the question prompt without answering."
 #   ❌  Any markdown with `**bold**` or `#` headings on stdout
 #   ❌  "Based on the code I read, the answer is..."
 #   ❌  A thoughtful prose essay on the tradeoffs
@@ -25,6 +26,31 @@
 # bottom. If you can't compose that JSON (insufficient context, can't anchor
 # an item, etc.), use the refusal shape. Never emit prose to stdout. Prose
 # belongs in `body.full_detail` INSIDE the JSON, not standalone on stdout.
+#
+# MINIMUM CONTENT REQUIREMENTS (server-side validated):
+#   • body.sections      — at least 3 sections with bespoke headings (NOT
+#                          "Options" and "Recommendation" — those are the
+#                          jq-fallback shape and writing them is a bug)
+#   • body.diagrams      — at least 1 valid Mermaid diagram for a
+#                          worker-stuck dossier (the structure of the
+#                          fork itself is structural)
+#   • body.full_detail   — at least 500 chars of stand-alone prose
+#                          (the fallback tier that works for a reader who
+#                          skipped sections and diagram)
+#   • items              — at least 1 item (the respondable affordance —
+#                          a dossier with zero items is unanswerable)
+#
+# Builder output that fails these thresholds is treated as a builder
+# failure by the server (quality gate, mcp-askbrian/server.mjs); the
+# server falls back to the deterministic jq path, the dossier ships
+# as "FALLBACK AUTHOR" badged, and Brian sees an honest thin shape
+# instead of a rich-looking-but-empty one. Don't punt.
+#
+# If you genuinely cannot meet these thresholds because the context is
+# too thin, use `{"refuse": true, "reason": "..."}` — that's the
+# honest channel. Emitting `{"body": {}, "items": []}` to satisfy the
+# JSON contract is the WRONG response — it masquerades as a polished
+# dossier when it's just a shell.
 #
 # ════════════════════════════════════════════════════════════════════════════
 

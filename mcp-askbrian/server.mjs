@@ -352,6 +352,31 @@ function runBuilder({ workspaceDir, builderInput }) {
           return;
         }
       }
+      // claude-tools-cvj second-pass: validate the builder produced
+      // substantive content. The 10:38 240 attempt emitted technically-valid
+      // but vacuous JSON (`{body: {}, items: []}`) that passed JSON.parse
+      // but produced a fallback-shape dossier badged as "agent" — worse
+      // than an honest fallback because the bad shape masquerades as good.
+      // Quality gate: a worker-stuck dossier MUST carry ≥3 sections,
+      // ≥1 item, and ≥500 chars of full_detail. Anything thinner is the
+      // model punting; treat it as a builder failure so the jq fallback
+      // produces an honest deterministic shape and the badge matches.
+      if (dossier.refuse !== true) {
+        const body = dossier.body || {};
+        const sections = Array.isArray(body.sections) ? body.sections : [];
+        const items = Array.isArray(dossier.items) ? dossier.items : [];
+        const full_detail = String(body.full_detail || "");
+        const thin = sections.length < 3 || items.length < 1 || full_detail.length < 500;
+        if (thin) {
+          finish({
+            ok: false,
+            reason: `builder produced thin output (sections=${sections.length}, items=${items.length}, full_detail_len=${full_detail.length}) — minimum 3/1/500 required`,
+            body_preview: cleaned.slice(0, 500),
+            model: envelope.model || null,
+          });
+          return;
+        }
+      }
       finish({ ok: true, dossier });
     });
     try {
