@@ -192,52 +192,23 @@ if [[ "${1:-}" == "--yolo" ]]; then
   MODE_LABEL="all permissions bypassed"
 fi
 
-# ── claude-tools-4tj path-prime: spawn claude under nvm's node, not system v25
+# ── Node v25 PATH prime (claude-tools-4tj; shared with specialist.sh /
+#    runner.sh via lib/node25-prime.sh, claude-tools-18c). The body lives in
+#    the shared helper because the same bug bit three siblings; the SCOPED
+#    skip env var (RUNNER_SKIP_NVM_PRIME) stays caller-local so each test
+#    surface forces a skip under its own name. See node25-prime.sh for the
+#    bug-and-fix narrative; the one-liner: a daemon-launched PATH resolves
+#    `claude` to system-node v25 which crashes the CLI at startup.
 #
-# Same bug + same fix as claude-tools-3kd (specialist.sh, commit a857038),
-# repeated here because the daemon-launched runner inherits the same stripped
-# PATH and resolves `claude` to a system install running under
-# /usr/local/bin/node (currently v25.2.1). Node v25 crashes the claude CLI at
-# startup with `TypeError: Cannot read properties of undefined (reading
-# 'prototype')` from cli.js. The crash made every spawned task fail in ~5s,
-# the runner retried immediately, and the resulting flurry of `bd ready` /
-# `bd update` / `bd show` calls saturated the embeddeddolt lock — making
-# interactive `bd` appear locked up to anyone holding a shell in the workspace.
-#
-# Non-invasive by design: if the current node is already < v25 (interactive
-# session, test fixture, an OS without nvm) we change nothing. Tests can also
-# set RUNNER_SKIP_NVM_PRIME=1 to force-skip.
-if [[ "${RUNNER_SKIP_NVM_PRIME:-0}" != "1" ]]; then
-  node_major="$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')"
-  if [[ -n "$node_major" && "$node_major" -ge 25 ]]; then
-    NVM_DIR_RESOLVED="${NVM_DIR:-$HOME/.nvm}"
-    if [[ -d "$NVM_DIR_RESOLVED/versions/node" ]]; then
-      _ver=""
-      _alias_file="$NVM_DIR_RESOLVED/alias/default"
-      if [[ -f "$_alias_file" ]]; then
-        _ver="$(head -1 "$_alias_file" 2>/dev/null)"
-        # Follow alias chain (e.g. default -> lts/iron -> 23.11.1) — bounded hops.
-        for _ in 1 2 3 4 5; do
-          [[ -n "$_ver" && -f "$NVM_DIR_RESOLVED/alias/$_ver" ]] || break
-          _ver="$(head -1 "$NVM_DIR_RESOLVED/alias/$_ver" 2>/dev/null)"
-        done
-      fi
-      _ver="${_ver#v}"
-      # If alias resolution didn't yield an X.Y.Z literal, pick the highest
-      # installed version that is NOT itself in the wrong-node range (v25+).
-      if [[ ! "$_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        _ver="$(ls -1 "$NVM_DIR_RESOLVED/versions/node" 2>/dev/null \
-                  | sed 's/^v//' \
-                  | awk -F. '$1 < 25' \
-                  | sort -V | tail -1)"
-      fi
-      if [[ -n "$_ver" && -d "$NVM_DIR_RESOLVED/versions/node/v$_ver/bin" ]]; then
-        PATH="$NVM_DIR_RESOLVED/versions/node/v$_ver/bin:$PATH"
-        export PATH
-      fi
-    fi
-  fi
-fi
+# Sourced UNCONDITIONALLY (no `[[ -f $LIB ]]` guard, unlike the OPTIONAL
+# LA/SR/NO libs above): the node25-prime lib IS the fix — a missing lib is a
+# real regression and should fail loudly, not silently degrade to a stripped-
+# PATH `claude` spawn. Matches the unconditional source in specialist.sh and
+# runner.sh.
+NP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/node25-prime.sh"
+# shellcheck source=lib/node25-prime.sh
+source "$NP_LIB"
+node25_prime_path "${RUNNER_SKIP_NVM_PRIME:-0}"
 
 STOP_FILE=".stop-beads"
 rm -f "$STOP_FILE"
@@ -1473,24 +1444,15 @@ $PROMPT"
   wait "$WATCHDOG_PID" 2>/dev/null || true
   echo ""
 
-  # ── claude-tools-4tj wrong-Node crash detector (LOUD, never silent) ──────
-  # If claude exits nonzero AND the stream carries the Node v25+ × claude-CLI
-  # prototype TypeError, surface it explicitly: a clearly-marked stderr line,
-  # an incidents.log entry, AND a sticky line in wrong-node-crash.log. We do
-  # NOT mutate $CLAUDE_EXIT — downstream classification still runs. Without
-  # this, the crash output lands in $STREAM_FILE as if it were the agent's
-  # reply and the runner just logs UNKNOWN_FAILURE → retry forever, with no
-  # signal that Node 25 is the actual cause. Backstop behind the path-prime
-  # above; even after the prime, a custom launch environment could reintroduce
-  # the wrong-Node case.
-  if [[ "$CLAUDE_EXIT" -ne 0 && -s "$STREAM_FILE" ]]; then
-    _head_blob="$(head -c 16384 "$STREAM_FILE" 2>/dev/null)"
-    _tail_blob="$(tail -c 4096  "$STREAM_FILE" 2>/dev/null)"
-    if printf '%s%s' "$_head_blob" "$_tail_blob" \
-         | grep -qE "TypeError: Cannot read properties of undefined \(reading 'prototype'\)" 2>/dev/null \
-       && printf '%s' "$_tail_blob" \
-         | grep -qE "Node\.js v(2[5-9]|[3-9][0-9])\." 2>/dev/null; then
-      _node_seen="$(printf '%s' "$_tail_blob" | grep -oE "Node\.js v[0-9.]+" | tail -1)"
+  # ── wrong-Node crash detector (LOUD, never silent) — claude-tools-4tj ────
+  # Backstop behind the path-prime above. The detection regex/scan body lives
+  # in node25_check_wrong_node_crash (lib/node25-prime.sh, shared with the
+  # other two callers); here we own the runner-scoped surface: a TASK_ID-
+  # attributed stderr block, an INCIDENTS entry that surfaces in the end-of-
+  # run summary, and a sticky line in wrong-node-crash.log. $CLAUDE_EXIT is
+  # NOT mutated — downstream classification still runs.
+  if [[ "$CLAUDE_EXIT" -ne 0 ]] && declare -F node25_check_wrong_node_crash >/dev/null; then
+    if _node_seen="$(node25_check_wrong_node_crash "$STREAM_FILE")"; then
       {
         printf '  WRONG-NODE CRASH — claude CLI crashed at startup.\n'
         printf '    detected: %s (the claude CLI is incompatible with Node v25+; see claude-tools-4tj / claude-tools-3kd)\n' "${_node_seen:-<unknown>}"

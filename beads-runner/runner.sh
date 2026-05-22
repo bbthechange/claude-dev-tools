@@ -164,6 +164,19 @@ source "$RUNNER_DIR/lib/coordinator-stub.sh"
 # shellcheck source=/dev/null
 source "$RUNNER_DIR/lib/local-agent-stub.sh"
 
+# ── Node v25 PATH prime (claude-tools-18c; shared lib at lib/node25-prime.sh,
+#    pattern proven in specialist.sh = claude-tools-3kd and run-beads-tasks.sh
+#    = claude-tools-4tj). The body lives in the shared helper because the same
+#    bug bit three siblings; the SCOPED skip env var (RUNNER_SKIP_NVM_PRIME)
+#    stays caller-local so each test surface forces a skip under its own name.
+#    See node25-prime.sh for the bug-and-fix narrative; the one-liner: a
+#    daemon-launched PATH resolves `claude` to system-node v25 which crashes
+#    the CLI at startup. Doing the prime ONCE at runner startup (not per-task)
+#    is sufficient — the runner's PATH inherits to every spawned `claude -p`.
+# shellcheck source=/dev/null
+source "$RUNNER_DIR/lib/node25-prime.sh"
+node25_prime_path "${RUNNER_SKIP_NVM_PRIME:-0}"
+
 # ── BC-42 typed degradation primitive ────────────────────────────────────────
 # degrade <KIND> <human-msg>            — one visible typed line; never silent.
 # safe_capture <KIND> <fallback> -- cmd…
@@ -1344,6 +1357,42 @@ st_run_task() {
     _reap_tree "$WATCHDOG_PID" TERM 2     # subshell + its sleep/ps/lsof kids
     WATCHDOG_PID=""
   fi
+
+  # ── wrong-Node crash detector (LOUD, never silent) — claude-tools-18c ─────
+  # Backstop behind the startup-time path-prime (node25_prime_path, sourced
+  # near the top of this file). The detection regex/scan lives in
+  # node25_check_wrong_node_crash (lib/node25-prime.sh, shared with
+  # specialist.sh / run-beads-tasks.sh); here we own the runner-scoped
+  # surface: a CURRENT_TASK_ID-attributed stderr block, an INCIDENTS entry
+  # that surfaces in the end-of-run summary via emit_incidents(), and a
+  # sticky line in wrong-node-crash.log. $CLAUDE_EXIT is NOT mutated — the
+  # T2.2 classify_failure path below still runs (so any downstream retry /
+  # breaker behavior is unchanged), but the silent degradation we're killing
+  # (UNKNOWN_FAILURE-and-retry on every spawn) is now impossible: the crash
+  # leaves visible fingerprints in three places. Even after the prime, an
+  # unforeseen launch environment could reintroduce the wrong-Node case
+  # (system claude wrapper, NVM_DIR moved, custom $CLAUDE_BIN) — this detector
+  # is the backstop that ensures it is heard instantly instead of weeks later.
+  if [[ "$CLAUDE_EXIT" -ne 0 ]] && declare -F node25_check_wrong_node_crash >/dev/null; then
+    if _node_seen="$(node25_check_wrong_node_crash "$STREAM_FILE")"; then
+      {
+        printf '  WRONG-NODE CRASH — claude CLI crashed at startup.\n'
+        printf '    detected: %s (the claude CLI is incompatible with Node v25+; see claude-tools-18c / claude-tools-3kd / claude-tools-4tj)\n' "${_node_seen:-<unknown>}"
+        printf '    stream:   %s\n' "$STREAM_FILE"
+        printf '    fix:      ensure $NVM_DIR/versions/node/<lts>/bin is first in PATH for the launching process.\n'
+        printf '              runner.sh already prepends nvm bin when node --version is v25+; the wrong-Node\n'
+        printf '              detection firing means even that prepend did not resolve the right binary.\n'
+      } >&2
+      mkdir -p "$LOG_DIR" 2>/dev/null || true
+      {
+        printf '%s\t%s\twrong_node_crash\t%s\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")" \
+          "$CURRENT_TASK_ID" "${_node_seen:-unknown}"
+      } >> "$LOG_DIR/wrong-node-crash.log" 2>/dev/null || true
+      INCIDENTS+=("$(date -u +%Y-%m-%dT%H:%M:%SZ)	$CURRENT_TASK_ID	WRONG_NODE_CRASH:${_node_seen:-unknown}	$STREAM_FILE")
+    fi
+  fi
+
   # SIGNAL_FILE + STREAM_FILE + PROC_SNAPSHOT are intentionally LEFT in place:
   # T2.2 (classify/precedence/§7.1) consumes WATCHDOG_KILL=1 from SIGNAL_FILE
   # and T2.2/BC-28 owns selective stream/proc-snapshot retention-vs-delete by
