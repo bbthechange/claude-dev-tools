@@ -513,6 +513,24 @@ ck "swapped agent fixture (omitting authored_by) is stamped='agent'" \
 ck "swapped agent fixture preserves its own body.tldr verbatim" \
    eq "$(JF b3swap '.body.tldr')" "swapped-author tldr"
 
+# (8) claude-tools-xdo: caller-supplied source.authored_by hint (the MCP
+#     write_polished path stamps "agent" + a reason so the jq shape-coercer
+#     does NOT mislabel the body as "fallback"). The hint must also suppress
+#     the no_DG_AUTHOR_CMD incident fire (this is not a degraded path).
+INCIDENT_MARKER2="$WORK/incident-marker-xdo.log"
+record_incident() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$INCIDENT_MARKER2"; }
+export -f record_incident
+unset DG_AUTHOR_CMD
+SRC_PREAUTH=$(jq -c '. + {authored_by:"agent", authored_by_reason:"mcp_polished_builder"}' <<<"$SRC_STRUCT")
+dg_generate "$GOOD" "$(gi b3xdo worker_stuck blocking "$SRC_PREAUTH" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "pre-authored gi ⇒ body.authored_by reflects the hint ('agent')" \
+   eq "$(JF b3xdo '.body.authored_by')" "agent"
+ck "pre-authored gi ⇒ body.authored_by_reason reflects the hint" \
+   eq "$(JF b3xdo '.body.authored_by_reason')" "mcp_polished_builder"
+ckn "pre-authored gi ⇒ NO no_DG_AUTHOR_CMD incident fired (jq is shape-coercer here)" \
+    grep -q '^b3xdo|DOSSIER_FALLBACK' "$INCIDENT_MARKER2"
+unset -f record_incident
+
 # Clean up so later test runs / metric scripts don't see this run's noise.
 unset DG_AUTHOR_CMD DG_AUDIT_LOG
 

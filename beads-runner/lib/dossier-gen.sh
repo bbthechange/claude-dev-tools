@@ -449,7 +449,17 @@ dg__validate_dossier() {
 dg__author() {
   local gi="${1:-}" sv; sv="$(dg__sv)"
   local did reason out rc t0 elapsed_ms timeout_sec
+  local pre_author_by pre_author_reason
   did="$(printf '%s' "$gi" | jq -r '.id // ""' 2>/dev/null)" || did=""
+  # claude-tools-xdo: optional caller-supplied AUTHORING HINT on .source. When
+  # the gi was assembled from a pre-authored body (the MCP write_polished path
+  # hands the dossier-builder subprocess's body straight through), the jq path
+  # below is a shape-coercer, NOT a degraded fallback. The hint lets that jq
+  # path stamp body.authored_by accurately and skips the no_DG_AUTHOR_CMD
+  # incident-fire (which would be misleading — the agent that authored is the
+  # builder, not DG_AUTHOR_CMD).
+  pre_author_by="$(printf '%s' "$gi" | jq -r '.source.authored_by // ""' 2>/dev/null)" || pre_author_by=""
+  pre_author_reason="$(printf '%s' "$gi" | jq -r '.source.authored_by_reason // ""' 2>/dev/null)" || pre_author_reason=""
   if [[ -n "${DG_AUTHOR_CMD:-}" ]]; then
     # Provider-agnostic swap (§0.2): a real model emits the same §5 CONTENT.
     # Still ONE call; output goes through the SAME frozen §5 gate downstream.
@@ -494,12 +504,15 @@ dg__author() {
     dg__audit_fallback "$reason" "$did" "$gi" "$elapsed_ms" || true
   else
     reason="no_DG_AUTHOR_CMD"
-    dg__audit_fallback "$reason" "$did" "$gi" "0" || true
+    # claude-tools-xdo: if the caller pre-authored .source (MCP write_polished
+    # path), the jq pass is just shape-coercion — don't fire an incident.
+    [[ -n "$pre_author_by" ]] || dg__audit_fallback "$reason" "$did" "$gi" "0" || true
   fi
   # Default single-pass deterministic transform of the §7.2 raw material.
   # Stamps body.authored_by="fallback" + the specific reason so the Inbox can
   # badge "degraded author" (B3 / claude-tools-95m).
-  printf '%s' "$gi" | jq -c --argjson sv "$sv" --arg reason "$reason" '
+  printf '%s' "$gi" | jq -c --argjson sv "$sv" --arg reason "$reason" \
+                              --arg pre_by "$pre_author_by" --arg pre_reason "$pre_author_reason" '
     .source as $s
     | ($s.tldr // $s.ask // "Decision required.") as $tldr
     | ( if ($s.sections|type)=="array" and ($s.sections|length)>0 then $s.sections
@@ -519,7 +532,8 @@ dg__author() {
              + (if ($s.reversible|type)=="string" then "\n\nReversibility: " + $s.reversible else "" end) ) ) as $full
     | { body: { dossier_schema_version:$sv, tldr:$tldr, sections:$sections,
                 diagrams:$diagrams, full_detail:$full,
-                authored_by:"fallback", authored_by_reason:$reason },
+                authored_by:(if ($pre_by|length)>0 then $pre_by else "fallback" end),
+                authored_by_reason:(if ($pre_reason|length)>0 then $pre_reason else $reason end) },
         items: [ (.items // [])[]
                  | . + { consequence_block:
                            ( if .kind=="pick-option" then (.consequence_block // {})

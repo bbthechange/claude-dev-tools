@@ -455,6 +455,14 @@ function assembleGenerationInput({ dossier_id, bead_ref, dossier, worker_ask }) 
     options: worker_ask.options || [],
     recommendation: worker_ask.recommendation || null,
     reversible: worker_ask.reversible || "",
+    // claude-tools-xdo: the polished body was authored by the dossier-builder
+    // subprocess (an agent) BEFORE this call hands off to dg_generate. The
+    // bridge env has no DG_AUTHOR_CMD, so dg__author's jq path is just a
+    // shape-coercer here, not a degraded fallback. Stamping this hint lets the
+    // jq path label the body authored_by="agent" so the Inbox renderer doesn't
+    // badge MCP-polished dossiers as "fallback author".
+    authored_by: "agent",
+    authored_by_reason: "mcp_polished_builder",
   };
   // Drop undefined keys so the bridge's jq doesn't see literal null fields
   // where source.sections is expected to be array-or-absent.
