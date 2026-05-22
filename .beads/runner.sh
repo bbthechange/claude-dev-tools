@@ -57,6 +57,35 @@ PERMISSION_FLAGS=(
 # the I2 task would silently stall. Scoped to the one real workspace 2.
 EXTRA_CLAUDE_FLAGS=(--no-chrome --add-dir /Users/brianbutler/code/thirsty)
 
+# ════════════════════════════════════════════════════════════════════════════
+# Hosted coordinator wiring — claude-tools-3w8 / I2 per-workspace registration
+# (epic claude-tools-8bm). Mirrors the thirsty workspace block.
+# ════════════════════════════════════════════════════════════════════════════
+# This is WORKSPACE 1. Without these two vars, beads-runner/lib/co-http-
+# transport.sh STAYS DORMANT (its top-level `if [[ -n "$COORDINATOR_URL" ]]`
+# gate evaluates false), la_outbox_drain is never declared, and the runner's
+# §1.1 coordinator-outbox.jsonl only EVER grows locally — heartbeats accumulate
+# but never reach reconcile.js, so RunnerState.last_heartbeat_at stays null in
+# the hosted engine and the deployed Board shows "stale (last seen unknown
+# ago)" forever (3w8: 110 silent heartbeats found in the outbox, none drained).
+# Adding these two vars wires the §4.2 actual-state heartbeat + §1.1 outbox
+# drain so this runner REGISTERS + stays live (last_heartbeat_at within §0.5
+# STALE_AFTER) in the HOSTED engine under project_ref "claude-tools".
+
+# project_ref pinned explicitly so a launch from any cwd (e.g. a worktree, the
+# detached launcher) still registers under the right stable §1.1-safe key —
+# co__safe_key requires [A-Za-z0-9._-], no "..". Without this, basename of
+# pwd is used; a worktree at /tmp/foo would register as "foo" instead.
+PROJECT_REF="claude-tools"
+
+# Deployed Worker "coordinator-cf" (cf-production-deploy-topology); co-http-
+# transport.sh speaks the native POST-slash {op,args:[…]} dialect against the
+# raw Worker (the full CF.11-proven op surface — heartbeat / reconcile /
+# work-snapshot included). The §9.2 bearer is resolved server-side from the
+# macOS Keychain (service "claude-beads-runner.coordinator-token") by
+# la_coordinator_token — NEVER hard-coded here, NEVER in any agent context.
+COORDINATOR_URL="https://coordinator-cf.bbthechange.workers.dev"
+
 # ── Watchdog grace (BC-22) ───────────────────────────────────────────────────
 # Overhaul tasks legitimately run quiet for a while (harness spawning claude -p,
 # npm ci, wrangler, blocking review subagents). Default 600s (10m) killed a
