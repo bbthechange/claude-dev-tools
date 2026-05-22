@@ -84,7 +84,18 @@ PROJECT_REF="claude-tools"
 # work-snapshot included). The §9.2 bearer is resolved server-side from the
 # macOS Keychain (service "claude-beads-runner.coordinator-token") by
 # la_coordinator_token — NEVER hard-coded here, NEVER in any agent context.
-COORDINATOR_URL="https://coordinator-cf.bbthechange.workers.dev"
+#
+# EXPORTED (claude-tools-cxj): without `export` these stay shell-local to the
+# script that sources runner.sh and are invisible to subprocesses — including
+# the §7.3 backstop dossier path (sr_route_stuck → dg_from_worker_ask →
+# do_dossier_put) which runs in subshells / through co_request. With the gate
+# at co-http-transport.sh:79 evaluating false in those subshells, every
+# fallback dossier was written to the in-process bash store at CO_STORE
+# (.beads/runner-logs/.co-store/) and never reached coordinator-cf. The token
+# pull from Keychain mirrors la_coordinator_token's lookup; an empty result is
+# tolerated by co_http__token (env > Keychain > stub fallback).
+export COORDINATOR_URL="https://coordinator-cf.bbthechange.workers.dev"
+export COORDINATOR_TOKEN="$(security find-generic-password -s 'claude-beads-runner.coordinator-token' -w 2>/dev/null)"
 
 # ── Watchdog grace (BC-22) ───────────────────────────────────────────────────
 # Overhaul tasks legitimately run quiet for a while (harness spawning claude -p,

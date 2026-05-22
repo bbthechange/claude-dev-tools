@@ -8,7 +8,7 @@
 //   1. AUTHORING DISPATCH — spawn a fresh `claude -p` running the
 //      dossier-builder agent (B1's system prompt, beads-runner/agents/
 //      dossier-builder.system.md) with the worker's structured input on
-//      stdin. Time-budgeted (BUILDER_TIMEOUT_MS; default 90s).
+//      stdin. Time-budgeted (BUILDER_TIMEOUT_MS; default 300s).
 //   2. WRITE TO HOSTED ENGINE FIRST — engine-bridge.sh write_polished
 //      (builder's {body, items[]}) OR write_fallback (B3 jq path) lands the
 //      dossier durable cloud-side BEFORE the poll loop starts.
@@ -57,8 +57,13 @@ const BUILDER_PROMPT_PATH =
   process.env.DOSSIER_BUILDER_PROMPT_PATH || DEFAULT_BUILDER_PROMPT;
 
 // ── tunables ────────────────────────────────────────────────────────────────
+// Default 300s (5 min): a real builder run with Opus 4.7 1M + the full
+// dossier-builder.system.md + Read/Grep workspace exploration takes ~182s
+// (claude-tools-cxj 6-minute probe). 90s SIGTERM'd the builder mid-thought
+// every time, masking the agent-authored path entirely. 300s gives ~65%
+// headroom over observed and bounds a genuine hang at 5 min, not 90s.
 const BUILDER_TIMEOUT_MS = parseInt(
-  process.env.BUILDER_TIMEOUT_MS || "90000",
+  process.env.BUILDER_TIMEOUT_MS || "300000",
   10,
 );
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || "1000", 10);
