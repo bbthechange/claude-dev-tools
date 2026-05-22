@@ -216,7 +216,18 @@ function runBuilder({ workspaceDir, builderInput }) {
     // Bash — what the builder spec promises) stays available.
     const args = [
       "-p",
-      "--append-system-prompt",
+      // claude-tools-cvj third-pass: switched from --append-system-prompt to
+      // --system-prompt (replace). When the dossier-builder.system.md was
+      // APPENDED to Claude Code's default helpful-assistant system prompt,
+      // the default persona kept winning on juicy real-decision inputs —
+      // the model would treat the worker_ask JSON as "user pasted a
+      // document, what do I think?" and emit markdown commentary
+      // ("Since you've pasted it to me without a question, two options:..."
+      // observed verbatim on 240 at 10:50Z) instead of composing a JSON
+      // dossier. Replacing the system prompt removes the competing persona;
+      // only the dossier-builder role is active. --allowedTools handles the
+      // tool surface explicitly so we don't lose Read/Grep/Glob/Bash.
+      "--system-prompt",
       `@${BUILDER_PROMPT_PATH}`,
       "--add-dir",
       workspaceDir,
