@@ -55,17 +55,25 @@ USAGE_THRESHOLD=${USAGE_THRESHOLD:-70}       # pause new tasks above this % (0 =
 USAGE_SLEEP_SECONDS=${USAGE_SLEEP_SECONDS:-1800} # sleep duration when over threshold (30 min)
 USAGE_CACHE_SECONDS=${USAGE_CACHE_SECONDS:-300}  # cache usage API response (avoid hammering per-loop)
 CAPACITY_DENY_BACKOFF=${CAPACITY_DENY_BACKOFF:-60} # C1: per-pickup daemon ask-capacity denied ⇒ release lease + sleep N before retry
-# claude-tools-noj — hard label gate. Tasks carrying ANY of these labels are
-# refused by validate_task regardless of priority, defer state, or readiness.
-# `human-live-session` is the canonical "Brian is driving this on his phone
-# from the couch — do NOT auto-claim it" marker for engineered fixtures
-# (closing-gate beads, live end-to-end runs). `human-triage` is the older
-# epic-level marker (ir7 children) kept for back-compat. This is a HARD gate,
-# not text in the description: tkf proved description text + priority + status
-# flips are all ignored under load; only a labelled refusal sticks. Comma-
-# separated env override is supported so a project can extend (e.g. add
-# 'human-action') without editing the runner.
-RUNNER_NO_CLAIM_LABELS=${RUNNER_NO_CLAIM_LABELS:-human-live-session,human-triage}
+# claude-tools-noj / claude-tools-tkf — hard label gate. Tasks carrying ANY
+# of these labels are refused by validate_task regardless of priority, defer
+# state, or readiness.
+#   - `human-live-session` — canonical "Brian is driving this on his phone
+#     from the couch — do NOT auto-claim it" marker for engineered fixtures
+#     (closing-gate beads, live end-to-end runs).
+#   - `human-triage`      — older epic-level marker (ir7 children) kept for
+#     back-compat.
+#   - `human-action`      — universal "the next move belongs to a human, not
+#     any runner". tkf documented the runner auto-claiming a P0 human-action
+#     blocker filed specifically to stop a loop — the label must refuse in
+#     EVERY workspace, so it lives in the global default rather than per-
+#     workspace overrides.
+# This is a HARD gate, not text in the description: tkf proved description
+# text + priority + status flips are all ignored under load; only a labelled
+# refusal sticks. Comma-separated env override is supported so a project can
+# extend the gate (e.g. an FE-rooted workspace appending 'backend' so it
+# never auto-claims a backend-impl bead) without editing the runner.
+RUNNER_NO_CLAIM_LABELS=${RUNNER_NO_CLAIM_LABELS:-human-live-session,human-triage,human-action}
 export WORKER_STUCK_EXIT=${WORKER_STUCK_EXIT:-7} # §7.2/§8.1 worker deliberate-stuck sentinel exit (≠ BC-21 0–4; INTERFACE.md v1 constants). Exported: a stuck-aware worker wrapper reads it; the §7.2 detection below keys on it.
 IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}                # seconds of stream silence before watchdog kills (env-overridable)
 # claude-tools-idg — while a Task subagent is in-flight (task_notification

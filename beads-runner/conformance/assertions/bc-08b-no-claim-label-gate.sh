@@ -47,19 +47,37 @@ _need "skip message names the matched label"        contains "$(out)" "label 'hu
 _emit
 H_cleanup
 
+# ── default label: `human-action` (claude-tools-tkf) also refused ────────────
+# tkf documented the runner auto-claiming a P0 human-action blocker filed
+# specifically to stop a loop — the label is universal across workspaces and
+# must live in the default, not require every project to enumerate it. Same
+# skip-not-fail posture as the other default labels.
+H_init_test bc08b-human-action
+bd_seed T1 "human-action blocker" "human decision required" open "human-action"
+unset RUNNER_EXIT_ON_DRAIN
+RUN_TIMEOUT=5 run_runner
+_expect "BC-08b" "BC-08b" "default RUNNER_NO_CLAIM_LABELS refuses 'human-action'"
+_need "bead T1 must stay open"                      test "$(bd_status T1)" = open
+_need "no in_progress transition"                   bash -c '! grep -qE "^T1 in_progress" "'"$BD_AUDIT"'"'
+_need "skip message names 'human-action'"           contains "$(out)" "label 'human-action' present"
+_emit
+H_cleanup
+
 # ── env override: a project can extend the gate with extra labels ────────────
-# RUNNER_NO_CLAIM_LABELS is comma-separated and overridable. A project that
-# adds e.g. 'human-action' (the tkf failure class) gets it honored without
-# editing the runner. Whitespace around commas is tolerated.
+# RUNNER_NO_CLAIM_LABELS is comma-separated and overridable. An FE-rooted
+# workspace that appends 'backend' (the tkf failure class, where six prior
+# auto-claims of a backend-impl bead from a FE sandbox all bailed with zero
+# code written) gets it honored without editing the runner. Whitespace around
+# commas is tolerated.
 H_init_test bc08b-env-override
-bd_seed T1 "human-action only" "label requested via project env" open "human-action"
-export RUNNER_NO_CLAIM_LABELS=" human-live-session , human-action , human-triage "
+bd_seed T1 "backend impl" "code lives in thirsty-backend" open "backend"
+export RUNNER_NO_CLAIM_LABELS=" human-live-session , human-triage , human-action , backend "
 unset RUNNER_EXIT_ON_DRAIN
 RUN_TIMEOUT=5 run_runner
 _expect "BC-08b" "BC-08b" "env-overridden RUNNER_NO_CLAIM_LABELS honors extra labels (comma-split, whitespace-tolerant)"
 _need "bead T1 must stay open"                      test "$(bd_status T1)" = open
 _need "no in_progress transition"                   bash -c '! grep -qE "^T1 in_progress" "'"$BD_AUDIT"'"'
-_need "skip message names 'human-action'"           contains "$(out)" "label 'human-action' present"
+_need "skip message names 'backend'"                contains "$(out)" "label 'backend' present"
 unset RUNNER_NO_CLAIM_LABELS
 _emit
 H_cleanup

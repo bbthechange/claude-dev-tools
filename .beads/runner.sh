@@ -78,6 +78,16 @@ EXTRA_CLAUDE_FLAGS=(--no-chrome --add-dir /Users/brianbutler/code/thirsty)
 # pwd is used; a worktree at /tmp/foo would register as "foo" instead.
 PROJECT_REF="claude-tools"
 
+# ── claude-tools-tkf — FE-rooted workspace, refuse 'backend' tasks ──────────
+# claude-tools' worker sandbox is rooted at /Users/brianbutler/code/claude-
+# tools (with --add-dir extending into thirsty/ above). Any bead labelled
+# `backend` — by convention, work whose code lives in ~/code/thirsty-backend/
+# — is unreachable from this sandbox; six prior auto-claims of thirsty-hs88.2
+# from this workspace all bailed with zero code written. Append (don't
+# replace) the workspace gate so the universal human-* labels from the
+# run-beads-tasks.sh default still apply.
+RUNNER_NO_CLAIM_LABELS="${RUNNER_NO_CLAIM_LABELS:+$RUNNER_NO_CLAIM_LABELS,}backend"
+
 # Deployed Worker "coordinator-cf" (cf-production-deploy-topology); co-http-
 # transport.sh speaks the native POST-slash {op,args:[…]} dialect against the
 # raw Worker (the full CF.11-proven op surface — heartbeat / reconcile /
