@@ -100,13 +100,21 @@ export COORDINATOR_TOKEN="$(security find-generic-password -s 'claude-beads-runn
 # ── Watchdog grace (BC-22) ───────────────────────────────────────────────────
 # Overhaul tasks legitimately run quiet for a while (harness spawning claude -p,
 # npm ci, wrangler, blocking review subagents). Default 600s (10m) killed a
-# healthy harness agent. 1200s (20m) gives long ops room WITHOUT meaningfully
-# weakening true-hang detection (per-task MAX_RETRIES + the consecutive-failure
-# breaker still bound a real hang; a genuine hang just wastes one 20m timeout,
-# not the fleet). NOT the real fix — see the T2 note: the rewritten watchdog
-# must key "stuck" on agent+child-process-tree liveness, not parent-stream
-# silence alone (BC-22's own caveat). This is the v1 stopgap.
-IDLE_TIMEOUT=1200
+# healthy harness agent. 1200s (20m) was the v1 stopgap — but a worker that
+# correctly invokes `mcp__askbrian__ask-brian` enters a tool_use state where
+# its own stdout is silent for as long as Brian takes to answer on his phone,
+# and the watchdog killed those workers at 20 min sharp (observed on the
+# claude-tools-240 closing-gate test 2026-05-22 08:02/08:24, where each
+# kill spawned a fresh analysis-claude-tools-240 fallback dossier and the
+# runner entered a respawn loop). 21600s (6h) matches mcp-askbrian/server.mjs
+# POLL_MAX_MS so a worker waiting on a human decision survives the natural
+# poll horizon. Still NOT the real fix — the rewritten watchdog must key
+# "stuck" on agent+child-process-tree liveness (the MCP server child is
+# emitting poll_still_waiting every ~37s; that IS liveness) — but bumping
+# this saves the closing-gate test from churning while T2's deeper rewrite
+# lands. Trade-off: a genuinely hung worker (model crash, infinite loop)
+# now wastes one 6h slot before retry. Acceptable for now.
+IDLE_TIMEOUT=21600
 
 # ── Project-wide worker guidance (appended to every task prompt; BC-37) ───────
 PROMPT_EXTRA='Watchdog / long operations: a watchdog stops you if your visible activity is silent past the idle timeout. Delegating to subagents (the Task tool) is ENCOURAGED for context isolation and for objective review with a clean context, and is watchdog-safe while the subagent is actively working — do NOT inline context-heavy work into your own thread just to avoid delegating (that causes context overflow, which is worse). The ONLY pattern that trips the watchdog is detaching a long shell command (run_in_background, or a long blocking Bash) and then sitting idle: if you must background a long Bash op, poll it and print a one-line progress note every few minutes so activity stays visible. Prefer foreground for short commands, a subagent for anything heavy or needing objectivity, and background-shell only when necessary with periodic visible progress.'

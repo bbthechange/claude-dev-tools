@@ -236,6 +236,18 @@ function runBuilder({ workspaceDir, builderInput }) {
       "Grep",
       "Glob",
       "Bash",
+      // claude-tools-cvj second-pass: the dossier-builder.system.md prompt
+      // tells the model "Don't call EnterPlanMode, ExitPlanMode, or
+      // AskUserQuestion" but the model honored it only ~50% of the time
+      // (observed on 240 — 07:45 succeeded; 08:04 emitted "The user
+      // dismissed the question prompt without answering. I'll wait for
+      // direct input on the three forks rather than guess" via an
+      // AskUserQuestion call denied by the harness, then fell to fallback).
+      // Block at the harness layer so prompt drift doesn't bite.
+      "--disallowedTools",
+      "AskUserQuestion",
+      "EnterPlanMode",
+      "ExitPlanMode",
       "--max-turns",
       "30",
     ];
