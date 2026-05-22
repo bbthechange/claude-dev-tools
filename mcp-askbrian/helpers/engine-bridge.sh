@@ -26,12 +26,17 @@
 #       frozen §5 gate). Then emit + dispatch the Notification.
 #
 #   poll_once <dossier_id>
-#       Read the dossier back from the hosted engine and check whether ANY
-#       item has moved to answered|applied. If so, prints ONE JSON object on
-#       stdout (and rc 0); otherwise prints nothing (and rc 0). rc 1 is
-#       reserved for transport/auth failure (caller keeps polling). Schema:
-#         { item_id, ask, chosen, chosen_label, chosen_blast_radius,
-#           free_text, response }
+#       Read the dossier back from the hosted engine and check whether EVERY
+#       item has moved out of `open` (i.e. answered/applied/expired/etc).
+#       Multi-item dossiers (N>1 items) hold the worker until ALL items are
+#       resolved — partial returns leak answers (claude-tools-88e: an N=3
+#       dossier with all 3 answered returned only item 1, the worker re-asked
+#       items 2-3, Brian's Inbox got a duplicate dossier). If every item is
+#       resolved, prints ONE JSON object on stdout (and rc 0); otherwise
+#       prints nothing (and rc 0). rc 1 is reserved for transport/auth
+#       failure (caller keeps polling). Schema:
+#         { items: [ { item_id, state, ask, chosen, chosen_label,
+#                      chosen_blast_radius, free_text, response }, ... ] }
 #
 # Auth: COORDINATOR_URL + COORDINATOR_TOKEN must be set in the env (the
 # user-scope MCP add command's -e flags). With no COORDINATOR_URL the
@@ -103,39 +108,47 @@ cmd_write_fallback() {
 }
 
 cmd_poll_once() {
-  local did="${1:-}" b rec rolled decided
+  local did="${1:-}" b rec all_resolved
   [[ -n "$did" ]] || { echo "engine-bridge: poll_once needs <dossier_id>" >&2; return 2; }
   b="$(bearer)"
   rec="$(do_dossier_get "$b" "$did" 2>/dev/null)" || return 1
   [[ -n "$rec" ]] || return 1
   printf '%s' "$rec" | jq -e 'type=="object"' >/dev/null 2>&1 || return 1
-  # Mirror sr_poll_hosted_resolution's "decided" predicate (lib/stuck-routing.sh
-  # ~547) but inlined so we don't need a bfh control-plane record.
-  decided=$(printf '%s' "$rec" | jq -c '
-    ( .items // [] )
-    | (map(select(.state=="answered" or .state=="applied")) | .[0])
-      // (map(select(.state!="open")) | .[0])
-      // empty
-  ' 2>/dev/null) || decided=""
-  [[ -n "$decided" ]] || return 0   # still pending — caller keeps polling
-  # Build the human-readable answer record. Same idiom as
-  # sr_poll_hosted_resolution: pull selected_option_id / decision / free_text
-  # explicitly, never short-circuit through `//` on empty strings.
-  printf '%s' "$decided" | jq -c '
+  # Multi-item dossiers (claude-tools-88e): block until EVERY item has moved
+  # out of `open`. Returning as soon as the first item resolves caused the
+  # worker to receive only one answer and re-ask the rest (see sr_poll_hosted_
+  # resolution at lib/stuck-routing.sh ~547 — that path is per-fork via a bfh
+  # record, so the partial-return there was correct; here we have no bfh
+  # record and one tool call covers all items in the dossier, so we must wait
+  # for the whole dossier).
+  all_resolved=$(printf '%s' "$rec" | jq -r '
+    ( .items // [] ) as $items
+    | if ($items | length) == 0 then "false"
+      else (if ($items | all(.state != "open")) then "true" else "false" end)
+      end
+  ' 2>/dev/null) || all_resolved="false"
+  [[ "$all_resolved" == "true" ]] || return 0   # still pending — caller keeps polling
+  # Build the per-item human-readable answer records. Same nz/`//` idiom as
+  # sr_poll_hosted_resolution; one entry per item in the dossier so the
+  # worker sees all of Brian's answers in one tool_result.
+  printf '%s' "$rec" | jq -c '
     def nz: select((. // "") != "");
-    ( .response // {} ) as $r
-    | ( ($r.selected_option_id | nz) // "" ) as $sel
-    | ( ($r.decision | nz) // "" ) as $dec
-    | ( ( .options // [] ) | map(select(.option_id==$sel)) | .[0] // {} ) as $opt
-    | ( ($sel | nz) // ($dec | nz) // "" ) as $chosen
-    | { item_id:(.id // ""),
-        state:(.state // ""),
-        ask:( (.framing.ask | nz) // (.context_anchor.where | nz) // "" ),
-        chosen:$chosen,
-        chosen_label:( ($opt.label | nz) // ($chosen | nz) // "(answered — see the dossier)" ),
-        chosen_blast_radius:( $opt.blast_radius // "" ),
-        free_text:( ($r.free_text | nz) // ($r.note | nz) // ($r.edited_value | nz) // ($r.text | nz) // "" ),
-        response:$r }'
+    { items:
+      [ ( .items // [] )[]
+        | ( .response // {} ) as $r
+        | ( ($r.selected_option_id | nz) // "" ) as $sel
+        | ( ($r.decision | nz) // "" ) as $dec
+        | ( ( .options // [] ) | map(select(.option_id==$sel)) | .[0] // {} ) as $opt
+        | ( ($sel | nz) // ($dec | nz) // "" ) as $chosen
+        | { item_id:(.id // ""),
+            state:(.state // ""),
+            ask:( (.framing.ask | nz) // (.context_anchor.where | nz) // "" ),
+            chosen:$chosen,
+            chosen_label:( ($opt.label | nz) // ($chosen | nz) // "(answered — see the dossier)" ),
+            chosen_blast_radius:( $opt.blast_radius // "" ),
+            free_text:( ($r.free_text | nz) // ($r.note | nz) // ($r.edited_value | nz) // ($r.text | nz) // "" ),
+            response:$r } ]
+    }'
 }
 
 main() {

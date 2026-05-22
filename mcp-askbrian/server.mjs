@@ -553,9 +553,7 @@ function assembleGenerationInput({ dossier_id, bead_ref, dossier, worker_ask }) 
   });
 }
 
-function formatAnswer(ans) {
-  // The text the worker sees as its tool_result. Skim-readable; the worker
-  // is expected to act on this directly.
+function formatOneAnswer(ans) {
   const parts = [];
   const label = ans.chosen_label || ans.chosen || "(answered)";
   parts.push(`Brian's answer: ${label}`);
@@ -563,6 +561,34 @@ function formatAnswer(ans) {
   if (ans.chosen_blast_radius) parts.push(`Blast radius: ${ans.chosen_blast_radius}`);
   if (ans.free_text) parts.push(`Free-text note: ${ans.free_text}`);
   return parts.join("\n");
+}
+
+function formatAnswer(payload) {
+  // The text the worker sees as its tool_result. claude-tools-88e: a dossier
+  // can have N>1 items; the bridge returns {items:[...]} with all answered
+  // entries in one shot. For a single-item dossier we keep the old terse
+  // shape; for multi-item we header + per-item blocks so the worker can act
+  // on every answer without re-asking.
+  const items = Array.isArray(payload && payload.items) ? payload.items : [];
+  if (items.length === 0) {
+    // Defensive: an empty payload should not have escaped poll_once, but if
+    // it does, surface that the dossier was resolved with no decisions.
+    return "Brian's answer: (the dossier resolved with no per-item decision — see the dossier in his Inbox for context).";
+  }
+  if (items.length === 1) {
+    return formatOneAnswer(items[0]);
+  }
+  const blocks = [
+    `Brian answered all ${items.length} items in this dossier. Each item's answer is below — apply ALL of them; do not re-ask any item.`,
+    "",
+  ];
+  items.forEach((ans, i) => {
+    blocks.push(`── Item ${i + 1}/${items.length} (${ans.item_id || "?"}) ──`);
+    if (ans.ask) blocks.push(`Ask: ${ans.ask}`);
+    blocks.push(formatOneAnswer(ans));
+    blocks.push("");
+  });
+  return blocks.join("\n").trimEnd();
 }
 
 // ── the one tool ────────────────────────────────────────────────────────────
@@ -805,12 +831,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     const text = formatAnswer(answer);
+    const answeredItems = Array.isArray(answer && answer.items) ? answer.items : [];
     logLine({
       event: "answer_returned",
       call_id,
       dossier_id: did,
-      item_id: answer.item_id,
-      chosen: answer.chosen,
+      item_count: answeredItems.length,
+      items: answeredItems.map((a) => ({ item_id: a.item_id, chosen: a.chosen })),
       elapsed_ms: Date.now() - t0,
     });
     // R1 Q1: leave isError unset so tool_result.is_error is null (NOT false).
