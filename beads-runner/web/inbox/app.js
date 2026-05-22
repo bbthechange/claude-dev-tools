@@ -438,6 +438,25 @@
       : nowResolved + ' staged · ' + openLeft + ' still open';
     el('dsubmit').textContent = ov && nowResolved === 0
       ? 'Acknowledge' : (nowResolved === 0 ? 'Submit' : 'Submit ' + nowResolved);
+    // claude-tools-23r — show the dismiss-as-stale button only when there is
+    // at least one item in state=open (the only state the engine's stateCheck
+    // legally moves to `expired`; an `answered` item is mid-reconcile and is
+    // NOT this affordance's target).
+    var dismissable = openItemIds().length;
+    el('ddismiss').hidden = dismissable === 0;
+    el('ddismiss').textContent = dismissable > 1
+      ? 'Dismiss ' + dismissable + ' as stale' : 'Dismiss as stale';
+  }
+
+  // claude-tools-23r — ids of items where state==='open' (NOT 'answered').
+  // The engine's dossier.js stateCheck allows ONLY open→expired; an `answered`
+  // item is mid-reconcile and would 422 here. Honesty over false success: we
+  // never attempt to expire an item the engine would reject, and we say so.
+  function openItemIds() {
+    if (!curView) return [];
+    return curView.items
+      .filter(function (x) { return x.state === 'open'; })
+      .map(function (x) { return x.id; });
   }
 
   function applyDensity() {
@@ -479,6 +498,47 @@
       // as still-open, S-2). errs[] is passed through so the ack states
       // PERSISTENTLY which submits failed and why — not a vanishing toast
       // (principle 4: never mask the real failure).
+      refetchAck(errs);
+    });
+  }
+
+  // ── DISMISS-AS-STALE (claude-tools-23r) ───────────────────────────────────
+  // An at-the-shell "this is stale, get it out of my way" affordance, gated
+  // behind a window.confirm so it cannot be a foot-gun. It flips every open
+  // item to the §4.1 terminal state `expired` (the same legal sink T5.4's
+  // timed-fyi auto-proceed uses), one POST per open item — partial is
+  // first-class (AD7). The ack is the RE-FETCHED §4 record's latch-true state
+  // (no Dolt-lag lie). It is NOT a §5.2 response; the renderer's per-Item
+  // affordance set is untouched.
+  function dismissDossier() {
+    if (!curView) return;
+    var ids = openItemIds();
+    if (ids.length === 0) {
+      toast('Nothing to dismiss — every item is already resolved or in-flight.');
+      return;
+    }
+    var msg = 'Mark ' + ids.length + ' open item' + (ids.length === 1 ? '' : 's') +
+      ' as expired and drop this dossier from the Inbox?\n\n' +
+      'Expired is a terminal state — applying a response later is no longer possible. ' +
+      'Already-answered items (mid-reconcile) are left alone.';
+    if (!window.confirm(msg)) return;
+    el('ddismiss').disabled = true;
+    el('ddismiss').textContent = 'Dismissing…';
+    el('dsubmit').disabled = true;
+    var chain = Promise.resolve();
+    var errs = [];
+    ids.forEach(function (iid) {
+      chain = chain.then(function () {
+        return postJSON('/api/expire', {
+          dossier_id: curView.id, item_id: iid
+        }).catch(function (e) { errs.push(iid + ': ' + e.message); });
+      });
+    });
+    chain.then(function () {
+      el('ddismiss').disabled = false;
+      el('dsubmit').disabled = false;
+      // Honest re-fetch is the source of truth: any item the engine refused
+      // to expire (illegal transition) correctly reads back as still-open.
       refetchAck(errs);
     });
   }
@@ -659,6 +719,7 @@
   el('back').addEventListener('click', function () { location.hash = '#/'; });
   el('cf-back').addEventListener('click', function () { location.hash = '#/'; });
   el('dsubmit').addEventListener('click', submitDossier);
+  el('ddismiss').addEventListener('click', dismissDossier);
   el('den-skim').addEventListener('click', function () { density = 'skim'; applyDensity(); });
   el('den-full').addEventListener('click', function () { density = 'full'; applyDensity(); });
   window.addEventListener('hashchange', route);

@@ -43,7 +43,8 @@ P_INBOX="$HERE/../web/inbox/functions/api/inbox.js"
 P_DOSS="$HERE/../web/inbox/functions/api/dossier.js"
 P_RESP="$HERE/../web/inbox/functions/api/respond.js"
 P_FOR="$HERE/../web/inbox/functions/api/forensic.js"
-for f in "$GENLIB" "$CONLIB" "$VIEW" "$APP" "$P_INBOX" "$P_DOSS" "$P_RESP" "$P_FOR"; do
+P_EXP="$HERE/../web/inbox/functions/api/expire.js"
+for f in "$GENLIB" "$CONLIB" "$VIEW" "$APP" "$P_INBOX" "$P_DOSS" "$P_RESP" "$P_FOR" "$P_EXP"; do
   [[ -f "$f" ]] || { echo "FATAL: missing $f"; exit 2; }
 done
 command -v node >/dev/null 2>&1 || { echo "FATAL: node required"; exit 2; }
@@ -250,7 +251,7 @@ ck "snapshot schema_version 2 ⇒ Inbox list REFUSED (§4.5/§0.3)" eq "$(jqr "$
 ck "inbox-view.js makes NO network call (pure core)"          hasnt "fetch(" "$(cat "$VIEW")"
 ck "inbox-view.js has no POST verb"                           hasnt "POST" "$(cat "$VIEW")"
 ck "app.js issues NO direct beads/bd write"                   hasnt "bd update" "$(cat "$APP")"
-ck "app.js POSTs only to /api/respond + /api/forensic (no Dolt)" eq "$(grep -oE "postJSON\('/api/[a-z]+'" "$APP" | sort -u | paste -sd, -)" "postJSON('/api/forensic',postJSON('/api/respond'"
+ck "app.js POSTs only to /api/respond + /api/forensic + /api/expire (no Dolt)" eq "$(grep -oE "postJSON\('/api/[a-z]+'" "$APP" | sort -u | paste -sd, -)" "postJSON('/api/expire',postJSON('/api/forensic',postJSON('/api/respond'"
 ck "inbox proxy exports ONLY onRequestGet"                    has "export async function onRequestGet" "$(cat "$P_INBOX")"
 ck "inbox proxy exports NO onRequestPost"                     hasnt "onRequestPost" "$(cat "$P_INBOX")"
 ck "inbox proxy hard-codes the §4.5 read op"                  has "COORDINATOR_OP = 'work-snapshot'" "$(cat "$P_INBOX")"
@@ -263,7 +264,7 @@ ck "respond proxy exports NO onRequestGet (no read/mutate mix)" hasnt "onRequest
 ck "respond proxy pins the ONE write op 'item-apply'"         has "COORDINATOR_OP = 'item-apply'" "$(cat "$P_RESP")"
 ck "respond proxy: exactly ONE op literal on the wire"        eq "$(opn "$P_RESP")" "1"
 ck "respond proxy strips any client-sent principal (§9.1)"    has "delete response.principal" "$(cat "$P_RESP")"
-ck "bearer is a server-side env binding in ALL 4 proxies"     eq "$(grep -l 'env.COORDINATOR_TOKEN' "$P_INBOX" "$P_DOSS" "$P_RESP" "$P_FOR" | wc -l | tr -d ' ')" "4"
+ck "bearer is a server-side env binding in ALL 5 proxies"     eq "$(grep -l 'env.COORDINATOR_TOKEN' "$P_INBOX" "$P_DOSS" "$P_RESP" "$P_FOR" "$P_EXP" | wc -l | tr -d ' ')" "5"
 ck "no token literal in the client app"                       hasnt "COORDINATOR_TOKEN" "$(cat "$APP")"
 ck "no token literal in the shipped shell HTML"               hasnt "COORDINATOR_TOKEN" "$(cat "$SHELL_HTML")"
 ck "client never selects an op (no searchParams op in app.js)" hasnt "set('op'" "$(cat "$APP")"
@@ -312,6 +313,41 @@ ck "the §10 forensic STREAM is DROPPED by the renderer"      hasnt "$FOR_CANARY
 FV="$(iv deriveFailureView "$SNAPF" '"claude-tools-91"')"
 ck "tier-3 forensic is an ON-DEMAND affordance only (§10.3)" eq "$(jqr "$FV" '.forensic.available and (.forensic.fetched|not)')" "true"
 ck "failure view carries NO forensic stream inline"          hasnt "$FOR_CANARY" "$FV"
+
+echo "── claude-tools-23r: at-the-shell DISMISS-AS-STALE affordance ──"
+# A stale Dossier was wedging itself in the user's face forever (claude-tools-vxs
+# saw 9 i1-live-* on claude-tools-txj). Dismiss flips every still-open item to
+# state=expired (a §4.1 terminal sink, already legal for the lane projection
+# from T5.4's timed-fyi auto-proceed) — gated behind a confirm in the UI, no
+# §5.2 contract change. The engine's stateCheck (open→expired only) is the
+# floor: an answered item is mid-reconcile and is NOT this affordance's target.
+DID_DM="$(dg_generate "$GOOD" "$(gi dDM human_flag blocking "[$(item_ar s1),$(item_ar s2)]")")"
+ck "T5 dg_generate produced the stale-fixture Dossier"        eq "$DID_DM" "dDM"
+ck "stale Dossier surfaces in the lane (before dismiss)"      eq "$(jqr "$(iv deriveInboxList "$(SNAPSHOT)")" '[.items[]|select(.dossier_ref=="dDM")]|length')" "1"
+do_item_set_state "$GOOD" dDM s1 expired >/dev/null 2>&1
+do_item_set_state "$GOOD" dDM s2 expired >/dev/null 2>&1
+DM_REC="$(GET dDM)"
+ck "open item s1 → expired (§4.1 terminal)"                    eq "$(jqr "$DM_REC" '.items[]|select(.id=="s1").state')" "expired"
+ck "open item s2 → expired (§4.1 terminal)"                    eq "$(jqr "$DM_REC" '.items[]|select(.id=="s2").state')" "expired"
+ck "dismissed Dossier LEAVES the lane (honest, S-2)"          eq "$(jqr "$(iv deriveInboxList "$(SNAPSHOT)")" '[.items[]|select(.dossier_ref=="dDM")]|length')" "0"
+# Already-answered items are mid-reconcile: stateCheck refuses answered→expired,
+# so the dismiss honestly skips them. The lane MUST stay honest (still surfaces
+# the dossier while ≥1 item is non-terminal — open OR answered).
+DID_DM2="$(dg_generate "$GOOD" "$(gi dDM2 human_flag blocking "[$(item_ar t1)]")")"
+do_item_set_state "$GOOD" dDM2 t1 answered >/dev/null 2>&1
+EXP_REJ="$(do_item_set_state "$GOOD" dDM2 t1 expired 2>&1)"
+ck "answered→expired REJECTED by stateCheck (honest gate)"     has "illegal transition" "$EXP_REJ"
+ck "dossier with only-answered items STAYS in the lane (honest)" eq "$(jqr "$(iv deriveInboxList "$(SNAPSHOT)")" '[.items[]|select(.dossier_ref=="dDM2")]|length')" "1"
+# §9.1 chokepoint discipline (the expire proxy must match respond.js' shape).
+ck "expire proxy exports ONLY onRequestPost"                  has "export async function onRequestPost" "$(cat "$P_EXP")"
+ck "expire proxy exports NO onRequestGet (no read/mutate mix)" hasnt "onRequestGet" "$(cat "$P_EXP")"
+ck "expire proxy pins op 'item-set-state'"                    has "COORDINATOR_OP = 'item-set-state'" "$(cat "$P_EXP")"
+ck "expire proxy hard-codes target state 'expired'"           has "TARGET_STATE = 'expired'" "$(cat "$P_EXP")"
+ck "expire proxy: exactly ONE op literal on the wire"         eq "$(opn "$P_EXP")" "1"
+ck "expire proxy bearer is a server-side env binding"         has "env.COORDINATOR_TOKEN" "$(cat "$P_EXP")"
+ck "expire proxy carries NO client-supplied state (foot-gun)"  hasnt "payload.state" "$(cat "$P_EXP")"
+ck "app.js dismiss flow gates behind window.confirm (foot-gun)" has "window.confirm" "$(cat "$APP")"
+ck "app.js dismiss never targets non-open items (stateCheck floor)" has "state === 'open'" "$(cat "$APP")"
 
 echo "── §10.3 forensic round-trip (the binding the forensic proxy depends on) ──"
 RED='{"redacted":true,"tool_use":["Read(x.ts)"],"errors":["WATCHDOG"],"last_turn":"…"}'

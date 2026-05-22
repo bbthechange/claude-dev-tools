@@ -119,9 +119,15 @@
     </footer>
   </main>
 
-  <!-- sticky submit dock (dossier only) -->
+  <!-- sticky submit dock (dossier only). The dismiss button (claude-tools-23r)
+       is an at-the-shell "this is stale, get it out of my way" affordance: it
+       flips every still-open item to state=expired (a §4.1 terminal sink, the
+       same one timed-fyi auto-proceed uses), gated behind a confirm so it is
+       not a foot-gun. It is NOT a §5.2 response — the renderer's affordance
+       set is untouched (§11). -->
   <div class="ddock" id="ddock" hidden>
     <div class="sum" id="dsum"></div>
+    <button class="btn ghost" id="ddismiss" type="button" hidden>Dismiss as stale</button>
     <button class="btn primary" id="dsubmit" type="button">Submit</button>
   </div>
 

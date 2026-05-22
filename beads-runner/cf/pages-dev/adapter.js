@@ -63,6 +63,8 @@ function jerr(msg, status) {
 //   forensic-dismiss (blobId)         — forensic.js forensicDismiss(co,pr,a0)
 //   set-desired    (proj,state,actor) — coordinator.js opSetDesired(pr,a0,a1,a2)
 //                                       (F1, Board-side of UX-DESIGN Flow D)
+//   item-set-state (did, iid, to)     — dossier.js itemSetState(co,pr,a0,a1,a2)
+//                                       (claude-tools-23r, Inbox dismiss-as-stale)
 function argsForGet(op, url) {
   const q = url.searchParams;
   if (op === "work-snapshot") {
@@ -79,6 +81,13 @@ function argsForPost(op, body) {
   const b = body && typeof body === "object" ? body : {};
   if (op === "item-apply") return [b.dossier_id, b.item_id, b.response];
   if (op === "forensic-dismiss") return [b.id];
+  // claude-tools-23r — Inbox "dismiss as stale" affordance. Maps the narrow
+  // proxy's named-body {dossier_id,item_id,state} to itemSetState's positional
+  // [did, iid, to]. The §5.2 response is intentionally NOT carried: an at-
+  // the-shell archive is not a §5.2 decision; the engine's open→expired
+  // stateCheck is the only gate. The PROXY (expire.js) hard-codes state to
+  // 'expired'; the adapter stays dumb plumbing.
+  if (op === "item-set-state") return [b.dossier_id, b.item_id, b.state];
   // F1 (claude-tools-49w) — Board-side of UX-DESIGN Flow D. The proxy carries
   // the named-JSON-body shape {project_ref, desired:{state,actor}}; here it
   // unwraps to opSetDesired's positional `[proj, state, actor]` (the same
