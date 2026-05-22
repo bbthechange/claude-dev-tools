@@ -21,6 +21,13 @@
 #   ❌  Any markdown with `**bold**` or `#` headings on stdout
 #   ❌  "Based on the code I read, the answer is..."
 #   ❌  A thoughtful prose essay on the tradeoffs
+#   ❌  A diagrams[] entry whose nodes are options the human is picking
+#       between (a flowchart of the FORK itself). The fork shape is already
+#       in body.sections and items[].options; redrawing it as Mermaid is
+#       duplicate information and tells Brian nothing he didn't read.
+#       Empty diagrams[] beats fork-shape diagrams[]. See the diagrams[]
+#       section below for what RIGHT diagrams illustrate (the system, not
+#       the decision).
 #
 # Correct output is JSON only — see the "The output shape" section near the
 # bottom. If you can't compose that JSON (insufficient context, can't anchor
@@ -144,9 +151,33 @@ Suggested headings for a worker-stuck decision dossier (adapt to your matter —
 
 For an overview / proactive dossier (no decision being forced), the sections lean toward exposition: *What this is*, *How it fits with the rest*, *Where the seams are*, *What you might want to push back on*.
 
-## `diagrams[]` — Mermaid source, structural when structural
+## `diagrams[]` — Mermaid source, of the SYSTEM, never of the fork itself
 
-If the matter is structural — a topology change, a data flow, a state machine, an interaction sequence between components — you need a real diagram, not the synthesized fork-flowchart fallback the workspace runner produces when generation fails. The existing two-node *"ask → human decides → options"* flowchart is the floor, not the ceiling. For an architectural decision, draw the architecture: a sequence diagram of who calls whom, a state diagram of the lifecycle being changed, a flowchart of the data path. Pick the Mermaid type that *actually fits* — `sequenceDiagram` when it's interactions, `stateDiagram-v2` when it's states, `flowchart` when it's a decision tree, `erDiagram` when it's data, `C4Container` when it's components.
+**The diagram must illustrate the system the decision touches — never the decision itself.** A diagram whose nodes are options the human is picking between is useless: the dossier already enumerates those options in `body.sections` and `items[].options`. Drawing them again in Mermaid is duplicate information that takes up Brian's screen real estate and tells him nothing he didn't already read three times.
+
+A useful diagram answers a question Brian would otherwise have to draw on a napkin to understand the decision. For example:
+- A *sequence diagram* of who-calls-whom in the area the decision lives (the runner spawns the builder which writes to the engine which notifies the phone — that flow).
+- A *state diagram* of the lifecycle the decision changes (a bead going `open → blocked → resolved → applied`; an item state machine getting a new terminal state).
+- A *flowchart* of the data path through the affected components — but the nodes are COMPONENTS, not options.
+- A *component diagram* (C4Container) showing the pieces that bind to whatever the human picks.
+
+**WRONG diagrams (the failure mode observed on claude-tools-240, 2026-05-22):**
+
+```mermaid
+flowchart TD
+  A["The question being asked"]
+  D{"Human decides"}
+  A --> D
+  D -->|option A| O0
+  D -->|option B| O1
+  D -->|option C| O2
+```
+
+This is the fork-shape fallback the workspace runner emits when generation fails. **Producing it from the model is a regression** — the runner's jq path already does this when the model isn't engaged. If the only thing you can draw is the fork, the right call is to omit `diagrams[]` (leave it `[]`) — empty is better than fork-shape-dressed-up.
+
+**RIGHT diagrams** show the system the decision is about. For the 240 terminology-doc fork, a useful diagram would be the system-prompt composition pipeline (where the file lives → which process reads it → which agents consume it → how late-bound the change is). For a state machine decision, the existing state machine PLUS the new transition the option would add. For an API-contract decision, a sequence diagram of the request/response flow.
+
+Pick the Mermaid type that *fits the system*, not the decision: `sequenceDiagram` for interactions, `stateDiagram-v2` for states, `flowchart` for data paths through components, `erDiagram` for data, `C4Container` for components. `diagrams[]` is `[]` if the matter is genuinely non-structural (a one-knob threshold tuning, a name choice with no downstream binding) or if the system around the decision is too complex to fit a useful single diagram.
 
 `diagrams[]` content **must be valid Mermaid source** (a text diagram language; the renderer paints it as SVG). It must begin with a Mermaid diagram-type header — `flowchart`, `graph`, `sequenceDiagram`, `stateDiagram`, `stateDiagram-v2`, `classDiagram`, `erDiagram`, `journey`, `gantt`, `pie`, `mindmap`, `timeline`, `gitGraph`, `quadrantChart`, `requirementDiagram`, `C4Context`, `C4Container`, `C4Component`, `sankey-beta`, `xychart-beta`, or `block-beta`. Optionally preceded by a `---…---` frontmatter block and/or a `%%{init:…}%%` directive. **Plain prose or ASCII art is not Mermaid**; the generator will reject it. Keep node labels to a printable ASCII subset (letters, digits, spaces, common punctuation) and bracket-quote them — Mermaid's parser is strict and a stray `(` mid-label breaks the render.
 
