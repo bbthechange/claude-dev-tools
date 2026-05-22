@@ -192,6 +192,53 @@ if [[ "${1:-}" == "--yolo" ]]; then
   MODE_LABEL="all permissions bypassed"
 fi
 
+# ── claude-tools-4tj path-prime: spawn claude under nvm's node, not system v25
+#
+# Same bug + same fix as claude-tools-3kd (specialist.sh, commit a857038),
+# repeated here because the daemon-launched runner inherits the same stripped
+# PATH and resolves `claude` to a system install running under
+# /usr/local/bin/node (currently v25.2.1). Node v25 crashes the claude CLI at
+# startup with `TypeError: Cannot read properties of undefined (reading
+# 'prototype')` from cli.js. The crash made every spawned task fail in ~5s,
+# the runner retried immediately, and the resulting flurry of `bd ready` /
+# `bd update` / `bd show` calls saturated the embeddeddolt lock — making
+# interactive `bd` appear locked up to anyone holding a shell in the workspace.
+#
+# Non-invasive by design: if the current node is already < v25 (interactive
+# session, test fixture, an OS without nvm) we change nothing. Tests can also
+# set RUNNER_SKIP_NVM_PRIME=1 to force-skip.
+if [[ "${RUNNER_SKIP_NVM_PRIME:-0}" != "1" ]]; then
+  node_major="$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')"
+  if [[ -n "$node_major" && "$node_major" -ge 25 ]]; then
+    NVM_DIR_RESOLVED="${NVM_DIR:-$HOME/.nvm}"
+    if [[ -d "$NVM_DIR_RESOLVED/versions/node" ]]; then
+      _ver=""
+      _alias_file="$NVM_DIR_RESOLVED/alias/default"
+      if [[ -f "$_alias_file" ]]; then
+        _ver="$(head -1 "$_alias_file" 2>/dev/null)"
+        # Follow alias chain (e.g. default -> lts/iron -> 23.11.1) — bounded hops.
+        for _ in 1 2 3 4 5; do
+          [[ -n "$_ver" && -f "$NVM_DIR_RESOLVED/alias/$_ver" ]] || break
+          _ver="$(head -1 "$NVM_DIR_RESOLVED/alias/$_ver" 2>/dev/null)"
+        done
+      fi
+      _ver="${_ver#v}"
+      # If alias resolution didn't yield an X.Y.Z literal, pick the highest
+      # installed version that is NOT itself in the wrong-node range (v25+).
+      if [[ ! "$_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        _ver="$(ls -1 "$NVM_DIR_RESOLVED/versions/node" 2>/dev/null \
+                  | sed 's/^v//' \
+                  | awk -F. '$1 < 25' \
+                  | sort -V | tail -1)"
+      fi
+      if [[ -n "$_ver" && -d "$NVM_DIR_RESOLVED/versions/node/v$_ver/bin" ]]; then
+        PATH="$NVM_DIR_RESOLVED/versions/node/v$_ver/bin:$PATH"
+        export PATH
+      fi
+    fi
+  fi
+fi
+
 STOP_FILE=".stop-beads"
 rm -f "$STOP_FILE"
 
@@ -1425,6 +1472,41 @@ $PROMPT"
   wait "$TAIL_PID" 2>/dev/null || true
   wait "$WATCHDOG_PID" 2>/dev/null || true
   echo ""
+
+  # ── claude-tools-4tj wrong-Node crash detector (LOUD, never silent) ──────
+  # If claude exits nonzero AND the stream carries the Node v25+ × claude-CLI
+  # prototype TypeError, surface it explicitly: a clearly-marked stderr line,
+  # an incidents.log entry, AND a sticky line in wrong-node-crash.log. We do
+  # NOT mutate $CLAUDE_EXIT — downstream classification still runs. Without
+  # this, the crash output lands in $STREAM_FILE as if it were the agent's
+  # reply and the runner just logs UNKNOWN_FAILURE → retry forever, with no
+  # signal that Node 25 is the actual cause. Backstop behind the path-prime
+  # above; even after the prime, a custom launch environment could reintroduce
+  # the wrong-Node case.
+  if [[ "$CLAUDE_EXIT" -ne 0 && -s "$STREAM_FILE" ]]; then
+    _head_blob="$(head -c 16384 "$STREAM_FILE" 2>/dev/null)"
+    _tail_blob="$(tail -c 4096  "$STREAM_FILE" 2>/dev/null)"
+    if printf '%s%s' "$_head_blob" "$_tail_blob" \
+         | grep -qE "TypeError: Cannot read properties of undefined \(reading 'prototype'\)" 2>/dev/null \
+       && printf '%s' "$_tail_blob" \
+         | grep -qE "Node\.js v(2[5-9]|[3-9][0-9])\." 2>/dev/null; then
+      _node_seen="$(printf '%s' "$_tail_blob" | grep -oE "Node\.js v[0-9.]+" | tail -1)"
+      {
+        printf '  WRONG-NODE CRASH — claude CLI crashed at startup.\n'
+        printf '    detected: %s (the claude CLI is incompatible with Node v25+; see claude-tools-4tj / claude-tools-3kd)\n' "${_node_seen:-<unknown>}"
+        printf '    stream:   %s\n' "$STREAM_FILE"
+        printf '    fix:      ensure $NVM_DIR/versions/node/<lts>/bin is first in PATH for the launching process.\n'
+        printf '              run-beads-tasks.sh already prepends nvm bin when node --version is v25+; the wrong-Node\n'
+        printf '              detection firing means even that prepend did not resolve the right binary.\n'
+      } >&2
+      {
+        printf '%s\t%s\twrong_node_crash\t%s\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")" \
+          "$TASK_ID" "${_node_seen:-unknown}"
+      } >> "$LOG_DIR/wrong-node-crash.log" 2>/dev/null || true
+      INCIDENTS+=("$(date -u +%Y-%m-%dT%H:%M:%SZ)	$TASK_ID	WRONG_NODE_CRASH:${_node_seen:-unknown}	$STREAM_FILE")
+    fi
+  fi
 
   CLASSIFICATION=$(classify_failure "$SIGNAL_FILE" "$TASK_ID" "$CLAUDE_EXIT")
 
