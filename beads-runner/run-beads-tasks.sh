@@ -55,6 +55,17 @@ USAGE_THRESHOLD=${USAGE_THRESHOLD:-70}       # pause new tasks above this % (0 =
 USAGE_SLEEP_SECONDS=${USAGE_SLEEP_SECONDS:-1800} # sleep duration when over threshold (30 min)
 USAGE_CACHE_SECONDS=${USAGE_CACHE_SECONDS:-300}  # cache usage API response (avoid hammering per-loop)
 CAPACITY_DENY_BACKOFF=${CAPACITY_DENY_BACKOFF:-60} # C1: per-pickup daemon ask-capacity denied ⇒ release lease + sleep N before retry
+# claude-tools-noj — hard label gate. Tasks carrying ANY of these labels are
+# refused by validate_task regardless of priority, defer state, or readiness.
+# `human-live-session` is the canonical "Brian is driving this on his phone
+# from the couch — do NOT auto-claim it" marker for engineered fixtures
+# (closing-gate beads, live end-to-end runs). `human-triage` is the older
+# epic-level marker (ir7 children) kept for back-compat. This is a HARD gate,
+# not text in the description: tkf proved description text + priority + status
+# flips are all ignored under load; only a labelled refusal sticks. Comma-
+# separated env override is supported so a project can extend (e.g. add
+# 'human-action') without editing the runner.
+RUNNER_NO_CLAIM_LABELS=${RUNNER_NO_CLAIM_LABELS:-human-live-session,human-triage}
 export WORKER_STUCK_EXIT=${WORKER_STUCK_EXIT:-7} # §7.2/§8.1 worker deliberate-stuck sentinel exit (≠ BC-21 0–4; INTERFACE.md v1 constants). Exported: a stuck-aware worker wrapper reads it; the §7.2 detection below keys on it.
 IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}                # seconds of stream silence before watchdog kills (env-overridable)
 # claude-tools-idg — while a Task subagent is in-flight (task_notification
@@ -537,6 +548,33 @@ next_task() {
 # Returns 0 if ok, 1 if should skip
 validate_task() {
   local task_id="$1"
+
+  # claude-tools-noj — hard label gate. If the task carries any label in
+  # RUNNER_NO_CLAIM_LABELS, refuse to claim it. Skip-not-fail (same posture
+  # as the epic/parent skips below): no FAILED++, no retry tracking, no
+  # incident — the bead stays open-and-ready for the human to claim from
+  # their phone, but the autonomous runner walks past it on every loop.
+  # Defer state is unreliable for this (claude-tools-240 cycle: a 2030 defer
+  # gets mis-set or lifted, and the next loop re-claims; av7/tkf both
+  # documented the same class). The label cannot be lifted by the runner
+  # itself, so the gate is sticky across bd reloads.
+  if [[ -n "${RUNNER_NO_CLAIM_LABELS:-}" ]]; then
+    local task_labels gate_label hit=""
+    task_labels=$(bd label list "$task_id" --json 2>/dev/null | jq -r '.[]?' 2>/dev/null || echo "")
+    # IFS=',' split without subshell so an empty env value collapses cleanly
+    local IFS=','
+    for gate_label in $RUNNER_NO_CLAIM_LABELS; do
+      gate_label="${gate_label## }"; gate_label="${gate_label%% }"
+      [[ -z "$gate_label" ]] && continue
+      if printf '%s\n' "$task_labels" | grep -qxF "$gate_label" 2>/dev/null; then
+        hit="$gate_label"; break
+      fi
+    done
+    if [[ -n "$hit" ]]; then
+      echo "  Skipping: label '$hit' present (RUNNER_NO_CLAIM_LABELS — human-driven fixture, not for autonomous claim)"
+      return 1
+    fi
+  fi
 
   # Check for unresolved dependencies (may have been added after bd ready ran)
   local blocked_ids

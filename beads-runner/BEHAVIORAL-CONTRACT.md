@@ -85,6 +85,12 @@ After the orphan list is exhausted, fall through to `bd ready` (or `[]` if that 
 **Source:** 287–305, plus 576–580 (cost-free skip).
 **Classification:** **SCAR.** Prevents the runner from feeding a container task to an agent (which would have nothing concrete to do) and prevents stale parents lingering after their work is done.
 
+### BC-08b — `RUNNER_NO_CLAIM_LABELS` hard label gate (claude-tools-noj)
+**Assertion:** Before the dependency / epic / parent checks, `validate_task` reads `bd label list <id> --json` and, if the task carries **any** label in `RUNNER_NO_CLAIM_LABELS` (default `human-live-session,human-triage`; comma-separated, surrounding whitespace stripped), the task is **skipped with no failure counted** (no `FAILED++`, no retry, no circuit-breaker, no incident — same cost-free `continue` as BC-06/07/08). The check runs on every loop, so a runner cannot grandfather in a previously-claimed task by holding state; the gate is sticky across bd reloads because the label can only be lifted by a human (the runner never removes labels).
+**Repro:** Label a ready task `human-live-session` (or `human-triage`) → `bd ready` still surfaces it, but the runner prints `Skipping: label 'human-live-session' present (RUNNER_NO_CLAIM_LABELS — human-driven fixture, not for autonomous claim)` and continues; the bead stays open for Brian to claim from his phone.
+**Source:** runner config block (`RUNNER_NO_CLAIM_LABELS` default), `validate_task` head (label scan + skip).
+**Classification:** **SCAR.** Closes the failure class proved by claude-tools-240 (closing-gate fixture for bzc) — four consecutive `TASK_NOT_CLOSED` cycles in a single night (06:23/06:44/08:02/08:24Z, 2026-05-22) where the runner kept re-claiming a fixture explicitly designed for a one-shot live session with Brian on his phone. tkf and av7 documented adjacent variants (description text + priority + status flips were all ignored under load); only a labelled refusal is durable. The gate intentionally lives **before** the dependency/epic checks so a `human-live-session` task with open deps is still skipped silently rather than logging "blocked" noise.
+
 ---
 
 ## 4. Failure classification
