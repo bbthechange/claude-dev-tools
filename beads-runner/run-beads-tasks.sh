@@ -1172,7 +1172,31 @@ BEADS_DESC
 
 IMPORTANT: You are running non-interactively. Do NOT use EnterPlanMode or ExitPlanMode -- there is no human to approve plans. Do NOT use AskUserQuestion -- there is no human to answer. Just execute the work directly.
 
-If -- and ONLY if -- you hit a genuine fork you must NOT resolve yourself (an irreversible product / architecture / scope decision that is the human's call to make, or a spec ambiguity where guessing would risk real damage), do NOT ask and do NOT guess a default. This is NOT for ordinary hard work and NOT a substitute for thinking a problem through -- it is only for a decision a human owns. When you hit one, call the `mcp__askbrian__ask-brian` MCP tool with a SHORT trigger and wait for it to return Brian's answer. The tool blocks until he answers, then returns the answer as a string -- act on it and continue the task. Multi-question is allowed: if a second fork emerges after the first answer, call the tool again rather than burning a whole stuck cycle. Do NOT close the issue while waiting; just call the tool.
+ASK-BRIAN IS A LAST RESORT, NOT A FIRST RESORT. Before you even consider calling `mcp__askbrian__ask-brian`, you MUST have done the research below. Brian is asleep and pays per-dossier; piling up his Inbox with questions you could have answered yourself by reading the codebase IS the failure mode -- not a safe default. The original design intent (Brian, 2026-05-22): "agents look through project documentation and then if it could not find an answer, pass it to the dossier agent." Internalize this.
+
+RESEARCH CHECKLIST -- run through ALL of these before escalating:
+  1. Read docs/HANDOFF.md and any docs/runbooks/*.md that names the area you are working on.
+  2. Read the design docs that own the component: beads-runner/DESIGN.md, UX-DESIGN.md, INTERFACE.md, BEHAVIORAL-CONTRACT.md, and the relevant README/CLAUDE.md.
+  3. `bd memories <keyword>` for prior insights; `bd show <related-bead>` for prior decisions; walk the dependency graph at depth 1.
+  4. `git log --oneline -n 30 -- <relevant-paths>` for recent decisions on this area. Read the commits that look load-bearing in full.
+  5. Read the code the question is actually about, end-to-end. If the question names a function/file, you must have read it.
+  6. After all of the above: if a thoughtful engineer reading the same material would pick a defensible answer in 5-10 minutes -- you do the same. That is the job, not an escalation.
+
+THINGS THAT ARE NOT FORKS (these have been over-escalated -- do not repeat):
+  -- "Where should this file live?" -- look at existing convention in the workspace, pick one, file a separate bead if you want to revisit later. Not a fork.
+  -- "How should this state machine handle case X?" -- read the existing state machine, find the precedent, follow it. Filing a "what should we do" question without having read the state machine first is NOT a fork; it is skipped homework.
+  -- "Should we use approach A or B?" where both work and the tradeoff is small. Pick the one that matches the existing patterns in the codebase. Reversibility note in the debrief if it matters.
+  -- A question already answered in CLAUDE.md, HANDOFF.md, a runbook, a design doc section, a recent commit message, or a bd memory. Always quote the source in your debrief if you used it.
+  -- Anything where you have not yet run `bd show` on the related beads and `git log` on the relevant paths. Do the research first.
+
+WHAT IS A REAL FORK (genuine ask-brian territory):
+  -- An irreversible product/architecture/scope decision that genuinely has no precedent in this codebase (new component vocabulary, new external contract, breaking schema change).
+  -- A spec ambiguity where guessing would risk real damage AND no design doc or prior decision covers it.
+  -- A scope-or-priority call that is Brian's per the project's standing instructions (e.g., a §11 amendment, a roadmap reorder).
+
+When you have a REAL fork after doing the research: call `mcp__askbrian__ask-brian` with a SHORT trigger and wait for the answer. The tool blocks until Brian answers, then returns the answer as a string -- act on it and continue. Multi-question is allowed: if a second fork emerges after the first answer, call again rather than burning a whole stuck cycle. Do NOT close the issue while waiting; just call the tool.
+
+CRUCIAL: Your `context_dump` to the dossier-builder must include the research you already did -- "I read X, Y, Z and they did not address W" is what makes the dossier rich. A thin context_dump is a strong signal you have not done the research, and the dossier-builder will refuse it. The builder is NOT a substitute for your homework; it is the polish layer on top of it.
 
 The trigger is intentionally brief (aim for under 200 words). A fresh dossier-builder agent in its own clean context will read the bead, related code, and design docs and write the polished multi-section dossier with Mermaid + per-option consequence_blocks. Your job is to drop a seed the builder can build on, not to dump your whole context. Tool inputs:
   - question: one sentence -- the precise decision needed

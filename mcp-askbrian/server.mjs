@@ -71,7 +71,14 @@ const POLL_MAX_MS = parseInt(
   process.env.POLL_MAX_MS || String(6 * 60 * 60 * 1000), // 6h hard ceiling
   10,
 );
-const BUILDER_MODEL = process.env.DOSSIER_BUILDER_MODEL || ""; // "" = inherit default
+// Pin to claude-opus-4-7 by default (claude-tools-cvj followup). The
+// production 240/5os runs used the inherited default model (likely Sonnet
+// or Haiku), which produced markdown prose ('The three...') in ~27s rather
+// than the JSON dossier the prompt demands — same prompt under Opus 4.7
+// produced the polished JSON in ~78-180s. Faster models do not follow the
+// long-preamble system prompt as reliably; cost trade-off is acknowledged.
+// Override via env DOSSIER_BUILDER_MODEL if a cheaper model proves reliable.
+const BUILDER_MODEL = process.env.DOSSIER_BUILDER_MODEL || "claude-opus-4-7";
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 // Soft cap on child stdout/stderr so a runaway builder cannot exhaust the
 // Node heap before BUILDER_TIMEOUT_MS fires. Past the cap we SIGKILL the
@@ -217,6 +224,18 @@ function runBuilder({ workspaceDir, builderInput }) {
       "json",
       "--permission-mode",
       "acceptEdits",
+      // claude-tools-cvj followup: --permission-mode acceptEdits alone does NOT
+      // auto-grant Bash in non-interactive `-p` mode — the harness emits the
+      // canonical refusal "The user does not have permission to grant this
+      // tool" and the builder gives up in ~27s before writing any JSON. The
+      // dossier-builder.system.md spec explicitly requires Read/Grep/Glob/Bash
+      // for its breadth-first context gather. Allowlist them explicitly so the
+      // builder can `bd show`, `git log`, grep the workspace, etc.
+      "--allowedTools",
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash",
       "--max-turns",
       "30",
     ];
@@ -308,9 +327,15 @@ function runBuilder({ workspaceDir, builderInput }) {
           } catch {}
         }
         if (!dossier) {
+          // claude-tools-cvj followup: capture the leading 500 chars of the
+          // builder's result text so the next non-JSON failure is
+          // self-diagnosing. The 07:11/07:28 failures cost an hour of
+          // hypothesis-spelunking that one log line would have shortened.
           finish({
             ok: false,
             reason: `builder output not JSON: ${String(e).slice(0, 200)}`,
+            body_preview: cleaned.slice(0, 500),
+            model: envelope.model || null,
           });
           return;
         }
@@ -624,6 +649,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       elapsed_ms: builder.elapsedMs,
       reason: builder.ok ? null : builder.reason,
       refused: builder.ok && builder.dossier && builder.dossier.refuse === true,
+      // claude-tools-cvj followup: surface the builder's raw .result on failure
+      // so next-time diagnosis is one log line away.
+      body_preview: builder.body_preview || null,
+      model: builder.model || null,
     });
 
     // Step 2: WRITE TO HOSTED ENGINE FIRST.
