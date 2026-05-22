@@ -333,11 +333,24 @@ else
     source "$HERE/dossier.sh"
     source "$HERE/co-http-transport.sh"
     DID="i1-live-$$"
+
+    # Self-erasing fixture: on subshell EXIT, expire the item so the dossier
+    # falls out of the prod waiting_on_you projection. Same one-shot
+    # open→expired transition claude-tools-vxs used to retire 9 leaked
+    # i1-live-* dossiers. Trap fires even if put/get below fails partway,
+    # so a flaky run still cleans up after itself.
+    _expire_c() {
+      local _ex
+      _ex="$(mk "$DID" 2 "[$(item i1 expired)]")"
+      do_dossier_put "$PLACEHOLDER" "$_ex" >/dev/null 2>&1 || true
+      rm -rf "$W" 2>/dev/null || true
+    }
+    trap _expire_c EXIT
+
     D="$(mk "$DID" 2 "[$(item i1 open)]")"
     id="$(do_dossier_put "$PLACEHOLDER" "$D")"; prc=$?
     rec="$(do_dossier_get "$PLACEHOLDER" "$DID" 2>/dev/null)"; grc=$?
     echo "CLIVE put=$prc get=$grc id=$id"
-    rm -rf "$W"
   ) > "$STATE_DIR/c.txt" 2>/dev/null || true
   if grep -q "CLIVE put=0 get=0 id=i1-live" "$STATE_DIR/c.txt" 2>/dev/null; then
     ok "LIVE deployed engine: reused do_dossier_put + get round-trip ⇒ rc 0 (the I5 hop, token present)"
