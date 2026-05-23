@@ -91,6 +91,17 @@ LOG_DIR=".beads/runner-logs"                     # post-mortem artifacts (stream
 runner_setup()   { :; }  # called once at script start
 runner_cleanup() { :; }  # called on exit/interrupt
 
+# claude-tools-yva: belt-and-suspenders descendant reap. The per-task reap at
+# the bottom of the task loop is the primary path, but failure-path early
+# exits, signal races, and reparented grandchildren can still leave subshells
+# alive. Wired to trap EXIT below so it ALWAYS runs before the runner exits,
+# regardless of the user-overridable runner_cleanup hook.
+_final_subshell_reap() {
+  pkill -P $$ 2>/dev/null || true
+  sleep 0.3 2>/dev/null || sleep 1
+  pkill -KILL -P $$ 2>/dev/null || true
+}
+
 # ── Load project config ──────────────────────────────────────────────────────
 
 CONFIG_FILE=".beads/runner.sh"
@@ -333,6 +344,12 @@ cleanup() {
   exit 1
 }
 trap cleanup INT TERM
+# claude-tools-yva: EXIT trap runs on every exit path — clean drain, exit 2
+# (circuit breaker), or after cleanup()'s `exit 1` on INT/TERM. Idempotent: a
+# second pkill on already-dead PIDs is a no-op. This is the last line of
+# defense against leaked TAIL/WATCHDOG subshells whose `sleep` grandchildren
+# were reparented to PID 1 mid-task.
+trap _final_subshell_reap EXIT
 
 # ── Usage check ──────────────────────────────────────────────────────────────
 
@@ -1354,6 +1371,13 @@ $PROMPT"
   TASK_INFLIGHT_FILE=$(mktemp)
   date +%s > "$ACTIVITY_FILE"
 
+  # claude-tools-yva: spawn TAIL parser in its own process group via job
+  # control (`set -m`). PGID == TAIL_PID. On reap we send `kill -- -$TAIL_PID`
+  # which reaches every descendant (tail -f, jq, ...) — including any that
+  # have been reparented to PID 1 between subshell-loop iterations. Without
+  # `set -m`, the subshell shares the runner's PGID, so a PG-wide kill would
+  # nuke the runner itself; pid-only kill leaves reparented grandchildren.
+  set -m
   (
     tail -f "$STREAM_FILE" 2>/dev/null | while IFS= read -r line; do
       TS=$(date +%H:%M:%S)
@@ -1436,9 +1460,16 @@ $PROMPT"
     done
   ) &
   TAIL_PID=$!
+  set +m
 
   # ── Watchdog ─────────────────────────────────────────────────────────────
 
+  # claude-tools-yva: same PG-isolation trick for the watchdog. The watchdog
+  # is the more common leak path because its `sleep 15` regularly outlives a
+  # single iteration of the `while` loop — and a subshell `break` can happen
+  # between the `sleep` spawn and the next iteration check, leaving an orphan
+  # sleep that pid-only `pkill -P` cannot find.
+  set -m
   (
     # claude-tools-t7i: defense in depth so the watchdog can't outlive its
     # claude child. Three guards: (a) re-check `kill -0 $CLAUDE_PID` immediately
@@ -1504,29 +1535,38 @@ $PROMPT"
     done
   ) &
   WATCHDOG_PID=$!
+  set +m
 
   # ── Wait for result and classify ─────────────────────────────────────────
 
   wait "$CLAUDE_PID" 2>/dev/null && CLAUDE_EXIT=0 || CLAUDE_EXIT=$?
   sleep 1
-  # claude-tools-t7i: bounded watchdog reap. The subshell may be mid-`sleep`,
-  # so a pid-only SIGTERM can race (the in-flight `sleep` grandchild outlives
-  # the subshell, and an unconditional `wait $WATCHDOG_PID` can then block the
-  # runner forever — stranding it past the next .stop-beads check). SIGTERM
-  # the subshell + its sleep child, give a 2s grace, escalate to SIGKILL, then
-  # `wait` only AFTER the kill confirmation so we never block.
-  kill -TERM "$WATCHDOG_PID" 2>/dev/null || true
-  pkill -P "$WATCHDOG_PID" 2>/dev/null || true   # in-flight `sleep` grandchild
+  # claude-tools-yva: PG-targeted reap. The subshells were spawned with
+  # `set -m` so each has its own process group (PGID == leader PID). Signalling
+  # the negative PID (`kill -- -PID`) reaches the leader AND every descendant
+  # in that PG — including `sleep` / `tail -f` grandchildren that the t7i
+  # pid-based reap missed when the subshell's loop exited between iterations
+  # and the grandchild got reparented to PID 1. PG membership survives both
+  # reparenting and leader reap, so this remains correct mid-race.
+  #
+  # Layered: TERM the PG, 2s grace, KILL the PG if anything is left, then a
+  # pid-only fallback in case PG isolation failed (set -m no-op'd for any
+  # reason). `wait` only after kill confirmation so we never block.
+  kill -TERM -- "-$WATCHDOG_PID" 2>/dev/null || kill -TERM "$WATCHDOG_PID" 2>/dev/null || true
   for _ in 1 2; do
     kill -0 "$WATCHDOG_PID" 2>/dev/null || break
     sleep 1
   done
   if kill -0 "$WATCHDOG_PID" 2>/dev/null; then
-    pkill -KILL -P "$WATCHDOG_PID" 2>/dev/null || true
+    kill -KILL -- "-$WATCHDOG_PID" 2>/dev/null || true
     kill -KILL "$WATCHDOG_PID" 2>/dev/null || true
   fi
-  kill "$TAIL_PID" 2>/dev/null || true
-  pkill -P "$TAIL_PID" 2>/dev/null || true  # kill tail -f child that outlives subshell
+  kill -TERM -- "-$TAIL_PID" 2>/dev/null || kill -TERM "$TAIL_PID" 2>/dev/null || true
+  # Brief grace, then KILL the PG to ensure tail -f / jq descendants exit even
+  # if the subshell leader already died and the PG is grandchild-only.
+  sleep 1
+  kill -KILL -- "-$TAIL_PID" 2>/dev/null || true
+  kill -KILL "$TAIL_PID" 2>/dev/null || true
   wait "$TAIL_PID" 2>/dev/null || true
   wait "$WATCHDOG_PID" 2>/dev/null || true
   echo ""
