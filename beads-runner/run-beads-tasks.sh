@@ -1115,9 +1115,24 @@ while true; do
   echo "  $TASK_TITLE ($TASK_ID) [$TASK_MODEL]"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  # Pre-flight: skip tasks that aren't actually workable (no failure counted)
+  # Pre-flight: skip tasks that aren't actually workable (no failure counted).
+  # claude-tools-g20: heartbeat-idle + backoff so a workspace whose ready set
+  # is ONLY un-workable beads (epics, parents w/ open children) doesn't hot-
+  # spin — the loop would otherwise burn ~30 iter/min on bd show + bd show
+  # --children with no `hb` refresh between cycles, ageing out actual-state in
+  # the GUI even though the process is alive. Also honor desired=stopped here
+  # so a phone toggle ends the runner within SKIP_BACKOFF (the idle-branch
+  # reconcile at the bd-ready-empty path is unreachable while an epic sits
+  # atop bd ready).
   if ! validate_task "$TASK_ID"; then
     echo ""
+    hb idle
+    SKIP_DESIRED=$(workspace_desired_state)
+    if [[ "$SKIP_DESIRED" == "stopped" ]]; then
+      echo "Coordinator desired=stopped observed during validate_task skip — stopping gracefully."
+      break
+    fi
+    sleep "${SKIP_BACKOFF:-30}"
     continue
   fi
 
