@@ -1484,7 +1484,17 @@ $PROMPT"
       kill -0 "$CLAUDE_PID" 2>/dev/null || break
       [[ -f "$STOP_FILE" ]] && break
       if [[ -f "$ACTIVITY_FILE" ]]; then
-        LAST=$(cat "$ACTIVITY_FILE")
+        LAST=$(cat "$ACTIVITY_FILE" 2>/dev/null | tr -d '[:space:]')
+        # claude-tools-h7n: sanity-guard LAST before the IDLE arithmetic. An
+        # empty or malformed read (parser hasn't written yet, or a partial
+        # write raced our cat) would otherwise make bash treat LAST as 0 —
+        # IDLE then becomes NOW (the current epoch, ~1.78e9s = 56yr), which
+        # is always ≥ any sane EFFECTIVE_TIMEOUT and triggers an instant
+        # false-positive kill. Floor 1704067200 = 2024-01-01; any real write
+        # from this runner is well above it.
+        if [[ ! "$LAST" =~ ^[0-9]+$ ]] || (( LAST < 1704067200 )); then
+          continue
+        fi
         NOW=$(date +%s)
         IDLE=$((NOW - LAST))
         # claude-tools-idg: stretch (don't pause) the kill threshold while a
