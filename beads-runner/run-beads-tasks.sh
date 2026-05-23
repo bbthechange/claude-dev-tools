@@ -96,9 +96,33 @@ runner_cleanup() { :; }  # called on exit/interrupt
 # exits, signal races, and reparented grandchildren can still leave subshells
 # alive. Wired to trap EXIT below so it ALWAYS runs before the runner exits,
 # regardless of the user-overridable runner_cleanup hook.
+#
+# claude-tools-8mb: PG-kill TAIL/WATCHDOG first. The in-task reap at the
+# bottom of the task loop covers normal task-end. SIGINT/SIGTERM (via
+# cleanup()), the circuit-breaker exit 2, and any unguarded set -uo pipefail
+# trip jump straight here without invoking it. `pkill -P $$` finds only
+# DIRECT children — the TAIL/WATCHDOG subshell leaders — and misses their
+# tail/while-read/sleep grandchildren, which then reparent to PID 1 with
+# tail -f spinning on a deleted streamfile fd forever (the 'old
+# hangoutsBackend Terminated: 15' leak — ~211 tails accumulated this way
+# before this fix). PG-kill via `kill -- -$TAIL_PID` mirrors the in-task
+# reap (TAIL_PID == PGID because of the per-task `set -m`; bash 3.2.57
+# arm64 verified) and reaches every descendant in the group.
 _final_subshell_reap() {
+  if [[ -n "${WATCHDOG_PID:-}" ]]; then
+    kill -TERM -- "-$WATCHDOG_PID" 2>/dev/null || kill -TERM "$WATCHDOG_PID" 2>/dev/null || true
+  fi
+  if [[ -n "${TAIL_PID:-}" ]]; then
+    kill -TERM -- "-$TAIL_PID" 2>/dev/null || kill -TERM "$TAIL_PID" 2>/dev/null || true
+  fi
   pkill -P $$ 2>/dev/null || true
   sleep 0.3 2>/dev/null || sleep 1
+  if [[ -n "${WATCHDOG_PID:-}" ]]; then
+    kill -KILL -- "-$WATCHDOG_PID" 2>/dev/null || true
+  fi
+  if [[ -n "${TAIL_PID:-}" ]]; then
+    kill -KILL -- "-$TAIL_PID" 2>/dev/null || true
+  fi
   pkill -KILL -P $$ 2>/dev/null || true
 }
 
