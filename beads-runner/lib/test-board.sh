@@ -97,7 +97,7 @@ ck "health headline states machine health"                      has "healthy" "$
 ck "WAITING-ON-YOU lane surfaces the open Dossier"              eq "$(jq -r '.waiting_on_you|length' <<<"$V")" "1"
 ck "lane carries the bead_ref it waits on"                       eq "$(jq -r '.waiting_on_you[0].bead_ref' <<<"$V")" "claude-tools-99"
 ck "lane shows the open-item count (1 open of 2)"                eq "$(jq -r '.waiting_on_you[0].open_item_count' <<<"$V")" "1"
-ck "lane is a POINTER into T6b's Inbox (deep-link, not body)"    has "/inbox#dOpen" "$(jq -r '.waiting_on_you[0].inbox_href' <<<"$V")"
+ck "lane is a POINTER into T6b's Inbox (deep-link, not body)"    has "claude-wrangler-inbox.pages.dev/#dOpen" "$(jq -r '.waiting_on_you[0].inbox_href' <<<"$V")"
 ck "lane does NOT carry dossier body/items (T6b owns content)"   eq "$(jq -r '.waiting_on_you[0]|has("body") or has("items")' <<<"$V")" "false"
 ck "lifecycle spine present, FROZEN idea→done (+\"\" honest)"     eq "$(jq -r '[.lifecycle[].stage]|join(",")' <<<"$V")" "idea,ux,design,impl,docs,tests,done,"
 ck "impl column carries the bead, with its 'waiting_on'"         eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].waiting_on' <<<"$V")" "review"

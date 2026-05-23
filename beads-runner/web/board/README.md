@@ -35,7 +35,9 @@ the §-clauses, not "Pages"). No build step, no dependencies.
 ## Deliberately NOT here (anti-drift)
 
 - **The Inbox / dossier UI is T6b** (claude-tools-xre). The WAITING-ON-YOU
-  lane is a *pointer* (`/inbox#<dossier_ref>`) — it never renders dossier
+  lane is a *pointer* (`https://claude-wrangler-inbox.pages.dev/#<dossier_ref>`
+  while the Inbox is a sibling Pages project; the host collapses when the
+  apps are unified per UX-DESIGN §2) — it never renders dossier
   `body`/`items[]`.
 - **The §10 forensic stream / fetch UI is T6b.** Only Flow G tiers 1–2
   failure metadata (`class` + `retry_state`) — which IS in §4.5 — is shown.

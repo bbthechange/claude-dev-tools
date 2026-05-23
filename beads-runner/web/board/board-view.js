@@ -244,7 +244,12 @@
         open_item_count: n,
         label: n + (n === 1 ? ' item needs you' : ' items need you'),
         // Deep-link target for T6b's Inbox — the Board does not open it here.
-        inbox_href: w.dossier_ref ? '/inbox#' + w.dossier_ref : null
+        // Absolute URL because the Inbox is a sibling Cloudflare Pages project
+        // on its own host; a root-relative `/inbox#…` hits the Board's own SPA
+        // fallback and silently re-renders the Board. (Until the apps are
+        // consolidated under one host per UX-DESIGN §2, the cross-app link
+        // MUST be absolute.)
+        inbox_href: w.dossier_ref ? 'https://claude-wrangler-inbox.pages.dev/#' + w.dossier_ref : null
       };
     });
 
@@ -332,10 +337,12 @@
                   (f.retry_state ? ' · ' + f.retry_state : '') +
                   (silent ? ' · silent' : ''),
                 // G1 deep-link: T6b's Inbox SPA failure route. Same shape as
-                // inbox-view.js's failure_href (`#/f/<bead_ref>`); the host
-                // path /inbox is the sibling Pages app. Never null when we
-                // have a bead_ref (the failure view IS the answer).
-                failure_href: beadRef ? '/inbox#/f/' + beadRef : null
+                // inbox-view.js's failure_href (`#/f/<bead_ref>`). Absolute
+                // URL because the Inbox is a sibling Pages project on its own
+                // host — a root-relative `/inbox…` hits the Board's own SPA
+                // fallback and silently re-renders the Board. Never null when
+                // we have a bead_ref (the failure view IS the answer).
+                failure_href: beadRef ? 'https://claude-wrangler-inbox.pages.dev/#/f/' + beadRef : null
               };
             }()) : null
           };
