@@ -145,7 +145,7 @@
 
   function loadDossier(id) {
     show('loading'); el('loading').hidden = false;
-    getJSON('/api/dossier?id=' + encodeURIComponent(id)).then(function (rec) {
+    getJSON('/api/inbox/dossier?id=' + encodeURIComponent(id)).then(function (rec) {
       curDossier = rec;
       var v = IV.deriveDossierView(rec);
       curView = v;
@@ -487,7 +487,7 @@
       var built = IV.buildItemResponse(it, formState[iid], Date.now());
       if (!built.ok) { errs.push(iid + ': ' + built.error); return; }
       chain = chain.then(function () {
-        return postJSON('/api/respond', {
+        return postJSON('/api/inbox/respond', {
           dossier_id: curView.id, item_id: iid, response: built.response
         }).catch(function (e) { errs.push(iid + ': ' + e.message); });
       });
@@ -529,7 +529,7 @@
     var errs = [];
     ids.forEach(function (iid) {
       chain = chain.then(function () {
-        return postJSON('/api/expire', {
+        return postJSON('/api/inbox/expire', {
           dossier_id: curView.id, item_id: iid
         }).catch(function (e) { errs.push(iid + ': ' + e.message); });
       });
@@ -548,7 +548,7 @@
   // Dolt read. "You don't need to go check" is honest because of this.
   function refetchAck(errs) {
     errs = errs || [];
-    getJSON('/api/dossier?id=' + encodeURIComponent(curView.id)).then(function (rec) {
+    getJSON('/api/inbox/dossier?id=' + encodeURIComponent(curView.id)).then(function (rec) {
       var c = IV.deriveConfirm(rec);
       if (!c.ok) { showError('Cannot render the ack', c.error); return; }
       el('title').textContent = 'Confirmed';
@@ -662,7 +662,7 @@
   function fetchForensic(beadRef) {
     var fb = el('f-fetch');
     fb.disabled = true; fb.textContent = 'Pulling over the authed channel…';
-    fetch('/api/forensic?id=' + encodeURIComponent(beadRef), {
+    fetch('/api/inbox/forensic?id=' + encodeURIComponent(beadRef), {
       method: 'GET',
       headers: { accept: 'application/json' }
     }).then(function (r) {
@@ -693,7 +693,7 @@
     });
   }
   function dismissForensic(beadRef) {
-    postJSON('/api/forensic', { id: beadRef }).then(function () {
+    postJSON('/api/inbox/forensic', { id: beadRef }).then(function () {
       clearForensicTtlTimer();
       el('f-redbox').hidden = true;
       el('f-dismiss').hidden = true;

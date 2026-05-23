@@ -1,4 +1,4 @@
-/* beads-runner/web/intake/functions/api/intake-presets.js — I4 (claude-tools-vvh).
+/* beads-runner/web/functions/api/intake/presets.js — I4 (claude-tools-vvh).
  *
  * The Intake's PRESET CATALOG read proxy. The phone UI calls this same-
  * origin GET on page load to learn the canonical entry-intent presets

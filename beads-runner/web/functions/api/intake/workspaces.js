@@ -1,4 +1,4 @@
-/* beads-runner/web/intake/functions/api/workspaces.js — I1 (claude-tools-tbl).
+/* beads-runner/web/functions/api/intake/workspaces.js — I1 (claude-tools-tbl).
  *
  * The Intake's WORKSPACE LIST read proxy — feeds Flow A's "project picker"
  * dropdown. The phone UI calls this credential-less, same-origin GET to learn

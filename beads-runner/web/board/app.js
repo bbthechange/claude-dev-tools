@@ -7,7 +7,7 @@
  * runner must surface — §4.2/S-1).
  *
  * THE ONE WRITE PATH (F2, claude-tools-8fh): the per-workspace toggle row
- * POSTs to /api/set-desired (F1, claude-tools-49w) — the Board's ONE Pages
+ * POSTs to /api/board/set-desired (F1, claude-tools-49w) — the Board's ONE Pages
  * write proxy. The hard-coded upstream op lives server-side; the client just
  * sends {project_ref, desired:{state, actor:'ui'}} and renders honestly
  * (principle 4): the projection's ACTUAL never moves until the next refresh
@@ -155,7 +155,7 @@
     // ACTUAL is unchanged until the next /api/board refresh reports it
     // (principle 4 — honest, never optimistic).
     if (btn) { btn.disabled = true; btn.classList.add('busy'); }
-    fetch('/api/set-desired', {
+    fetch('/api/board/set-desired', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

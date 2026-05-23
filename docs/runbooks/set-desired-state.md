@@ -15,7 +15,7 @@ The daemon polls desired-state every 60 seconds (configurable via `DESIRED_STATE
 
 ## Setting via the Board UI
 
-The "cleanest" path: open `https://claude-wrangler-board.pages.dev/` on a phone or laptop, find the workspace, tap a state button. This requires the Board's `set-desired` Pages function to be deployed (see `deploy-pages.md`) and the Cloudflare Worker's adapter to support the `set-desired` op (see `deploy-cloudflare-worker.md`).
+The "cleanest" path: open `https://claude-wrangler.pages.dev/board` on a phone or laptop, find the workspace, tap a state button. This requires the Board's `set-desired` Pages function to be deployed (see `deploy-pages.md`) and the Cloudflare Worker's adapter to support the `set-desired` op (see `deploy-cloudflare-worker.md`).
 
 ## Setting via curl (when the UI is broken or you're scripting)
 

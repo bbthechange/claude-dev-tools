@@ -408,8 +408,8 @@ sr_human_resolve() {
 # The closed loop's return leg, the slice epic 8bm names "never been wired":
 # §7.3 PARKS the fork (sr__raise_bfh {resolved:false} + the bead driven
 # blocked) and the runner moves on (§7.5). When Brian answers on his phone the
-# deployed Inbox `/api/respond` proxy POSTs the FROZEN `item-apply` op to the
-# HOSTED engine (web/inbox/functions/api/respond.js) — the §5.2 response is
+# deployed Inbox `/api/inbox/respond` proxy POSTs the FROZEN `item-apply` op to
+# the HOSTED engine (web/functions/api/inbox/respond.js) — the §5.2 response is
 # recorded on the Item and §5.2.2/§7.4 moves it open→answered→applied IN THE
 # HOSTED ENGINE. Nothing on the runner side ever LOOKED there: the local S-2
 # bfh record stayed {resolved:false} forever, so `sr_reconcile_blocked_for_

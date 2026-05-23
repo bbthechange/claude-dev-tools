@@ -31,14 +31,18 @@ dependencies.
 - `app.js` — browser glue only: hash-routes, fetches the credential-less
   proxies, collects per-Item form state, submits **one response per resolved
   Item** (partial is first-class — AD7), re-fetches for the honest ack.
-- `functions/api/inbox.js` — GET proxy, op pinned `work-snapshot` (§4.5 read).
-- `functions/api/dossier.js` — GET proxy, op pinned `get` + type `dossier`
-  (the §4 record the lane points at).
-- `functions/api/respond.js` — **the one write path**: POST proxy, op pinned
-  `item-apply` (T5's idempotent per-Item applier). The UI submits a response;
-  it never applies one. No Dolt write.
-- `functions/api/forensic.js` — GET `forensic-fetch` + POST `forensic-dismiss`
-  (§10.3). No put/sweep op is client-reachable.
+- `../functions/api/inbox/index.js` — GET proxy (`/api/inbox`), op pinned
+  `work-snapshot` (§4.5 read).
+- `../functions/api/inbox/dossier.js` — GET proxy (`/api/inbox/dossier`), op
+  pinned `get` + type `dossier` (the §4 record the lane points at).
+- `../functions/api/inbox/respond.js` — **the one write path**: POST proxy
+  (`/api/inbox/respond`), op pinned `item-apply` (T5's idempotent per-Item
+  applier). The UI submits a response; it never applies one. No Dolt write.
+- `../functions/api/inbox/forensic.js` — GET `forensic-fetch` + POST
+  `forensic-dismiss` (`/api/inbox/forensic`, §10.3). No put/sweep op is
+  client-reachable.
+- `../functions/api/inbox/expire.js` — POST `item-expire`
+  (`/api/inbox/expire`) for the dismiss-as-stale affordance.
 - `index.html` + `inbox.css` — responsive shell, T6a visual language.
 
 ## Deliberately NOT here (anti-drift)
@@ -59,8 +63,11 @@ dependencies.
 
 ## Deploy (non-normative — Appendix A)
 
-Cloudflare Pages, root = `web/inbox/`. Required env bindings (server-side
-only — §9.1/§9.2; never committed):
+Cloudflare Pages, **unified** project `claude-wrangler` (root = `web/`). The
+Inbox is served at the `/inbox` route prefix on a sibling-to-Board origin
+(UX-DESIGN §2 "one responsive web app"; consolidation in claude-tools-b59).
+Pages Functions live under `web/functions/api/inbox/...`. Required env
+bindings (server-side only — §9.1/§9.2; never committed):
 
 - `COORDINATOR_URL` — base URL of the Coordinator's §2.3 authed endpoint.
 - `COORDINATOR_TOKEN` — the per-deployment bearer secret.

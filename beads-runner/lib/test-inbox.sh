@@ -39,11 +39,11 @@ CONLIB="$HERE/consequence.sh"
 VIEW="$HERE/../web/inbox/inbox-view.js"
 APP="$HERE/../web/inbox/app.js"
 SHELL_HTML="$HERE/../web/inbox/index.html"
-P_INBOX="$HERE/../web/inbox/functions/api/inbox.js"
-P_DOSS="$HERE/../web/inbox/functions/api/dossier.js"
-P_RESP="$HERE/../web/inbox/functions/api/respond.js"
-P_FOR="$HERE/../web/inbox/functions/api/forensic.js"
-P_EXP="$HERE/../web/inbox/functions/api/expire.js"
+P_INBOX="$HERE/../web/functions/api/inbox/index.js"
+P_DOSS="$HERE/../web/functions/api/inbox/dossier.js"
+P_RESP="$HERE/../web/functions/api/inbox/respond.js"
+P_FOR="$HERE/../web/functions/api/inbox/forensic.js"
+P_EXP="$HERE/../web/functions/api/inbox/expire.js"
 for f in "$GENLIB" "$CONLIB" "$VIEW" "$APP" "$P_INBOX" "$P_DOSS" "$P_RESP" "$P_FOR" "$P_EXP"; do
   [[ -f "$f" ]] || { echo "FATAL: missing $f"; exit 2; }
 done
@@ -168,7 +168,7 @@ ck "ack honest: you don’t need to go check (S-2)"            has "go check" "$
 # inbox-view.js has no network/exec at all, so it CANNOT read (lagging) Dolt.
 ck "inbox-view.js is pure: no network call"                  hasnt "fetch(" "$(cat "$VIEW")"
 ck "inbox-view.js is pure: no child_process/exec"            hasnt "child_process" "$(cat "$VIEW")"
-ck "app ack path re-fetches the §4 record, not a beads read" has "/api/dossier?id=" "$(cat "$APP")"
+ck "app ack path re-fetches the §4 record, not a beads read" has "/api/inbox/dossier?id=" "$(cat "$APP")"
 # The lane is HONEST: once every item resolves the projection drops it (the
 # control-plane item-state drives §4.5 — no Dolt lag in the latency path).
 ck "resolved Dossier leaves the lane (honest, S-2)"          eq "$(jqr "$(iv deriveInboxList "$(SNAPSHOT)")" '.items|length')" "0"
@@ -251,7 +251,7 @@ ck "snapshot schema_version 2 ⇒ Inbox list REFUSED (§4.5/§0.3)" eq "$(jqr "$
 ck "inbox-view.js makes NO network call (pure core)"          hasnt "fetch(" "$(cat "$VIEW")"
 ck "inbox-view.js has no POST verb"                           hasnt "POST" "$(cat "$VIEW")"
 ck "app.js issues NO direct beads/bd write"                   hasnt "bd update" "$(cat "$APP")"
-ck "app.js POSTs only to /api/respond + /api/forensic + /api/expire (no Dolt)" eq "$(grep -oE "postJSON\('/api/[a-z]+'" "$APP" | sort -u | paste -sd, -)" "postJSON('/api/expire',postJSON('/api/forensic',postJSON('/api/respond'"
+ck "app.js POSTs only to /api/inbox/respond + /api/inbox/forensic + /api/inbox/expire (no Dolt)" eq "$(grep -oE "postJSON\('/api/inbox/[a-z]+'" "$APP" | sort -u | paste -sd, -)" "postJSON('/api/inbox/expire',postJSON('/api/inbox/forensic',postJSON('/api/inbox/respond'"
 ck "inbox proxy exports ONLY onRequestGet"                    has "export async function onRequestGet" "$(cat "$P_INBOX")"
 ck "inbox proxy exports NO onRequestPost"                     hasnt "onRequestPost" "$(cat "$P_INBOX")"
 ck "inbox proxy hard-codes the §4.5 read op"                  has "COORDINATOR_OP = 'work-snapshot'" "$(cat "$P_INBOX")"

@@ -14,7 +14,7 @@ from the daemon's own logs without re-reading code.
 **UI ↔ wire vocabulary.** The Board's per-workspace toggle row uses the UI
 label `spare-only` (UX-DESIGN Flow D); the §4.2 RunnerState.desired enum,
 the daemon's M3 reconciler, and the gate below all key on the canonical
-wire value `spare-cycles`. The `web/board/functions/api/set-desired.js`
+wire value `spare-cycles`. The `web/functions/api/board/set-desired.js`
 proxy normalises UI→wire on write (`WIRE_STATE['spare-only'] =
 'spare-cycles'`, F3 / claude-tools-6mx) so the engine always stores
 `spare-cycles` and downstream consumers never see the UI synonym. An

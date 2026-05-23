@@ -1,4 +1,4 @@
-/* beads-runner/web/inbox/functions/api/inbox.js — T6b (claude-tools-xre).
+/* beads-runner/web/functions/api/inbox/index.js — T6b (claude-tools-xre).
  *
  * The Inbox's READ proxy — a Cloudflare Pages Function (Appendix A
  * realization; §0.2 — provider primitives are NON-NORMATIVE). It is the §9.1

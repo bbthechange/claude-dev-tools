@@ -33,8 +33,8 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$HERE/coordinator.sh"
 VIEW="$HERE/../web/board/board-view.js"
-PROXY="$HERE/../web/board/functions/api/board.js"
-WPROXY="$HERE/../web/board/functions/api/set-desired.js"
+PROXY="$HERE/../web/functions/api/board/index.js"
+WPROXY="$HERE/../web/functions/api/board/set-desired.js"
 APP="$HERE/../web/board/app.js"
 SHELL_HTML="$HERE/../web/board/index.html"
 [[ -f "$LIB"   ]] || { echo "FATAL: coordinator.sh not found at $LIB"; exit 2; }
@@ -97,7 +97,7 @@ ck "health headline states machine health"                      has "healthy" "$
 ck "WAITING-ON-YOU lane surfaces the open Dossier"              eq "$(jq -r '.waiting_on_you|length' <<<"$V")" "1"
 ck "lane carries the bead_ref it waits on"                       eq "$(jq -r '.waiting_on_you[0].bead_ref' <<<"$V")" "claude-tools-99"
 ck "lane shows the open-item count (1 open of 2)"                eq "$(jq -r '.waiting_on_you[0].open_item_count' <<<"$V")" "1"
-ck "lane is a POINTER into T6b's Inbox (deep-link, not body)"    has "claude-wrangler-inbox.pages.dev/#dOpen" "$(jq -r '.waiting_on_you[0].inbox_href' <<<"$V")"
+ck "lane is a POINTER into T6b's Inbox (deep-link, not body)"    has "/inbox#dOpen" "$(jq -r '.waiting_on_you[0].inbox_href' <<<"$V")"
 ck "lane does NOT carry dossier body/items (T6b owns content)"   eq "$(jq -r '.waiting_on_you[0]|has("body") or has("items")' <<<"$V")" "false"
 ck "lifecycle spine present, FROZEN idea→done (+\"\" honest)"     eq "$(jq -r '[.lifecycle[].stage]|join(",")' <<<"$V")" "idea,ux,design,impl,docs,tests,done,"
 ck "impl column carries the bead, with its 'waiting_on'"         eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].waiting_on' <<<"$V")" "review"
@@ -163,7 +163,7 @@ echo "── EXIT-3: write path is the ONE narrow F1 seam — proven by STRUCTUR
 # T6a + F2 (claude-tools-8fh): the pure renderer is still purely pure — no
 # network at all (so no fetch, no POST verb, even in prose). The browser app
 # now has TWO calls: the credential-less GET to /api/board AND the narrow F2
-# POST to /api/set-desired (and ONLY those two endpoints — never the
+# POST to /api/board/set-desired (and ONLY those two endpoints — never the
 # Coordinator directly, never with a token). Each Pages proxy enforces its
 # own narrow shape (GET-only read; POST-only write with the upstream op
 # hard-coded). The Board has NO write path to Dolt; F1's set-desired writes
@@ -173,12 +173,12 @@ ck "board-view.js has no write/POST verb"                    hasnt "POST" "$(cat
 ck "board-view.js has no PUT/PATCH/DELETE verb"              hasnt "PUT" "$(cat "$VIEW")"
 # The client app's TWO calls — both same-origin, credential-less, narrow.
 ck "app.js issues a GET to /api/board (read channel)"        has "fetch('/api/board'" "$(cat "$APP")"
-ck "app.js issues a POST to /api/set-desired (F2 write)"     has "fetch('/api/set-desired'" "$(cat "$APP")"
+ck "app.js issues a POST to /api/board/set-desired (F2 write)" has "fetch('/api/board/set-desired'" "$(cat "$APP")"
 ck "app.js POST method is the F2 write only"                 has "method: 'POST'" "$(cat "$APP")"
 # STRUCTURAL — the ONLY two endpoints reached are /api/board and
-# /api/set-desired (a third fetch URL would be a write-path widening that
+# /api/board/set-desired (a third fetch URL would be a write-path widening that
 # bypasses the §9.1 chokepoint pattern).
-ck "app.js fetches ONLY /api/board and /api/set-desired"     eq "$(grep -cE "fetch\('/api/" "$APP")" "2"
+ck "app.js fetches ONLY /api/board and /api/board/set-desired" eq "$(grep -cE "fetch\('/api/" "$APP")" "2"
 ck "app.js carries NO upstream URL/Coordinator base"         hasnt "/request" "$(cat "$APP")"
 ck "app.js never sets an authorization header (§9.2)"        hasnt "authorization" "$(cat "$APP")"
 ck "app.js write body is the F1 named-shape (state/actor)"   has "desired: { state:" "$(cat "$APP")"

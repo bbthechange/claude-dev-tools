@@ -25,20 +25,23 @@ the §-clauses, not "Pages"). No build step, no dependencies.
 - `app.js` — browser glue only. The **one** network call in the whole client
   is a credential-less, same-origin, read-only `GET /api/board`. No form, no
   POST, no mutation affordance.
-- `functions/api/board.js` — the Pages Function read proxy: the §9.1
-  chokepoint, Board side. `onRequestGet` only; the upstream op is the
-  hard-coded literal `work-snapshot`. No reader write path **by
-  construction**.
+- `../functions/api/board/index.js` — the Pages Function read proxy
+  (`/api/board`): the §9.1 chokepoint, Board side. `onRequestGet` only; the
+  upstream op is the hard-coded literal `work-snapshot`. No reader write path
+  **by construction**. (Lives under the unified `web/functions/` tree per
+  claude-tools-b59; the sibling write seam is
+  `../functions/api/board/set-desired.js`.)
 - `index.html` + `board.css` — responsive shell (phone-first → desktop),
   visual direction from `beads-runner/ux-mocks.html` v1.
 
 ## Deliberately NOT here (anti-drift)
 
 - **The Inbox / dossier UI is T6b** (claude-tools-xre). The WAITING-ON-YOU
-  lane is a *pointer* (`https://claude-wrangler-inbox.pages.dev/#<dossier_ref>`
-  while the Inbox is a sibling Pages project; the host collapses when the
-  apps are unified per UX-DESIGN §2) — it never renders dossier
-  `body`/`items[]`.
+  lane is a *pointer* (`/inbox#<dossier_ref>` — same-host sibling route in the
+  unified `claude-wrangler` Pages project, per UX-DESIGN §2 and the
+  consolidation in claude-tools-b59) — it never renders dossier
+  `body`/`items[]`. The anti-drift is a UI separation (T6a does not render the
+  dossier surface), not a deployment separation.
 - **The §10 forensic stream / fetch UI is T6b.** Only Flow G tiers 1–2
   failure metadata (`class` + `retry_state`) — which IS in §4.5 — is shown.
 - **No UI-side derived state.** A field the Board needs but §4.5 does not
@@ -53,8 +56,11 @@ the §-clauses, not "Pages"). No build step, no dependencies.
 
 ## Deploy (non-normative — Appendix A)
 
-Cloudflare Pages, root = `web/board/`. Required environment bindings (the
-bearer lives server-side only — §9.1/§9.2; never committed):
+Cloudflare Pages, **unified** project `claude-wrangler` (root = `web/`). The
+Board is served at the `/board` route prefix; the Inbox at `/inbox`; the
+Intake at `/intake` (UX-DESIGN §2 "one responsive web app"). Pages Functions
+live under `web/functions/api/{board,inbox,intake}/...`. Required environment
+bindings (the bearer lives server-side only — §9.1/§9.2; never committed):
 
 - `COORDINATOR_URL` — base URL of the Coordinator's §2.3 authed endpoint.
 - `COORDINATOR_TOKEN` — the per-deployment bearer secret.

@@ -70,19 +70,21 @@ _Add your project-specific conventions here_
 
 ## Web/Pages task-acceptance discipline (lesson from claude-tools-bgw)
 
-Any bd task that touches `beads-runner/web/board/**` or `beads-runner/web/inbox/**` is **not done when the code is committed** — it is done when the deployed Cloudflare Pages site serves the new bytes. `bd close` without a deploy is the exact failure mode that bit F1/F2/F3/G1/L3 (closed-but-not-shipped) and that [claude-tools-bgw] exists to prevent.
+Any bd task that touches `beads-runner/web/**` is **not done when the code is committed** — it is done when the deployed Cloudflare Pages site serves the new bytes. `bd close` without a deploy is the exact failure mode that bit F1/F2/F3/G1/L3 (closed-but-not-shipped) and that [claude-tools-bgw] exists to prevent.
+
+Board, Inbox, and Intake are routes inside ONE unified Pages project, `claude-wrangler` (consolidation in claude-tools-b59; UX-DESIGN §2 "one responsive web app"). One deploy ships all three.
 
 **Required steps before `bd close` on a web-track task:**
 
-1. **Deploy** the affected Pages project(s):
+1. **Deploy** the unified Pages project:
    ```bash
-   (cd beads-runner/web/board && npx wrangler pages deploy . --project-name claude-wrangler-board)
-   (cd beads-runner/web/inbox && npx wrangler pages deploy . --project-name claude-wrangler-inbox)
+   (cd beads-runner/web && npx wrangler pages deploy . --project-name claude-wrangler)
    ```
 2. **Verify** the deploy landed — deployed bytes must match committed bytes:
    ```bash
-   bash beads-runner/web/verify-pages-deploy.sh board   # or: inbox
+   bash beads-runner/verify-pages-deploy.sh          # all three routes
+   bash beads-runner/verify-pages-deploy.sh board    # or just one
    ```
-   A passing run prints `mismatches=0`. Any `DRIFT` line means the deploy did not land; re-deploy and re-verify before closing.
+   A passing run prints `mismatches=0`. Any `DRIFT` or `MISS` line means the deploy did not land; re-deploy and re-verify before closing.
 
 This is "a child closes on what Brian experiences, never on a passing weak contract check" applied to the web tracks. Local tests passing + code committed is **not** acceptance — `mismatches=0` against the live host is.

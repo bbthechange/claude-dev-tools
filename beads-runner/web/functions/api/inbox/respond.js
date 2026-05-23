@@ -1,4 +1,4 @@
-/* beads-runner/web/inbox/functions/api/respond.js — T6b (claude-tools-xre).
+/* beads-runner/web/functions/api/inbox/respond.js — T6b (claude-tools-xre).
  *
  * The per-Item RESPONSE write proxy — the ONE legitimate write path T6b
  * OWNS: the decision surface (Flow B step 4, "the doc IS the form"). It is

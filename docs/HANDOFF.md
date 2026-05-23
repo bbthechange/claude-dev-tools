@@ -25,12 +25,12 @@ The rescue epic `claude-tools-kie` ("The actual tool") replaced what was a stubb
 - **Per-machine daemon**: installed, running, polling. See `runbooks/daemon-control.md` to stop/start/check.
 - **Workspace runner**: spawned by the daemon when desired-state is `running` for a workspace. Has idle-poll behavior (stays alive between tasks). Has the MCP allowlist fix. Has the watchdog cleanup fix. Has Node v25 PATH-prime protection. Has Fix B auto-flip on agent slip.
 - **Hosted Cloudflare engine**: deployed, includes all op handlers (put/get/poll/set-desired/timer-*/work-snapshot/item-apply). Token in macOS Keychain at service `claude-beads-runner.coordinator-token`.
-- **Board**: deployed with per-workspace start/stop toggles, capacity strip, failure badges, lifecycle columns. See `https://claude-wrangler-board.pages.dev/`.
-- **Inbox**: deployed with Mermaid rendering, tolerant degradation for non-conformant dossiers, redacted forensic blob view. See `https://claude-wrangler-inbox.pages.dev/`.
+- **Board**: deployed with per-workspace start/stop toggles, capacity strip, failure badges, lifecycle columns. See `https://claude-wrangler.pages.dev/board` (route inside the unified `claude-wrangler` Pages project per claude-tools-b59).
+- **Inbox**: deployed with Mermaid rendering, tolerant degradation for non-conformant dossiers, redacted forensic blob view. See `https://claude-wrangler.pages.dev/inbox`.
 - **Production `ask-brian` MCP server**: built at `mcp-askbrian/server.mjs`, registered at user scope, takes worker dump + spawns dossier-builder + writes to engine + polls for answer. Bridge: `mcp-askbrian/helpers/engine-bridge.sh`.
 - **Dossier-builder agent**: prompt at `beads-runner/agents/dossier-builder.system.md`. Dispatched by the MCP server, runs inside the workspace with full tool access.
 - **Specialist hat agents**: 7 prompts under `beads-runner/agents/` (ux, design, impl, docs, tests, reconciler, enricher, dossier-builder). Launched via `beads-runner/agents/specialist.sh --kind=<hat>`.
-- **Flow A intake**: phone UI at `https://claude-wrangler-inbox.pages.dev/intake/` (or board's intake route), backed by enricher hat dispatch from the daemon.
+- **Flow A intake**: phone UI at `https://claude-wrangler.pages.dev/intake`, backed by enricher hat dispatch from the daemon.
 - **Lifecycle stages**: `stage:<value>` label discipline (idea/ux/design/impl/docs/tests/done) applied to all 49 kie children. See `beads-runner/agents/lifecycle.md` and `beads-runner/agents/gate-policy.md`.
 - **Capacity gating**: workspace runner consults daemon's `ask-capacity` on every pickup. Spare-cycles 14.2%/day ramp implemented.
 

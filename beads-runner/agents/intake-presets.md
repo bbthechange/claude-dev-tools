@@ -51,22 +51,22 @@ wins** — that is the file every consumer reads.
                           │
             ┌─────────────┼───────────────────────────────┐
             ▼             ▼                               ▼
-   web/intake/functions   agents/enricher.system.md   gate-policy.sh
-   /api/_presets-          (prompt-resolution           (L2 preset enum,
+   web/functions/api/     agents/enricher.system.md   gate-policy.sh
+   intake/_presets-        (prompt-resolution           (L2 preset enum,
    catalog.js              table, §"Entry stage          PRESET_ENUM —
    (Pages-side MIRROR;     label" bullet)               must agree with
-   imported by both         The enricher reads the      the catalog values)
-   intake.js [write proxy] JSON at run-time and
-   and intake-presets.js   uses it to pick (stage,
+   imported by both        The enricher reads the       the catalog values)
+   intake/index.js [write] JSON at run-time and
+   and intake/presets.js   uses it to pick (stage,
    [read proxy].           gate). Adding a row here
    The browser fetches     means adding a bullet
-   /api/intake-presets     in the resolution table.
+   /api/intake/presets     in the resolution table.
    and renders radio
    cards from it.)
 ```
 
 The browser does **not** know about the catalog at compile time — the
-preset radios are rendered from the live `/api/intake-presets` response,
+preset radios are rendered from the live `/api/intake/presets` response,
 which a Pages function serves off the same JS mirror that `/api/intake`
 validates against. That collapses the "two-step UI + proxy" sync hazard
 from the I1 README into a single mirror file inside the Pages tree.
@@ -83,9 +83,9 @@ files. Anything else is a hint that the spine is being violated.
    `gate-human`), `description`.
 
 2. **Mirror it in
-   `web/intake/functions/api/_presets-catalog.js`** — the Pages-side
-   mirror that both the read proxy (`intake-presets.js`) and the write
-   proxy (`intake.js`) import. Same five fields, same `value`, no drift.
+   `web/functions/api/intake/_presets-catalog.js`** — the Pages-side
+   mirror that both the read proxy (`intake/presets.js`) and the write
+   proxy (`intake/index.js`) import. Same five fields, same `value`, no drift.
    This is the only file that has to be updated by hand alongside the
    JSON — Pages Functions cannot read across the repo tree at request
    time, so the mirror is the pragmatic shape.

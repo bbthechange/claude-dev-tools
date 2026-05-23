@@ -1,4 +1,4 @@
-/* beads-runner/web/intake/functions/api/_presets-catalog.js — I4 (claude-tools-vvh).
+/* beads-runner/web/functions/api/intake/_presets-catalog.js — I4 (claude-tools-vvh).
  *
  * Pages-side MIRROR of `beads-runner/agents/intake-presets.json` (the
  * canonical entry-intent preset catalog; UX-DESIGN Flow A, I4 spec).
@@ -6,23 +6,24 @@
  * WHY THE MIRROR (read this twice):
  *   Cloudflare Pages Functions cannot read the repo's `agents/` tree at
  *   request time — they only see files inside their own deployment root
- *   (`web/intake/`). The honest options were:
+ *   (`web/` for the unified `claude-wrangler` project — claude-tools-b59).
+ *   The honest options were:
  *     1. Bundle the JSON via a build step. (Vetoed — `intake/README.md`
  *        says "No build step."; we want this app to stay diff-readable.)
  *     2. Mirror the catalog inline here and link the two files in the
  *        docs (one PR touches both — see `agents/intake-presets.md`,
  *        "Adding a preset — the one-PR playbook").
  *   We took (2). The mirror is one file in one location; both proxies
- *   (`intake.js` write + `intake-presets.js` read) import it, so a drift
- *   between the mirror and the engine-facing allowlist is impossible.
+ *   (`intake/index.js` write + `intake/presets.js` read) import it, so a
+ *   drift between the mirror and the engine-facing allowlist is impossible.
  *   A drift between THIS file and `agents/intake-presets.json` is what
  *   the playbook PR is designed to prevent.
  *
  * UNDERSCORE PREFIX:
  *   Cloudflare Pages Functions treat files whose basename starts with `_`
  *   as NON-ROUTABLE — so this module is import-only; it does NOT register
- *   `/api/_presets-catalog` as a public route. (The public read endpoint
- *   is `/api/intake-presets`, served by `intake-presets.js`, which
+ *   `/api/intake/_presets-catalog` as a public route. (The public read
+ *   endpoint is `/api/intake/presets`, served by `presets.js`, which
  *   imports this file.)
  *
  * SHAPE CONTRACT:

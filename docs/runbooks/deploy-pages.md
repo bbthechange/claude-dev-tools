@@ -1,58 +1,86 @@
-# Runbook: deploy the Board and Inbox to Cloudflare Pages
+# Runbook: deploy the unified `claude-wrangler` Pages project
 
 ## When
 
-You've edited any file under `beads-runner/web/board/` or `beads-runner/web/inbox/` (HTML, app.js, board-view.js, inbox-view.js, CSS, or any Pages Functions). The committed code change does NOT automatically reach the deployed Pages site — you must explicitly redeploy.
+You've edited any file under `beads-runner/web/{board,inbox,intake}/` (HTML,
+app.js, board-view.js, inbox-view.js, CSS) or under
+`beads-runner/web/functions/api/{board,inbox,intake}/...`. The committed code
+change does NOT automatically reach the deployed Pages site — you must
+explicitly redeploy.
 
-This is the most common source of "wired but not actually live" bugs in this project. See HANDOFF.md "loose threads" for the pattern.
+This is the most common source of "wired but not actually live" bugs in this
+project. See HANDOFF.md "loose threads" for the pattern.
 
-## Board deploy
+## Shape
+
+Board, Inbox, and Intake are routes inside ONE responsive web app (UX-DESIGN
+§2; consolidation in claude-tools-b59):
+
+- `claude-wrangler.pages.dev/board`   → `web/board/`
+- `claude-wrangler.pages.dev/inbox`   → `web/inbox/`
+- `claude-wrangler.pages.dev/intake`  → `web/intake/`
+- `claude-wrangler.pages.dev/api/board/*`  → `web/functions/api/board/...`
+- `claude-wrangler.pages.dev/api/inbox/*`  → `web/functions/api/inbox/...`
+- `claude-wrangler.pages.dev/api/intake/*` → `web/functions/api/intake/...`
+
+## Deploy
 
 ```bash
-cd beads-runner/web/board
-npx wrangler pages deploy . --project-name claude-wrangler-board
+cd beads-runner/web
+npx wrangler pages deploy . --project-name claude-wrangler
 ```
 
-`wrangler pages deploy` finds Pages Functions relative to CWD, so you MUST `cd` into the project directory and pass `.` as the dir arg. Running from `beads-runner/` with `web/board` as the dir silently misses the `functions/` subdir and ships HTML without the API proxies.
-
-## Inbox deploy
-
-```bash
-cd beads-runner/web/inbox
-npx wrangler pages deploy . --project-name claude-wrangler-inbox
-```
+`wrangler pages deploy` finds Pages Functions relative to CWD, so you MUST
+`cd` into `beads-runner/web/` and pass `.` as the dir arg. Running from the
+repo root with `beads-runner/web` as the dir silently misses the `functions/`
+subdir and ships HTML without the API proxies.
 
 ## Verification — DO NOT skip this
 
-Several bugs in this project closed because the agent ran the deploy command but never confirmed the live URL actually serves the new code. Verify with a byte-compare:
+Several bugs in this project closed because the agent ran the deploy command
+but never confirmed the live URL actually serves the new code. Use the
+one-script verifier:
 
 ```bash
-# Compare deployed JS sizes to committed
-curl -sS https://claude-wrangler-board.pages.dev/app.js -o /tmp/deployed-app.js -w "deployed: %{size_download} bytes\n"
-echo "committed: $(wc -c < beads-runner/web/board/app.js) bytes"
-
-# Diff if you want to see what's different
-diff -q beads-runner/web/board/app.js /tmp/deployed-app.js
+bash beads-runner/verify-pages-deploy.sh           # verifies all three routes
+bash beads-runner/verify-pages-deploy.sh board     # or just one
 ```
 
-If the deployed bytes match the committed bytes, the deploy landed. If they differ, the deploy either failed silently or you ran from the wrong directory.
-
-For the Inbox, repeat with `claude-wrangler-inbox.pages.dev` and `beads-runner/web/inbox/`.
+A passing run prints `mismatches=0`. Any `DRIFT` or `MISS` line means the
+deploy did not land — re-deploy and re-verify before closing.
 
 ## When the deploy succeeds but the feature still doesn't work
 
-The Pages site fetches data from the hosted Cloudflare Worker via API proxies under `functions/api/`. If the Worker doesn't support a new op (like `set-desired`), the proxy will get an "adapter - unsupported POST proxy op" error from the Worker even though the Pages deploy was correct.
+The Pages site fetches data from the hosted Cloudflare Worker via API proxies
+under `web/functions/api/`. If the Worker doesn't support a new op (like
+`set-desired`), the proxy will get an "adapter - unsupported POST proxy op"
+error from the Worker even though the Pages deploy was correct.
 
-In that case, the bug is on the Worker side, not Pages. See `deploy-cloudflare-worker.md`.
+In that case, the bug is on the Worker side, not Pages. See
+`deploy-cloudflare-worker.md`.
 
-## When you've edited both the Board/Inbox AND the Worker
+## When you've edited both the web/ app AND the Worker
 
-Deploy the Worker first, then the Pages. The Pages depend on Worker ops; Worker doesn't depend on Pages. Wrong order can produce transient failures.
+Deploy the Worker first, then the Pages. The Pages depend on Worker ops; the
+Worker doesn't depend on Pages. Wrong order can produce transient failures.
 
 ## What gets cached
 
-Both Pages sites set `cache-control: no-store` for API proxy responses (so liveness is honest). Static assets may be cached by Cloudflare's CDN; you may need to bust browser cache or open in an incognito tab to see updates.
+The Pages site sets `cache-control: no-store` for API proxy responses (so
+liveness is honest). Static assets may be cached by Cloudflare's CDN; you may
+need to bust browser cache or open in an incognito tab to see updates.
 
 ## Discipline
 
-After every web-track task close, the closing agent MUST run the byte-compare verification before `bd close`. This is documented as the project's standing rule per the `claude-tools-bgw` close-discipline note. Failing to verify is the failure mode that caused 5 separate bugs in 24 hours during the rescue.
+After every web-track task close, the closing agent MUST run the byte-compare
+verification before `bd close`. This is documented as the project's standing
+rule per the `claude-tools-bgw` close-discipline note. Failing to verify is
+the failure mode that caused 5 separate bugs in 24 hours during the rescue.
+
+## Decommissioning the old per-app projects
+
+Pre-claude-tools-b59 there were three separate Pages projects
+(`claude-wrangler-board`, `claude-wrangler-inbox`, `claude-wrangler-intake`).
+Keep them running until `verify-pages-deploy.sh` passes against the unified
+URL, then decommission them in the Cloudflare dashboard (or redirect to the
+new URL). The repo no longer carries deploy commands for those projects.

@@ -1,4 +1,4 @@
-/* beads-runner/web/board/functions/api/board.js — T6a (claude-tools-p2m).
+/* beads-runner/web/functions/api/board/index.js — T6a (claude-tools-p2m).
  *
  * The Board's read proxy — a Cloudflare Pages Function (Appendix A
  * realization: "web app → Pages"; §0.2 — provider primitives are

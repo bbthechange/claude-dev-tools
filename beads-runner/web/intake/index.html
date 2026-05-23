@@ -13,9 +13,10 @@
 
   Cloudflare Pages app shell. No build step. Reuses the T6a/T6b visual
   language (same tokens, fonts) so this is the SAME product, not a third
-  look — anti-drift. The §9.1 chokepoint lives in functions/api/* (workspaces
-  read; intake write). The browser holds NO secret and never picks the
-  principal/op (§9.1/§9.2). The single WRITE call is the I2 POST /api/intake.
+  look — anti-drift. The §9.1 chokepoint lives in functions/api/intake/* (the
+  unified Pages tree — see claude-tools-b59). The browser holds NO secret and
+  never picks the principal/op (§9.1/§9.2). The single WRITE call is the I2
+  POST /api/intake.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -40,7 +41,7 @@
         aria-describedby="idea-hint"></textarea>
       <p id="idea-hint" class="hint">One sentence is enough — the enricher fills in the dossier.</p>
 
-      <!-- Project picker — populated from /api/workspaces. -->
+      <!-- Project picker — populated from /api/intake/workspaces. -->
       <label class="lbl" for="workspace">Workspace</label>
       <div class="picker">
         <select id="workspace" name="workspace" aria-describedby="ws-hint">
@@ -49,10 +50,10 @@
       </div>
       <p id="ws-hint" class="hint" hidden></p>
 
-      <!-- Preset chooser — populated at run-time from /api/intake-presets
+      <!-- Preset chooser — populated at run-time from /api/intake/presets
            (I4, claude-tools-vvh). The canonical catalog is
            agents/intake-presets.json; the Pages-side mirror is
-           functions/api/_presets-catalog.js. Adding a preset is the
+           functions/api/intake/_presets-catalog.js. Adding a preset is the
            one-PR playbook in agents/intake-presets.md — no edit to
            this HTML is required. -->
       <fieldset class="presets" id="presets">

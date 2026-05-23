@@ -1,4 +1,4 @@
-/* beads-runner/web/inbox/functions/api/expire.js — claude-tools-23r.
+/* beads-runner/web/functions/api/inbox/expire.js — claude-tools-23r.
  *
  * The per-Item EXPIRE write proxy — the "this dossier is stale, get it out of
  * my way" affordance for the Inbox shell. NOT a §5.2 response (no decision,

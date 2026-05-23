@@ -67,20 +67,17 @@ cd beads-runner/cf
 npx wrangler secret put CO_EXPECTED_TOKEN --config wrangler.production.toml
 # Paste the new token
 
-# 2. Rotate the matching client-side token on each Pages project
-cd beads-runner/web/board
-npx wrangler pages secret put COORDINATOR_TOKEN --project-name claude-wrangler-board
-cd ../inbox
-npx wrangler pages secret put COORDINATOR_TOKEN --project-name claude-wrangler-inbox
+# 2. Rotate the matching client-side token on the unified Pages project
+cd beads-runner/web
+npx wrangler pages secret put COORDINATOR_TOKEN --project-name claude-wrangler
 
 # 3. Update the local Keychain entry
 security delete-generic-password -s "claude-beads-runner.coordinator-token"
 security add-generic-password -s "claude-beads-runner.coordinator-token" -a brian -w "<new-token>"
 
-# 4. Redeploy all three
+# 4. Redeploy the Worker, then the unified Pages project
 npx wrangler deploy --config beads-runner/cf/wrangler.production.toml
-cd beads-runner/web/board && npx wrangler pages deploy . --project-name claude-wrangler-board
-cd ../inbox && npx wrangler pages deploy . --project-name claude-wrangler-inbox
+cd beads-runner/web && npx wrangler pages deploy . --project-name claude-wrangler
 
 # 5. Re-register any MCP servers that took the token via -e flag (see register-mcp-tool.md)
 # The user-scope MCP config in ~/.claude.json holds the token; it'd need updating too.

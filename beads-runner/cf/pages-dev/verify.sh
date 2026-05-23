@@ -213,17 +213,18 @@ echo "── EXIT-4: no FROZEN edit (READ proxies / engine / INTERFACE) — addi
 # F2 (claude-tools-8fh) legitimately edits the BOARD CLIENT (board-view.js /
 # app.js / board.css) to add the per-workspace toggle row, so the prior
 # "web/ UNMODIFIED" blanket is REPLACED with a narrower check: the FROZEN
-# READ proxies (functions/api/board.js, the inbox proxies) and the engine
-# source remain untouched. The Board client surfaces are now an evolving
-# UI layer (test-board.sh owns its structural invariants).
-# F3 (claude-tools-6mx) further narrows: web/board/functions/api/set-desired.js
+# READ proxies (functions/api/board/index.js, the inbox proxies) and the
+# engine source remain untouched. The Board client surfaces are now an
+# evolving UI layer (test-board.sh owns its structural invariants).
+# F3 (claude-tools-6mx) further narrows: web/functions/api/board/set-desired.js
 # is the WRITE proxy (F1) — legitimately evolving with the desired-state wire
-# contract (e.g. F3's UI→§4.2 normalisation). Only the READ proxies (board.js,
-# inbox/*) remain in the frozen set; the WRITE proxies live on board.js's
-# sibling path but are NOT frozen.
+# contract (e.g. F3's UI→§4.2 normalisation). Only the READ proxies
+# (board/index.js, inbox/*) remain in the frozen set; the WRITE proxies live
+# alongside them under the unified functions tree (claude-tools-b59) but are
+# NOT frozen.
 DIRTY="$(cd "$CF_DIR/../.." && git status --porcelain \
-  -- beads-runner/web/board/functions/api/board.js \
-     beads-runner/web/inbox/functions \
+  -- beads-runner/web/functions/api/board/index.js \
+     beads-runner/web/functions/api/inbox \
      beads-runner/cf/src \
      beads-runner/cf/wrangler.toml \
      beads-runner/INTERFACE.md \

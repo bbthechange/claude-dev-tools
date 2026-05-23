@@ -23,7 +23,7 @@
 #                   stopped
 #
 # UI ↔ WIRE — UX-DESIGN names the spare state `spare-only`; INTERFACE.md §4.2
-# names it `spare-cycles`. The proxy (web/board/functions/api/set-desired.js,
+# names it `spare-cycles`. The proxy (web/functions/api/board/set-desired.js,
 # F3 patch) normalises UI→wire so the engine, the daemon, and the runner all
 # read the canonical §4.2 enum. This test asserts the daemon and runner BOTH
 # see `spare-cycles` after a `spare-only` UI tap is mediated by the proxy's
@@ -44,7 +44,7 @@ LIB="$HERE/coordinator.sh"
 RUNNER_SH="$REPO_ROOT/run-beads-tasks.sh"
 M3_LIB="$REPO_ROOT/daemon/desired-state-poll.sh"
 REGISTRY_LIB="$REPO_ROOT/daemon/workspace-registry.sh"
-PROXY_JS="$REPO_ROOT/web/board/functions/api/set-desired.js"
+PROXY_JS="$REPO_ROOT/web/functions/api/board/set-desired.js"
 
 [[ -f "$LIB" ]]          || { echo "FATAL: coordinator.sh not found at $LIB"; exit 2; }
 [[ -f "$M3_LIB" ]]       || { echo "FATAL: desired-state-poll.sh not found at $M3_LIB"; exit 2; }

@@ -1,4 +1,4 @@
-/* beads-runner/web/inbox/functions/api/dossier.js — T6b (claude-tools-xre).
+/* beads-runner/web/functions/api/inbox/dossier.js — T6b (claude-tools-xre).
  *
  * The Dossier READ proxy — fetches the ONE §4.1 Dossier RECORD a
  * WAITING-ON-YOU lane row points at, so the Inbox can render the §5

@@ -26,35 +26,35 @@ No build step. No dependencies.
   same product, not a third look.
 - `intake.css` — `--tap: 44px` floor, no hover-only states, 16px+ font sizes
   to dodge iOS auto-zoom, layout that survives the on-screen keyboard.
-- `app.js` — browser glue only. Two network calls:
-  - `GET  /api/intake-presets` once on load (catalog → preset radios).
-  - `GET  /api/workspaces` once on load (populates the picker).
+- `app.js` — browser glue only. Three network calls:
+  - `GET  /api/intake/presets` once on load (catalog → preset radios).
+  - `GET  /api/intake/workspaces` once on load (populates the picker).
   - `POST /api/intake` on submit (the I2 write proxy).
-- `functions/api/workspaces.js` — Pages Function read proxy. `onRequestGet`
-  only; upstream op hard-coded to `work-snapshot`; projects the response
-  down to a sorted list of `project_ref` strings.
-- `functions/api/intake.js` — I2 (claude-tools-x9u) write proxy.
-  `onRequestPost` only; upstream op hard-coded to `put`; record type
-  hard-coded to `intake-request`; preset allowlist imported from the I4
-  catalog mirror (`_presets-catalog.js`) so the UI and the write
+- `../functions/api/intake/workspaces.js` — Pages Function read proxy
+  (`/api/intake/workspaces`). `onRequestGet` only; upstream op hard-coded to
+  `work-snapshot`; projects the response down to a sorted list of
+  `project_ref` strings.
+- `../functions/api/intake/index.js` — I2 (claude-tools-x9u) write proxy
+  (`/api/intake`). `onRequestPost` only; upstream op hard-coded to `put`;
+  record type hard-coded to `intake-request`; preset allowlist imported from
+  the I4 catalog mirror (`_presets-catalog.js`) so the UI and the write
   validator cannot drift.
-- `functions/api/intake-presets.js` — I4 (claude-tools-vvh) catalog
-  read proxy. `onRequestGet` only; serves the preset catalog the UI
-  renders its radio cards from. No engine round-trip; the data lives
-  entirely in `_presets-catalog.js`.
-- `functions/api/_presets-catalog.js` — I4 (claude-tools-vvh)
-  Pages-side mirror of `agents/intake-presets.json` (the canonical
-  catalog). Underscore-prefixed → non-routable; imported by both
-  proxies above.
+- `../functions/api/intake/presets.js` — I4 (claude-tools-vvh) catalog read
+  proxy (`/api/intake/presets`). `onRequestGet` only; serves the preset
+  catalog the UI renders its radio cards from. No engine round-trip; the data
+  lives entirely in `_presets-catalog.js`.
+- `../functions/api/intake/_presets-catalog.js` — I4 (claude-tools-vvh)
+  Pages-side mirror of `agents/intake-presets.json` (the canonical catalog).
+  Underscore-prefixed → non-routable; imported by both proxies above.
 
 ## The preset list
 
 The catalog is **catalog-driven, not hard-coded**. The UI fetches
-`/api/intake-presets` on page load and renders one radio card per row.
+`/api/intake/presets` on page load and renders one radio card per row.
 The canonical source of truth is
-**`beads-runner/agents/intake-presets.json`**; this directory carries a
-1-for-1 mirror at `functions/api/_presets-catalog.js` that both proxies
-import.
+**`beads-runner/agents/intake-presets.json`**; the unified Pages tree carries
+a 1-for-1 mirror at `web/functions/api/intake/_presets-catalog.js` that both
+proxies import.
 
 v1 catalog (see `beads-runner/agents/intake-presets.md` for the full
 table and the add-a-preset playbook):
@@ -66,10 +66,11 @@ table and the add-a-preset playbook):
 
 **Adding a preset is a documented one-PR change** — see
 `beads-runner/agents/intake-presets.md` "Adding a preset — the one-PR
-playbook". The playbook is: one row in the JSON, one mirror row here in
-`_presets-catalog.js`, one bullet in `agents/enricher.system.md`, (one
-entry in `gate-policy.sh` `PRESET_ENUM`). No edit to `index.html` is
-required — the radios re-render from the catalog on next deploy.
+playbook". The playbook is: one row in the JSON, one mirror row in
+`web/functions/api/intake/_presets-catalog.js`, one bullet in
+`agents/enricher.system.md`, (one entry in `gate-policy.sh` `PRESET_ENUM`).
+No edit to `index.html` is required — the radios re-render from the catalog
+on next deploy.
 
 ## Deliberately NOT here (anti-drift)
 
@@ -85,8 +86,12 @@ required — the radios re-render from the catalog on next deploy.
 
 ## Deploy (non-normative — Appendix A)
 
-Cloudflare Pages, root = `web/intake/`. Required environment bindings
-(server-side only — §9.1/§9.2; never committed):
+Cloudflare Pages, **unified** project `claude-wrangler` (root = `web/`). The
+Intake is served at the `/intake` route prefix alongside `/board` and
+`/inbox` (UX-DESIGN §2 "one responsive web app"; consolidation in
+claude-tools-b59). Pages Functions live under
+`web/functions/api/intake/...`. Required environment bindings (server-side
+only — §9.1/§9.2; never committed):
 
 - `COORDINATOR_URL` — base URL of the Coordinator's §2.3 authed endpoint.
 - `COORDINATOR_TOKEN` — the per-deployment bearer secret.

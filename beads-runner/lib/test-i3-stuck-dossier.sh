@@ -350,7 +350,7 @@ else
       nid="$(no_emit "$GOOD" "$did" 2>/dev/null)"; echo "T_nrc=$?"
       echo "T_nid=$nid"
 
-      # the EXACT deployed-Inbox phone read front (web/inbox/functions/api/
+      # the EXACT deployed-Inbox phone read front (web/functions/api/inbox/
       # dossier.js): GET /request?op=get&type=dossier&id=<did>. This is
       # precisely what the phone hits — if the genuine dossier comes back
       # here, it "reaches the phone" (read path; the human-on-phone is I5).

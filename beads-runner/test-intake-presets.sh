@@ -5,7 +5,7 @@
 # Asserts the three places that name the entry-intent preset catalog
 # agree on what's in it. The canonical file is
 # `agents/intake-presets.json`; the Pages-side mirror is
-# `web/intake/functions/api/_presets-catalog.js`; the L2 gate-policy
+# `web/functions/api/intake/_presets-catalog.js`; the L2 gate-policy
 # script keeps a `PRESET_ENUM` array in `gate-policy.sh`. Adding a
 # preset is documented in `agents/intake-presets.md` as a one-PR change
 # — this harness is what fails the PR if a step is skipped.
@@ -28,7 +28,7 @@ set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JSON="$REPO_DIR/agents/intake-presets.json"
-MIRROR="$REPO_DIR/web/intake/functions/api/_presets-catalog.js"
+MIRROR="$REPO_DIR/web/functions/api/intake/_presets-catalog.js"
 GATE="$REPO_DIR/gate-policy.sh"
 ENRICHER="$REPO_DIR/agents/enricher.system.md"
 

@@ -1,8 +1,9 @@
 /* beads-runner/web/intake/app.js — I1 (claude-tools-tbl).
  *
- * Browser glue ONLY. Two same-origin, credential-less network calls:
- *   GET  /api/workspaces — list of project_refs for the picker dropdown
- *   POST /api/intake     — the ONE write (I2 proxy stamps principal via §9.1)
+ * Browser glue ONLY. Three same-origin, credential-less network calls:
+ *   GET  /api/intake/presets    — catalog of entry-intent presets (I4)
+ *   GET  /api/intake/workspaces — list of project_refs for the picker dropdown
+ *   POST /api/intake            — the ONE write (I2 proxy stamps principal via §9.1)
  *
  * The browser holds NO secret (§9.2) and never picks the principal or op
  * (§9.1) — both proxies are server-side and hard-code their op. This file
@@ -61,9 +62,9 @@
   }
 
   // ── preset radio cards (I4 · claude-tools-vvh) ────────────────────────────
-  // Rendered at run-time from /api/intake-presets so the radio set is
+  // Rendered at run-time from /api/intake/presets so the radio set is
   // catalog-driven (agents/intake-presets.json → _presets-catalog.js →
-  // /api/intake-presets). The browser does NOT carry a hard-coded preset
+  // /api/intake/presets). The browser does NOT carry a hard-coded preset
   // list; adding a preset to the catalog ships a new radio on next deploy
   // with no client edit.
   var presetsLoaded = false;
@@ -77,7 +78,7 @@
     // semantics survive the re-render.
     Array.prototype.slice.call(box.querySelectorAll('label.preset'))
       .forEach(function (n) { n.parentNode.removeChild(n); });
-    getJSON('/api/intake-presets').then(function (d) {
+    getJSON('/api/intake/presets').then(function (d) {
       var ps = d && Array.isArray(d.presets) ? d.presets : [];
       if (ps.length === 0) {
         // Honest empty: the catalog file has no rows. A submit is
@@ -127,7 +128,7 @@
   function loadWorkspaces() {
     var sel = el('workspace');
     var hint = el('ws-hint');
-    getJSON('/api/workspaces').then(function (d) {
+    getJSON('/api/intake/workspaces').then(function (d) {
       // Reset the loading placeholder.
       while (sel.firstChild) sel.removeChild(sel.firstChild);
       var ws = Array.isArray(d.workspaces) ? d.workspaces : [];

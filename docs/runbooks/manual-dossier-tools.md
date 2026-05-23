@@ -136,7 +136,7 @@ curl -sS -X POST https://coordinator-cf.bbthechange.workers.dev/ \
   | jq '{id, bead_ref, kind, tier, schema_version, body_keys: (.body|keys), section_count: (.body.sections|length), diagram_count: (.body.diagrams|length), tldr_first_100: (.body.tldr[:100])}'
 ```
 
-Then look at the Inbox URL — `https://claude-wrangler-inbox.pages.dev/` — to see the dossier rendered on the phone surface. Find it in the list by `bead_ref` or by the title (the tldr, post-`56h` fix).
+Then look at the Inbox URL — `https://claude-wrangler.pages.dev/inbox` — to see the dossier rendered on the phone surface. Find it in the list by `bead_ref` or by the title (the tldr, post-`56h` fix).
 
 ## Common errors at write time
 

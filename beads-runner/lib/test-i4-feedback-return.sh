@@ -9,7 +9,7 @@
 #   • AWAIT is NEW: sr_poll_hosted_resolution READS each parked Dossier back
 #     over the SAME §2.1 `co_request get dossier` surface the I1 transport
 #     carries (→ the HOSTED deployed engine). When Brian answers on his phone
-#     the deployed Inbox `/api/respond` proxy POSTs the FROZEN `item-apply`
+#     the deployed Inbox `/api/inbox/respond` proxy POSTs the FROZEN `item-apply`
 #     op upstream and §5.2.2/§7.4 moves the Item answered→applied IN THE
 #     ENGINE — the runner observes that and flips the S-2 record resolved:true.
 #   • RESUME is NEW: the decision is captured the moment it is observed (a
@@ -38,8 +38,8 @@
 #            cf/src = the code production runs VERBATIM): the FULL closed loop.
 #            A stuck routes a Dossier into the hosted engine; the phone answer
 #            is stood in PROGRAMMATICALLY via the EXACT deployed front
-#            (POST /request?op=item-apply — precisely what web/inbox/functions/
-#            api/respond.js forwards; permitted for I4's OWN verification). The
+#            (POST /request?op=item-apply — precisely what web/functions/api/
+#            inbox/respond.js forwards; permitted for I4's OWN verification). The
 #            parked runner's poll OBSERVES it over HTTP, captures the decision,
 #            flips S-2; the existing reconcile lifts the bead (→ open) and the
 #            resume directive carries the human's choice. Every observable ≡
@@ -139,7 +139,7 @@ fi
 #   consolidated SOLE gate (batching directive). I4 is a BUILD task: it closes
 #   on the LIVE-DEPLOYED-ENGINE wiring verification (PART 0/A/B/C); the
 #   programmatic phone-answer stand-in below is the EXACT deployed front
-#   (POST /request?op=item-apply — what web/inbox/functions/api/respond.js
+#   (POST /request?op=item-apply — what web/functions/api/inbox/respond.js
 #   forwards), permitted for I4's OWN verification ONLY. Nothing about the
 #   return PATH is mocked: the parked runner's poll really reads the Dossier
 #   back from the byte-identical production engine over the I1 HTTP transport.
@@ -350,7 +350,7 @@ BDEOF
       echo "T_bfh_pre=$(sr_bfh_get "$FIXTURE" | jq -r '.resolved' 2>/dev/null)"
       echo "T_ans_pre=$(sr_resume_answer "$FIXTURE" >/dev/null 2>&1 && echo present || echo absent)"
 
-      # THE PHONE ANSWER — the EXACT deployed front: web/inbox/functions/api/
+      # THE PHONE ANSWER — the EXACT deployed front: web/functions/api/inbox/
       # respond.js POSTs {dossier_id,item_id,response} to the FROZEN literal
       # op `item-apply` upstream. This curl IS that upstream POST verbatim
       # (programmatic stand-in permitted for I4's OWN verification only).

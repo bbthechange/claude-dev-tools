@@ -1,4 +1,4 @@
-/* beads-runner/web/board/functions/api/set-desired.js — F1 (claude-tools-49w).
+/* beads-runner/web/functions/api/board/set-desired.js — F1 (claude-tools-49w).
  *
  * The Board's per-workspace DESIRED-STATE write proxy — UX-DESIGN Flow D
  * closed loop, Board side. The phone changes a workspace's desired-state

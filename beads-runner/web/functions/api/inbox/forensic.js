@@ -1,4 +1,4 @@
-/* beads-runner/web/inbox/functions/api/forensic.js — T6b (claude-tools-xre).
+/* beads-runner/web/functions/api/inbox/forensic.js — T6b (claude-tools-xre).
  *
  * The Flow-G tier-3 FORENSIC proxy (§10.3). Forensic content is the single
  * controlled crossing of the sync boundary: raw stream-json holds file

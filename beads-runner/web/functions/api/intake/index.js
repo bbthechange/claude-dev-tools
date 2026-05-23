@@ -1,4 +1,4 @@
-/* beads-runner/web/intake/functions/api/intake.js — I2 (claude-tools-x9u).
+/* beads-runner/web/functions/api/intake/index.js — I2 (claude-tools-x9u).
  *
  * The Flow A INTAKE write proxy — the ONE legitimate write path for "phone
  * intake": one text box + project picker + preset chooser (UX-DESIGN Flow A).
@@ -36,7 +36,7 @@ const RECORD_TYPE = 'intake-request';            // §4 v1 — FROZEN here.
 const RECORD_SCHEMA_VERSION = 1;                 // §0.3 / §4 — bound to engine SCHEMA_VERSIONS.
 
 // Preset allowlist (UX-DESIGN Flow A). Sourced from the I4 catalog mirror
-// (`_presets-catalog.js`), which is the same module the `/api/intake-presets`
+// (`_presets-catalog.js`), which is the same module the `/api/intake/presets`
 // read proxy serves to the browser. A UI typo'd preset is a 422 here,
 // BEFORE the engine burns a round-trip — and a UI / proxy drift on the
 // allowlist is impossible by construction (one mirror, two importers).
