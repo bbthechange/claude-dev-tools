@@ -377,6 +377,51 @@ it("CF.8 STUCK cross-tier routing is behaviour-identical to lib/stuck-routing.sh
   const scanOk = await callJson("stuck-scan-backstop", [OK_STREAM]);
   ck("backstop scan does NOT false-fire on a benign stream", scanOk && scanOk.fired === false);
 
+  // ── stuck-restart (claude-tools-0wu) — wipe + re-run from scratch ──────────
+  // Distinct from stuck-resolve: records NO decision; expires every still-open
+  // dossier item (open→expired); flips bfh so the next reconcile lifts the bead.
+  const R = "stuck-restart-bead";
+  const rR = await callJson("stuck-route", [R, "worker_stuck", ASK]);
+  const DIDR = rR && rR.dossier_id;
+  ck("stuck-restart fixture: bfh raised + Dossier authored", typeof DIDR === "string" && DIDR.length > 0);
+  const dR0 = await getDossier(DIDR);
+  eq(
+    "before restart: Item is open (the worker_stuck pick-option)",
+    dR0 && dR0.items ? dR0.items.filter((i) => i && i.state === "open").length : -1,
+    1
+  );
+  const rr1 = await callJson("stuck-restart", [R]);
+  ck("stuck-restart returns ok", rr1 && rr1.ok === true);
+  eq("stuck-restart echoes the number of items it expired", rr1 && rr1.expired, 1);
+  const dR1 = await getDossier(DIDR);
+  eq(
+    "still-open Item moved to expired (Option A — no answered/applied)",
+    dR1 && dR1.items ? dR1.items.filter((i) => i && i.state === "expired").length : -1,
+    1
+  );
+  eq(
+    "NO Item moved to answered (no decision recorded — distinct from stuck-resolve)",
+    dR1 && dR1.items ? dR1.items.filter((i) => i && i.state === "answered").length : -1,
+    0
+  );
+  eq("bfh now resolved (next reconcile will lift the bead)", await bfhField(R, "resolved"), true);
+  // Idempotent re-run: already-expired item untouched, already-resolved bfh
+  // flip is a no-op.
+  const rr2 = await callJson("stuck-restart", [R]);
+  ck("stuck-restart is idempotent (re-run ⇒ ok)", rr2 && rr2.ok === true);
+  eq("expired Item count unchanged after idempotent re-run",
+    (await getDossier(DIDR)).items.filter((i) => i && i.state === "expired").length, 1);
+  // Reconcile lifts the bead + hard-deletes the bfh (the canonical S-2 leg).
+  const n3 = await callJson("stuck-reconcile", [R]);
+  eq("reconcile acted on the restart-flipped record", n3 && n3.n, 1);
+  eq("stuck-restart + reconcile ⇒ bead UNBLOCKED for re-pick", await beadStatus(R), "open");
+  ck("stuck-restart + reconcile ⇒ bfh record hard-deleted", !(await bfhExists(R)));
+  // Unsafe / missing args ⇒ rejected; absent bfh ⇒ ok no-op.
+  const rrUnsafe = await call(GOOD, "stuck-restart", ["../escape"]);
+  ck("stuck-restart rejects unsafe task_ref", rrUnsafe.status >= 400);
+  const rrMissing = await callJson("stuck-restart", ["never-stuck-fork"]);
+  ck("stuck-restart on a never-stuck task_ref ⇒ ok no-op", rrMissing && rrMissing.ok === true);
+
   // eslint-disable-next-line no-console
   console.log(
     `\n══ CF.8 differential (vs lib/stuck-routing.sh + test-stuck-routing.sh + bc-stuck-cross-tier.sh): PASS=${PASS} FAIL=${FAIL} ══`

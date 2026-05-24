@@ -401,6 +401,42 @@ sr_human_resolve() {
   return 0
 }
 
+# sr_stuck_restart <bearer> <task_ref>
+#   The operator "wipe + re-run from scratch" entry, distinct from
+#   sr_human_resolve (which carries a human DECISION; with an item arg moves
+#   the per-Item state open→answered for the T5.3 applier). Restart instead:
+#     1. Expire every still-open dossier item via T5.1 do_item_set_state
+#        open→expired (the same path §5.2 dismiss-as-stale uses); items
+#        already in answered/applied/expired are LEFT UNTOUCHED — the
+#        §4.1.1/§5.2 monotonic state machine forbids reverse transitions, and
+#        respecting that preserves the audit history Option A protects.
+#     2. Flip the S-2 bfh record resolved:false→true (same `sr__resolve_bfh`
+#        path sr_human_resolve uses). The next sr_reconcile_blocked_for_human
+#        then LIFTS the work-plane block (bead → open, label `human` dropped)
+#        and hard-deletes the record — the bead re-enters the ready set.
+#   Idempotent. Best-effort per-item expiry — a single-item hiccup does NOT
+#   abort the wipe; the bfh flip still runs so the bead can be re-armed.
+#   Absent dossier / absent bfh ⇒ rc=0 no-op.
+sr_stuck_restart() {
+  local bearer="${1:-}" tref="${2:-}" did rec ids id st
+  [[ -n "$bearer" && -n "$tref" ]] || { echo "stuck-routing: restart — need <bearer> <task_ref>" >&2; return 2; }
+  did="$(sr_dossier_id_for "$tref")" || { echo "stuck-routing: restart — unsafe task_ref '$tref' (§0.4)" >&2; return 2; }
+  rec="$(do_dossier_get "$bearer" "$did" 2>/dev/null)" || rec=""
+  if [[ -n "$rec" ]]; then
+    # Open-item ids only — answered/applied/expired are LEFT UNTOUCHED (the
+    # state machine forbids reverse transitions; Option A preserves the audit
+    # history). Newline-separated so the loop survives ids with spaces (there
+    # are none in the §0.4 key class but the discipline is consistent).
+    ids="$(printf '%s' "$rec" | jq -r '.items[]? | select(.state=="open") | .id' 2>/dev/null)" || ids=""
+    while IFS= read -r id; do
+      [[ -n "$id" ]] || continue
+      do_item_set_state "$bearer" "$did" "$id" expired >/dev/null 2>&1 || true
+    done <<<"$ids"
+  fi
+  sr__resolve_bfh "$tref" || { echo "stuck-routing: restart — could not flip bfh for '$tref'" >&2; return 4; }
+  return 0
+}
+
 # ════════════════════════════════════════════════════════════════════════════
 # I4 — the FEEDBACK RETURN PATH: the parked runner observes the human's phone
 #      answer in the HOSTED engine and resumes the agent WITH it (epic 8bm).

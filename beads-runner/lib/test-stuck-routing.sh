@@ -197,6 +197,39 @@ eq   "binding still points at the original Dossier (no overwrite)" \
 eq   "blocked-for-human is NOT a §4 record type (no co__schema_version)" \
        "$(co__schema_version blocked-for-human 2>/dev/null)" ""
 
+# ── stuck-restart (claude-tools-0wu) — wipe + re-run from scratch ────────────
+# Distinct from sr_human_resolve: records NO decision; expires every still-open
+# dossier item (open→expired); flips bfh so the next reconcile lifts the bead.
+R=stuck-restart-bead
+DIDR="$(sr_route_stuck "$GOOD" "$R" worker_stuck "$ASK_JSON" 2>/dev/null)"
+ck   "stuck-restart fixture: bfh raised + Dossier authored" test -n "$DIDR"
+eq   "before restart: Item is open (the worker_stuck pick-option)" \
+       "$(DJQ "$DIDR" '[.items[]?|select(.state=="open")]|length')" "1"
+ck   "sr_stuck_restart returns ok"                       sr_stuck_restart "$GOOD" "$R"
+eq   "still-open Item moved to expired (Option A — no answered/applied)" \
+       "$(DJQ "$DIDR" '[.items[]?|select(.state=="expired")]|length')" "1"
+eq   "NO Item moved to answered (no decision recorded — distinct from stuck-resolve)" \
+       "$(DJQ "$DIDR" '[.items[]?|select(.state=="answered")]|length')" "0"
+eq   "bfh now resolved (next reconcile will lift the bead)" \
+       "$(BFHJQ "$R" '.resolved')" "true"
+# A second restart is idempotent — the already-expired Item is untouched
+# (the state machine forbids expired→expired), and the already-resolved bfh
+# flip is a no-op. The op returns ok.
+ck   "sr_stuck_restart is idempotent (re-run ⇒ ok)"     sr_stuck_restart "$GOOD" "$R"
+eq   "expired Item count unchanged after idempotent re-run" \
+       "$(DJQ "$DIDR" '[.items[]?|select(.state=="expired")]|length')" "1"
+# Next reconcile lifts the bead + hard-deletes the bfh (the canonical S-2 leg).
+n3="$(sr_reconcile_blocked_for_human "$GOOD" "$R" 2>/dev/null)"
+eq   "reconcile acted on the restart-flipped record"    "$n3" "1"
+eq   "stuck-restart + reconcile ⇒ bead UNBLOCKED for re-pick" \
+       "$(BDSTATUS "$R")" "open"
+ckn  "stuck-restart + reconcile ⇒ bfh record hard-deleted" sr_bfh_get "$R"
+
+# stuck-restart on an unsafe / missing task_ref ⇒ rejected; absent bfh ⇒ ok.
+ckn  "stuck-restart rejects unsafe task_ref"            sr_stuck_restart "$GOOD" "../escape"
+ck   "stuck-restart on a never-stuck task_ref ⇒ ok no-op" \
+                                                          sr_stuck_restart "$GOOD" "never-stuck-fork"
+
 echo ""
 echo "── stuck-routing: $PASS passed, $FAIL failed ────────────────────────────"
 [[ $FAIL -eq 0 ]] && { echo "ALL GREEN"; exit 0; } || { echo "RED"; exit 1; }

@@ -95,6 +95,7 @@ export const STUCK_OPS = new Set([
   "stuck-route", // sr_route_stuck            — §7.4 dedup + §7.3 drive + route
   "stuck-reconcile", // sr_reconcile_blocked_for_human — S-2 control→work
   "stuck-resolve", // sr_human_resolve         — record the human decision
+  "stuck-restart", // sr_stuck_restart        — wipe bfh + expire open items
   "stuck-dedup-record", // do_dedup_record    — the §7.4 dossier dedup STRUCTURE
   "stuck-dedup-get", // do_dedup_get           — read-only structure consult
   "stuck-bfh-get", // sr_bfh_get               — read-only control-plane truth
@@ -629,6 +630,59 @@ async function humanResolve(co, principal, tref, did, iid, resp) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// sr_stuck_restart — the operator "wipe + re-run from scratch" entry point.
+// Distinct from `stuck-resolve` (which carries a human decision; with an item
+// arg flips the item open→answered, recording a no-op decision otherwise).
+// Restart instead:
+//   1. Expires every still-open dossier item via the existing open→expired
+//      transition (CF.6 `item-set-state`, the same path §5.2 dismiss-as-stale
+//      uses). Items already in answered/applied/expired are left untouched —
+//      the monotonic state machine forbids reverse transitions (§4.1.1/§5.2),
+//      and respecting that preserves the audit history Option A protects.
+//   2. Flips the stuck_bfh record resolved:false→true (same path
+//      `humanResolve(tref-only)` uses). The next §S-2 reconcile then LIFTS
+//      the work-plane block (status=open, drops `human`) and hard-deletes the
+//      record — the bead re-enters the ready set for a fresh agent pickup.
+// Idempotent. Best-effort per-item expiry: a single item failing (e.g.
+// already-answered race) does not abort the wipe — the bfh flip still runs
+// so the bead can be re-armed. Absent dossier / absent bfh ⇒ ok no-op.
+// ════════════════════════════════════════════════════════════════════════════
+async function restartStuck(co, principal, tref) {
+  if (!principal) return { ok: false, code: "unauthorized" };
+  if (!tref) return { ok: false, error: "stuck: restart — need <task_ref>" };
+  if (!safeKey(tref)) return { ok: false, code: "unsafe_key" };
+  const did = stuckDossierIdFor(tref);
+  let expired = 0;
+  if (did) {
+    const dres = await handleDossierOp(co, "dossier-get", [did], principal);
+    if (dres.status === 200) {
+      let rec = null;
+      try {
+        rec = JSON.parse(await dres.text());
+      } catch {
+        rec = null;
+      }
+      const items = rec && Array.isArray(rec.items) ? rec.items : [];
+      for (const it of items) {
+        if (!it || typeof it.id !== "string") continue;
+        if (it.state !== "open") continue;
+        try {
+          const r = await handleDossierOp(co, "item-set-state", [did, it.id, "expired"], principal);
+          if (r.status === 200) expired += 1;
+        } catch {
+          /* best-effort: bfh flip below still re-arms the bead */
+        }
+      }
+    }
+  }
+  const r = await bfhResolve(co, tref);
+  if (!r.ok) {
+    return { ok: false, error: `stuck: restart — could not flip bfh for '${tref}'` };
+  }
+  return { ok: true, expired };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // THE CF.8 DISPATCHER — called from the Coordinator DO for every STUCK_OPS op.
 // The §9.1 chokepoint (the Worker, CF.1) has ALREADY authenticated + threaded
 // the resolved `principal` — there is NO second auth path here (C4); a
@@ -664,6 +718,10 @@ export async function handleStuckOp(co, op, args, principal) {
     }
     if (op === "stuck-resolve") {
       const r = await humanResolve(co, principal, a[0], a[1], a[2], a[3]);
+      return jsonRes(r, r.ok ? 200 : 422);
+    }
+    if (op === "stuck-restart") {
+      const r = await restartStuck(co, principal, a[0]);
       return jsonRes(r, r.ok ? 200 : 422);
     }
     if (op === "stuck-dedup-record") {

@@ -76,13 +76,13 @@ ls "$CO_STORE/blocked-for-human/<bead-id>.json" 2>/dev/null
 
 ### 2. Wipe the record
 
-The cleanest path on the CF engine is to call `stuck-resolve` with **only the task_ref** (no dossier item, no decision payload). `humanResolve` in `beads-runner/cf/src/stuck.js` skips `item-set-state` when `did`/`iid` are absent and just flips `resolved:false→true`. The next reconcile then LIFTS the work-plane block and DELETEs the record (S-2 control→work). This is the closest thing to a "no-decision restart" the current API offers:
+The canonical path is `stuck-restart` (added in `claude-tools-0wu`). Pass **only the task_ref**: `restartStuck` in `beads-runner/cf/src/stuck.js` (mirror `sr_stuck_restart` in `beads-runner/lib/stuck-routing.sh`) expires every still-open dossier item via the existing `item-set-state` open→expired path (items already in answered/applied/expired are left untouched — the §4.1.1/§5.2 monotonic state machine forbids reverse transitions, so Option A preserves the audit history), then flips the `stuck_bfh` record resolved:false→true. The next reconcile LIFTS the work-plane block and DELETEs the record (S-2 control→work). Unlike `stuck-resolve` this records NO decision against any dossier item.
 
 ```bash
 curl -sS -X POST https://coordinator-cf.bbthechange.workers.dev/ \
   -H "Authorization: Bearer $TOK" \
   -H "content-type: application/json" \
-  -d '{"op":"stuck-resolve","args":["<bead-id>"]}'
+  -d '{"op":"stuck-restart","args":["<bead-id>"]}'
 
 # Force the reconcile immediately (otherwise wait for the next cron cycle)
 curl -sS -X POST https://coordinator-cf.bbthechange.workers.dev/ \
@@ -111,7 +111,9 @@ Only THEN run `bd update --status=open` + `bd label remove human` — those will
 
 ### Caveat
 
-`stuck-resolve` is semantically the "human gave a decision" path. Using it without a decision payload effectively records a no-op decision on the dossier (the dossier items remain in their prior state since `did`/`iid` were omitted). For a true "wipe and re-run" op (delete the bfh + reset associated dossier items), see follow-up `claude-tools-0wu` (a dedicated `stuck-restart` op). Until that exists, the no-arg `stuck-resolve` is the documented workaround.
+`stuck-restart` is the dedicated "wipe + re-run from scratch" op (landed in `claude-tools-0wu`, decision Option A from `claude-tools-5os`). It expires still-open dossier items but leaves any items already in `answered`/`applied`/`expired` untouched — the monotonic state machine forbids reverse transitions, and that is intentional: the original dossier remains as audit history of why the bead was first stuck. Use `stuck-resolve` instead when you actually want to RECORD a human decision against a specific dossier item; `stuck-restart` records none.
+
+For older runners that have not yet picked up `stuck-restart`, the historical no-arg `stuck-resolve` workaround still flips the bfh but leaves dossier items in their prior state (`humanResolve` skips `item-set-state` when `did`/`iid` are absent).
 
 ## When the bead has an associated engine record (with a decision payload)
 
@@ -162,7 +164,7 @@ pkill -f run-beads-tasks
 TOK=$(security find-generic-password -s "claude-beads-runner.coordinator-token" -w)
 curl -sS -X POST https://coordinator-cf.bbthechange.workers.dev/ \
   -H "Authorization: Bearer $TOK" -H "content-type: application/json" \
-  -d '{"op":"stuck-resolve","args":["claude-tools-240"]}'
+  -d '{"op":"stuck-restart","args":["claude-tools-240"]}'
 curl -sS -X POST https://coordinator-cf.bbthechange.workers.dev/ \
   -H "Authorization: Bearer $TOK" -H "content-type: application/json" \
   -d '{"op":"stuck-reconcile","args":["claude-tools-240"]}'
