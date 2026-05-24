@@ -1,5 +1,11 @@
 -- C12 (claude-tools-zdxd.3) — MACHINE-STATE.md v1 (D2) telemetry schema.
 --
+-- ANTI-DRIFT: binds FROZEN MACHINE-STATE.md v1 (D2).
+-- Oracle = MACHINE-STATE.md + test-fixtures/machine-state-v1.json +
+-- cf/test/conformance-machine-state.sh.
+-- A D2 gap ⇒ reopen D2, bump+re-freeze — NEVER diverge, NEVER edit
+-- MACHINE-STATE.md silently.
+--
 -- Canonical migration for the hosted-deploy path
 -- (`wrangler d1 migrations apply coordinator-records`). The Coordinator DO
 -- ALSO applies this DDL lazily + idempotently (CREATE TABLE IF NOT EXISTS) so

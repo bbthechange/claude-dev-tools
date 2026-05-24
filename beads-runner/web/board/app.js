@@ -25,6 +25,12 @@
  * (C4) — per-machine usage is now surfaced ONCE at the top of the board,
  * not duplicated on each workspace row. Empty machines[] ⇒ explicit
  * "no telemetry yet" banner (§3.C), never a phantom "ok".
+ *
+ * ANTI-DRIFT: binds FROZEN MACHINE-STATE.md v1 (D2).
+ * Oracle = MACHINE-STATE.md + test-fixtures/machine-state-v1.json +
+ * cf/test/conformance-machine-state.sh.
+ * A D2 gap ⇒ reopen D2, bump+re-freeze — NEVER diverge, NEVER edit
+ * MACHINE-STATE.md silently.
  */
 (function () {
   'use strict';
