@@ -65,6 +65,18 @@
 // reconnect contract, §4.5 the projection shape, §0.5 STALE_AFTER=180s.)
 // Oracle = lib/coordinator.sh co__reconcile/co__work_snapshot/co__heartbeat/
 // co__derive_liveness + lib/test-coordinator-reconcile.sh + lib/test-board.sh.
+//
+// ANTI-DRIFT (sibling): the top-level `machines[]` slot ALSO binds FROZEN
+// MACHINE-STATE.md v1 (D2). The projection reads `machine_state_reports`
+// (the SEPARATE namespace cf/src/machine-state.js owns) — pure read, no
+// _serialize (§2.4) — and derives `fresh` + `age_seconds` at projection time
+// (§3.A) from `USAGE_POLL_TTL_SECONDS` (server-side; the Board only sees the
+// boolean). `projects[].capacity_strip` is DROPPED by C3 per §3.B; §4.5's
+// "5h%/7d%/today_spare_line%/actual_7d%" wording is now satisfied by
+// `machines[]` carrying them as the per-machine header strip. A D2 gap ⇒
+// reopen D2, bump+re-freeze — NEVER diverge, NEVER edit MACHINE-STATE.md.
+// Oracle = MACHINE-STATE.md + test-fixtures/machine-state-v1.json +
+// cf/test/reconcile.spec.js (the §3.A field-set conformance assertions).
 
 import { safeKey } from "./schema.js";
 
@@ -90,6 +102,21 @@ export function staleAfterSeconds(env) {
   if (v === undefined || v === null || String(v).length === 0) return 180;
   const n = Number(v);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 180;
+}
+
+// ── USAGE_POLL_TTL_SECONDS — D2 §1 cadence constant, env-overridable ──────────
+// Single normative definition is MACHINE-STATE.md §1 (cadence) + §3.A (freshness
+// derivation: `fresh = age_seconds ≤ 2 × USAGE_POLL_TTL_SECONDS`). Default 300 s
+// matches the daemon's USAGE_POLL_TTL_SECONDS literal (daemon/usage-poll.sh:69).
+// The constant stays SERVER-SIDE — the Board only ever sees the derived `fresh`
+// boolean per §3.A, so adjusting the cutoff is a snapshot-side change and never
+// requires a Board redeploy. `:-` keeps a present non-empty value (mirrors the
+// STALE_AFTER env override discipline above).
+export function usagePollTtlSeconds(env) {
+  const v = env && env.USAGE_POLL_TTL_SECONDS;
+  if (v === undefined || v === null || String(v).length === 0) return 300;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 300;
 }
 
 // The §4.2 `actual` enum is CLOSED (INTERFACE.md §4.2): runner-reported state
@@ -416,10 +443,13 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     projs = (results || []).map((r) => r.id).filter((id) => id);
   }
 
-  // Per-project RunnerState (desired+actual+liveness DERIVED) + capacity strip
-  // (the §4.5 slot RENDERED here; the VERDICT is CF.4's coarse §6.3
-  // aggregation — absent ⇒ "unknown", behaviour-identical to the bash oracle
-  // when co__ask_capacity yields nothing; CF.3 computes no 5h/7d numbers).
+  // Per-project RunnerState (desired+actual+liveness DERIVED). The legacy
+  // per-project `capacity_strip` block is DROPPED in this projection per
+  // MACHINE-STATE.md §3.B — the §4.5 5h%/7d%/ramp wording is now satisfied by
+  // the top-level `machines[]` carrying them as the per-machine header strip
+  // (§3.A). The §6.3 gate verdict still flows through report-capacity /
+  // ask-capacity unchanged; that channel is internal to the CF.4 capacity
+  // module and is NOT surfaced in this projection.
   const projects = [];
   for (const pr of projs) {
     if (!pr) continue;
@@ -435,11 +465,6 @@ async function workSnapshot(co, principal, proj, beadsStr) {
         desired_actual_mismatch: rec.desired_actual_mismatch,
       },
       lease: rec.lease,
-      capacity_strip: {
-        cost_class: "standard",
-        verdict: "unknown",
-        source: "§6.3 aggregated coarse verdict (T4.4)",
-      },
     });
   }
 
@@ -563,14 +588,64 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     })
     .map(card);
 
+  // ── Top-level `machines[]` — MACHINE-STATE.md §3.A ──────────────────────────
+  // Peer to `projects` and `waiting_on_you` (NOT nested per-project — D2 §0.B:
+  // machine-state is per-machine). Reads the SEPARATE machine_state_reports
+  // namespace cf/src/machine-state.js owns (pure read, no _serialize per §2.4).
+  // `fresh` and `age_seconds` are DERIVED at projection time so the Board never
+  // has to know USAGE_POLL_TTL_SECONDS. Empty array if no daemon has reported
+  // (§3.C empty-state contract: `machines: []` is honest; never absent/null;
+  // the snapshot does NOT fabricate a stub). Ordered by `runner_id` (the §2.1
+  // PRIMARY KEY) for deterministic UI stability across two-machine futures.
+  const machines = await readMachines(co, Date.now());
+
   return jsonRes({
     schema_version: 1,
     principal,
     read_only: true,
+    machines,
     projects,
     lifecycle_columns,
     waiting_on_you,
   });
+}
+
+// ── readMachines — the §3.A projection-side read of the D2 telemetry channel ──
+// Pure read of `machine_state_reports` (MACHINE-STATE.md §2.4 — no _serialize).
+// The table is lazily created by cf/src/machine-state.js on first ingest; if no
+// daemon has ever reported, the SELECT throws "no such table" — we honestly
+// degrade to `machines: []` (§3.C empty-state) rather than DDL from a reader.
+// Each row's stamped JSON is decorated with `fresh` + `age_seconds` (DERIVED at
+// READ time — the same C6 discipline `liveness` follows). A corrupt row is
+// skipped (should not happen given the §1.4 strict ingest gate, defensive).
+async function readMachines(co, nowMs) {
+  let results = [];
+  try {
+    const r = await co.db
+      .prepare("SELECT json FROM machine_state_reports ORDER BY runner_id ASC")
+      .all();
+    results = (r && r.results) || [];
+  } catch {
+    return []; // table not yet created ⇒ honest empty (§3.C)
+  }
+  const ttl = usagePollTtlSeconds(co.env);
+  const out = [];
+  for (const row of results) {
+    let rec;
+    try {
+      rec = JSON.parse(row.json);
+    } catch {
+      continue;
+    }
+    if (!rec || typeof rec !== "object" || Array.isArray(rec)) continue;
+    const obsMs = Date.parse(rec.observed_at);
+    const ageSec = Number.isFinite(obsMs)
+      ? Math.max(0, Math.floor((nowMs - obsMs) / 1000))
+      : null;
+    const fresh = ageSec !== null && ageSec <= 2 * ttl;
+    out.push({ ...rec, fresh, age_seconds: ageSec });
+  }
+  return out;
 }
 
 // Per-module Response helpers (mirroring the sibling modules — coordinator.js's

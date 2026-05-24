@@ -35,7 +35,8 @@
 
 import { env, SELF } from "cloudflare:test";
 import { it, expect } from "vitest";
-import { deriveLiveness, staleAfterSeconds } from "../src/reconcile.js";
+import { deriveLiveness, staleAfterSeconds, usagePollTtlSeconds } from "../src/reconcile.js";
+import machineFixture from "../../test-fixtures/machine-state-v1.json";
 
 const GOOD = "bearer-runner-secret-xyz"; // a present, valid v1 bearer
 
@@ -316,17 +317,13 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
   const partly = SNAPp.waiting_on_you.find((w) => w.dossier_ref === "dPartly");
   ck("AD7 — a partly-answered dossier STILL shows in WAITING-ON-YOU", !!partly);
   ck("AD7 — its answered-not-applied item counts as still-open (1)", partly && partly.open_item_count === 1);
-  // The capacity strip is RENDERED here (the §4.5 slot); the VERDICT is CF.4's
-  // §6.3 aggregation — absent ⇒ the honest "unknown" default (behaviour-
-  // identical to the bash oracle WHEN co__ask_capacity is unavailable).
-  ck("capacity strip RENDERED (verdict slot present, non-empty)", !!SNAP.projects[0].capacity_strip.verdict);
+  // Per-project `capacity_strip` is DROPPED by C3 per MACHINE-STATE.md §3.B.
+  // §4.5's strip-fields wording is now satisfied by the top-level `machines[]`
+  // carrying them (asserted in the dedicated §3.A block below). A future
+  // refactor that re-adds capacity_strip should re-open D2 first.
   ck(
-    "capacity strip names its source as the §6.3/T4.4 aggregation (surfaced, not measured)",
-    SNAP.projects[0].capacity_strip.source.includes("T4.4")
-  );
-  ck(
-    "capacity verdict honestly 'unknown' (CF.4 §6.3 aggregation not present — CF.3 measures none)",
-    SNAP.projects[0].capacity_strip.verdict === "unknown"
+    "projects[].capacity_strip is DROPPED (MACHINE-STATE.md §3.B)",
+    !Object.prototype.hasOwnProperty.call(SNAP.projects[0], "capacity_strip")
   );
 
   // ── EXIT-3: NO write path from any reader (read-only invariant) ───────────
@@ -484,4 +481,185 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     console.log("FAILED:\n  - " + fails.join("\n  - "));
   }
   expect(FAIL, `differential clauses failed: ${fails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// C3 (claude-tools-zdxd.4) — §3.A top-level machines[] + freshness derivation.
+// Bound to FROZEN MACHINE-STATE.md v1 (D2) + test-fixtures/machine-state-v1.json
+// as the single source of truth (the §A drift-blocker).
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 §3.A workSnapshot machines[] projection — D2-faithful (claude-tools-zdxd.4)", async () => {
+  let p3PASS = 0;
+  let p3FAIL = 0;
+  const p3fails = [];
+  function p3ck(name, cond) {
+    if (cond) {
+      p3PASS++;
+      // eslint-disable-next-line no-console
+      console.log(`  ✓ ${name}`);
+    } else {
+      p3FAIL++;
+      p3fails.push(name);
+      // eslint-disable-next-line no-console
+      console.log(`  ✗ ${name}`);
+    }
+  }
+
+  // Reset the D2 namespace so the empty-state / multi-machine arms start clean.
+  async function freshMachines() {
+    try {
+      await env.DB.prepare("DELETE FROM machine_state_reports").run();
+    } catch {
+      /* lazy table absent ⇒ already empty */
+    }
+  }
+
+  // Build a §1.1 line by overlaying changes on the canonical fixture (same
+  // pattern as machine-state.spec.js). The "_comment_DO_NOT_REMOVE" sentinel
+  // is a docstring on the fixture; strip it so the round-trip assertion sees
+  // only contract fields.
+  function payload() {
+    const o = { ...machineFixture };
+    delete o._comment_DO_NOT_REMOVE;
+    return o;
+  }
+  function line(overrides) {
+    return JSON.stringify({ ...payload(), ...overrides });
+  }
+  async function report(l) {
+    return call(GOOD, "report-machine-state", [l]);
+  }
+
+  // The required §3.A field set. A future refactor that drops any of these
+  // fails the conformance assertion below — the drift-blocker the bead asks
+  // for. §1.1 required + §1.2 optional (present in the fixture) + the
+  // projection-derived `fresh`/`age_seconds`.
+  const REQUIRED_MACHINE_FIELDS = [
+    "runner_id",
+    "observed_at",
+    "pct_5h",
+    "pct_7d",
+    "spare_ramp_today",
+    "threshold_in_effect",
+    "gate_disabled",
+    "keychain_ok",
+    "usage_api_ok",
+    "fresh",
+    "age_seconds",
+  ];
+
+  // ── EMPTY-STATE (§3.C): machines: [] is honest; NOT absent, NOT null ─────
+  await freshMachines();
+  const SNAPe = await callJson("work-snapshot", ["", ""]);
+  p3ck(
+    "§3.C empty-state — `machines` is PRESENT on the snapshot (never absent)",
+    Object.prototype.hasOwnProperty.call(SNAPe, "machines")
+  );
+  p3ck(
+    "§3.C empty-state — `machines` is an empty array (never null, never stub)",
+    Array.isArray(SNAPe.machines) && SNAPe.machines.length === 0
+  );
+  p3ck(
+    "§3.A — machines[] is TOP-LEVEL (peer to projects/waiting_on_you, not nested)",
+    Object.prototype.hasOwnProperty.call(SNAPe, "machines") &&
+      Object.prototype.hasOwnProperty.call(SNAPe, "projects") &&
+      Object.prototype.hasOwnProperty.call(SNAPe, "waiting_on_you")
+  );
+
+  // ── FIXTURE ROUNDTRIP: insert the canonical fixture; assert it surfaces ──
+  await freshMachines();
+  const fix = payload();
+  const ing = await report(JSON.stringify(fix));
+  p3ck("canonical fixture ingests (200)", ing.status === 200);
+  // Override the daemon-cadence TTL so the test is hermetic against wall-clock
+  // age vs the fixture's 2026-05-24 observed_at. The §3.A derivation is
+  // `fresh = age_seconds ≤ 2 × TTL`; setting TTL high (1e9) ⇒ fresh=true for
+  // any past observed_at, isolating the fixture-roundtrip assertion from the
+  // stale-derivation assertion below.
+  env.USAGE_POLL_TTL_SECONDS = "1000000000";
+  const SNAPf = await callJson("work-snapshot", ["", ""]);
+  delete env.USAGE_POLL_TTL_SECONDS;
+  p3ck("fixture roundtrip — machines[] has one entry", Array.isArray(SNAPf.machines) && SNAPf.machines.length === 1);
+  const m0 = (SNAPf.machines && SNAPf.machines[0]) || {};
+  p3ck("fixture roundtrip — runner_id preserved", m0.runner_id === fix.runner_id);
+  p3ck("fixture roundtrip — observed_at preserved", m0.observed_at === fix.observed_at);
+  p3ck("fixture roundtrip — pct_5h preserved (float OK)", m0.pct_5h === fix.pct_5h);
+  p3ck("fixture roundtrip — pct_7d preserved", m0.pct_7d === fix.pct_7d);
+  p3ck("fixture roundtrip — spare_ramp_today preserved", m0.spare_ramp_today === fix.spare_ramp_today);
+  p3ck("fixture roundtrip — threshold_in_effect preserved", m0.threshold_in_effect === fix.threshold_in_effect);
+  p3ck("fixture roundtrip — gate_disabled (§1.2) preserved", m0.gate_disabled === fix.gate_disabled);
+  p3ck("fixture roundtrip — keychain_ok (§1.2) preserved", m0.keychain_ok === fix.keychain_ok);
+  p3ck("fixture roundtrip — usage_api_ok (§1.2) preserved", m0.usage_api_ok === fix.usage_api_ok);
+  p3ck("fixture roundtrip — fresh=true under wide TTL", m0.fresh === true);
+  p3ck("fixture roundtrip — age_seconds is a non-negative integer", typeof m0.age_seconds === "number" && m0.age_seconds >= 0 && Math.floor(m0.age_seconds) === m0.age_seconds);
+  // §9.1 — the resolved principal was stamped at ingest (the fixture literal
+  // "PRINCIPAL_V1" should NOT survive); the projection carries the stamped
+  // record verbatim.
+  p3ck("fixture roundtrip — §9.1 stamped principal carried through", m0.principal === "brian");
+
+  // ── STALE-DERIVATION: observed_at = now - 3 × TTL ⇒ fresh=false, age>0 ───
+  await freshMachines();
+  const TTL = usagePollTtlSeconds({}); // 300 — the bare default with no env override
+  const staleObsMs = Date.now() - 3 * TTL * 1000;
+  const staleObs = new Date(staleObsMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+  await report(line({ runner_id: "stalebox", observed_at: staleObs }));
+  const SNAPs = await callJson("work-snapshot", ["", ""]);
+  const ms = (SNAPs.machines || []).find((m) => m.runner_id === "stalebox");
+  p3ck("stale-derivation — record surfaces in machines[]", !!ms);
+  p3ck("stale-derivation — fresh=false (observed_at > 2×TTL ago)", ms && ms.fresh === false);
+  p3ck("stale-derivation — age_seconds present and ≥ 2×TTL", ms && typeof ms.age_seconds === "number" && ms.age_seconds >= 2 * TTL);
+
+  // ── MULTI-MACHINE: two runner_ids ⇒ both surface, ordered by runner_id ───
+  await freshMachines();
+  await report(line({ runner_id: "zeta-host", observed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") }));
+  await report(line({ runner_id: "alpha-host", observed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") }));
+  const SNAPm = await callJson("work-snapshot", ["", ""]);
+  p3ck("multi-machine — both records surface", Array.isArray(SNAPm.machines) && SNAPm.machines.length === 2);
+  p3ck(
+    "multi-machine — ordered by runner_id (alpha before zeta, deterministic for UI)",
+    SNAPm.machines &&
+      SNAPm.machines[0] &&
+      SNAPm.machines[1] &&
+      SNAPm.machines[0].runner_id === "alpha-host" &&
+      SNAPm.machines[1].runner_id === "zeta-host"
+  );
+
+  // ── CONFORMANCE: every required §3.A field is present on a machines[] entry
+  // — a future refactor that drops any required field fails this test (the
+  // grep-equivalent the bead asks for).
+  for (const k of REQUIRED_MACHINE_FIELDS) {
+    p3ck(
+      `§3.A field-set — machines[0] carries '${k}'`,
+      SNAPm.machines && SNAPm.machines[0] && Object.prototype.hasOwnProperty.call(SNAPm.machines[0], k)
+    );
+  }
+
+  // ── READ-ONLY invariant holds for the new read path too (§4.5) ───────────
+  const before = await env.DB.prepare(
+    "SELECT type, id FROM records ORDER BY type, id"
+  ).all();
+  const sigBefore = ((before && before.results) || []).map((r) => `${r.type}.${r.id}`).join("|");
+  const beforeM = await env.DB.prepare("SELECT COUNT(*) AS n FROM machine_state_reports").first();
+  await callJson("work-snapshot", ["", ""]);
+  await callJson("work-snapshot", ["", ""]);
+  const after = await env.DB.prepare(
+    "SELECT type, id FROM records ORDER BY type, id"
+  ).all();
+  const sigAfter = ((after && after.results) || []).map((r) => `${r.type}.${r.id}`).join("|");
+  const afterM = await env.DB.prepare("SELECT COUNT(*) AS n FROM machine_state_reports").first();
+  p3ck("read-only — workSnapshot does NOT mutate the §4 records table", sigBefore === sigAfter);
+  p3ck(
+    "read-only — workSnapshot does NOT mutate the D2 namespace either",
+    (beforeM && beforeM.n) === (afterM && afterM.n)
+  );
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `\n══ CF.3 §3.A machines[] (vs MACHINE-STATE.md v1 + test-fixtures/machine-state-v1.json): PASS=${p3PASS} FAIL=${p3FAIL} ══`
+  );
+  if (p3FAIL > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + p3fails.join("\n  - "));
+  }
+  expect(p3FAIL, `§3.A machines[] clauses failed: ${p3fails.join("; ")}`).toBe(0);
 });
