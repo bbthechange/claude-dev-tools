@@ -1837,12 +1837,29 @@ $PROMPT"
     fi
     if [[ -n "$SR_TRIGGER" ]]; then
       : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
+      # claude-tools-5me: wire DG_AUTHOR_CMD to the bridge so the runner-side
+      # backstop authors via the real dossier-builder agent (mirrors the MCP
+      # path). Scoped to this command substitution's subshell — does not leak
+      # to other dg__author callers. The 300s timeout matches the MCP path's
+      # BUILDER_TIMEOUT_MS and overrides the dg__author 90s default (a
+      # full-context dossier-builder reliably exceeds 90s; cvj observed
+      # 78-180s typical). Absent bridge / unavailable claude ⇒ dg__author
+      # classifies as agent_unavailable, audits, and the labeled-degraded
+      # jq path runs — same UX as today (just with a real attempt first).
+      DG_BRIDGE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/dg-author-bridge.sh"
       # §7.4: capture the dedup'd dossier id sr_route_stuck echoes (one fork ⇒
       # ONE id; idempotent on a re-trigger — PRIMARY+BACKSTOP on the same fork
       # collapse here). stderr stays suppressed.
-      SR_DID="$(sr_route_stuck "${SR_BEARER:-bearer-runner-stuck}" "$TASK_ID" \
-        "$SR_TRIGGER" "$(sr_worker_ask "$TASK_ID" 2>/dev/null || true)" \
-        2>/dev/null || true)"
+      SR_DID="$(
+        if [[ -x "$DG_BRIDGE" ]]; then
+          export DG_AUTHOR_CMD="$DG_BRIDGE"
+          export DG_AUTHOR_TIMEOUT_SEC="${DG_AUTHOR_TIMEOUT_SEC:-300}"
+          export DG_AUTHOR_BRIDGE_WORKSPACE="$PWD"
+        fi
+        sr_route_stuck "${SR_BEARER:-bearer-runner-stuck}" "$TASK_ID" \
+          "$SR_TRIGGER" "$(sr_worker_ask "$TASK_ID" 2>/dev/null || true)" \
+          2>/dev/null || true
+      )"
       # §4.3/C3 — the SINGLE Notification for that dossier MUST exist at
       # creation, BEFORE any send. I3 wires the emit here (the disconnection:
       # the dossier reached the hosted engine with no notification). no_emit

@@ -89,7 +89,16 @@ if [[ -f "$RUNNER" ]]; then
   [[ -n "$nl" && -n "$cl" && "$nl" -lt "$cl" ]] \
     && ok "NO_LIB sourced BEFORE CT_LIB (the I1 HTTP co_request override still wins last)" \
     || bad "NO_LIB must be sourced before CT_LIB (got NO_LIB@$nl CT_LIB@$cl)"
-  grep -q 'SR_DID="\$(sr_route_stuck' "$RUNNER" \
+  # claude-tools-5me relaxed this: the SR_DID="$(...)" subshell now also
+  # exports DG_AUTHOR_CMD for the bridge before invoking sr_route_stuck, so
+  # the call no longer fits on the same line as the assignment. The
+  # semantic — SR_DID captures sr_route_stuck's stdout — is what we check.
+  awk '
+    /SR_DID="\$\(/                       { in_block=1; saw_sr_did=1 }
+    in_block && /sr_route_stuck[[:space:]"]/ { saw_call=1 }
+    in_block && /\)"/                    { in_block=0 }
+    END { exit !(saw_sr_did && saw_call) }
+  ' "$RUNNER" \
     && ok "stuck block CAPTURES the §7.4 dedup'd dossier id sr_route_stuck echoes" \
     || bad "stuck block captures sr_route_stuck's dossier id (SR_DID)"
   if grep -q 'command -v no_emit' "$RUNNER" \
