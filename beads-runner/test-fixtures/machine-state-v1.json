@@ -1,0 +1,15 @@
+{
+  "_comment_DO_NOT_REMOVE": "Canonical fixture for MACHINE-STATE.md v1 (D2). Every test (producer, ingest, projection, render) loads from THIS file. Changing a field here breaks every test that does not change in lockstep — that is the drift-blocker. Adding a field = a D2 amend. See MACHINE-STATE.md §A.",
+  "report": "machine_state",
+  "schema_version": 1,
+  "principal": "PRINCIPAL_V1",
+  "runner_id": "macbook-pro.local",
+  "observed_at": "2026-05-24T06:38:20Z",
+  "pct_5h": 24.0,
+  "pct_7d": 82.0,
+  "spare_ramp_today": 56,
+  "threshold_in_effect": 70,
+  "gate_disabled": false,
+  "keychain_ok": true,
+  "usage_api_ok": true
+}
