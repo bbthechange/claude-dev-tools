@@ -337,7 +337,12 @@ async function heartbeat(co, principal, jsonStr) {
   base.actual = act;
   base.last_heartbeat_at = hb;
   base.updated_at = now;
-  if (cur !== "") base.current_task_ref = cur;
+  // claude-tools-lv9c — current_task_ref must be AUTHORITATIVE per heartbeat:
+  // an `hb idle` (producer omits the field ⇒ jqStr→"") must CLEAR the prior
+  // value, not preserve it via `...prev`. Old runners that omit on idle now get
+  // the semantically-correct behaviour. board-view.js already treats null,
+  // missing, and "" identically.
+  base.current_task_ref = cur || null;
   const w = await co._writeRecord(principal, "runner_state", proj, base);
   if (!w.ok) return jsonRes({ ok: false, code: w.code, error: w.msg }, 422);
   return jsonRes({ ok: true });

@@ -1296,8 +1296,8 @@ co__heartbeat() {
             --arg cur "$cur" \
             --arg at  "$now" \
             '. + {project_ref:$proj, schema_version:$sv, actual:$act,
-                  last_heartbeat_at:$hb, updated_at:$at}
-               + (if $cur=="" then {} else {current_task_ref:$cur} end)' 2>/dev/null) \
+                  last_heartbeat_at:$hb, updated_at:$at,
+                  current_task_ref:(if $cur=="" then null else $cur end)}' 2>/dev/null) \
     || { echo "co: heartbeat — could not build RunnerState envelope" >&2; return 3; }
   co__store_put "$principal" runner_state "$proj" "$base"
 }

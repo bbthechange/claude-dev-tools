@@ -264,6 +264,58 @@ ck "no-token work-snapshot ⇒ rejected"                        rejected "" work
 invalid_tok() ( export CO_EXPECTED_TOKEN=expected; ! co_request wrong heartbeat "$(hb_line h p running c "$(ago 5)")" >/dev/null 2>&1 )
 ck "invalid-token heartbeat ⇒ rejected"                       invalid_tok
 
+echo "── claude-tools-lv9c: current_task_ref is AUTHORITATIVE per heartbeat ──"
+# Producer (la_report_heartbeat) OMITS current_task_ref on `hb idle`. Coordinator
+# must treat any missing/empty current_task_ref as a CLEAR signal — never
+# preserve the prior value from `...prev`. Otherwise the Board shows a stale
+# "currently running" pointer to a long-closed task.
+
+# Case A — set then clear via hb idle (field OMITTED, the producer's wire shape)
+co_request "$GOOD" heartbeat "$(hb_line hostLv9 projLv9A running claude-tools-xyz "$(ago 5)")" >/dev/null 2>&1
+lv9A1="$(co_request "$GOOD" get runner_state projLv9A 2>/dev/null)"
+ck "lv9c A1 — running heartbeat sets current_task_ref"        eq "$(jq -r '.current_task_ref' <<<"$lv9A1")" "claude-tools-xyz"
+# An idle heartbeat that OMITS the field entirely (the producer's la_report_heartbeat
+# shape on `hb idle`) must CLEAR the prior value.
+idle_no_cur="$(jq -cn --argjson sv 1 --arg pr "literal" --arg rid hostLv9 \
+                      --arg prj projLv9A --arg at "$(ago 1)" \
+   '{report:"heartbeat",schema_version:$sv,principal:$pr,runner_id:$rid,
+     project_ref:$prj,actual:"idle",observed_at:$at}')"
+co_request "$GOOD" heartbeat "$idle_no_cur" >/dev/null 2>&1
+lv9A2="$(co_request "$GOOD" get runner_state projLv9A 2>/dev/null)"
+ck "lv9c A2 — idle heartbeat (field absent) CLEARS current_task_ref" \
+   zz "$(jq -r '.current_task_ref // ""' <<<"$lv9A2")"
+ck "lv9c A2 — actual flips to idle"                           eq "$(jq -r '.actual' <<<"$lv9A2")" "idle"
+
+# Case B — running TASK_A then running TASK_B overwrites (not stale)
+co_request "$GOOD" heartbeat "$(hb_line hostLv9 projLv9B running TASK_A "$(ago 10)")" >/dev/null 2>&1
+ck "lv9c B1 — current_task_ref = TASK_A" \
+   eq "$(co_request "$GOOD" get runner_state projLv9B 2>/dev/null | jq -r '.current_task_ref')" "TASK_A"
+co_request "$GOOD" heartbeat "$(hb_line hostLv9 projLv9B running TASK_B "$(ago 5)")" >/dev/null 2>&1
+ck "lv9c B2 — current_task_ref overwrites to TASK_B"          \
+   eq "$(co_request "$GOOD" get runner_state projLv9B 2>/dev/null | jq -r '.current_task_ref')" "TASK_B"
+
+# Case C — preserve actual + last_heartbeat_at while clearing current_task_ref
+co_request "$GOOD" heartbeat "$(hb_line hostLv9 projLv9C running TASK_A "$(ago 60)")" >/dev/null 2>&1
+obs2="$(ago 5)"
+idle_C="$(jq -cn --argjson sv 1 --arg pr "literal" --arg rid hostLv9 \
+                 --arg prj projLv9C --arg at "$obs2" \
+   '{report:"heartbeat",schema_version:$sv,principal:$pr,runner_id:$rid,
+     project_ref:$prj,actual:"idle",observed_at:$at}')"
+co_request "$GOOD" heartbeat "$idle_C" >/dev/null 2>&1
+lv9C="$(co_request "$GOOD" get runner_state projLv9C 2>/dev/null)"
+ck "lv9c C — actual reflects new idle"                        eq "$(jq -r '.actual' <<<"$lv9C")" "idle"
+ck "lv9c C — last_heartbeat_at reflects new observed_at"      eq "$(jq -r '.last_heartbeat_at' <<<"$lv9C")" "$obs2"
+ck "lv9c C — current_task_ref cleared on idle"                zz "$(jq -r '.current_task_ref // ""' <<<"$lv9C")"
+
+# Case D — empty string from the wire (literal "") ALSO clears, identical to
+# omission (the producer's jqStr-style normalization on the receive side).
+co_request "$GOOD" heartbeat "$(hb_line hostLv9 projLv9D running TASK_A "$(ago 10)")" >/dev/null 2>&1
+ck "lv9c D1 — current_task_ref = TASK_A"                      \
+   eq "$(co_request "$GOOD" get runner_state projLv9D 2>/dev/null | jq -r '.current_task_ref')" "TASK_A"
+co_request "$GOOD" heartbeat "$(hb_line hostLv9 projLv9D idle "" "$(ago 5)")" >/dev/null 2>&1
+ck "lv9c D2 — literal empty current_task_ref also clears"     \
+   zz "$(co_request "$GOOD" get runner_state projLv9D 2>/dev/null | jq -r '.current_task_ref // ""')"
+
 echo "── anti-drift: T4.1 boundary intact (co__poll liveness-free; caps == 4) ──"
 # co__poll stays the pure TRANSPORT its own T4.1 test asserts — reconcile is a
 # SEPARATE semantics layer (this is exactly the T4.1 boundary T4.3 must hold).

@@ -665,6 +665,100 @@ it("CF.3 §3.A workSnapshot machines[] projection — D2-faithful (claude-tools-
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// claude-tools-lv9c — current_task_ref is AUTHORITATIVE per heartbeat.
+// Producer (lib/local-agent.sh la_report_heartbeat) OMITS the field on `hb idle`.
+// Before this fix, the CF handler only WROTE current_task_ref when non-empty,
+// so the prior value leaked through `...prev` indefinitely — the Board kept
+// showing a long-closed task as "currently running on" the workspace until a
+// new task picked up. Fix: every heartbeat's current_task_ref is authoritative
+// (present ⇒ set; missing/empty ⇒ clear to null). Mirrors the bash twin in
+// lib/test-coordinator-reconcile.sh (the differential discipline §4.2 owes).
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 lv9c — current_task_ref is AUTHORITATIVE per heartbeat (clear-on-idle)", async () => {
+  let lvPASS = 0;
+  let lvFAIL = 0;
+  const lvFails = [];
+  function lvck(name, cond) {
+    if (cond) {
+      lvPASS++;
+      // eslint-disable-next-line no-console
+      console.log(`  ✓ ${name}`);
+    } else {
+      lvFAIL++;
+      lvFails.push(name);
+      // eslint-disable-next-line no-console
+      console.log(`  ✗ ${name}`);
+    }
+  }
+  // The producer's actual wire shape on `hb idle`: current_task_ref OMITTED.
+  // Mirrors la_report_heartbeat's `if $cur=="" then {} else {current_task_ref:$cur}`.
+  function hbIdleNoCur(prj, at) {
+    return JSON.stringify({
+      report: "heartbeat",
+      schema_version: 1,
+      principal: "literal-overwritten",
+      runner_id: "hostLv9",
+      project_ref: prj,
+      actual: "idle",
+      observed_at: at,
+    });
+  }
+
+  // ── Case A: set, then clear via hb idle (field OMITTED, the producer's shape)
+  await call(GOOD, "heartbeat", [hbLine("hostLv9", "projLv9A", "running", "claude-tools-xyz", ago(5))]);
+  const lvA1 = await getRecord("runner_state", "projLv9A");
+  lvck("A1 — running heartbeat sets current_task_ref", lvA1 && lvA1.current_task_ref === "claude-tools-xyz");
+  await call(GOOD, "heartbeat", [hbIdleNoCur("projLv9A", ago(1))]);
+  const lvA2 = await getRecord("runner_state", "projLv9A");
+  lvck(
+    "A2 — idle heartbeat (field absent) CLEARS current_task_ref",
+    lvA2 && (lvA2.current_task_ref === null || lvA2.current_task_ref === undefined || lvA2.current_task_ref === "")
+  );
+  lvck("A2 — actual flips to idle", lvA2 && lvA2.actual === "idle");
+
+  // ── Case B: running TASK_A then running TASK_B overwrites (not stale) ────
+  await call(GOOD, "heartbeat", [hbLine("hostLv9", "projLv9B", "running", "TASK_A", ago(10))]);
+  const lvB1 = await getRecord("runner_state", "projLv9B");
+  lvck("B1 — current_task_ref = TASK_A", lvB1 && lvB1.current_task_ref === "TASK_A");
+  await call(GOOD, "heartbeat", [hbLine("hostLv9", "projLv9B", "running", "TASK_B", ago(5))]);
+  const lvB2 = await getRecord("runner_state", "projLv9B");
+  lvck("B2 — current_task_ref overwrites to TASK_B", lvB2 && lvB2.current_task_ref === "TASK_B");
+
+  // ── Case C: preserve actual + last_heartbeat_at while clearing the ref ───
+  await call(GOOD, "heartbeat", [hbLine("hostLv9", "projLv9C", "running", "TASK_A", ago(60))]);
+  const obs2 = ago(5);
+  await call(GOOD, "heartbeat", [hbIdleNoCur("projLv9C", obs2)]);
+  const lvC = await getRecord("runner_state", "projLv9C");
+  lvck("C — actual reflects new idle", lvC && lvC.actual === "idle");
+  lvck("C — last_heartbeat_at reflects new observed_at", lvC && lvC.last_heartbeat_at === obs2);
+  lvck(
+    "C — current_task_ref cleared on idle",
+    lvC && (lvC.current_task_ref === null || lvC.current_task_ref === undefined || lvC.current_task_ref === "")
+  );
+
+  // ── Case D: literal "" from wire ALSO clears (identical to omission) ─────
+  await call(GOOD, "heartbeat", [hbLine("hostLv9", "projLv9D", "running", "TASK_A", ago(10))]);
+  const lvD1 = await getRecord("runner_state", "projLv9D");
+  lvck("D1 — current_task_ref = TASK_A", lvD1 && lvD1.current_task_ref === "TASK_A");
+  await call(GOOD, "heartbeat", [hbLine("hostLv9", "projLv9D", "idle", "", ago(5))]);
+  const lvD2 = await getRecord("runner_state", "projLv9D");
+  lvck(
+    "D2 — literal empty current_task_ref also clears",
+    lvD2 && (lvD2.current_task_ref === null || lvD2.current_task_ref === undefined || lvD2.current_task_ref === "")
+  );
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `\n══ CF.3 lv9c clear-on-idle (vs lib/coordinator.sh + test-coordinator-reconcile.sh): PASS=${lvPASS} FAIL=${lvFAIL} ══`
+  );
+  if (lvFAIL > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + lvFails.join("\n  - "));
+  }
+  expect(lvFAIL, `lv9c clauses failed: ${lvFails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // claude-tools-4g5o — workspace_inventory join: workSnapshot looks up the
 // title for each project's current_task_ref from the stored §4.6
 // workspace_inventory record's in_progress_beads[] and exposes it as
