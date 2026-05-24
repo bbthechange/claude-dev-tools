@@ -292,6 +292,48 @@ ck "control buttons set touch-action:manipulation (no 300ms)" has "touch-action:
 ck "control buttons are NOT hover-only (have :active style)"  has ".rbtn:active" "$(cat "$CSS")"
 ck "shell HTML viewport tag enables mobile sizing"           has "width=device-width" "$(cat "$SHELL_HTML")"
 
+echo "── EXIT-6: 8ag — workspace strip surfaces a LIVE runner's current_task_ref ──"
+# The §4.5 projection's runner_state.current_task_ref is the bead the runner
+# last reported it was working on. On the workspace strip, a LIVE runner's
+# task is presented as a secondary "currently working on" line under the
+# state pill (ref-only — no title lookup yet; see board-view.js comment).
+# A STALE runner's last-reported task is honestly unknown (S-1) and MUST
+# NOT be promoted as "currently working".
+#
+# Case D — liveness=live, current_task_ref non-empty ⇒ row.current_task=<ref>.
+co_request "$GOOD" set-desired projD running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostD projD running claude-tools-h7n "$(ago 10)")" >/dev/null 2>&1
+SNAP_D="$(co_request "$GOOD" work-snapshot projD "[]" 2>/dev/null)"
+VD="$(render "$SNAP_D")"
+RD="$(jq -c '.runners[]|select(.project_ref=="projD")' <<<"$VD")"
+ck "Case D — live runner exposes current_task on the row"        eq "$(jq -r '.current_task' <<<"$RD")" "claude-tools-h7n"
+ck "Case D — view model carries the ref verbatim (no decoration)" eq "$(jq -r '.current_task' <<<"$RD")" "claude-tools-h7n"
+# Case E — liveness=stale + current_task_ref present ⇒ row.current_task null.
+# Re-anchor projD's last heartbeat past STALE_AFTER so the Coordinator marks
+# it stale at read time; the renderer must DROP the current_task per S-1.
+co_request "$GOOD" heartbeat "$(hb_line hostD projD running claude-tools-h7n "$(ago 99999)")" >/dev/null 2>&1
+SNAP_E="$(co_request "$GOOD" work-snapshot projD "[]" 2>/dev/null)"
+VE="$(render "$SNAP_E")"
+RE="$(jq -c '.runners[]|select(.project_ref=="projD")' <<<"$VE")"
+ck "Case E — stale runner's current_task is null (S-1)"          eq "$(jq -r '.current_task' <<<"$RE")" "null"
+ck "Case E — view model does NOT carry the ref for stale runner" hasnt "claude-tools-h7n" "$(jq -r '.current_task // ""' <<<"$RE")"
+# Case F — liveness=live, current_task_ref empty/missing ⇒ current_task null.
+# A live runner that reports actual=idle and an empty current_task_ref must
+# not produce a secondary line (nothing to say).
+co_request "$GOOD" set-desired projF running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostF projF idle "" "$(ago 10)")" >/dev/null 2>&1
+SNAP_F8="$(co_request "$GOOD" work-snapshot projF "[]" 2>/dev/null)"
+VFF="$(render "$SNAP_F8")"
+RF="$(jq -c '.runners[]|select(.project_ref=="projF")' <<<"$VFF")"
+ck "Case F — live runner with no task: liveness is live"         eq "$(jq -r '.liveness' <<<"$RF")" "live"
+ck "Case F — live runner with empty task ⇒ current_task null"    eq "$(jq -r '.current_task' <<<"$RF")" "null"
+# STRUCTURAL — app.js renders the secondary line from r.current_task using
+# the .workspace-current-task class so a future renderer change cannot
+# silently drop the line for live runners.
+ck "app.js renders r.current_task as the secondary line"         has "r.current_task" "$(cat "$APP")"
+ck "app.js uses the .workspace-current-task class for the line"  has "workspace-current-task" "$(cat "$APP")"
+ck "board.css styles .workspace-current-task (secondary text)"   has "workspace-current-task" "$(cat "$CSS")"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-board (T6a + F2 claude-tools-8fh):  PASS=$PASS  FAIL=$FAIL"

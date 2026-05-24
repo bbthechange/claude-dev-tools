@@ -146,6 +146,10 @@
       row.state_class = 'stale';
       row.state_label = 'stale (last seen ' + ago + ' ago)';
       row.actual_note = actual ? 'last reported: ' + actual : null;
+      // S-1: a stale runner's last-reported current_task_ref is an honest
+      // unknown ("we don't know what it's doing now"); do NOT promote it
+      // as the "currently working on" secondary line.
+      row.current_task = null;
     } else {
       row.state_class = actual && ACTUAL_HEALTHY_ACTIVE[actual] ? 'live' :
         (actual ? 'attention' : 'unknown');
@@ -156,6 +160,13 @@
         ? base + ' (target: ' + desired + ')'
         : base;
       row.actual_note = null;
+      // 8ag — a live runner's current_task_ref is the secondary "currently
+      // working on" line on the workspace strip. Ref-only (no title lookup);
+      // the projection's lifecycle_columns is empty in production today, so
+      // a title would be undefined for every workspace — wait for the future
+      // workspace_inventory producer (claude-tools-1y0 Issue 4 reservation).
+      row.current_task = (typeof rs.current_task_ref === 'string' && rs.current_task_ref)
+        ? rs.current_task_ref : null;
     }
 
     // F2 — per-row controls. `active` is the button matching CURRENT ACTUAL

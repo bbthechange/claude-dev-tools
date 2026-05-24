@@ -219,6 +219,12 @@
       st.appendChild(mk('span', 'pill ' + r.state_class));
       st.appendChild(mk('span', null, r.state_label));
       box.appendChild(st);
+      // 8ag — a live runner's current task ref as a secondary line under the
+      // pill. Ref-only (no title lookup yet — see board-view.js). Dropped for
+      // stale runners by the view (S-1: their last task is honestly unknown).
+      if (r.current_task) {
+        box.appendChild(mk('code', 'workspace-current-task', r.current_task));
+      }
       // S-1: the last-reported actual of a stale runner is muted CONTEXT,
       // never promoted to a live state (board-view.js guarantees this).
       if (r.actual_note) box.appendChild(mk('div', 'rnote', r.actual_note));

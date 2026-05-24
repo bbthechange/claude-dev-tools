@@ -144,6 +144,13 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .runner .pill.stale{background:var(--coral);box-shadow:0 0 7px var(--coral)}
 .runner.stale .rstate{color:var(--coral)}
 .runner .rnote{margin-top:8px;font-size:10px;color:var(--faint);letter-spacing:.04em}
+/* 8ag — secondary "currently working on" line under the workspace state pill.
+ * Live-only (board-view.js drops it for stale runners — S-1). Ref-only for
+ * now; title lookup is deferred to workspace_inventory (claude-tools-1y0). */
+.runner .workspace-current-task{
+  display:block;margin-top:6px;font-family:var(--mono);font-size:11px;
+  color:var(--dim);letter-spacing:.02em;
+}
 .runner .rcap{margin-top:8px;font-size:9px;letter-spacing:.14em;
   text-transform:uppercase;color:var(--slate)}
 .runner .rcap.over{color:var(--amber-soft)}
