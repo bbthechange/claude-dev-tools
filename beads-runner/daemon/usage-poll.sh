@@ -2,6 +2,14 @@
 # beads-runner/daemon/usage-poll.sh — M2 Anthropic-usage poll
 # (claude-tools-8mz; epic claude-tools-kie).
 #
+# ANTI-DRIFT: binds FROZEN MACHINE-STATE.md v1 (D2).
+# Oracle = MACHINE-STATE.md + test-fixtures/machine-state-v1.json +
+# daemon/test-machine-state-producer.sh.
+# A D2 gap ⇒ reopen D2, bump+re-freeze — NEVER diverge, NEVER edit
+# MACHINE-STATE.md silently. (The _machine_state_emit helper below is the D2
+# §1.1 producer; field names + types + closed-enum discipline mirror the
+# contract verbatim. The render is tolerant; the WRITE is strict.)
+#
 # WHAT THIS IS (DESIGN §3.2 job 1 / UX 0.A "one central runner per computer")
 #   The daemon-side periodic poll of the Anthropic usage API. Before M2,
 #   every workspace's la_capacity_check (lib/local-agent.sh:169) did this
@@ -187,6 +195,46 @@ _usage_poll_write_cache() {
   return 0
 }
 
+# _machine_state_emit <pct_5h> <pct_7d> <ramp> <threshold> <keychain_ok> <usage_api_ok>
+#   The §1.1 MACHINE-STATE.md v1 (D2) upward telemetry report. Parallel to
+#   _usage_poll_emit_capacity_report but a SEPARATE channel (§0.C Path B):
+#   the §6.3 gate keeps emitting the {ok|over} verdict; THIS channel carries
+#   the human-facing per-machine 5h/7d numbers the Board renders. Same outbox
+#   (USAGE_POLL_OUTBOX), same cadence (once per cycle).
+#
+#   Fields mirror MACHINE-STATE.md §1.1/§1.2 verbatim — adding/removing a
+#   field here = a D2 amend (the small ceremony in §C), NOT a local tweak.
+#   Booleans use --argjson so they land as JSON true/false (not strings); the
+#   numeric fields use --argjson so floats stay floats and ints stay ints (the
+#   engine §1.4 rejects wrong-type fields). gate_disabled is the §1.2 mirror
+#   of threshold_in_effect===0; we send both so the Board may render off
+#   either (§4.D).
+_machine_state_emit() {
+  local pct5="$1" pct7="$2" ramp="$3" thr="$4" kc_ok="$5" api_ok="$6"
+  local ts rid gate_disabled
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  rid="${RUNNER_ID:-$(hostname 2>/dev/null || echo localhost)}"
+  if [[ "${thr:-0}" -eq 0 ]]; then gate_disabled=true; else gate_disabled=false; fi
+  mkdir -p "$USAGE_POLL_CACHE_DIR" 2>/dev/null || true
+  jq -cn \
+     --argjson sv 1 \
+     --arg pr  "${PRINCIPAL_V1:-brian}" \
+     --arg rid "$rid" \
+     --arg at  "$ts" \
+     --argjson pct5 "${pct5:-0}" \
+     --argjson pct7 "${pct7:-0}" \
+     --argjson ramp "${ramp:-0}" \
+     --argjson thr  "${thr:-0}" \
+     --argjson gd   "$gate_disabled" \
+     --argjson kc   "${kc_ok:-false}" \
+     --argjson api  "${api_ok:-false}" \
+     '{report:"machine_state",schema_version:$sv,principal:$pr,runner_id:$rid,
+       observed_at:$at,pct_5h:$pct5,pct_7d:$pct7,spare_ramp_today:$ramp,
+       threshold_in_effect:$thr,gate_disabled:$gd,keychain_ok:$kc,
+       usage_api_ok:$api}' \
+     >> "$USAGE_POLL_OUTBOX" 2>/dev/null || true
+}
+
 # _usage_poll_emit_capacity_report <verdict> <cost_class>
 #   The §1.1 UP capacity report — the daemon's now-owned producer. Same
 #   JSON shape la_report_capacity (lib/local-agent.sh:213) emits, written
@@ -229,6 +277,10 @@ daemon_usage_poll_once() {
   # back to the direct path on every check (which would re-read Keychain).
   if [[ "$USAGE_POLL_THRESHOLD" -eq 0 ]]; then
     _usage_poll_write_cache 0 0 100 '"standard","low_priority"' || true
+    # D2 (MACHINE-STATE.md §1.1): emit a machine_state record with
+    # threshold_in_effect=0 so the Board can render the §4.D gate-disabled
+    # chip without a redeploy.
+    _machine_state_emit 0 0 100 0 true true
     return 0
   fi
 
@@ -244,6 +296,10 @@ daemon_usage_poll_once() {
       _usage_poll_log "M2 usage-poll: Keychain unreadable / no token ⇒ writing permissive fail-OPEN cache (BC-34)"
       _usage_poll_write_cache 0 0 100 '"standard","low_priority"' || true
     fi
+    # D2 §1.1 fail-OPEN emit: keychain_ok=false, usage_api_ok=false (no API
+    # call made), pct_5h/pct_7d=0. The Board surfaces the "keychain
+    # unreadable" breadcrumb (§4.C) — the strip is never hidden.
+    _machine_state_emit 0 0 "$(_usage_poll_spare_ramp_pct)" "$USAGE_POLL_THRESHOLD" false false
     return 0
   fi
 
@@ -252,6 +308,8 @@ daemon_usage_poll_once() {
       _usage_poll_log "M2 usage-poll: Anthropic usage API failed ⇒ writing permissive fail-OPEN cache (BC-34)"
       _usage_poll_write_cache 0 0 100 '"standard","low_priority"' || true
     fi
+    # D2 §1.1 fail-OPEN emit: keychain_ok=true, usage_api_ok=false; pct=0.
+    _machine_state_emit 0 0 "$(_usage_poll_spare_ramp_pct)" "$USAGE_POLL_THRESHOLD" true false
     return 0
   fi
 
@@ -275,6 +333,14 @@ daemon_usage_poll_once() {
   if printf '%s' "$allowed" | grep -q '"low_priority"'; then lp_v=ok; else lp_v=over; fi
   _usage_poll_emit_capacity_report "$std_v" standard
   _usage_poll_emit_capacity_report "$lp_v"  low_priority
+
+  # D2 (MACHINE-STATE.md §1.1) — the per-machine telemetry record. SEPARATE
+  # channel from the §1.1 capacity report above (§0.C Path B): the gate keeps
+  # emitting the verdict; this carries the human-facing 5h/7d numbers the
+  # Board renders. Same outbox, same cadence (once per cycle). pct_5h/pct_7d
+  # are passed as the raw API values (float OK; engine §1.4 keeps them in
+  # [0,200]).
+  _machine_state_emit "${five:-0}" "${seven:-0}" "$ramp" "$USAGE_POLL_THRESHOLD" true true
 
   # C2 (claude-tools-oil): log the daily-ramp FORMULA, not just the result,
   # so the UX 0.A math (day-of-week × SPARE_RAMP_PER_DAY%) is auditable from

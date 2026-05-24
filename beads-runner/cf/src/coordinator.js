@@ -92,6 +92,19 @@ import { TIMER_OPS, handleTimerOp, alarmFire } from "./timer.js";
 // logic, NOT a DO op (an "unreachable" op call is a contradiction) — exactly
 // as bash co_ask_capacity is NOT routed through co_request.
 import { CAPACITY_OPS, handleCapacityOp } from "./capacity.js";
+// C12 (claude-tools-zdxd.3) — MACHINE-STATE.md v1 (D2) per-machine telemetry
+// channel, layered ON this substrate (a SEPARATE module, mirroring how the
+// parallel §1.1 capacity report lives in capacity.js). It adds NO §4 record
+// type: a D2 machine_state report is NOT a §4 record — `machine_state_reports`
+// is the module's OWN sibling D1 namespace (lazy + idempotent DDL there), the
+// capacity_reports / forensic / dossier-dedup "NOT a §4 record" precedent —
+// so `machine_state` stays ABSENT from the schema.js §4 registry and is
+// structurally never in the §4.5 projection. Its ops are dispatched in a
+// dedicated guard so this substrate stays untouched. The §9.1 chokepoint
+// (the Worker) has ALREADY authenticated + threaded `principal` — no second
+// auth path (C4); a no/invalid-token op is rejected 401 at the Worker BEFORE
+// this guard, so it writes NOTHING.
+import { MACHINE_STATE_OPS, handleMachineStateOp } from "./machine-state.js";
 // CF.2 (claude-tools-7g0.2) — the §6.1/§6.2/§4.4 global exclusive TTL'd LEASE
 // arbitration + the §4.4 monotonic `generation` fencing token + the AD2.2
 // LEASE-half DEGRADED-CLOSED unreachable posture, layered ON this substrate
@@ -307,6 +320,20 @@ export class Coordinator {
     // BEFORE this guard, so it writes NOTHING.
     if (CAPACITY_OPS.has(op)) {
       return await handleCapacityOp(this, op, args, principal);
+    }
+
+    // ── C12 (claude-tools-zdxd.3) MACHINE-STATE.md v1 (D2) telemetry guard ───
+    // The per-machine telemetry channel — a §1.1 UP report carrying the
+    // human-facing 5h/7d numbers the Board renders. Dispatched by its
+    // dedicated module so this CF.1 substrate switch stays byte-identical.
+    // NO §4 record type / NO §4 DDL: a D2 machine_state report is NOT a §4
+    // record — the module owns its OWN `machine_state_reports` namespace
+    // (lazy + idempotent DDL there), so `machine_state` stays ABSENT from
+    // the §4 registry/projection. SEPARATE from CAPACITY_OPS above: the
+    // gate keeps emitting the verdict via report-capacity; THIS channel is
+    // display telemetry (§0.C Path B).
+    if (MACHINE_STATE_OPS.has(op)) {
+      return await handleMachineStateOp(this, op, args, principal);
     }
 
     // ── CF.2 (claude-tools-7g0.2) §6.1/§6.2/§4.4 LEASE arbitration guard ─────
