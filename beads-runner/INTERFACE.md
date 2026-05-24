@@ -320,6 +320,59 @@ per-bead failure metadata for Flow G tiers 1–2 (class + retry-state +
 forensic stream is **not** in the projection — §10). Each card: `title ·
 stage · priority · runner state · age · the one thing it waits on`.
 
+### §4.6 *workspace_inventory* — RESERVED (no producer/consumer)
+
+**Reservation only: name + intent claimed; no `schema_version`, no producer, no
+consumer yet.** Reserving the name is not a schema change; bumping a version is
+(§0.3). Future record type for per-workspace bead inventory: "what's done,
+what's ready, what's blocked in this workspace." Producer target: the workspace
+runner (it has `bd` and the working copy). Cadence target: every `300` s
+(slower than `HEARTBEAT_INTERVAL` (`60` s), faster than ad-hoc). Transport: the
+same Local-Agent outbox path as heartbeats, distinct `report` discriminator.
+Consumer target: a future workspace-detail UI route. **Explicitly NOT muxed
+into `RunnerState` (§4.2)** — keeping inventory and heartbeat separate lets
+them evolve on independent cadences and keeps the hot heartbeat read path
+lean. Shape: TBD when the producer lands; should include `ready_count`,
+`open_count`, `blocked_count`, `in_progress_count`, and optionally a small
+bounded array of `{ bead_ref, title, status, stage }` for the top N
+most-recently-touched beads (full inventory is **not** the goal of this
+record — that is a Work-plane query, not a control-plane projection). This
+reservation makes "add the *workspace_inventory* producer later" a normal
+feature task, not a §0/§11 contract amendment.
+
+### §4.7 *task_progress* — RESERVED (no producer/consumer)
+
+**Reservation only: name + intent claimed; no `schema_version`, no producer, no
+consumer yet.** Reserving the name is not a schema change; bumping a version is
+(§0.3). Future record type for per-workspace "what is the current task actually
+doing right now." Producer target: the workspace runner, by parsing its own
+stream-json output via the existing parser at
+`run-beads-tasks.sh:1446-1525`. **Tap point:** the upstream `STREAM_FILE`
+(`run-beads-tasks.sh:1417`) — the temp file written by `claude -p`, **before**
+the bash parser's line-mangling. Tapping the `detached-*.log` instead drops
+multi-line assistant message bodies (lesson from the spelunk report). Cadence
+target: every `60` s while a task is in flight, written sibling to but
+**independent from** the §4.2 heartbeat (same separation rationale as
+*workspace_inventory* — heartbeat and progress evolve on independent cadences;
+this is **not** a `RunnerState` mux). Consumer target: a future per-workspace
+progress badge on the Board (§4.5) and the rich workspace-detail view. Shape:
+TBD when the producer lands; should include `current_tool_name` (string, e.g.
+`"Bash"` or `"Edit"`), `last_event_kind` (enum:
+`assistant`|`tool_use`|`tool_result`|`system`|`result`), `last_event_at`
+(RFC-3339 UTC `...Z`, §0.4), `api_retry_in_progress` (bool, with attempt count
+from the parser's `RATE_LIMIT`/`SERVER_ERROR` markers in `SIGNAL_FILE`).
+**Redaction discipline (§10 boundary).** Content snippets (tool inputs,
+assistant text) MUST be summarized to safe presentation metadata at the
+runner, **before write** — *task_progress* is the boundary where stream
+content meets the hosted engine, and per §10.2 the engine MUST never see raw
+user content. **Regex spec** for the runner-side line-prefix parser (from the
+spelunk report): tag/timestamp extraction
+`^\s*\[(\d\d:\d\d:\d\d)\]\s*(\[[a-z_:]+\])?`; tool name from
+`"name": "([A-Za-z_]+)"` in `tool_use` payloads; API retry from
+`API retry \((\d+)/(\d+)\): (\S+)`. This reservation makes "add the
+*task_progress* producer later" a normal feature task, not a §0/§11 contract
+amendment.
+
 ---
 
 ## §5. Dossier schema — body ⊃ items[] (AD7 — versioned, §0.A, NOT tradeable)
