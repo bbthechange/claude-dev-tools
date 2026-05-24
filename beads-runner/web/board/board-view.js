@@ -151,14 +151,35 @@
       // as the "currently working on" secondary line.
       row.current_task = null;
     } else {
-      row.state_class = actual && ACTUAL_HEALTHY_ACTIVE[actual] ? 'live' :
-        (actual ? 'attention' : 'unknown');
+      var isActive = actual && ACTUAL_HEALTHY_ACTIVE[actual];
+      // g2s — soft 'thinking' visual between 90s and 180s heartbeat age.
+      // Purely presentational: wire `liveness` stays binary (§4.2 frozen);
+      // the Board still consumes it verbatim for control-button gating
+      // (S-1 invariant — `row.controls[].active` below still keys off
+      // `liveness === 'live'`, never off state_class). The threshold
+      // softens the visual jump caused by a long legitimate stream gap
+      // (spelunk report: p99=40–742s tool_result gaps) flipping the pill
+      // from live→stale at the 180s STALE_AFTER cliff. Scoped to
+      // `actual === 'running'` because idle/starting silence is honest,
+      // not "thinking after a big tool_result".
+      var nowForAge = typeof nowMs === 'number' ? nowMs : Date.now();
+      var hbT = rs.last_heartbeat_at ? Date.parse(rs.last_heartbeat_at) : NaN;
+      var ageMs = isNaN(hbT) ? 0 : (nowForAge - hbT);
+      var thinking = isActive && actual === 'running' &&
+        ageMs >= 90000 && ageMs < 180000;
       var base = actual || 'unknown';
-      // Honest desired≠actual (principle 4): show the actual, then the
-      // unreached target — never collapse one onto the other.
-      row.state_label = mismatch && desired
-        ? base + ' (target: ' + desired + ')'
-        : base;
+      if (thinking) {
+        row.state_class = 'thinking';
+        row.state_label = base + ' · last event ' + ago + ' ago';
+      } else {
+        row.state_class = isActive ? 'live' :
+          (actual ? 'attention' : 'unknown');
+        // Honest desired≠actual (principle 4): show the actual, then the
+        // unreached target — never collapse one onto the other.
+        row.state_label = mismatch && desired
+          ? base + ' (target: ' + desired + ')'
+          : base;
+      }
       row.actual_note = null;
       // 8ag — a live runner's current_task_ref is the secondary "currently
       // working on" line on the workspace strip. Ref-only (no title lookup);

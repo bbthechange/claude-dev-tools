@@ -138,6 +138,16 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .runner .pill.live{background:var(--mint);box-shadow:0 0 7px var(--mint)}
 .runner .pill.attention{background:var(--amber);box-shadow:0 0 7px var(--amber)}
 .runner .pill.unknown{background:var(--slate)}
+/* g2s — soft 'thinking' visual between 90s and 180s heartbeat age. Same
+ * green family as live (the wire `liveness` IS still 'live' — S-1), but
+ * desaturated and pulsing to read as "active but momentarily quiet" rather
+ * than the bright steady-state live pill. */
+.runner .pill.thinking{background:var(--mint);opacity:.55;animation:thinking-pulse 1.6s ease-in-out infinite}
+.runner .rstate .pill.thinking + span{color:var(--dim)}
+@keyframes thinking-pulse{0%,100%{opacity:.35}50%{opacity:.75}}
+@media (prefers-reduced-motion:reduce){
+  .runner .pill.thinking{animation:none;opacity:.55}
+}
 /* S-1: a STALE runner is visually its OWN state — never the live green pill */
 .runner.stale{border-color:rgba(255,107,107,.32);
   background:linear-gradient(160deg,rgba(255,107,107,.09),var(--panel))}

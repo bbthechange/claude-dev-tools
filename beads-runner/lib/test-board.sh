@@ -334,6 +334,53 @@ ck "app.js renders r.current_task as the secondary line"         has "r.current_
 ck "app.js uses the .workspace-current-task class for the line"  has "workspace-current-task" "$(cat "$APP")"
 ck "board.css styles .workspace-current-task (secondary text)"   has "workspace-current-task" "$(cat "$CSS")"
 
+echo "── EXIT-7: g2s — soft 'thinking' visual between 90s and 180s heartbeat age ──"
+# A purely-presentational threshold: when liveness=='live' AND the heartbeat
+# is between 90s and 180s old AND actual=='running', the renderer paints a
+# third visual class ('thinking') so the pill doesn't jump live→stale at the
+# 180s cliff for a long legitimate stream gap. The wire `liveness` stays
+# binary (§4.2 frozen); S-1 control-button gating still keys off `liveness`,
+# never state_class.
+#
+#   Case A — age=10s,  live  → state_class='live',     label='running'
+#   Case B — age=120s, live  → state_class='thinking', label contains 'last event'
+#   Case C — age=300s, stale → state_class='stale',    label='stale (last seen …)'
+co_request "$GOOD" set-desired projTA running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostTA projTA running ctA "$(ago 10)")" >/dev/null 2>&1
+SNAP_TA="$(co_request "$GOOD" work-snapshot projTA "[]" 2>/dev/null)"
+RTA="$(jq -c '.runners[]|select(.project_ref=="projTA")' <<<"$(render "$SNAP_TA")")"
+ck "Case A — age=10s liveness is 'live'"                       eq "$(jq -r '.liveness' <<<"$RTA")" "live"
+ck "Case A — state_class is 'live' (under thinking threshold)" eq "$(jq -r '.state_class' <<<"$RTA")" "live"
+ck "Case A — state_label is 'running' (existing branch)"       eq "$(jq -r '.state_label' <<<"$RTA")" "running"
+ck "Case A — state_label does NOT contain 'last event'"        hasnt "last event" "$(jq -r '.state_label' <<<"$RTA")"
+
+co_request "$GOOD" set-desired projTB running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostTB projTB running ctB "$(ago 120)")" >/dev/null 2>&1
+SNAP_TB="$(co_request "$GOOD" work-snapshot projTB "[]" 2>/dev/null)"
+RTB="$(jq -c '.runners[]|select(.project_ref=="projTB")' <<<"$(render "$SNAP_TB")")"
+ck "Case B — age=120s liveness is STILL 'live' (wire binary)"  eq "$(jq -r '.liveness' <<<"$RTB")" "live"
+ck "Case B — state_class is 'thinking' (90s≤age<180s window)"  eq "$(jq -r '.state_class' <<<"$RTB")" "thinking"
+ck "Case B — state_label contains 'last event'"                has "last event" "$(jq -r '.state_label' <<<"$RTB")"
+ck "Case B — S-1 unchanged: live-keyed control still active"   eq "$(jq -r '.controls[]|select(.state=="running").active' <<<"$RTB")" "true"
+
+co_request "$GOOD" set-desired projTC running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostTC projTC running ctC "$(ago 300)")" >/dev/null 2>&1
+SNAP_TC="$(co_request "$GOOD" work-snapshot projTC "[]" 2>/dev/null)"
+RTC="$(jq -c '.runners[]|select(.project_ref=="projTC")' <<<"$(render "$SNAP_TC")")"
+ck "Case C — age=300s liveness is 'stale' (past STALE_AFTER)"  eq "$(jq -r '.liveness' <<<"$RTC")" "stale"
+ck "Case C — state_class is 'stale' (its own state, §4.2)"     eq "$(jq -r '.state_class' <<<"$RTC")" "stale"
+ck "Case C — state_label is 'stale (last seen … ago)'"         has "stale (last seen" "$(jq -r '.state_label' <<<"$RTC")"
+# Edge: actual=idle in the thinking window MUST NOT paint 'thinking' (idle
+# silence is honest, not "thinking after a tool_result"); stays 'live'.
+co_request "$GOOD" set-desired projTI running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostTI projTI idle "" "$(ago 120)")" >/dev/null 2>&1
+RTI="$(jq -c '.runners[]|select(.project_ref=="projTI")' <<<"$(render "$(co_request "$GOOD" work-snapshot projTI "[]" 2>/dev/null)")")"
+ck "Edge — actual=idle in thinking window stays 'live'"        eq "$(jq -r '.state_class' <<<"$RTI")" "live"
+# CSS — the new class is declared with a presentation matching the live family
+# but visibly distinct (opacity/animation), and is reduced-motion safe.
+ck "board.css declares .pill.thinking"                         has ".pill.thinking" "$(cat "$CSS")"
+ck "board.css thinking style is reduced-motion safe"           has "prefers-reduced-motion" "$(cat "$CSS")"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-board (T6a + F2 claude-tools-8fh):  PASS=$PASS  FAIL=$FAIL"
