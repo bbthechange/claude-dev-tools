@@ -330,6 +330,83 @@ la_report_heartbeat() {
      >> "$(la__outbox)" 2>/dev/null || true
 }
 
+# la_publish_workspace_inventory — workspace_inventory record (epic
+# claude-tools-vvgy, producer Phase A claude-tools-ztb6). One UP report
+# describing this workspace's bd queue: counts by status, the full
+# in_progress set, and the top-N open beads (most recently updated). Wire
+# shape is frozen in the epic; field names match it verbatim. The hosted
+# join projects these per-workspace records into the Board's machine strip /
+# title rendering — never reads bd directly. Drainer maps report=="workspace_
+# inventory" to op=workspace-inventory-put (CF handler claude-tools-8dfb).
+#
+# OPTIONAL/guarded posture (matches la_report_heartbeat): a missing bd or jq
+# returns 0 silently — the runner's main job is not workspace inventory
+# publishing, and a transient producer failure must NEVER abort task pickup.
+# The next pickup tries again. Output goes to la__outbox; the §1.1 drain
+# pushes it on the next cycle.
+la_publish_workspace_inventory() {
+  command -v jq >/dev/null 2>&1 || return 0
+  command -v bd >/dev/null 2>&1 || return 0
+
+  local ts open ready in_prog blocked
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+
+  # counts — each query is independently best-effort; an empty/failed count
+  # falls to 0 (the wire contract requires integers, not nulls).
+  open=$(bd list --status=open --json 2>/dev/null | jq 'length' 2>/dev/null) || open=0
+  ready=$(bd ready --json 2>/dev/null | jq 'length' 2>/dev/null) || ready=0
+  in_prog=$(bd list --status=in_progress --json 2>/dev/null | jq 'length' 2>/dev/null) || in_prog=0
+  blocked=$(bd list --status=blocked --json 2>/dev/null | jq 'length' 2>/dev/null) || blocked=0
+  [[ "$open"    =~ ^[0-9]+$ ]] || open=0
+  [[ "$ready"   =~ ^[0-9]+$ ]] || ready=0
+  [[ "$in_prog" =~ ^[0-9]+$ ]] || in_prog=0
+  [[ "$blocked" =~ ^[0-9]+$ ]] || blocked=0
+
+  # in_progress_beads — ALL of them (never capped by the top_n bound; the
+  # Board needs the full set to render "what is each runner doing right now").
+  local ip_beads
+  ip_beads=$(bd list --status=in_progress --json 2>/dev/null \
+    | jq -c 'map({bead_ref: .id, title: (.title // ""),
+                  stage: ((.labels // [])
+                          | map(select(type=="string" and startswith("stage:")))
+                          | (first // "")
+                          | sub("^stage:"; ""))})' 2>/dev/null) || ip_beads="[]"
+  [[ -n "$ip_beads" ]] || ip_beads="[]"
+
+  # top_n_beads — at most 20 open beads, ordered by updated_at desc, mapped
+  # to the wire shape {bead_ref, title, status, stage}. The cap is enforced
+  # in jq so a bd that ignores --limit is still bounded.
+  local top_beads
+  top_beads=$(bd list --status=open --json 2>/dev/null \
+    | jq -c '(sort_by(.updated_at // "") | reverse)[0:20]
+             | map({bead_ref: .id, title: (.title // ""),
+                    status: (.status // "open"),
+                    stage: ((.labels // [])
+                            | map(select(type=="string" and startswith("stage:")))
+                            | (first // "")
+                            | sub("^stage:"; ""))})' 2>/dev/null) || top_beads="[]"
+  [[ -n "$top_beads" ]] || top_beads="[]"
+
+  jq -cn \
+     --argjson sv 1 \
+     --arg pr  "$(la_principal)" \
+     --arg rid "$(la_runner_id)" \
+     --arg prj "${PROJECT_REF:-$(basename "$(pwd)" 2>/dev/null)}" \
+     --arg at  "$ts" \
+     --argjson o  "${open:-0}" \
+     --argjson rd "${ready:-0}" \
+     --argjson ip "${in_prog:-0}" \
+     --argjson bl "${blocked:-0}" \
+     --argjson ipb "$ip_beads" \
+     --argjson tb  "$top_beads" \
+     '{report:"workspace_inventory",schema_version:$sv,principal:$pr,
+       runner_id:$rid,project_ref:$prj,observed_at:$at,
+       counts:{open:$o,ready:$rd,in_progress:$ip,blocked:$bl},
+       in_progress_beads:$ipb,top_n_beads:$tb}' \
+     >> "$(la__outbox)" 2>/dev/null || true
+  return 0
+}
+
 # ── §8.2 terminal-reason re-home ─────────────────────────────────────────────
 # la_report_terminal_reason <terminal_class> <bc21_exit> <task_ref> <project_ref>
 #
