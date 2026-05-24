@@ -606,7 +606,19 @@ next_task() {
     done
     ORPHANED_IDS=("${remaining[@]+"${remaining[@]}"}")
   fi
-  bd ready --json 2>/dev/null || echo "[]"
+  # claude-tools-dzc — exclude epics at the query layer so an epic-topped
+  # ready queue doesn't starve the runner (158-skip-loop observed
+  # 2026-05-24 in detached-20260524T003251Z.log). The in-process epic
+  # skip in validate_task (below) stays as defense-in-depth.
+  #
+  # bd v1.0.2 accepts --exclude-type=epic but does NOT actually filter
+  # (verified empirically against this DB on 2026-05-24 — flag is a
+  # no-op). We pass it anyway so the intent is documented and a future
+  # bd fix takes over, AND we jq-filter the JSON client-side so the
+  # starvation is actually fixed today regardless of bd behavior.
+  bd ready --exclude-type=epic --json 2>/dev/null \
+    | jq '[.[] | select((.issue_type // .type // "") != "epic")]' 2>/dev/null \
+    || echo "[]"
 }
 
 # Check if a task is actually workable (deps resolved, not a parent container)
