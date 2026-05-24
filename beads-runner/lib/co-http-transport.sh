@@ -290,9 +290,10 @@ co_request() {
 # the SAME authed HTTP co_request above, dispatched by the line's `report`
 # discriminator to its hosted op (the §2.4 "Coordinator drains on reconnect"
 # realised as the runner-side push):
-#     report=="capacity"      → co_request … report-capacity      <line>  (capacity.js)
-#     report=="heartbeat"     → co_request … heartbeat            <line>  (reconcile.js)
-#     report=="machine_state" → co_request … report-machine-state <line>  (machine-state.js)
+#     report=="capacity"           → co_request … report-capacity        <line>  (capacity.js)
+#     report=="heartbeat"          → co_request … heartbeat              <line>  (reconcile.js)
+#     report=="machine_state"      → co_request … report-machine-state   <line>  (machine-state.js)
+#     report=="workspace_inventory"→ co_request … workspace-inventory-put<line>  (claude-tools-8dfb)
 # A line with any other `report` (e.g. the §8.2 terminal-reason re-home, whose
 # authoritative sink is the LOCAL $LOG_DIR/terminal-reason file + the
 # heartbeat-absence channel — there is deliberately NO hosted terminal-reason
@@ -336,9 +337,10 @@ la_outbox_drain() {
     [[ -n "$line" ]] || continue
     report="$(printf '%s' "$line" | jq -r 'if type=="object" then (.report // "") else "" end' 2>/dev/null)" || report=""
     case "$report" in
-      capacity)      op="report-capacity" ;;
-      heartbeat)     op="heartbeat" ;;
-      machine_state) op="report-machine-state" ;;
+      capacity)            op="report-capacity" ;;
+      heartbeat)           op="heartbeat" ;;
+      machine_state)       op="report-machine-state" ;;
+      workspace_inventory) op="workspace-inventory-put" ;;
       *)
         # No hosted op for this report kind — retain verbatim, do not 422 it.
         echo "co: outbox-drain — retaining line with no hosted op (report='${report:-<none>}')" >&2

@@ -1057,6 +1057,15 @@ notify_user() {
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 
+# gk17 source-mode guard: BEADS_RUNNER_TEST_MODE=1 lets a test (or a startup-
+# sanity check) `source` this file to validate that all function definitions
+# load cleanly without entering the persistent task loop. Returns from the
+# sourced file at this point; functions defined above remain in the caller's
+# shell, but no `hb starting` / `while true` side-effect runs.
+if [[ "${BEADS_RUNNER_TEST_MODE:-0}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 # §4.2 `starting`: the very first registration line — a freshly (re)launched
 # runner appears in the hosted engine under its project_ref before it claims
 # any work (the I2 "appears as a live runner via the deployed read path").
@@ -1309,6 +1318,12 @@ while true; do
   CURRENT_TASK_ID="$TASK_ID"
   bd update "$TASK_ID" --status=in_progress 2>/dev/null || true
   hb running "$TASK_ID"   # §4.2: actual=running + current_task_ref, re-registers liveness
+  # gk17 / epic vvgy: emit a workspace_inventory snapshot at pickup so the
+  # Board shows the freshly-claimed bead in this workspace's title rendering.
+  # OPTIONAL/guarded (same posture as hb): a missing lib / failed shell-out
+  # never blocks task start — the producer is best-effort.
+  command -v la_publish_workspace_inventory >/dev/null 2>&1 \
+    && la_publish_workspace_inventory || true
 
   # ── Build prompt ─────────────────────────────────────────────────────────
 
@@ -2064,6 +2079,11 @@ $PROMPT"
   # outlives the work (release/expiry ⇒ bead open; orphan recovery = expiry).
   lease_release_seam "$TASK_ID"
   rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE"
+  # gk17 / epic vvgy: emit a workspace_inventory snapshot at completion so the
+  # Board reflects the post-task queue (the just-closed bead leaves
+  # in_progress, counts update, the next ready bead becomes visible).
+  command -v la_publish_workspace_inventory >/dev/null 2>&1 \
+    && la_publish_workspace_inventory || true
   CLAUDE_PID=""
   CURRENT_TASK_ID=""
   echo ""
