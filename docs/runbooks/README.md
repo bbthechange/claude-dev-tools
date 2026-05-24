@@ -10,6 +10,7 @@ Operational guides for recurring tasks. Read `../HANDOFF.md` first for the big p
 | [`cleanup-orphan-runners.md`](cleanup-orphan-runners.md) | Multiple `run-beads-tasks` processes accumulating |
 | [`reset-stuck-bead.md`](reset-stuck-bead.md) | A bead is stuck in blocked-for-human and you want to retry |
 | [`daemon-control.md`](daemon-control.md) | Install, start, stop, reload the per-machine daemon |
+| [`heal-beads-identity-mismatch.md`](heal-beads-identity-mismatch.md) | Every `bd` write fails with `workspace identity mismatch detected` |
 
 ## Configuration changes
 
