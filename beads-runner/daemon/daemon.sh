@@ -310,6 +310,16 @@ main() {
       _last_usage_poll="$_now"
       daemon_usage_poll_once || true
     fi
+    # claude-tools-1p0u: drain the daemon's OWN §1.1 outbox to the deployed
+    # Coordinator. The usage-poll above appends capacity + machine_state lines
+    # to USAGE_POLL_OUTBOX every USAGE_POLL_INTERVAL; nothing else drained them
+    # (run-beads-tasks.sh drains only the workspace outbox), so the daemon
+    # outbox grew without bound and the Worker's /work-snapshot machines[]
+    # stayed empty. Runs every heartbeat: cheap no-op when the outbox is empty
+    # (common path), ships any just-appended line within ~HEARTBEAT_INTERVAL.
+    if declare -F daemon_outbox_drain_once >/dev/null 2>&1; then
+      daemon_outbox_drain_once || true
+    fi
     # `sleep` is interruptible by signals; the loop condition is re-checked
     # immediately after wake.
     sleep "$HEARTBEAT_INTERVAL" &

@@ -370,3 +370,71 @@ daemon_usage_drain() {
   _usage_poll_log "M2 usage-poll: cache cleared on drain"
   return 0
 }
+
+# daemon_outbox_drain_once
+#   Ship the daemon's own §1.1 UP queue (USAGE_POLL_OUTBOX) to the deployed
+#   Coordinator. The daemon emits capacity + machine_state reports here every
+#   USAGE_POLL_INTERVAL; nothing else drained them until this hook existed
+#   (claude-tools-1p0u: "wired-but-not-live gap" — outbox grew unbounded, the
+#   Worker's /work-snapshot machines[] stayed empty even though the engine's
+#   report-machine-state op was deployed).
+#
+#   Picks the FIRST registered workspace's coordinator binding (COORDINATOR_URL
+#   + the Keychain-resolved COORDINATOR_TOKEN). In practice every workspace
+#   points at the same hosted engine — the §1.1 reports are keyed by
+#   {principal, runner_id}, not project_ref, so the daemon outbox is machine-
+#   wide and any one workspace's binding addresses the same coordinator. With
+#   no workspaces registered (the M1-only posture), this is a strict no-op —
+#   no binding ⇒ no push.
+#
+#   Always returns 0. A drain failure (auth, transport, etc.) leaves the line
+#   in the outbox for the next cycle to retry (la_outbox_drain's rewrite-
+#   survivors contract); we must not abort the daemon main loop on it.
+daemon_outbox_drain_once() {
+  [[ -f "$USAGE_POLL_OUTBOX" ]] || return 0
+  # Empty file ⇒ nothing to do (the drainer would handle this too, but avoid
+  # the subshell + lib source on the common no-op path).
+  [[ -s "$USAGE_POLL_OUTBOX" ]] || return 0
+
+  local ws_count=0
+  if declare -p REGISTRY_PROJECT_REFS >/dev/null 2>&1; then
+    ws_count="${#REGISTRY_PROJECT_REFS[@]}"
+  fi
+  if [[ "$ws_count" -eq 0 ]]; then
+    _usage_poll_log "M2 outbox-drain: no workspaces registered ⇒ skipping daemon-outbox push (lines retained for later)"
+    return 0
+  fi
+
+  local curl_url="${REGISTRY_COORDINATOR_URLS[0]:-}"
+  local tk_item="${REGISTRY_TOKEN_KEYCHAIN_ITEMS[0]:-}"
+  if [[ -z "$curl_url" ]]; then
+    _usage_poll_log "M2 outbox-drain: workspace[0] has no coordinator_url ⇒ skipping daemon-outbox push (lines retained)"
+    return 0
+  fi
+
+  local lib_dir="${DAEMON_REPO_LIB_DIR:-${DAEMON_REPO_DIR:-}/lib}"
+  if [[ ! -f "$lib_dir/co-http-transport.sh" ]]; then
+    _usage_poll_log "M2 outbox-drain: co-http-transport.sh not found at $lib_dir ⇒ skipping"
+    return 0
+  fi
+
+  local outbox_path="$USAGE_POLL_OUTBOX"
+  (
+    set +e
+    export COORDINATOR_URL="$curl_url"
+    if [[ -n "$tk_item" ]] && command -v security >/dev/null 2>&1; then
+      local _tk
+      _tk="$(security find-generic-password -s "$tk_item" -w 2>/dev/null || true)"
+      [[ -n "$_tk" ]] && export COORDINATOR_TOKEN="$_tk"
+    fi
+    # shellcheck source=/dev/null
+    . "$lib_dir/co-http-transport.sh" 2>/dev/null || exit 0
+    command -v la_outbox_drain >/dev/null 2>&1 || exit 0
+    # Pass the bearer explicitly (the transport prefers the resolved token, but
+    # an empty arg still drives a clean 401 if no token resolved). The 2-arg
+    # form points the drainer at the daemon outbox instead of la__outbox.
+    la_outbox_drain "${COORDINATOR_TOKEN:-}" "$outbox_path" >/dev/null 2>&1
+    exit 0
+  )
+  return 0
+}

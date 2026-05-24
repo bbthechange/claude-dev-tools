@@ -290,12 +290,27 @@ co_request() {
 # the SAME authed HTTP co_request above, dispatched by the line's `report`
 # discriminator to its hosted op (the §2.4 "Coordinator drains on reconnect"
 # realised as the runner-side push):
-#     report=="capacity"  → co_request … report-capacity <line>   (capacity.js)
-#     report=="heartbeat" → co_request … heartbeat <line>          (reconcile.js)
+#     report=="capacity"      → co_request … report-capacity      <line>  (capacity.js)
+#     report=="heartbeat"     → co_request … heartbeat            <line>  (reconcile.js)
+#     report=="machine_state" → co_request … report-machine-state <line>  (machine-state.js)
 # A line with any other `report` (e.g. the §8.2 terminal-reason re-home, whose
 # authoritative sink is the LOCAL $LOG_DIR/terminal-reason file + the
 # heartbeat-absence channel — there is deliberately NO hosted terminal-reason
 # op) is LEFT IN PLACE and noted, never force-fit onto an op that would 422.
+#
+# Signature: la_outbox_drain <bearer> [outbox_path]
+#   - <bearer>           passed to co_request (the HTTP transport may swap it
+#                        for the resolved per-workspace token; if both are
+#                        empty the Worker 401s LOUDLY — clean rc 1).
+#   - [outbox_path]      OPTIONAL: explicit path to the §1.1 outbox file. When
+#                        absent, falls back to la__outbox() (the workspace
+#                        runner's outbox at $LOG_DIR/coordinator-outbox.jsonl).
+#                        Passed explicitly by the daemon to drain its OWN
+#                        machine-wide outbox ($DAEMON_CACHE_DIR/coordinator-
+#                        outbox.jsonl) — the same drainer logic, just a
+#                        different durable queue (the M2 daemon owns capacity
+#                        + machine_state emit; the workspace owns heartbeat +
+#                        terminal-reason).
 #
 # Contract: at-least-once with a rewrite-survivors tail. Each successfully
 # pushed line is dropped; a line whose push fails (incl. the by-design 401
@@ -304,12 +319,14 @@ co_request() {
 # loses a report. Returns 0 if the queue is now empty (all drained or none
 # present), 1 if any line was retained (caller may retry later); never aborts.
 la_outbox_drain() {
-  local bearer="${1:-}" obx kept rc=0
-  if ! declare -F la__outbox >/dev/null 2>&1; then
-    echo "co: outbox-drain — local-agent.sh not sourced (no la__outbox); nothing to drain" >&2
-    return 0
+  local bearer="${1:-}" obx="${2:-}" kept rc=0
+  if [[ -z "$obx" ]]; then
+    if ! declare -F la__outbox >/dev/null 2>&1; then
+      echo "co: outbox-drain — local-agent.sh not sourced (no la__outbox) and no outbox path passed; nothing to drain" >&2
+      return 0
+    fi
+    obx="$(la__outbox)"
   fi
-  obx="$(la__outbox)"
   [[ -f "$obx" ]] || return 0          # no queue ⇒ nothing to do (clean)
 
   kept="$(mktemp 2>/dev/null)" || { echo "co: outbox-drain — mktemp failed" >&2; return 1; }
@@ -319,8 +336,9 @@ la_outbox_drain() {
     [[ -n "$line" ]] || continue
     report="$(printf '%s' "$line" | jq -r 'if type=="object" then (.report // "") else "" end' 2>/dev/null)" || report=""
     case "$report" in
-      capacity)  op="report-capacity" ;;
-      heartbeat) op="heartbeat" ;;
+      capacity)      op="report-capacity" ;;
+      heartbeat)     op="heartbeat" ;;
+      machine_state) op="report-machine-state" ;;
       *)
         # No hosted op for this report kind — retain verbatim, do not 422 it.
         echo "co: outbox-drain — retaining line with no hosted op (report='${report:-<none>}')" >&2
