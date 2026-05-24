@@ -48,6 +48,16 @@ EXTRA_CLAUDE_FLAGS=(--no-chrome)
 # claude invocation): `text` hides permission_denials[] the §7.2 BACKSTOP needs.
 GUARDRAIL_FLAGS=(--disallowedTools AskUserQuestion EnterPlanMode ExitPlanMode)
 PROMPT_EXTRA=""
+# claude-tools-43m — per-workspace opt-in for the ask-brian / dossier escalation
+# flow. Default OFF = old-script behavior: worker prompt never mentions
+# mcp__askbrian__ask-brian, the §7.3 backstop never fires, beads are never
+# auto-flipped to blocked-for-human, the I4 RESUME splice is a no-op. A
+# workspace opts in by setting `ASK_BRIAN_ENABLED=1` in its `.beads/runner.sh`
+# AND allowlisting `mcp__askbrian__ask-brian` in PERMISSION_FLAGS. Default OFF
+# closes the doc-propagation gap that bit thirsty / thirsty-backend (dossiers
+# appearing from the runner-side backstop without those workspaces ever wiring
+# the MCP). claude-tools/.beads/runner.sh sets this to 1.
+ASK_BRIAN_ENABLED=${ASK_BRIAN_ENABLED:-0}
 MAX_RETRIES=${MAX_RETRIES:-2}
 MAX_CONSECUTIVE_FAILURES=${MAX_CONSECUTIVE_FAILURES:-3}
 DEFAULT_MODEL=${DEFAULT_MODEL:-opus[1m]}  # [1m] = 1M context variant; auto-tracks latest Opus
@@ -115,6 +125,9 @@ _final_subshell_reap() {
   if [[ -n "${TAIL_PID:-}" ]]; then
     kill -TERM -- "-$TAIL_PID" 2>/dev/null || kill -TERM "$TAIL_PID" 2>/dev/null || true
   fi
+  if [[ -n "${HB_PID:-}" ]]; then
+    kill -TERM -- "-$HB_PID" 2>/dev/null || kill -TERM "$HB_PID" 2>/dev/null || true
+  fi
   pkill -P $$ 2>/dev/null || true
   sleep 0.3 2>/dev/null || sleep 1
   if [[ -n "${WATCHDOG_PID:-}" ]]; then
@@ -122,6 +135,9 @@ _final_subshell_reap() {
   fi
   if [[ -n "${TAIL_PID:-}" ]]; then
     kill -KILL -- "-$TAIL_PID" 2>/dev/null || true
+  fi
+  if [[ -n "${HB_PID:-}" ]]; then
+    kill -KILL -- "-$HB_PID" 2>/dev/null || true
   fi
   pkill -KILL -P $$ 2>/dev/null || true
 }
@@ -754,6 +770,14 @@ classify_failure() {
 # Args: $1 = task_id, $2 = claude exit code.
 detect_worker_stuck_primary() {
   local task_id="$1" exit_code="${2:-0}" row status has_human has_stuck_note
+  # claude-tools-43m: stuck detection is part of the ask-brian / dossier
+  # spine. In opted-out workspaces the worker prompt never mentions the
+  # protocol, so any "stuck" signal would be spurious (stale notes, an
+  # off-the-cuff `human` label) — silently no-op so the normal classify_failure
+  # path handles whatever the worker actually did.
+  if [[ "${ASK_BRIAN_ENABLED:-0}" != "1" ]]; then
+    return 1
+  fi
   if [[ "$exit_code" == "${WORKER_STUCK_EXIT:-7}" ]]; then
     echo "worker_stuck"; return 0
   fi
@@ -1076,7 +1100,9 @@ while true; do
       DAEMON_ALIVE=1
     fi
   fi
-  if command -v sr_reconcile_blocked_for_human >/dev/null 2>&1; then
+  # claude-tools-43m: I4 feedback-return is dead code in opted-out workspaces
+  # (no dossiers means no answered forks to reconcile). Skip the poll entirely.
+  if [[ "${ASK_BRIAN_ENABLED:-0}" == "1" ]] && command -v sr_reconcile_blocked_for_human >/dev/null 2>&1; then
     : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
     SR_RESUMED=0
     # FALLBACK: the daemon is absent (no live pidfile). Run the poll inline as
@@ -1266,14 +1292,14 @@ while true; do
 
   # ── Build prompt ─────────────────────────────────────────────────────────
 
-  read -r -d '' PROMPT <<'PROMPT_DELIM' || true
-You are working on beads issue BEADS_ID: "BEADS_TITLE"
-
-Task description:
-BEADS_DESC
-
-IMPORTANT: You are running non-interactively. Do NOT use EnterPlanMode or ExitPlanMode -- there is no human to approve plans. Do NOT use AskUserQuestion -- there is no human to answer. Just execute the work directly.
-
+  # claude-tools-43m: build the ask-brian / dossier escalation block only when
+  # the workspace has opted in. Otherwise ASKBRIAN_BLOCK stays empty and the
+  # heredoc collapses to the old-script prompt (task header + non-interactive
+  # guardrails + homework discipline + debrief/close). The token substitution
+  # mirrors the existing BEADS_ID/BEADS_TITLE/BEADS_DESC pattern below so the
+  # heredoc itself stays literal-quoted.
+  if [[ "${ASK_BRIAN_ENABLED:-0}" == "1" ]]; then
+    read -r -d '' ASKBRIAN_BLOCK <<'ASKBRIAN_DELIM' || true
 ASK-BRIAN IS A LAST RESORT, NOT A FIRST RESORT. Before you even consider calling `mcp__askbrian__ask-brian`, you MUST have done the research below. Brian is asleep and pays per-dossier; piling up his Inbox with questions you could have answered yourself by reading the codebase IS the failure mode -- not a safe default. The original design intent (Brian, 2026-05-22): "agents look through project documentation and then if it could not find an answer, pass it to the dossier agent." Internalize this.
 
 RESEARCH CHECKLIST -- run through ALL of these before escalating:
@@ -1318,7 +1344,20 @@ Fallback path (only if `mcp__askbrian__ask-brian` is not registered in this sess
      Reversible: <what is / isn't reversible>"
   2. bd label add BEADS_ID human
   3. Stop. Do NOT close the issue, do NOT pick an option yourself, do NOT keep working around it. For a real human-decision fork this IS the correct, expected outcome -- not a failure.
+ASKBRIAN_DELIM
+  else
+    ASKBRIAN_BLOCK=""
+  fi
 
+  read -r -d '' PROMPT <<'PROMPT_DELIM' || true
+You are working on beads issue BEADS_ID: "BEADS_TITLE"
+
+Task description:
+BEADS_DESC
+
+IMPORTANT: You are running non-interactively. Do NOT use EnterPlanMode or ExitPlanMode -- there is no human to approve plans. Do NOT use AskUserQuestion -- there is no human to answer. Just execute the work directly.
+
+ASKBRIAN_BLOCK
 Follow the instructions in the task description above exactly. The description contains the full workflow for this task type.
 
 Before closing the issue, add a brief debrief note summarizing how it went:
@@ -1327,6 +1366,10 @@ Include: what you did, any difficulties or unexpected behavior, how long things 
 
 When you have completed all steps, close the issue: bd close BEADS_ID
 PROMPT_DELIM
+  # ASKBRIAN_BLOCK substitution must happen BEFORE the BEADS_* substitutions
+  # so that any BEADS_ID references inside the askbrian block (e.g. the bd
+  # update / bd label add commands in the fallback path) also get rewritten.
+  PROMPT="${PROMPT//ASKBRIAN_BLOCK/$ASKBRIAN_BLOCK}"
   PROMPT="${PROMPT//BEADS_ID/$TASK_ID}"
   PROMPT="${PROMPT//BEADS_TITLE/$TASK_TITLE}"
   PROMPT="${PROMPT//BEADS_DESC/$TASK_DESC}"
@@ -1350,7 +1393,11 @@ $PROMPT_EXTRA"
   # agent's own structured ask) so the resume is durable + auditable outside
   # the prompt. One-shot: consumed after splicing so a later unrelated pickup
   # never re-injects a stale decision. Guarded-optional like every sr_* call.
-  if command -v sr_resume_answer >/dev/null 2>&1 \
+  # claude-tools-43m: I4 splice is unreachable in opted-out workspaces (no
+  # dossier was ever created, so no answer can ever be staged). Gate explicitly
+  # to make the contract obvious to a reader.
+  if [[ "${ASK_BRIAN_ENABLED:-0}" == "1" ]] \
+     && command -v sr_resume_answer >/dev/null 2>&1 \
      && sr_resume_answer "$TASK_ID" >/dev/null 2>&1; then
     : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
     SR_DIRECTIVE="$(sr_format_resume_directive "$TASK_ID" 2>/dev/null || true)"
@@ -1571,6 +1618,55 @@ $PROMPT"
   WATCHDOG_PID=$!
   set +m
 
+  # ── Mid-task heartbeat (claude-tools-7v5) ────────────────────────────────
+  # The hb() function is otherwise only called at state transitions
+  # (start/finish/idle), so a task longer than STALE_AFTER=180s makes the
+  # Board render the workspace as liveness=stale even though the worker is
+  # actively processing. This subshell emits hb running "$TASK_ID" every
+  # HEARTBEAT_INTERVAL (60s) while the task is in flight, gated on stream
+  # progress so a genuinely-stuck worker still goes stale honestly:
+  #   Mode A (normal): emit only if ACTIVITY_FILE was updated within
+  #     HEARTBEAT_GAP_TOL (90s). 90s comfortably exceeds measured p95 stream
+  #     gaps (11–22s across three workspaces) but is well under STALE_AFTER.
+  #   Mode B (subagent): if TASK_INFLIGHT_FILE has ≥1 line, emit
+  #     unconditionally — mirrors the watchdog's idg trust in the same signal.
+  # Same set -m / kill -- -$HB_PID PG-isolation pattern as TAIL/WATCHDOG
+  # (claude-tools-yva) so sleep grandchildren can't outlive the parent.
+  set -m
+  (
+    HB_INTERVAL=${HEARTBEAT_INTERVAL:-60}
+    HB_GAP_TOL=${HEARTBEAT_GAP_TOL:-90}
+    while kill -0 "$CLAUDE_PID" 2>/dev/null; do
+      sleep "$HB_INTERVAL"
+      kill -0 "$CLAUDE_PID" 2>/dev/null || break
+      [[ -f "$STOP_FILE" ]] && break
+      INFLIGHT=0
+      if [[ -f "$TASK_INFLIGHT_FILE" ]]; then
+        INFLIGHT=$(wc -l < "$TASK_INFLIGHT_FILE" 2>/dev/null | tr -d ' ')
+        INFLIGHT=${INFLIGHT:-0}
+      fi
+      if [[ "$INFLIGHT" -gt 0 ]]; then
+        hb running "$TASK_ID"
+        continue
+      fi
+      if [[ -f "$ACTIVITY_FILE" ]]; then
+        LAST=$(cat "$ACTIVITY_FILE" 2>/dev/null | tr -d '[:space:]')
+        # Mirror watchdog h7n guard: reject empty/malformed/pre-2024 epochs
+        # so a partial write or empty read can't produce a giant GAP that
+        # silently suppresses the heartbeat forever.
+        if [[ "$LAST" =~ ^[0-9]+$ ]] && (( LAST >= 1704067200 )); then
+          NOW=$(date +%s)
+          GAP=$((NOW - LAST))
+          if (( GAP <= HB_GAP_TOL )); then
+            hb running "$TASK_ID"
+          fi
+        fi
+      fi
+    done
+  ) &
+  HB_PID=$!
+  set +m
+
   # ── Wait for result and classify ─────────────────────────────────────────
 
   wait "$CLAUDE_PID" 2>/dev/null && CLAUDE_EXIT=0 || CLAUDE_EXIT=$?
@@ -1586,6 +1682,18 @@ $PROMPT"
   # Layered: TERM the PG, 2s grace, KILL the PG if anything is left, then a
   # pid-only fallback in case PG isolation failed (set -m no-op'd for any
   # reason). `wait` only after kill confirmation so we never block.
+  # claude-tools-7v5: reap the HB subshell BEFORE the watchdog so the order
+  # mirrors spawn (parser, watchdog, HB → HB, watchdog, parser on the reap).
+  kill -TERM -- "-$HB_PID" 2>/dev/null || kill -TERM "$HB_PID" 2>/dev/null || true
+  for _ in 1 2; do
+    kill -0 "$HB_PID" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$HB_PID" 2>/dev/null; then
+    kill -KILL -- "-$HB_PID" 2>/dev/null || true
+    kill -KILL "$HB_PID" 2>/dev/null || true
+  fi
+  wait "$HB_PID" 2>/dev/null || true
   kill -TERM -- "-$WATCHDOG_PID" 2>/dev/null || kill -TERM "$WATCHDOG_PID" 2>/dev/null || true
   for _ in 1 2; do
     kill -0 "$WATCHDOG_PID" 2>/dev/null || break
@@ -1661,7 +1769,17 @@ $PROMPT"
   SR_STUCK_HANDLED=""
   SR_TRIGGER=""
   SR_REASON=""
-  if [[ "$CLASSIFICATION" != "AUTH_FAILURE" && "$CLASSIFICATION" != "BILLING_ERROR" ]] \
+  # claude-tools-43m: in opted-out workspaces the §7.3 backstop must NOT fire.
+  # The backstop synthesizes its own dossier from worker permission_denials
+  # (any disallowed-tool slip — AskUserQuestion / ExitPlanMode / EnterPlanMode)
+  # via sr_route_stuck → dg_from_worker_ask → do_dossier_put, completely
+  # bypassing whether the worker prompt even mentions ask-brian. Gating only
+  # the prompt would leave dossiers leaking into the Inbox from any worker
+  # permission denial. With this gate, a permission denial in an opted-out
+  # workspace falls through to classify_failure (TASK_NOT_CLOSED / retry /
+  # MAX_CONSECUTIVE_FAILURES) — exactly the old-script behavior.
+  if [[ "${ASK_BRIAN_ENABLED:-0}" == "1" ]] \
+     && [[ "$CLASSIFICATION" != "AUTH_FAILURE" && "$CLASSIFICATION" != "BILLING_ERROR" ]] \
      && command -v sr_route_stuck >/dev/null 2>&1 && command -v sr_scan_backstop >/dev/null 2>&1; then
     SR_BACKSTOP="$(sr_scan_backstop "$STREAM_FILE" 2>/dev/null || true)"
     SR_PRIMARY="$(detect_worker_stuck_primary "$TASK_ID" "$CLAUDE_EXIT" 2>/dev/null || true)"
