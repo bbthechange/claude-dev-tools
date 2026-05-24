@@ -33,6 +33,14 @@ const SCHEMA_VERSIONS = {
   // marker (no separate intake-pending type); the daemon flips a `processed`
   // flag once it has spawned the enricher. v1.
   "intake-request": 1,
+  // claude-tools-8dfb (epic claude-tools-vvgy) — §4.6 workspace_inventory v1.
+  // NEW §4 type, not a bump on an existing entry (the reservation in INTERFACE
+  // §4.6 promised that adding a producer later is a normal feature task, not a
+  // §0/§11 freeze-gate reopen). One row per workspace, keyed by the workspace
+  // bd prefix (`project_ref`), overwritten on each WRITE. Producer: the
+  // workspace runner (separate child of vvgy). Consumer: projection join +
+  // renderer (separate child). v1.
+  workspace_inventory: 1,
 };
 
 export function schemaVersion(type) {

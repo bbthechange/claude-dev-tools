@@ -87,6 +87,14 @@ export const RECONCILE_OPS = new Set([
   "heartbeat", // co__heartbeat   — §1.1 item-3 UPWARD actual-state ingest (a WRITE)
   "reconcile", // co__reconcile   — §2.4 deliver-desired-state-on-reconnect SEMANTICS (read)
   "work-snapshot", // co__work_snapshot — §4.5 read-only projection PRODUCER (read)
+  // claude-tools-8dfb (epic claude-tools-vvgy) — §4.6 workspace_inventory v1
+  // INGEST. UPWARD WRITE in the same family as `heartbeat`: it composes on
+  // CF.1's ONE gated `_writeRecord` path (§0.3 + §9.1 principal stamp THERE),
+  // mirrors the heartbeat validation/stamping shape, and lives in the same
+  // RECONCILE_OPS guard so the CF.1 substrate switch stays byte-identical.
+  // One row per workspace (`type=workspace_inventory`, `id=project_ref`),
+  // overwritten on each write (this is a periodic snapshot, NOT history).
+  "workspace-inventory-put",
 ]);
 
 // ── §0.5 STALE_AFTER — the S-1 liveness boundary, env-overridable, dflt 180 ──
@@ -331,6 +339,247 @@ async function heartbeat(co, principal, jsonStr) {
   base.updated_at = now;
   if (cur !== "") base.current_task_ref = cur;
   const w = await co._writeRecord(principal, "runner_state", proj, base);
+  if (!w.ok) return jsonRes({ ok: false, code: w.code, error: w.msg }, 422);
+  return jsonRes({ ok: true });
+}
+
+// ── workspace-inventory-put — §4.6 workspace_inventory v1 INGEST ─────────────
+// claude-tools-8dfb (epic claude-tools-vvgy). The CF-side WRITE endpoint that
+// the workspace runner producer (separate child) posts to. Validation mirrors
+// `heartbeat` above for shape parity:
+//   1. valid JSON object with report=="workspace_inventory";
+//   2. §0.3 — `schema_version` is an INTEGER (a string "1"/float/bool is
+//      rejected); an unknown HIGHER version is REJECTED (never best-effort-
+//      parsed); the engine binds v1 so any other value is unsupported ⇒ reject;
+//   3. `project_ref` is a non-empty SAFE key (§1.1 stamp / store-owner input
+//      hygiene — same gate the substrate's `_writeRecord`/safeKey applies);
+//   4. `observed_at` is RFC-3339 UTC `…Z` (§0.4) and is not absurdly old (the
+//      h7n-style pre-2024 guard — a malformed/clock-bug timestamp would lie
+//      about freshness; mirrors the heartbeat S-1 discipline);
+//   5. `counts` is an object with all four required INTEGER keys
+//      {open, ready, in_progress, blocked} — a missing or non-int count is a
+//      contract value, not "best-effort 0";
+//   6. `in_progress_beads` is an array (may be empty); each element MUST carry
+//      string `bead_ref` + `title` + `stage`;
+//   7. `top_n_beads` is REQUIRED (array, may be empty); each element MUST carry
+//      string `bead_ref` + `title` + `status` + `stage`. No hard cap on length
+//      at the write boundary — bounding is the producer's concern (the §4.6
+//      contract notes "a small bounded array of top-N most-recently-touched").
+// The wire `principal` field is OVERWRITTEN by the resolved §9.1 principal
+// inside `_writeRecord` (NEVER trust the wire's principal — same C7 discipline
+// `heartbeat` follows). Persisted through CF.1's ONE gated `_writeRecord` with
+// type='workspace_inventory', id=project_ref — one row per workspace,
+// INSERT OR REPLACE on each write (no append, no historical accumulation).
+// Nothing persisted on any rejection.
+const ISO_Z_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+async function workspaceInventoryPut(co, principal, jsonStr) {
+  if (jsonStr === undefined || jsonStr === null || jsonStr === "") {
+    return jsonRes(
+      { ok: false, error: "co: workspace-inventory-put needs <report_json>" },
+      422
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    parsed = null;
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    parsed.report !== "workspace_inventory"
+  ) {
+    return jsonRes(
+      {
+        ok: false,
+        error:
+          'co: reject — not a §4.6 workspace_inventory report (report!="workspace_inventory" / invalid JSON)',
+      },
+      422
+    );
+  }
+  const sv = parsed.schema_version;
+  const isInt = typeof sv === "number" && Number.isFinite(sv) && Math.floor(sv) === sv;
+  if (!isInt) {
+    return jsonRes(
+      {
+        ok: false,
+        error:
+          "co: reject — workspace_inventory missing integer schema_version (§4.6/§0.3)",
+      },
+      422
+    );
+  }
+  if (sv > 1) {
+    return jsonRes(
+      {
+        ok: false,
+        error: `co: reject — workspace_inventory schema_version ${sv} is an unknown higher version (bound=1; §0.3 reject, never best-effort-parse)`,
+      },
+      422
+    );
+  }
+  if (sv !== 1) {
+    return jsonRes(
+      {
+        ok: false,
+        error: `co: reject — workspace_inventory schema_version ${sv} unsupported (binds v1 only; §0.3)`,
+      },
+      422
+    );
+  }
+  const proj = jqStr(parsed.project_ref);
+  if (!proj || !safeKey(proj)) {
+    return jsonRes(
+      {
+        ok: false,
+        error: `co: reject — workspace_inventory project_ref '${proj}' missing/unsafe (§1.1 stamp; store-owner input hygiene)`,
+      },
+      422
+    );
+  }
+  const obs = jqStr(parsed.observed_at);
+  if (!obs || !ISO_Z_RE.test(obs)) {
+    return jsonRes(
+      {
+        ok: false,
+        error: `co: reject — workspace_inventory observed_at '${obs}' is not RFC-3339 UTC '…Z' (§0.4)`,
+      },
+      422
+    );
+  }
+  const obsMs = Date.parse(obs);
+  if (!Number.isFinite(obsMs) || obsMs < Date.parse("2024-01-01T00:00:00Z")) {
+    return jsonRes(
+      {
+        ok: false,
+        error: `co: reject — workspace_inventory observed_at '${obs}' pre-2024 / unparseable (S-1 freshness guard)`,
+      },
+      422
+    );
+  }
+  const counts = parsed.counts;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) {
+    return jsonRes(
+      {
+        ok: false,
+        error: "co: reject — workspace_inventory counts must be an object with {open,ready,in_progress,blocked} integers",
+      },
+      422
+    );
+  }
+  for (const k of ["open", "ready", "in_progress", "blocked"]) {
+    const v = counts[k];
+    const ok =
+      typeof v === "number" && Number.isFinite(v) && Math.floor(v) === v;
+    if (!ok) {
+      return jsonRes(
+        {
+          ok: false,
+          error: `co: reject — workspace_inventory counts.${k} missing/non-integer (got ${JSON.stringify(v)})`,
+        },
+        422
+      );
+    }
+  }
+  const ip = parsed.in_progress_beads;
+  if (!Array.isArray(ip)) {
+    return jsonRes(
+      {
+        ok: false,
+        error: "co: reject — workspace_inventory in_progress_beads must be an array (may be empty)",
+      },
+      422
+    );
+  }
+  for (let i = 0; i < ip.length; i++) {
+    const b = ip[i];
+    if (!b || typeof b !== "object" || Array.isArray(b)) {
+      return jsonRes(
+        {
+          ok: false,
+          error: `co: reject — workspace_inventory in_progress_beads[${i}] is not an object`,
+        },
+        422
+      );
+    }
+    for (const k of ["bead_ref", "title", "stage"]) {
+      if (typeof b[k] !== "string" || b[k].length === 0) {
+        return jsonRes(
+          {
+            ok: false,
+            error: `co: reject — workspace_inventory in_progress_beads[${i}].${k} missing/non-string`,
+          },
+          422
+        );
+      }
+    }
+  }
+  const tn = parsed.top_n_beads;
+  if (!Array.isArray(tn)) {
+    return jsonRes(
+      {
+        ok: false,
+        error: "co: reject — workspace_inventory top_n_beads required (array, may be empty)",
+      },
+      422
+    );
+  }
+  for (let i = 0; i < tn.length; i++) {
+    const b = tn[i];
+    if (!b || typeof b !== "object" || Array.isArray(b)) {
+      return jsonRes(
+        {
+          ok: false,
+          error: `co: reject — workspace_inventory top_n_beads[${i}] is not an object`,
+        },
+        422
+      );
+    }
+    for (const k of ["bead_ref", "title", "status", "stage"]) {
+      if (typeof b[k] !== "string" || b[k].length === 0) {
+        return jsonRes(
+          {
+            ok: false,
+            error: `co: reject — workspace_inventory top_n_beads[${i}].${k} missing/non-string`,
+          },
+          422
+        );
+      }
+    }
+  }
+  // Build the persisted envelope. The wire's `principal` field (if any) is
+  // discarded — `_writeRecord` stamps the §9.1-resolved principal AFTER the
+  // §0.3 gate, OVERWRITING whatever literal the report carried. `runner_id`
+  // is carried through verbatim (informational; not part of validation).
+  const now = nowIso();
+  const obj = {
+    schema_version: 1,
+    project_ref: proj,
+    runner_id: jqStr(parsed.runner_id),
+    observed_at: obs,
+    counts: {
+      open: counts.open,
+      ready: counts.ready,
+      in_progress: counts.in_progress,
+      blocked: counts.blocked,
+    },
+    in_progress_beads: ip.map((b) => ({
+      bead_ref: b.bead_ref,
+      title: b.title,
+      stage: b.stage,
+    })),
+    top_n_beads: tn.map((b) => ({
+      bead_ref: b.bead_ref,
+      title: b.title,
+      status: b.status,
+      stage: b.stage,
+    })),
+    updated_at: now,
+  };
+  const w = await co._writeRecord(principal, "workspace_inventory", proj, obj);
   if (!w.ok) return jsonRes({ ok: false, code: w.code, error: w.msg }, 422);
   return jsonRes({ ok: true });
 }
@@ -672,6 +921,8 @@ export async function handleReconcileOp(co, op, args, principal) {
       return jsonRes(await reconcileData(co, principal, a[0], a[1]));
     case "work-snapshot":
       return await workSnapshot(co, principal, a[0], a[1]);
+    case "workspace-inventory-put":
+      return await workspaceInventoryPut(co, principal, a[0]);
     default:
       return jsonRes({ ok: false, error: `co: unknown reconcile op '${op}'` }, 400);
   }

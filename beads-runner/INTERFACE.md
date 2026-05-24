@@ -320,25 +320,45 @@ per-bead failure metadata for Flow G tiers 1–2 (class + retry-state +
 forensic stream is **not** in the projection — §10). Each card: `title ·
 stage · priority · runner state · age · the one thing it waits on`.
 
-### §4.6 *workspace_inventory* — RESERVED (no producer/consumer)
+### §4.6 *workspace_inventory* (`schema_version: 1`)
 
-**Reservation only: name + intent claimed; no `schema_version`, no producer, no
-consumer yet.** Reserving the name is not a schema change; bumping a version is
-(§0.3). Future record type for per-workspace bead inventory: "what's done,
-what's ready, what's blocked in this workspace." Producer target: the workspace
-runner (it has `bd` and the working copy). Cadence target: every `300` s
+**v1 WRITE endpoint landed (claude-tools-8dfb, epic claude-tools-vvgy).** The
+reservation promised "adding the *workspace_inventory* producer later is a
+normal feature task, not a §0/§11 contract amendment"; this is that landing.
+Per-workspace bead inventory: "what's done, what's ready, what's blocked in
+this workspace." Producer: the workspace runner (it has `bd` and the working
+copy — separate child of vvgy; not yet wired). Cadence target: every `300` s
 (slower than `HEARTBEAT_INTERVAL` (`60` s), faster than ad-hoc). Transport: the
-same Local-Agent outbox path as heartbeats, distinct `report` discriminator.
-Consumer target: a future workspace-detail UI route. **Explicitly NOT muxed
-into `RunnerState` (§4.2)** — keeping inventory and heartbeat separate lets
-them evolve on independent cadences and keeps the hot heartbeat read path
-lean. Shape: TBD when the producer lands; should include `ready_count`,
-`open_count`, `blocked_count`, `in_progress_count`, and optionally a small
-bounded array of `{ bead_ref, title, status, stage }` for the top N
-most-recently-touched beads (full inventory is **not** the goal of this
-record — that is a Work-plane query, not a control-plane projection). This
-reservation makes "add the *workspace_inventory* producer later" a normal
-feature task, not a §0/§11 contract amendment.
+same Local-Agent outbox path as heartbeats, distinct `report` discriminator
+(`"report":"workspace_inventory"` → hosted op `workspace-inventory-put` →
+`reconcile.js` handler). Consumer: a future workspace-detail UI route + the
+projection join (separate child of vvgy). **Explicitly NOT muxed into
+`RunnerState` (§4.2)** — keeping inventory and heartbeat separate lets them
+evolve on independent cadences and keeps the hot heartbeat read path lean.
+
+Wire shape (v1, validated at the engine WRITE boundary; one row per workspace,
+keyed by `project_ref`, overwritten on each write — this is a periodic
+snapshot, not history):
+
+```
+{
+  "report": "workspace_inventory",
+  "schema_version": 1,
+  "principal":  "<resolved principal>",   // §9.1: wire literal OVERWRITTEN at the chokepoint
+  "runner_id":  "<runner id>",
+  "project_ref":"<workspace bd prefix>",  // safeKey; the §4 record id
+  "observed_at":"<RFC-3339 UTC ...Z>",    // §0.4; pre-2024 rejected (S-1 freshness)
+  "counts":      { "open": int, "ready": int, "in_progress": int, "blocked": int },
+  "in_progress_beads": [ { "bead_ref": str, "title": str, "stage": str } ],
+  "top_n_beads":       [ { "bead_ref": str, "title": str, "status": str, "stage": str } ]
+}
+```
+
+`counts` MUST contain all four integer keys (missing or non-int ⇒ reject).
+`in_progress_beads` MAY be empty but is REQUIRED. `top_n_beads` MAY be empty
+but is REQUIRED (no hard cap at the write boundary — bounding is the
+producer's concern; full inventory is **not** the goal of this record — that
+is a Work-plane query, not a control-plane projection).
 
 ### §4.7 *task_progress* — RESERVED (no producer/consumer)
 
