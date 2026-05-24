@@ -1062,6 +1062,11 @@ notify_user() {
 # any work (the I2 "appears as a live runner via the deployed read path").
 hb starting
 
+# Preserve any startup-time TASK_COST_CLASS as a project-wide override (the
+# §1257 escape hatch). Per-iteration cost-class is recomputed from TASK_PRIORITY
+# below, so the empty-guard can't latch a stale value across iterations (hkwg).
+TASK_COST_CLASS_OVERRIDE="${TASK_COST_CLASS:-}"
+
 while true; do
   # Check for graceful stop signal
   if [[ -f "$STOP_FILE" ]]; then
@@ -1260,12 +1265,15 @@ while true; do
   # P2 stays standard. A project that exports TASK_COST_CLASS overrides this
   # mapping wholesale (escape hatch for project-specific cost policies).
   WORKSPACE_DESIRED=$(workspace_desired_state)
-  if [[ -z "${TASK_COST_CLASS:-}" ]]; then
-    if [[ "${TASK_PRIORITY:-2}" -ge 3 ]]; then
-      TASK_COST_CLASS="low_priority"
-    else
-      TASK_COST_CLASS="standard"
-    fi
+  # Recompute every iteration — guarding on empty would latch the value from
+  # a prior pickup (a P3 leaking low_priority onto the next P2). The startup
+  # snapshot TASK_COST_CLASS_OVERRIDE preserves the project-wide escape hatch.
+  if [[ -n "$TASK_COST_CLASS_OVERRIDE" ]]; then
+    TASK_COST_CLASS="$TASK_COST_CLASS_OVERRIDE"
+  elif [[ "${TASK_PRIORITY:-2}" -ge 3 ]]; then
+    TASK_COST_CLASS="low_priority"
+  else
+    TASK_COST_CLASS="standard"
   fi
   # `set -e` exits on a failing command substitution inside an assignment in
   # bash 4.x+, so neutralise errexit and capture the code in one shot. CAP_RC
