@@ -229,6 +229,43 @@ SPARE_DAY_INDEX_OVERRIDE_RAMP=$(
 )
 eq "$SPARE_DAY_INDEX_OVERRIDE_RAMP" "28" "SPARE_DAY_INDEX=2 overrides resets_at-derived day"
 
+# A.4 — pkp2: the REAL API format is "2026-05-25T07:00:00.585476+00:00"
+# (microseconds + explicit +00:00 offset), not the strict-Z form. Verify
+# the parser handles every shape Anthropic could plausibly return so we
+# don't regress into silently-day=1.
+day_for_resets_pkp2() {
+  # $1 = a real or synthetic resets_at string
+  (
+    set +e
+    unset SPARE_DAY_INDEX
+    export USAGE_POLL_DISABLED=1
+    . "$USAGE_LIB"
+    _usage_poll_spare_ramp_day "$1"
+  )
+}
+
+# Build a "+1 day out" timestamp in EACH shape we want to accept, all anchored
+# on the SAME epoch second so the day-index answer is identical across them.
+TOMORROW_EPOCH=$(( NOW_EPOCH + 86400 ))
+ISO_Z=$(date -u -r "$TOMORROW_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -d "@$TOMORROW_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
+ISO_BASE="${ISO_Z%Z}"                           # ...07:00:00
+ISO_FRAC_OFFSET="${ISO_BASE}.585476+00:00"      # ← the real API shape
+ISO_FRAC_Z="${ISO_BASE}.585476Z"                # fractional + Z
+ISO_OFFSET="${ISO_BASE}+00:00"                  # no fractional, explicit +00:00
+ISO_OFFSET_NOCOLON="${ISO_BASE}+0000"           # no fractional, +0000
+
+eq "$(day_for_resets_pkp2 "$ISO_FRAC_OFFSET")"   "7" "real API shape (microsec + +00:00) parses ⇒ day=7"
+eq "$(day_for_resets_pkp2 "$ISO_Z")"             "7" "strict Z form still parses ⇒ day=7 (BC preserved)"
+eq "$(day_for_resets_pkp2 "$ISO_FRAC_Z")"        "7" "fractional + Z parses ⇒ day=7"
+eq "$(day_for_resets_pkp2 "$ISO_OFFSET")"        "7" "no fractional + +00:00 parses ⇒ day=7"
+eq "$(day_for_resets_pkp2 "$ISO_OFFSET_NOCOLON")" "7" "no fractional + +0000 parses ⇒ day=7"
+
+# Non-UTC offsets are deliberately NOT normalized — the API returns UTC, and a
+# hypothetical non-UTC value falls through to day=1 (conservative soft line).
+ISO_NON_UTC="${ISO_BASE}.585476-05:00"
+eq "$(day_for_resets_pkp2 "$ISO_NON_UTC")" "1" "non-UTC offset falls to day=1 (conservative; API returns UTC)"
+
 # ════════════════════════════════════════════════════════════════════════════
 # PART B — spare-cycles + low_priority + usage UNDER ramp ⇒ allowed
 # ════════════════════════════════════════════════════════════════════════════

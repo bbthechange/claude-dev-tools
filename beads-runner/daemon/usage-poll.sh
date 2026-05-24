@@ -100,12 +100,23 @@ _usage_poll_log() {
 # window" index in 1..7. The window ends at resets_at and is 7d wide, so
 # day N = ceil((now - (resets_at - 7d)) / 86400) = 8 - ceil((resets_at - now) / 86400).
 # Empty input or parse failure ⇒ empty stdout (caller falls back to day=1).
+#
+# pkp2: the real API returns timestamps like "2026-05-25T07:00:00.585476+00:00"
+# (fractional microseconds + explicit +00:00 offset), NOT the strict-Z form.
+# macOS BSD `date -j -u -f "%Y-%m-%dT%H:%M:%SZ"` rejects that outright, and
+# BSD `date` has no `-d` flag for the GNU fallback, so on macOS every call
+# was silently falling to day=1. We normalize the input first:
+#   1. strip fractional seconds when followed by a TZ marker (`+`, `-`, or `Z`)
+#   2. convert a `+00:00` / `+0000` UTC offset to `Z`
+# Non-UTC offsets are intentionally NOT normalized (the API returns UTC) — a
+# future non-UTC value falls to day=1, the conservative soft line.
 _usage_poll_resets_at_to_day() {
   local resets="$1"
   [[ -n "$resets" ]] || return 0
-  local resets_epoch now remaining day
+  local norm resets_epoch now remaining day
+  norm=$(printf '%s' "$resets" | sed -E 's/\.[0-9]+([+-Z])/\1/; s/\+00:?00$/Z/')
   # macOS first, then GNU date — matches the pattern used by _usage_poll_write_cache.
-  resets_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$resets" +%s 2>/dev/null \
+  resets_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$norm" +%s 2>/dev/null \
                  || date -u -d "$resets" +%s 2>/dev/null \
                  || echo "")
   [[ -n "$resets_epoch" ]] || return 0

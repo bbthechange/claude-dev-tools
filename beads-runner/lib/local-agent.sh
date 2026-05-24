@@ -187,13 +187,19 @@ la__usage_json() {
 # (1..7) for a deterministic measurement / test. Missing resets_at ⇒
 # day=1 (conservative: tightest soft line when window position unknown).
 la__spare_ramp_pct() {
-  local resets="${1:-}" day ramp resets_epoch now remaining
+  local resets="${1:-}" norm day ramp resets_epoch now remaining
   if [[ -n "${SPARE_DAY_INDEX:-}" ]]; then
     day="$SPARE_DAY_INDEX"
   elif [[ -n "$resets" ]]; then
     # Parse ISO 8601 — macOS first, GNU date second, matching the rest of
-    # the project's date-arithmetic pattern. On parse failure ⇒ day=1.
-    resets_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$resets" +%s 2>/dev/null \
+    # the project's date-arithmetic pattern. pkp2: the real API returns
+    # microseconds + explicit +00:00 offset (e.g. "...07:00:00.585476+00:00"),
+    # which BSD `date -j -f "%Y-%m-%dT%H:%M:%SZ"` rejects. Normalize: strip
+    # fractional seconds, convert "+00:00"/"+0000" to "Z". GNU date handles
+    # the raw form fine, so the Linux branch sees the un-normalized string.
+    # Non-UTC offsets fall through to day=1, the conservative soft line.
+    norm=$(printf '%s' "$resets" | sed -E 's/\.[0-9]+([+-Z])/\1/; s/\+00:?00$/Z/')
+    resets_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$norm" +%s 2>/dev/null \
                    || date -u -d "$resets" +%s 2>/dev/null \
                    || echo "")
     if [[ -n "$resets_epoch" ]]; then
