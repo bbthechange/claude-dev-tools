@@ -1536,6 +1536,34 @@ $PROMPT"
           ;;
         "")
           ;;
+        rate_limit_event)
+          # claude-tools-t5k: rate_limit_event is Claude-Code SUBSCRIPTION window
+          # metadata (5h / 7d quota snapshots), NOT a 429 throttle. The real 429
+          # path is system.api_retry.error=rate_limit above. Surface allowed_warning
+          # loudly so seven_day quota approaches are visible; collapse 'allowed' to
+          # one terse line; reserve RATE_LIMIT_QUOTA signal for rejected/exceeded
+          # (never observed today — forward-compat).
+          RL_STATUS=$(echo "$line" | jq -r '.rate_limit_info.status // empty' 2>/dev/null)
+          RL_TYPE=$(echo "$line" | jq -r '.rate_limit_info.rateLimitType // empty' 2>/dev/null)
+          RL_RESETS=$(echo "$line" | jq -r 'try (.rate_limit_info.resetsAt | todateiso8601) catch ""' 2>/dev/null)
+          case "$RL_STATUS" in
+            allowed_warning)
+              RL_UTIL=$(echo "$line" | jq -r '.rate_limit_info.utilization // empty' 2>/dev/null)
+              RL_THR=$(echo "$line" | jq -r '.rate_limit_info.surpassedThreshold // empty' 2>/dev/null)
+              echo "  [$TS] [rate_limit:WARN] $RL_TYPE utilization=$RL_UTIL (>=$RL_THR) resetsAt=$RL_RESETS"
+              ;;
+            allowed)
+              echo "  [$TS] [rate_limit] $RL_TYPE ok resetsAt=$RL_RESETS"
+              ;;
+            rejected|exceeded)
+              echo "  [$TS] [rate_limit:QUOTA] $RL_TYPE status=$RL_STATUS resetsAt=$RL_RESETS"
+              echo "RATE_LIMIT_QUOTA=$RL_TYPE" >> "$SIGNAL_FILE"
+              ;;
+            *)
+              echo "  [$TS] [rate_limit_event] status=$RL_STATUS $RL_TYPE resetsAt=$RL_RESETS"
+              ;;
+          esac
+          ;;
         *)
           echo "  [$TS] [$TYPE] $(echo "$line" | jq -c '.' 2>/dev/null)"
           ;;
