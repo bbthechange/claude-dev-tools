@@ -11,6 +11,17 @@ test pin) and is logged every cycle as
 `ramp=<pct>% (day=<N> × <SPARE_RAMP_PER_DAY>%)` so the formula is verifiable
 from the daemon's own logs without re-reading code.
 
+**Day-N anchor (x7ve).** N is `days into the API-reported rolling window`,
+NOT day-of-week. The Anthropic usage API returns `seven_day.resets_at` (the
+END of the rolling window); the window is 7d wide, so
+`N = clamp(8 − ceil((resets_at − now) / 1d), 1, 7)`. A pre-x7ve build
+computed `N = (epoch_days % 7) + 1`, which is day-of-week relative to
+1970-01-01 — uncorrelated with the user's real window, and the cause of
+non-monotone jumps in the soft line at UTC midnight. When `resets_at` is
+absent (fail-OPEN paths never reach this math; a malformed response falls
+through to N=1) the ramp defaults to the tightest line (14.2%); the hard
+5h/7d ceiling remains the real guard (AD2.3).
+
 **UI ↔ wire vocabulary.** The Board's per-workspace toggle row uses the UI
 label `spare-only` (UX-DESIGN Flow D); the §4.2 RunnerState.desired enum,
 the daemon's M3 reconciler, and the gate below all key on the canonical

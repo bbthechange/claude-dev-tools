@@ -175,19 +175,42 @@ la__usage_json() {
   printf '%s' "$json"
 }
 
-# la__spare_ramp_pct — the §6.3 soft-ramp ceiling for low_priority work: day N
-# of the 7d window allows ≤ N × SPARE_RAMP_PER_DAY of the 7d budget. The window
-# anchor is Coordinator-aggregated globally (T4); the LA owns only the local
-# *measurement*, deliberately coarse (AD2.3: the ramp is a soft line, the hard
-# 5h/7d ceiling is the real guard). SPARE_DAY_INDEX overrides the day index
-# (1..7) for a deterministic measurement / test; default = rolling day-of-cycle.
+# la__spare_ramp_pct [resets_at] — the §6.3 soft-ramp ceiling for low_priority
+# work: day N of the rolling 7d window allows ≤ N × SPARE_RAMP_PER_DAY of the
+# 7d budget. The day index is anchored on the Anthropic usage API's
+# seven_day.resets_at (the END of the rolling window) — NOT on the calendar
+# (x7ve: pre-fix used (epoch_days % 7)+1, which is day-of-week relative to
+# 1970-01-01 and so jumped non-monotonically at UTC midnight, uncorrelated
+# with the user's real window). The LA owns only the local *measurement*,
+# deliberately coarse (AD2.3: the ramp is a soft line, the hard 5h/7d
+# ceiling is the real guard). SPARE_DAY_INDEX overrides the day index
+# (1..7) for a deterministic measurement / test. Missing resets_at ⇒
+# day=1 (conservative: tightest soft line when window position unknown).
 la__spare_ramp_pct() {
-  local day ramp now
+  local resets="${1:-}" day ramp resets_epoch now remaining
   if [[ -n "${SPARE_DAY_INDEX:-}" ]]; then
     day="$SPARE_DAY_INDEX"
+  elif [[ -n "$resets" ]]; then
+    # Parse ISO 8601 — macOS first, GNU date second, matching the rest of
+    # the project's date-arithmetic pattern. On parse failure ⇒ day=1.
+    resets_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$resets" +%s 2>/dev/null \
+                   || date -u -d "$resets" +%s 2>/dev/null \
+                   || echo "")
+    if [[ -n "$resets_epoch" ]]; then
+      now=$(date +%s 2>/dev/null || echo 0)
+      remaining=$(( resets_epoch - now ))
+      if (( remaining <= 0 )); then
+        day=7
+      else
+        day=$(( 8 - ( (remaining + 86399) / 86400 ) ))
+        (( day < 1 )) && day=1
+        (( day > 7 )) && day=7
+      fi
+    else
+      day=1
+    fi
   else
-    now=$(date +%s 2>/dev/null || echo 0)
-    day=$(( (now / 86400) % 7 + 1 ))      # 1..7, rolling
+    day=1
   fi
   # ramp = day * SPARE_RAMP_PER_DAY, capped at 100, integer-truncated (the
   # verdict is coarse — §6.3 compares integer-truncated utilisation).
@@ -247,12 +270,14 @@ la_capacity_check() {
   # owns the upstream report. If the daemon is down for an extended
   # window, capacity reports go silent; the next daemon poll cycle resumes
   # them. Workspaces remain locally gated by the verdict below.
-  local token usage five seven five_i seven_i verdict="ok"
+  local token usage five seven resets five_i seven_i verdict="ok"
   token=$(la__anthropic_token) || { return 0; }            # §6.2 fail-OPEN
   usage=$(la__usage_json "$token") || { return 0; }         # §6.2 fail-OPEN
 
   five=$(printf '%s'  "$usage" | jq -r '.five_hour.utilization  // 0' 2>/dev/null) || five=0
   seven=$(printf '%s' "$usage" | jq -r '.seven_day.utilization // 0' 2>/dev/null) || seven=0
+  # x7ve: anchor the day-N ramp on the API-reported window end.
+  resets=$(printf '%s' "$usage" | jq -r '.seven_day.resets_at // .seven_day.resetsAt // ""' 2>/dev/null) || resets=""
   five_i=${five%.*};   five_i=${five_i:-0}
   seven_i=${seven%.*}; seven_i=${seven_i:-0}
 
@@ -263,7 +288,7 @@ la_capacity_check() {
     echo "  Usage: 5h=${five}% 7d=${seven}% (threshold: ${threshold}%)"
   elif [[ "$cost_class" == "low_priority" ]]; then
     # Spare-cycles soft ramp: low_priority backfills unused capacity only.
-    local ramp; ramp="$(la__spare_ramp_pct)"
+    local ramp; ramp="$(la__spare_ramp_pct "$resets")"
     if [[ "${seven_i:-0}" -ge "${ramp:-100}" ]]; then
       verdict="over"
       echo "  Usage: 5h=${five}% 7d=${seven}% (low_priority spare-cycles ramp: ${ramp}%)"

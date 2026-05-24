@@ -168,6 +168,67 @@ grep -q "ramp=42%" "$LOG_OUT" \
   && ok "daemon log shows ramp=42% on day 3 (matches floor(3 × 14.2))" \
   || bad "daemon log shows ramp=42% on day 3"
 
+# A.3 — x7ve: day_index derives from seven_day.resets_at, not the calendar.
+# Without SPARE_DAY_INDEX the ramp must move monotonically with the API-
+# reported window end, so the soft line cannot jump backwards at UTC midnight.
+ramp_for_resets() {
+  # $1 = resets_at ISO 8601 (leave empty to test the missing-field path)
+  (
+    set +e
+    unset SPARE_DAY_INDEX
+    export USAGE_POLL_DISABLED=1   # safe: source-only, never hits keychain
+    . "$USAGE_LIB"
+    _usage_poll_spare_ramp_pct "$1"
+  )
+}
+day_for_resets() {
+  (
+    set +e
+    unset SPARE_DAY_INDEX
+    export USAGE_POLL_DISABLED=1
+    . "$USAGE_LIB"
+    _usage_poll_spare_ramp_day "$1"
+  )
+}
+
+NOW_EPOCH=$(date +%s)
+iso_at() {  # $1 = seconds-from-now (may be negative)
+  local target=$(( NOW_EPOCH + $1 ))
+  date -u -r "$target" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$target" +%Y-%m-%dT%H:%M:%SZ
+}
+
+# resets ~1 day out ⇒ we are deep in the window ⇒ day=7.
+eq "$(day_for_resets "$(iso_at 86400)")"     "7"  "resets_at = now+1d ⇒ day=7 (deep in rolling window)"
+eq "$(ramp_for_resets "$(iso_at 86400)")"    "99" "resets_at = now+1d ⇒ ramp=99%"
+
+# resets ~7 days out ⇒ window just reset ⇒ day=1.
+eq "$(day_for_resets "$(iso_at $((7*86400)))")"   "1"  "resets_at = now+7d ⇒ day=1 (window just reset)"
+eq "$(ramp_for_resets "$(iso_at $((7*86400)))")"  "14" "resets_at = now+7d ⇒ ramp=14%"
+
+# resets ~3.5 days out ⇒ ceil((3.5d)/1d)=4 days remaining ⇒ day=8-4=4.
+eq "$(day_for_resets "$(iso_at $(( (7*86400)/2 )))")"   "4"  "resets_at = now+3.5d ⇒ day=4 (ceil of remaining)"
+eq "$(ramp_for_resets "$(iso_at $(( (7*86400)/2 )))")"  "56" "resets_at = now+3.5d ⇒ ramp=56%"
+
+# resets in the past (clock skew / stale cache) ⇒ clamped to day=7.
+eq "$(day_for_resets "$(iso_at -3600)")"  "7"  "resets_at in the past ⇒ day=7 (clamped)"
+
+# Missing / malformed resets_at ⇒ conservative day=1, ramp=14%.
+eq "$(day_for_resets "")"                "1"  "resets_at missing ⇒ day=1 (conservative)"
+eq "$(ramp_for_resets "")"               "14" "resets_at missing ⇒ ramp=14% (conservative)"
+eq "$(day_for_resets "not-a-timestamp")" "1"  "resets_at malformed ⇒ day=1 (conservative)"
+
+# SPARE_DAY_INDEX override still wins, even when resets_at says otherwise —
+# pinned tests must keep working.
+SPARE_DAY_INDEX_OVERRIDE_RAMP=$(
+  set +e
+  export SPARE_DAY_INDEX=2
+  export USAGE_POLL_DISABLED=1
+  . "$USAGE_LIB"
+  _usage_poll_spare_ramp_pct "$(iso_at 86400)"
+)
+eq "$SPARE_DAY_INDEX_OVERRIDE_RAMP" "28" "SPARE_DAY_INDEX=2 overrides resets_at-derived day"
+
 # ════════════════════════════════════════════════════════════════════════════
 # PART B — spare-cycles + low_priority + usage UNDER ramp ⇒ allowed
 # ════════════════════════════════════════════════════════════════════════════

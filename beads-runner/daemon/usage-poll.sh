@@ -95,33 +95,68 @@ _usage_poll_log() {
   fi
 }
 
-# _usage_poll_spare_ramp_pct — mirror of la__spare_ramp_pct (lib/local-
-# agent.sh): day N of the rolling 7d window allows ≤ N×SPARE_RAMP_PER_DAY%
-# utilisation for low_priority. SPARE_DAY_INDEX env override for tests.
+# _usage_poll_resets_at_to_day <resets_at_iso8601> — convert the Anthropic
+# usage API's seven_day.resets_at timestamp into a "day N of the rolling 7d
+# window" index in 1..7. The window ends at resets_at and is 7d wide, so
+# day N = ceil((now - (resets_at - 7d)) / 86400) = 8 - ceil((resets_at - now) / 86400).
+# Empty input or parse failure ⇒ empty stdout (caller falls back to day=1).
+_usage_poll_resets_at_to_day() {
+  local resets="$1"
+  [[ -n "$resets" ]] || return 0
+  local resets_epoch now remaining day
+  # macOS first, then GNU date — matches the pattern used by _usage_poll_write_cache.
+  resets_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$resets" +%s 2>/dev/null \
+                 || date -u -d "$resets" +%s 2>/dev/null \
+                 || echo "")
+  [[ -n "$resets_epoch" ]] || return 0
+  now=$(date +%s 2>/dev/null || echo 0)
+  remaining=$(( resets_epoch - now ))
+  if (( remaining <= 0 )); then
+    printf '7'
+    return 0
+  fi
+  # ceil(remaining / 86400) without bc.
+  day=$(( 8 - ( (remaining + 86399) / 86400 ) ))
+  (( day < 1 )) && day=1
+  (( day > 7 )) && day=7
+  printf '%s' "$day"
+}
+
+# _usage_poll_spare_ramp_pct [resets_at] — mirror of la__spare_ramp_pct (lib/
+# local-agent.sh): day N of the rolling 7d window allows ≤ N×SPARE_RAMP_PER_DAY%
+# utilisation for low_priority. The day index is anchored on the Anthropic
+# usage API's seven_day.resets_at (the END of the rolling window), NOT on
+# the calendar — so the ramp moves monotonically through the user's actual
+# window instead of cycling at UTC midnight (x7ve). SPARE_DAY_INDEX env
+# override pins the day for deterministic tests. Missing resets_at ⇒ day=1
+# (conservative: the soft line is tightest when the window position is
+# unknown; the hard 5h/7d ceiling is the real guard, AD2.3).
 _usage_poll_spare_ramp_pct() {
-  local day now ramp
+  local resets="${1:-}" day ramp
   if [[ -n "${SPARE_DAY_INDEX:-}" ]]; then
     day="$SPARE_DAY_INDEX"
   else
-    now=$(date +%s 2>/dev/null || echo 0)
-    day=$(( (now / 86400) % 7 + 1 ))
+    day=$(_usage_poll_resets_at_to_day "$resets")
+    [[ -n "$day" ]] || day=1
   fi
   ramp=$(awk -v d="$day" -v r="$USAGE_POLL_SPARE_RAMP_PER_DAY" \
            'BEGIN{ v=d*r; if(v>100) v=100; printf "%d", v }' 2>/dev/null) || ramp=100
   printf '%s' "${ramp:-100}"
 }
 
-# _usage_poll_spare_ramp_day — the day-of-week index (1..7) the current ramp
-# was computed against. Same SPARE_DAY_INDEX override the pct function takes,
-# so a test that pins day=3 sees both the pct and the day line up.
+# _usage_poll_spare_ramp_day [resets_at] — the day-into-window index (1..7)
+# the current ramp was computed against. Same SPARE_DAY_INDEX override and
+# same resets_at-anchored derivation the pct function uses, so a log line
+# of the form `day=N × R%` matches the ramp emitted alongside it.
 _usage_poll_spare_ramp_day() {
+  local resets="${1:-}" day
   if [[ -n "${SPARE_DAY_INDEX:-}" ]]; then
     printf '%s' "$SPARE_DAY_INDEX"
     return 0
   fi
-  local now
-  now=$(date +%s 2>/dev/null || echo 0)
-  printf '%s' $(( (now / 86400) % 7 + 1 ))
+  day=$(_usage_poll_resets_at_to_day "$resets")
+  [[ -n "$day" ]] || day=1
+  printf '%s' "$day"
 }
 
 # _usage_poll_read_token — read Anthropic OAuth token via macOS Keychain.
@@ -284,7 +319,7 @@ daemon_usage_poll_once() {
     return 0
   fi
 
-  local token usage five seven five_i seven_i ramp allowed
+  local token usage five seven resets five_i seven_i ramp allowed
   if ! token=$(_usage_poll_read_token); then
     # BC-34 fail-OPEN: cache a permissive record so the workspace doesn't
     # gate. The next cycle retries the Keychain (a locked Keychain unlocks
@@ -298,8 +333,11 @@ daemon_usage_poll_once() {
     fi
     # D2 §1.1 fail-OPEN emit: keychain_ok=false, usage_api_ok=false (no API
     # call made), pct_5h/pct_7d=0. The Board surfaces the "keychain
-    # unreadable" breadcrumb (§4.C) — the strip is never hidden.
-    _machine_state_emit 0 0 "$(_usage_poll_spare_ramp_pct)" "$USAGE_POLL_THRESHOLD" false false
+    # unreadable" breadcrumb (§4.C) — the strip is never hidden. The ramp
+    # mirrors the permissive cache literal (100) — without a usage-API
+    # response there is no resets_at to anchor the soft line, and the gate
+    # is already fail-OPEN here.
+    _machine_state_emit 0 0 100 "$USAGE_POLL_THRESHOLD" false false
     return 0
   fi
 
@@ -309,15 +347,19 @@ daemon_usage_poll_once() {
       _usage_poll_write_cache 0 0 100 '"standard","low_priority"' || true
     fi
     # D2 §1.1 fail-OPEN emit: keychain_ok=true, usage_api_ok=false; pct=0.
-    _machine_state_emit 0 0 "$(_usage_poll_spare_ramp_pct)" "$USAGE_POLL_THRESHOLD" true false
+    # Ramp=100 mirrors the permissive cache for the same reason as above.
+    _machine_state_emit 0 0 100 "$USAGE_POLL_THRESHOLD" true false
     return 0
   fi
 
   five=$(printf '%s'  "$usage" | jq -r '.five_hour.utilization  // 0' 2>/dev/null) || five=0
   seven=$(printf '%s' "$usage" | jq -r '.seven_day.utilization // 0' 2>/dev/null) || seven=0
+  # x7ve: anchor the day-N ramp on the API-reported window end. Accept either
+  # snake_case or camelCase; an absent field returns empty ⇒ conservative day=1.
+  resets=$(printf '%s' "$usage" | jq -r '.seven_day.resets_at // .seven_day.resetsAt // ""' 2>/dev/null) || resets=""
   five_i=${five%.*};   five_i=${five_i:-0}
   seven_i=${seven%.*}; seven_i=${seven_i:-0}
-  ramp="$(_usage_poll_spare_ramp_pct)"
+  ramp="$(_usage_poll_spare_ramp_pct "$resets")"
   allowed="$(_usage_poll_compute_allowed "$five_i" "$seven_i" "$ramp")"
 
   if ! _usage_poll_write_cache "$five" "$seven" "$ramp" "$allowed"; then
@@ -345,7 +387,7 @@ daemon_usage_poll_once() {
   # C2 (claude-tools-oil): log the daily-ramp FORMULA, not just the result,
   # so the UX 0.A math (day-of-week × SPARE_RAMP_PER_DAY%) is auditable from
   # the daemon's logs. e.g. ramp=42% (day=3 × 14.2%).
-  local ramp_day; ramp_day="$(_usage_poll_spare_ramp_day)"
+  local ramp_day; ramp_day="$(_usage_poll_spare_ramp_day "$resets")"
   _usage_poll_log "M2 usage-poll: 5h=${five}% 7d=${seven}% ramp=${ramp}% (day=${ramp_day} × ${USAGE_POLL_SPARE_RAMP_PER_DAY}%) allowed=[$allowed] (cache TTL=${USAGE_POLL_TTL_SECONDS}s)"
   return 0
 }
