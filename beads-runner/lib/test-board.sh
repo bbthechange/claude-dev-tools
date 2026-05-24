@@ -381,8 +381,144 @@ ck "Edge — actual=idle in thinking window stays 'live'"        eq "$(jq -r '.s
 ck "board.css declares .pill.thinking"                         has ".pill.thinking" "$(cat "$CSS")"
 ck "board.css thinking style is reduced-motion safe"           has "prefers-reduced-motion" "$(cat "$CSS")"
 
+echo "── EXIT-8: MACHINE-STATE.md v1 §4 — top-of-board capacity strip (zdxd.5) ──"
+# The §4.A per-machine strip is the ONE place per-machine usage surfaces; the
+# per-runner 'capacity: <verdict>' pill is removed (§4.F). Color bands are
+# driven by threshold_in_effect, NEVER a Board constant (§4.B). Staleness +
+# gate-disabled degrade per-field, NEVER all-or-nothing (§4.C/§4.D/§4.E).
+# Empty-state ⇒ explicit "no telemetry yet" banner (§3.C), not a phantom ok.
+
+# render_snap() pipes an arbitrary snapshot object (we craft these directly
+# here, since the bash producer doesn't emit machine_state — that's CF.3 +
+# the daemon's separate channel; the renderer just consumes the C3 shape).
+render_snap() { printf '%s' "$1" | node -e '
+  let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+    const BV=require(process.argv[1]);
+    let snap; try{snap=JSON.parse(s);}catch(e){snap=s;}
+    process.stdout.write(JSON.stringify(BV.deriveBoardView(snap)));
+  });' "$VIEW"; }
+
+# Minimal valid §4.5 snapshot wrapper: bound schema, no projects/lifecycle.
+empty_snap='{"schema_version":1,"principal":"PRINCIPAL_V1","read_only":true,"projects":[],"lifecycle_columns":{},"waiting_on_you":[],"machines":[]}'
+
+# §A canonical fixture entry: runner_id=macbook-pro.local, pct_5h=24, pct_7d=82,
+# spare_ramp_today=56, threshold_in_effect=70, fresh=true, age_seconds=42.
+fix='{"runner_id":"macbook-pro.local","observed_at":"2026-05-24T06:38:20Z","pct_5h":24,"pct_7d":82,"spare_ramp_today":56,"threshold_in_effect":70,"gate_disabled":false,"keychain_ok":true,"usage_api_ok":true,"fresh":true,"age_seconds":42}'
+
+# ─ Fixture-driven render: one strip, expected text + bands ─
+ONE_SNAP="$(jq -c --argjson m "$fix" '.machines=[$m]' <<<"$empty_snap")"
+V8="$(render_snap "$ONE_SNAP")"
+ck "fixture: deriveBoardView accepts a machines[] array (ok:true)" eq "$(jq -r '.ok' <<<"$V8")" "true"
+ck "fixture: machines view has exactly one row"                    eq "$(jq -r '.machines|length' <<<"$V8")" "1"
+ck "fixture: machines_empty=false when one row present"            eq "$(jq -r '.machines_empty' <<<"$V8")" "false"
+M0="$(jq -c '.machines[0]' <<<"$V8")"
+ck "fixture: runner_id surfaced verbatim"                          eq "$(jq -r '.runner_id' <<<"$M0")" "macbook-pro.local"
+ck "fixture: pct_5h_text formatted as '24%'"                       eq "$(jq -r '.pct_5h_text' <<<"$M0")" "24%"
+ck "fixture: pct_7d_text formatted as '82%'"                       eq "$(jq -r '.pct_7d_text' <<<"$M0")" "82%"
+ck "fixture: ramp_text formatted as '56%'"                         eq "$(jq -r '.ramp_text' <<<"$M0")" "56%"
+# §4.B bands at threshold 70: 0.5×T=35.
+#   pct_5h=24 < 35           ⇒ green
+#   ramp=56  ∈ [35,70)        — ramp is intentionally NEUTRAL (§4.B only bands pct_<n>)
+#   pct_7d=82 ≥ 70            ⇒ red
+ck "fixture: pct_5h band is green (24 < 35 = 0.5×70)"              eq "$(jq -r '.pct_5h_band' <<<"$M0")" "green"
+ck "fixture: pct_7d band is red (82 ≥ 70)"                         eq "$(jq -r '.pct_7d_band' <<<"$M0")" "red"
+ck "fixture: ramp band is neutral (§4.B only bands pct_<n>)"        eq "$(jq -r '.ramp_band' <<<"$M0")" "neutral"
+# Fixture pct_7d=82 ≥ threshold=70 ⇒ <allowed>='(none — over)' (mirrors
+# daemon/usage-poll.sh:_usage_poll_compute_allowed: pct ≥ T zeros allowed).
+ck "fixture: <allowed> = '(none — over)' (pct_7d=82 ≥ T=70)"         eq "$(jq -r '.allowed_text' <<<"$M0")" "(none — over)"
+ck "fixture: 'observed <age> ago' uses age_seconds (42s)"           eq "$(jq -r '.age_text' <<<"$M0")" "42s"
+ck "fixture: composite strip_text matches §4.A format"              has "macbook-pro.local · 5h 24% · 7d 82% · ramp 56% · (none — over) · observed 42s ago" "$(jq -r '.strip_text' <<<"$M0")"
+ck "fixture: fresh=true ⇒ no stale_label"                           eq "$(jq -r '.stale_label' <<<"$M0")" "null"
+ck "fixture: gate enabled ⇒ no gate-disabled chip"                  eq "$(jq -r '.gate_disabled_chip' <<<"$M0")" "null"
+ck "fixture: keychain_ok=true ⇒ no keychain chip"                   eq "$(jq -r '.keychain_chip' <<<"$M0")" "null"
+ck "fixture: usage_api_ok=true ⇒ no api chip"                       eq "$(jq -r '.api_chip' <<<"$M0")" "null"
+ck "fixture: all fields present ⇒ no 'partial' chip"                eq "$(jq -r '.partial_chip' <<<"$M0")" "null"
+
+# ─ Stale render: fresh=false ⇒ grayed numbers + 'stale Nm ago' badge ─
+stale_fix='{"runner_id":"macbook-pro.local","observed_at":"2026-05-24T06:00:00Z","pct_5h":24,"pct_7d":82,"spare_ramp_today":56,"threshold_in_effect":70,"gate_disabled":false,"keychain_ok":true,"usage_api_ok":true,"fresh":false,"age_seconds":1800}'
+S_SNAP="$(jq -c --argjson m "$stale_fix" '.machines=[$m]' <<<"$empty_snap")"
+MS="$(jq -c '.machines[0]' <<<"$(render_snap "$S_SNAP")")"
+ck "stale: pct_5h band is 'stale' (grayed, NOT a color band)"      eq "$(jq -r '.pct_5h_band' <<<"$MS")" "stale"
+ck "stale: pct_7d band is 'stale' (grayed)"                        eq "$(jq -r '.pct_7d_band' <<<"$MS")" "stale"
+ck "stale: ramp band is 'stale' (grayed)"                          eq "$(jq -r '.ramp_band' <<<"$MS")" "stale"
+ck "stale: stale_label present, names age"                         has "stale " "$(jq -r '.stale_label' <<<"$MS")"
+ck "stale: stale_label uses the formatted age"                     has "30m" "$(jq -r '.stale_label' <<<"$MS")"
+ck "stale: fresh=false propagates to view"                         eq "$(jq -r '.fresh' <<<"$MS")" "false"
+
+# ─ Gate-disabled render: threshold=0 ⇒ neutral palette + 'gate disabled' chip,
+#   strip MUST still render ─
+gd_fix='{"runner_id":"macbook-pro.local","observed_at":"2026-05-24T06:38:20Z","pct_5h":24,"pct_7d":82,"spare_ramp_today":56,"threshold_in_effect":0,"gate_disabled":true,"keychain_ok":true,"usage_api_ok":true,"fresh":true,"age_seconds":42}'
+GD_SNAP="$(jq -c --argjson m "$gd_fix" '.machines=[$m]' <<<"$empty_snap")"
+GV="$(render_snap "$GD_SNAP")"
+MGD="$(jq -c '.machines[0]' <<<"$GV")"
+ck "gate-disabled: machines view STILL has one row (never voided)" eq "$(jq -r '.machines|length' <<<"$GV")" "1"
+ck "gate-disabled: pct_5h band is neutral (un-banded)"             eq "$(jq -r '.pct_5h_band' <<<"$MGD")" "neutral"
+ck "gate-disabled: pct_7d band is neutral (un-banded)"             eq "$(jq -r '.pct_7d_band' <<<"$MGD")" "neutral"
+ck "gate-disabled: 'gate disabled' chip present"                   eq "$(jq -r '.gate_disabled_chip' <<<"$MGD")" "gate disabled"
+ck "gate-disabled: gate_disabled flag exposed on row"              eq "$(jq -r '.gate_disabled' <<<"$MGD")" "true"
+ck "gate-disabled: <allowed> = 'standard,low_priority' (all allowed)" eq "$(jq -r '.allowed_text' <<<"$MGD")" "standard,low_priority"
+ck "gate-disabled: numbers STILL formatted (degrade per-field, not row)" eq "$(jq -r '.pct_5h_text' <<<"$MGD")" "24%"
+
+# ─ Multi-machine: two entries ⇒ two rows, deterministic order (projection
+#   sorts by runner_id; the renderer iterates in input order) ─
+alpha_fix='{"runner_id":"alpha-host","observed_at":"2026-05-24T06:38:20Z","pct_5h":10,"pct_7d":20,"spare_ramp_today":80,"threshold_in_effect":70,"gate_disabled":false,"keychain_ok":true,"usage_api_ok":true,"fresh":true,"age_seconds":10}'
+zeta_fix='{"runner_id":"zeta-host","observed_at":"2026-05-24T06:38:20Z","pct_5h":80,"pct_7d":90,"spare_ramp_today":40,"threshold_in_effect":70,"gate_disabled":false,"keychain_ok":true,"usage_api_ok":true,"fresh":true,"age_seconds":20}'
+MULTI_SNAP="$(jq -c --argjson a "$alpha_fix" --argjson z "$zeta_fix" '.machines=[$a,$z]' <<<"$empty_snap")"
+MV="$(render_snap "$MULTI_SNAP")"
+ck "multi: two rows present"                                       eq "$(jq -r '.machines|length' <<<"$MV")" "2"
+ck "multi: row 0 is alpha-host (projection-determined order kept)" eq "$(jq -r '.machines[0].runner_id' <<<"$MV")" "alpha-host"
+ck "multi: row 1 is zeta-host"                                     eq "$(jq -r '.machines[1].runner_id' <<<"$MV")" "zeta-host"
+ck "multi: alpha pct_5h band is green (10 < 35)"                   eq "$(jq -r '.machines[0].pct_5h_band' <<<"$MV")" "green"
+ck "multi: zeta pct_5h band is red (80 ≥ 70)"                      eq "$(jq -r '.machines[1].pct_5h_band' <<<"$MV")" "red"
+# zeta: pct_5h ≥ T ⇒ over ⇒ <allowed>='(none — over)'.
+ck "multi: zeta <allowed> = '(none — over)' (over the cap)"         eq "$(jq -r '.machines[1].allowed_text' <<<"$MV")" "(none — over)"
+
+# ─ Empty-state: machines=[] ⇒ machines_empty=true (banner present in DOM
+#   via app.js render path); NOT silent. ─
+EV="$(render_snap "$empty_snap")"
+ck "empty: machines view is the empty array (NOT absent/null)"     eq "$(jq -r '.machines|length' <<<"$EV")" "0"
+ck "empty: machines_empty flag is true (drives the §3.C banner)"   eq "$(jq -r '.machines_empty' <<<"$EV")" "true"
+
+# ─ Per-runner pill removed (§4.F): grep app.js for 'rcap' / 'capacity:'
+#   returns no LIVE render-side reference. Comments naming the removal are
+#   legitimate and use distinguishing text; the live render path used the
+#   className 'rcap' and the prefix "capacity: ", so we assert those are gone. ─
+# The className token shouldn't appear in any code position. The only legitimate
+# residual is the CSS deletion-marker comment; app.js + board-view.js must be clean.
+ck "app.js no longer references the rcap className"                hasnt "rcap" "$(cat "$APP")"
+ck "app.js no longer renders the 'capacity: ' pill text"           hasnt "'capacity: '" "$(cat "$APP")"
+ck "board-view.js no longer emits capacity_verdict on rows"        hasnt "capacity_verdict:" "$(cat "$VIEW")"
+
+# ─ Missing-field degrade (§4.E): a record without pct_5h still renders the
+#   strip with '—' for that slot and a 'partial' chip; row is NOT collapsed. ─
+miss_fix='{"runner_id":"missing-host","observed_at":"2026-05-24T06:38:20Z","pct_7d":50,"spare_ramp_today":60,"threshold_in_effect":70,"gate_disabled":false,"keychain_ok":true,"usage_api_ok":true,"fresh":true,"age_seconds":15}'
+MS_SNAP="$(jq -c --argjson m "$miss_fix" '.machines=[$m]' <<<"$empty_snap")"
+MM="$(jq -c '.machines[0]' <<<"$(render_snap "$MS_SNAP")")"
+ck "missing-field: row STILL present (no all-or-nothing collapse)"  eq "$(jq -r '.runner_id' <<<"$MM")" "missing-host"
+ck "missing-field: absent pct_5h ⇒ '—' (per-field degrade)"         eq "$(jq -r '.pct_5h_text' <<<"$MM")" "—"
+ck "missing-field: absent pct_5h ⇒ band='missing' (no false color)" eq "$(jq -r '.pct_5h_band' <<<"$MM")" "missing"
+ck "missing-field: pct_7d still rendered honestly"                  eq "$(jq -r '.pct_7d_text' <<<"$MM")" "50%"
+ck "missing-field: 'partial' chip surfaces (breadcrumb)"            eq "$(jq -r '.partial_chip' <<<"$MM")" "partial"
+
+# ─ keychain_ok/usage_api_ok breadcrumb chips (§4.C) ─
+kc_fix='{"runner_id":"degraded-host","observed_at":"2026-05-24T06:38:20Z","pct_5h":24,"pct_7d":40,"spare_ramp_today":80,"threshold_in_effect":70,"gate_disabled":false,"keychain_ok":false,"usage_api_ok":false,"fresh":true,"age_seconds":12}'
+KC_SNAP="$(jq -c --argjson m "$kc_fix" '.machines=[$m]' <<<"$empty_snap")"
+KM="$(jq -c '.machines[0]' <<<"$(render_snap "$KC_SNAP")")"
+ck "breadcrumb: keychain_ok=false ⇒ 'keychain unreadable' chip"     has "keychain" "$(jq -r '.keychain_chip' <<<"$KM")"
+ck "breadcrumb: usage_api_ok=false ⇒ 'usage API failed' chip"       has "usage API" "$(jq -r '.api_chip' <<<"$KM")"
+ck "breadcrumb: strip STILL renders the numbers (degrade, not collapse)" eq "$(jq -r '.pct_5h_text' <<<"$KM")" "24%"
+
+# ─ STRUCTURAL — app.js + index.html wire the top-of-board strip; the empty
+#   banner element exists in the shell so renderMachines can toggle it. ─
+ck "index.html declares the #machines container"                   has 'id="machines"' "$(cat "$SHELL_HTML")"
+ck "index.html declares the #ms-empty banner (no telemetry yet)"   has "no telemetry yet" "$(cat "$SHELL_HTML")"
+ck "app.js exposes a renderMachines() pipeline"                    has "renderMachines" "$(cat "$APP")"
+ck "app.js calls renderMachines with view.machines + machines_empty" has "view.machines" "$(cat "$APP")"
+ck "board.css declares the .machines container"                    has ".machines{" "$(cat "$CSS")"
+ck "board.css declares per-band classes (green/amber/red)"         has ".band-red" "$(cat "$CSS")"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
-echo " test-board (T6a + F2 claude-tools-8fh):  PASS=$PASS  FAIL=$FAIL"
+echo " test-board (T6a + F2 claude-tools-8fh + C4 zdxd.5):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]

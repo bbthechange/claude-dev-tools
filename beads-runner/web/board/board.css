@@ -161,9 +161,52 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   display:block;margin-top:6px;font-family:var(--mono);font-size:11px;
   color:var(--dim);letter-spacing:.02em;
 }
-.runner .rcap{margin-top:8px;font-size:9px;letter-spacing:.14em;
-  text-transform:uppercase;color:var(--slate)}
-.runner .rcap.over{color:var(--amber-soft)}
+/* .runner .rcap was removed in claude-tools-zdxd.5 (C4) — per-machine
+ * usage now lives in the top-of-board .machines strip (MACHINE-STATE.md
+ * v1 §4). The rule is retained only as a deletion marker so a CSS grep
+ * for "rcap" stays clean (board-view.js + app.js no longer reference it). */
+
+/* MACHINE-STATE.md v1 §4 — top-of-board per-machine capacity strip.
+ * One row per machines[] entry; the strip ALWAYS renders (§3.C empty-state
+ * surfaces a banner instead of silently omitting). Color bands per §4.B
+ * are driven by threshold_in_effect, NEVER a hardcoded constant. Stale and
+ * gate-disabled rows degrade in palette but stay present (§4.C/§4.D). */
+.machines{display:flex;flex-direction:column;gap:7px;padding:0 14px}
+.ms-empty{margin:8px 22px 4px;color:var(--faint);font-size:12px;
+  letter-spacing:.02em}
+.mstrip{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;
+  padding:10px 14px;border:1px solid var(--line);border-radius:11px;
+  background:var(--panel);font-family:var(--mono);font-size:12px}
+.mstrip .mrid{color:var(--text);letter-spacing:.04em;font-weight:500}
+.mstrip .mslot{display:inline-flex;align-items:baseline;gap:4px}
+.mstrip .mlbl{color:var(--slate);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase}
+.mstrip .mnum{font-weight:500;letter-spacing:.01em}
+/* §4.B color bands — threshold_in_effect drives green/amber/red; gate
+ * disabled OR fresh=false ⇒ neutral/stale (muted, not banded). Missing
+ * fields render in the same faint slate so the per-field degrade reads. */
+.mstrip .mnum.band-green{color:var(--mint)}
+.mstrip .mnum.band-amber{color:var(--amber-soft)}
+.mstrip .mnum.band-red{color:var(--coral)}
+.mstrip .mnum.band-neutral{color:var(--text)}
+.mstrip .mnum.band-stale{color:var(--faint)}
+.mstrip .mnum.band-missing{color:var(--faint)}
+.mstrip .mallowed{color:var(--dim);font-size:11px;letter-spacing:.04em}
+.mstrip .mobs{color:var(--faint);font-size:11px;letter-spacing:.02em;
+  margin-left:auto}
+.mstrip .mchip{font-size:10px;letter-spacing:.06em;padding:3px 7px;
+  border-radius:6px;border:1px solid var(--line)}
+.mstrip .mchip.stale-chip{color:var(--faint);border-color:var(--line-2);
+  background:rgba(255,255,255,.02)}
+.mstrip .mchip.gate-chip{color:var(--dim);border-color:var(--line-2)}
+.mstrip .mchip.warn-chip{color:var(--amber-soft);
+  border-color:rgba(255,180,84,.35);background:var(--amber-glow)}
+/* §4.C: an entirely-stale row reads as muted across the board (not just the
+ * numbers) so the user's glance picks up "this whole strip is stale" at once. */
+.mstrip.stale{background:var(--ink-2);border-color:var(--line)}
+.mstrip.stale .mrid,.mstrip.stale .mallowed{color:var(--dim)}
+/* §4.D: gate disabled = un-banded neutral palette (numbers stay readable). */
+.mstrip.gate-disabled .mnum{color:var(--text)}
 
 /* F2 (claude-tools-8fh) — per-workspace desired-state toggle row.
  * Mobile-first: each button is ≥44×44px (Apple HIG / WCAG 2.5.5 minimum),

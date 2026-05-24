@@ -50,6 +50,14 @@
           <div class="cols" id="cols"></div>
         </div>
 
+        <!-- MACHINE STRIP — per-machine telemetry (MACHINE-STATE.md v1 §4.A).
+             Above the per-workspace runners grid; per-machine, not per-workspace. -->
+        <div class="spine">
+          <div class="sl">CAPACITY · per machine (machine_state v1)</div>
+          <div class="machines" id="machines"></div>
+          <p class="ms-empty" id="ms-empty" hidden>no telemetry yet — daemon hasn't reported in</p>
+        </div>
+
         <!-- PER-PROJECT RUNNERS — honest actual + S-1 liveness -->
         <div class="spine">
           <div class="sl">RUNNERS · honest state (§4.2)</div>

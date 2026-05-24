@@ -26,13 +26,22 @@
  * fields — a timestamp delta into "Nh ago" is presentation, not derived
  * state), and has NO write path. A field the Board genuinely needs but the
  * §4.5 producer does not emit is a §11 escalation to claude-tools-65z — NOT a
- * UI-side fabrication. (The mock's numeric 5h/7d gauges are such a
- * not-in-producer nicety; per the task NOTES precedence the frozen §4.5
- * coarse `verdict` wins and the gauge is treated as not-yet-updated mock — no
- * escalation, because machine-health is fully answerable from
- * verdict+liveness+mismatch+failure.) MUST NOT render the Inbox/dossier body
- * or the §10 forensic stream (that is T6b) — the WAITING-ON-YOU lane is a
- * pointer, never the dossier content.
+ * UI-side fabrication. MUST NOT render the Inbox/dossier body or the §10
+ * forensic stream (that is T6b) — the WAITING-ON-YOU lane is a pointer, never
+ * the dossier content.
+ *
+ * ANTI-DRIFT (sibling): the per-machine capacity strip ALSO binds FROZEN
+ * MACHINE-STATE.md v1 (D2). `deriveMachine` consumes `snapshot.machines[]`
+ * (the §3.A field set the C3 projection emits) and presents the §4.A strip:
+ *   runner_id · 5h <pct>% · 7d <pct>% · ramp <pct>% · <allowed> · observed <age> ago
+ * Color bands (§4.B) are driven by `threshold_in_effect` (NEVER hardcoded
+ * 70 — moving the env threshold re-bands on the next snapshot tick with no
+ * Board redeploy). Staleness (§4.C), gate-disabled (§4.D), and missing-field
+ * (§4.E) are degrade-per-field, never all-or-nothing — same render-tolerance
+ * discipline as the 4xe write-gate/render-tolerance memory. A D2 gap ⇒
+ * reopen D2 and re-freeze; NEVER edit MACHINE-STATE.md silently.
+ * Oracle = MACHINE-STATE.md + test-fixtures/machine-state-v1.json + the
+ * EXIT-8 clauses in lib/test-board.sh.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -136,9 +145,13 @@
       desired: desired,
       mismatch: mismatch,
       last_heartbeat_at: rs.last_heartbeat_at || null,
-      ago: ago,
-      capacity_verdict:
-        (p && p.capacity_strip && p.capacity_strip.verdict) || 'unknown'
+      ago: ago
+      // capacity_verdict — REMOVED in claude-tools-zdxd.5 (C4). The §4.5
+      // projection no longer carries projects[].capacity_strip (C3 dropped
+      // it per MACHINE-STATE.md §3.B); per-machine usage is now surfaced by
+      // the top-of-board strip via deriveMachine. The over-capacity warn
+      // tag at deriveBoardView is kept as a dormant slot for future §1.1
+      // capacity_reports wiring — currently always empty by construction.
     };
 
     if (liveness === 'stale') {
@@ -221,6 +234,124 @@
       : null;
 
     return row;
+  }
+
+  /* formatPct(n) → "<n>%" | "—". Defensive: a non-number degrades to em-dash
+   * per MACHINE-STATE.md §4.E (per-field degrade, never all-or-nothing). A
+   * whole number renders without a decimal; a float keeps one decimal. */
+  function formatPct(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return '—';
+    if (n === Math.floor(n)) return n + '%';
+    return n.toFixed(1) + '%';
+  }
+
+  /* formatAgeSeconds(s) → "<n>s" | "<n>m" | "<n>h" | "<n>d" | "unknown".
+   * Mirrors formatAgo's bucketing for the §4.A "observed <age> ago" slot. */
+  function formatAgeSeconds(s) {
+    if (typeof s !== 'number' || !isFinite(s) || s < 0) return 'unknown';
+    if (s < 90) return Math.floor(s) + 's';
+    var m = Math.floor(s / 60);
+    if (m < 90) return m + 'm';
+    var h = Math.floor(m / 60);
+    if (h < 48) return h + 'h';
+    return Math.floor(h / 24) + 'd';
+  }
+
+  /* deriveMachine(rec) → the per-machine view row for the §4.A top-of-board
+   * capacity strip. `rec` is a snapshot.machines[] entry shaped per
+   * MACHINE-STATE.md §3.A (the C3 projection adds `fresh` + `age_seconds`).
+   *
+   * Render-tolerance discipline (4xe memory + MACHINE-STATE §4 head note):
+   * the Board NEVER refuses to render a strip. A missing pct degrades to
+   * `—` (§4.E); a stale record renders grayed with a 'stale Nm ago' badge
+   * (§4.C); gate disabled (threshold=0 or gate_disabled=true) ⇒ neutral
+   * palette + 'gate disabled' chip but the strip STAYS (§4.D).
+   *
+   * The `<allowed>` slot in §4.A re-derives the daemon's gating decision
+   * from the wire fields using the SAME formula as
+   * daemon/usage-poll.sh:_usage_poll_compute_allowed — the Board never
+   * introduces a different gate semantic. */
+  function deriveMachine(rec) {
+    var r = (rec && typeof rec === 'object' && !Array.isArray(rec)) ? rec : {};
+    var t = (typeof r.threshold_in_effect === 'number' && isFinite(r.threshold_in_effect))
+      ? r.threshold_in_effect : null;
+    var gateDisabled = r.gate_disabled === true || t === 0;
+
+    var has5h = typeof r.pct_5h === 'number' && isFinite(r.pct_5h);
+    var has7d = typeof r.pct_7d === 'number' && isFinite(r.pct_7d);
+    var hasRamp = typeof r.spare_ramp_today === 'number' && isFinite(r.spare_ramp_today);
+    var partial = !has5h || !has7d || !hasRamp;
+
+    // §4.B color bands — driven by threshold_in_effect, NEVER a Board constant.
+    // gate disabled ⇒ neutral (un-banded) per §4.D.
+    function band(pct, has) {
+      if (!has) return 'missing';
+      if (gateDisabled || t === null || t <= 0) return 'neutral';
+      if (pct >= t) return 'red';
+      if (pct >= 0.5 * t) return 'amber';
+      return 'green';
+    }
+
+    // §4.C staleness: fresh===false ⇒ grayed numbers + stale badge. The
+    // projection's `fresh` flag is authoritative (C3 derives it from
+    // age_seconds ≤ 2×USAGE_POLL_TTL_SECONDS); the Board does NOT re-derive.
+    var fresh = r.fresh !== false;
+    var pct5hBand = fresh ? band(r.pct_5h, has5h) : 'stale';
+    var pct7dBand = fresh ? band(r.pct_7d, has7d) : 'stale';
+    var rampBand = fresh ? 'neutral' : 'stale';
+
+    // <allowed> — mirror of daemon/usage-poll.sh:_usage_poll_compute_allowed.
+    // Same formula keeps a single source of truth for the gate semantic; if
+    // the daemon's rule changes, both update in lockstep (binding-map drift
+    // would surface in the conformance bead, claude-tools-zdxd.6).
+    var allowedText;
+    if (gateDisabled || t === null || t <= 0) {
+      allowedText = 'standard,low_priority';
+    } else if ((has5h && r.pct_5h >= t) || (has7d && r.pct_7d >= t)) {
+      allowedText = '(none — over)';
+    } else if (has7d && hasRamp && r.pct_7d >= r.spare_ramp_today) {
+      allowedText = 'standard';
+    } else {
+      allowedText = 'standard,low_priority';
+    }
+
+    var ageSec = (typeof r.age_seconds === 'number' && isFinite(r.age_seconds))
+      ? r.age_seconds : null;
+    var ageStr = formatAgeSeconds(ageSec);
+
+    var pct5hText = formatPct(r.pct_5h);
+    var pct7dText = formatPct(r.pct_7d);
+    var rampText = formatPct(r.spare_ramp_today);
+    var rid = (typeof r.runner_id === 'string' && r.runner_id) ? r.runner_id : '—';
+
+    // The composite text the §4.A format prescribes — produced here so
+    // headless tests can assert against it without walking each slot.
+    var stripText = rid +
+      ' · 5h ' + pct5hText +
+      ' · 7d ' + pct7dText +
+      ' · ramp ' + rampText +
+      ' · ' + allowedText +
+      ' · observed ' + ageStr + ' ago';
+
+    return {
+      runner_id: rid,
+      pct_5h_text: pct5hText,
+      pct_7d_text: pct7dText,
+      ramp_text: rampText,
+      pct_5h_band: pct5hBand,
+      pct_7d_band: pct7dBand,
+      ramp_band: rampBand,
+      allowed_text: allowedText,
+      age_text: ageStr,
+      fresh: fresh,
+      stale_label: fresh ? null : ('stale ' + ageStr),
+      gate_disabled: gateDisabled,
+      gate_disabled_chip: gateDisabled ? 'gate disabled' : null,
+      keychain_chip: r.keychain_ok === false ? 'keychain unreadable' : null,
+      api_chip: r.usage_api_ok === false ? 'usage API failed' : null,
+      partial_chip: partial ? 'partial' : null,
+      strip_text: stripText
+    };
   }
 
   /* deriveBoardView(snapshot, nowMs?, opts?) → the whole Board view model.
@@ -466,6 +597,13 @@
       ].filter(Boolean)
     };
 
+    // MACHINE-STATE.md §3.A/§4 — top-of-board per-machine strip. Passed
+    // through to the rendered model verbatim from snapshot.machines[] (the
+    // C3 projection is authoritative). §3.C: an empty array is honest — the
+    // renderer surfaces a "no telemetry yet" banner, NOT a phantom "ok".
+    var rawMachines = Array.isArray(snap.machines) ? snap.machines : [];
+    var machineRows = rawMachines.map(deriveMachine);
+
     return {
       ok: true,
       principal: snap.principal || '(unresolved)',
@@ -474,14 +612,19 @@
       health: health,
       runners: runners,
       waiting_on_you: waiting,
-      lifecycle: lifecycle
+      lifecycle: lifecycle,
+      machines: machineRows,
+      machines_empty: machineRows.length === 0
     };
   }
 
   return {
     deriveBoardView: deriveBoardView,
     deriveRunner: deriveRunner,
+    deriveMachine: deriveMachine,
     formatAgo: formatAgo,
+    formatAgeSeconds: formatAgeSeconds,
+    formatPct: formatPct,
     STAGE_ORDER: STAGE_ORDER,
     DESIRED_CONTROLS: DESIRED_CONTROLS,
     SUPPORTED_SNAPSHOT_SCHEMA: SUPPORTED_SNAPSHOT_SCHEMA

@@ -17,6 +17,14 @@
  * (anti-drift: that is T6b). All honest-state / S-1 rendering decisions
  * live in board-view.js; this file only writes the derived strings into
  * elements and POSTs the user's tap.
+ *
+ * ANTI-DRIFT (sibling): the top-of-board per-machine capacity strip
+ * (MACHINE-STATE.md v1 §4.A) is rendered by renderMachines from
+ * view.machines[]; the derive lives in board-view.js (deriveMachine). The
+ * per-runner "capacity: <verdict>" pill was REMOVED in claude-tools-zdxd.5
+ * (C4) — per-machine usage is now surfaced ONCE at the top of the board,
+ * not duplicated on each workspace row. Empty machines[] ⇒ explicit
+ * "no telemetry yet" banner (§3.C), never a phantom "ok".
  */
 (function () {
   'use strict';
@@ -50,6 +58,8 @@
     woyEmpty: document.getElementById('woy-empty'),
     woyCount: document.getElementById('woy-count'),
     cols: document.getElementById('cols'),
+    machines: document.getElementById('machines'),
+    msEmpty: document.getElementById('ms-empty'),
     runners: document.getElementById('runners'),
     footUpdated: document.getElementById('foot-updated')
   };
@@ -255,10 +265,61 @@
       if (r.stale_controls_note) {
         box.appendChild(mk('div', 'rstale', r.stale_controls_note));
       }
-      var cap = mk('div', 'rcap' + (r.capacity_verdict === 'over' ? ' over' : ''),
-        'capacity: ' + r.capacity_verdict);
-      box.appendChild(cap);
+      // The per-runner "capacity: <verdict>" pill was REMOVED in
+      // claude-tools-zdxd.5 (C4). Per-machine usage now surfaces ONCE at
+      // the top of the board via renderMachines (MACHINE-STATE.md §4).
       el.runners.appendChild(box);
+    });
+  }
+
+  /* renderMachines(machines, empty) — MACHINE-STATE.md §4.A top-of-board
+   * per-machine capacity strip. One row per machines[] entry; deterministic
+   * order is the projection's (C3 sorts by runner_id). Empty array ⇒
+   * "no telemetry yet" banner (§3.C); the strip is NEVER omitted entirely.
+   *
+   * Color bands (§4.B) come from the view-model field per-pct (green/amber/
+   * red/neutral/stale/missing); CSS paints them. Staleness (§4.C) and gate
+   * disabled (§4.D) are surfaced as chips/badges next to the row. */
+  function renderMachines(machines, empty) {
+    clear(el.machines);
+    el.msEmpty.hidden = !empty;
+    if (empty) return;
+    machines.forEach(function (m) {
+      // Row container. `stale` and `gate-disabled` classes drive the muted
+      // palette per §4.C/§4.D; the strip itself ALWAYS renders.
+      var rowCls = 'mstrip';
+      if (!m.fresh) rowCls += ' stale';
+      if (m.gate_disabled) rowCls += ' gate-disabled';
+      var row = mk('div', rowCls);
+
+      // runner_id — the identity slot
+      row.appendChild(mk('span', 'mrid', m.runner_id));
+
+      function numSlot(label, text, band) {
+        var slot = mk('span', 'mslot');
+        slot.appendChild(mk('span', 'mlbl', label));
+        slot.appendChild(mk('span', 'mnum band-' + band, text));
+        return slot;
+      }
+      row.appendChild(numSlot('5h', m.pct_5h_text, m.pct_5h_band));
+      row.appendChild(numSlot('7d', m.pct_7d_text, m.pct_7d_band));
+      row.appendChild(numSlot('ramp', m.ramp_text, m.ramp_band));
+
+      // <allowed> — gating summary (re-derived from wire fields, mirrors
+      // daemon/usage-poll.sh:_usage_poll_compute_allowed).
+      row.appendChild(mk('span', 'mallowed', m.allowed_text));
+
+      // "observed <age> ago" — uses the projection's age_seconds (C3).
+      row.appendChild(mk('span', 'mobs', 'observed ' + m.age_text + ' ago'));
+
+      // Chips/badges (§4.C/§4.D/§4.E) — degrade per-field, never collapse the row.
+      if (m.stale_label) row.appendChild(mk('span', 'mchip stale-chip', m.stale_label));
+      if (m.gate_disabled_chip) row.appendChild(mk('span', 'mchip gate-chip', m.gate_disabled_chip));
+      if (m.keychain_chip) row.appendChild(mk('span', 'mchip warn-chip', m.keychain_chip));
+      if (m.api_chip) row.appendChild(mk('span', 'mchip warn-chip', m.api_chip));
+      if (m.partial_chip) row.appendChild(mk('span', 'mchip warn-chip', m.partial_chip));
+
+      el.machines.appendChild(row);
     });
   }
 
@@ -283,6 +344,7 @@
       });
     });
     renderLifecycle(view.lifecycle, gatedStages);
+    renderMachines(view.machines || [], view.machines_empty === true);
     renderRunners(view.runners);
     el.footUpdated.textContent = 'updated ' +
       new Date().toLocaleTimeString();
