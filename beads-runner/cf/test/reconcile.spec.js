@@ -663,3 +663,140 @@ it("CF.3 §3.A workSnapshot machines[] projection — D2-faithful (claude-tools-
   }
   expect(p3FAIL, `§3.A machines[] clauses failed: ${p3fails.join("; ")}`).toBe(0);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// claude-tools-4g5o — workspace_inventory join: workSnapshot looks up the
+// title for each project's current_task_ref from the stored §4.6
+// workspace_inventory record's in_progress_beads[] and exposes it as
+// runner_state.current_task_title. Graceful degradation when the record /
+// match / ref is absent — the Board renderer falls back to ref-only.
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 workSnapshot joins workspace_inventory.in_progress_beads → runner_state.current_task_title (claude-tools-4g5o)", async () => {
+  let pPASS = 0;
+  let pFAIL = 0;
+  const pfails = [];
+  function pck(name, cond) {
+    if (cond) {
+      pPASS++;
+      // eslint-disable-next-line no-console
+      console.log(`  ✓ ${name}`);
+    } else {
+      pFAIL++;
+      pfails.push(name);
+      // eslint-disable-next-line no-console
+      console.log(`  ✗ ${name}`);
+    }
+  }
+  // A minimal conformant §4.6 workspace_inventory payload for the put endpoint
+  // (the CF op handler asserts all required fields — see claude-tools-8dfb).
+  function wsiPayload(projectRef, inProgress) {
+    return JSON.stringify({
+      report: "workspace_inventory",
+      schema_version: 1,
+      principal: "literal-overwritten",
+      runner_id: "hostX",
+      project_ref: projectRef,
+      observed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      counts: { open: 0, ready: 0, in_progress: inProgress.length, blocked: 0 },
+      in_progress_beads: inProgress,
+      top_n_beads: [],
+    });
+  }
+  // Make sure each case starts from a known runner_state (so the projection
+  // surfaces THIS project) and a known current_task_ref (so the join has a
+  // key to look up).
+  async function seedRunner(projectRef, taskRef) {
+    await call(GOOD, "set-desired", [projectRef, "running", "ui:x"]);
+    await call(GOOD, "heartbeat", [
+      hbLine("hostX", projectRef, "running", taskRef, ago(5)),
+    ]);
+  }
+  async function pickRunner(projectRef) {
+    const snap = await callJson("work-snapshot", ["", ""]);
+    return (snap.projects || []).find((p) => p.project_ref === projectRef);
+  }
+
+  // ── Case A: workspace_inventory record exists + ref matches in_progress ──
+  await seedRunner("projA4g5o", "claude-tools-aaa");
+  await call(GOOD, "workspace-inventory-put", [
+    wsiPayload("projA4g5o", [
+      { bead_ref: "claude-tools-aaa", title: "Alpha title", stage: "impl" },
+      { bead_ref: "claude-tools-bbb", title: "Beta title", stage: "impl" },
+    ]),
+  ]);
+  const A = await pickRunner("projA4g5o");
+  pck("Case A — projection includes the project", !!A);
+  pck(
+    "Case A — runner_state.current_task_ref carries the heartbeat ref",
+    A && A.runner_state.current_task_ref === "claude-tools-aaa"
+  );
+  pck(
+    "Case A — runner_state HAS current_task_title (contract field present)",
+    A && Object.prototype.hasOwnProperty.call(A.runner_state, "current_task_title")
+  );
+  pck(
+    "Case A — current_task_title is the joined title from in_progress_beads",
+    A && A.runner_state.current_task_title === "Alpha title"
+  );
+
+  // ── Case B: record exists but ref isn't in in_progress_beads ─────────────
+  await seedRunner("projB4g5o", "claude-tools-missing");
+  await call(GOOD, "workspace-inventory-put", [
+    wsiPayload("projB4g5o", [
+      { bead_ref: "claude-tools-other", title: "Some other", stage: "impl" },
+    ]),
+  ]);
+  const B = await pickRunner("projB4g5o");
+  pck(
+    "Case B — ref not in in_progress_beads ⇒ current_task_title is null",
+    B && B.runner_state.current_task_title === null
+  );
+  pck(
+    "Case B — current_task_ref still carries the unmatched heartbeat ref",
+    B && B.runner_state.current_task_ref === "claude-tools-missing"
+  );
+
+  // ── Case C: no workspace_inventory record for the project at all ─────────
+  await seedRunner("projC4g5o", "claude-tools-anything");
+  // Deliberately DO NOT post a workspace-inventory-put. The join must
+  // gracefully degrade without throwing.
+  const C = await pickRunner("projC4g5o");
+  pck(
+    "Case C — no workspace_inventory record ⇒ current_task_title is null",
+    C && C.runner_state.current_task_title === null
+  );
+  pck(
+    "Case C — current_task_ref is still present (heartbeat-driven)",
+    C && C.runner_state.current_task_ref === "claude-tools-anything"
+  );
+
+  // ── Case D: record exists but no current_task_ref (workspace is idle) ────
+  await call(GOOD, "set-desired", ["projD4g5o", "running", "ui:x"]);
+  await call(GOOD, "heartbeat", [
+    hbLine("hostX", "projD4g5o", "idle", "", ago(5)),
+  ]);
+  await call(GOOD, "workspace-inventory-put", [
+    wsiPayload("projD4g5o", [
+      { bead_ref: "claude-tools-zzz", title: "Idle-time title", stage: "impl" },
+    ]),
+  ]);
+  const D = await pickRunner("projD4g5o");
+  pck(
+    "Case D — idle workspace (no current_task_ref) ⇒ title is null",
+    D && D.runner_state.current_task_title === null
+  );
+  pck(
+    "Case D — current_task_ref is empty/null when runner is idle",
+    D && (!D.runner_state.current_task_ref || D.runner_state.current_task_ref === "")
+  );
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `\n══ CF.3 workspace_inventory.title join (claude-tools-4g5o): PASS=${pPASS} FAIL=${pFAIL} ══`
+  );
+  if (pFAIL > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + pfails.join("\n  - "));
+  }
+  expect(pFAIL, `4g5o clauses failed: ${pfails.join("; ")}`).toBe(0);
+});

@@ -703,6 +703,39 @@ async function workSnapshot(co, principal, proj, beadsStr) {
   for (const pr of projs) {
     if (!pr) continue;
     const rec = await reconcileData(co, principal, pr, undefined);
+    // claude-tools-4g5o — workspace_inventory join: look up the title for
+    // current_task_ref from the stored §4.6 workspace_inventory record's
+    // in_progress_beads[]. Graceful degradation: no record / no match / no
+    // current_task_ref / unparseable body ⇒ current_task_title=null and the
+    // Board renderer falls back to ref-only. O(1) per project (typically one
+    // in_progress bead per workspace); deliberately no pre-cache, no staleness
+    // check (v1 trusts the lookup — bounded staleness comes from next pickup
+    // rewriting the record).
+    let currentTaskTitle = null;
+    if (typeof rec.current_task_ref === "string" && rec.current_task_ref) {
+      const wsi = await co.db
+        .prepare("SELECT json FROM records WHERE type = ? AND id = ?")
+        .bind("workspace_inventory", pr)
+        .first();
+      if (wsi && typeof wsi.json === "string") {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(wsi.json);
+        } catch {
+          parsed = null;
+        }
+        const ip = parsed && Array.isArray(parsed.in_progress_beads)
+          ? parsed.in_progress_beads : null;
+        if (ip) {
+          const match = ip.find(
+            (b) => b && typeof b === "object" && b.bead_ref === rec.current_task_ref
+          );
+          if (match && typeof match.title === "string") {
+            currentTaskTitle = match.title;
+          }
+        }
+      }
+    }
     projects.push({
       project_ref: rec.project_ref,
       runner_state: {
@@ -711,6 +744,7 @@ async function workSnapshot(co, principal, proj, beadsStr) {
         liveness: rec.liveness,
         last_heartbeat_at: rec.last_heartbeat_at,
         current_task_ref: rec.current_task_ref,
+        current_task_title: currentTaskTitle,
         desired_actual_mismatch: rec.desired_actual_mismatch,
       },
       lease: rec.lease,

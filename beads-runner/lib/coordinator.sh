@@ -1398,6 +1398,12 @@ co__work_snapshot() {
     rec="$(co__reconcile "$principal" "$pr" 2>/dev/null)" || rec='{}'
     [[ -n "$rec" ]] || rec='{}'
     cap="$(co__ask_capacity standard 2>/dev/null || true)"; [[ -n "$cap" ]] || cap="unknown"
+    # claude-tools-4g5o — current_task_title contract field. The bash
+    # coordinator does NOT store workspace_inventory (the CF chokepoint does,
+    # via the §4.6 put endpoint), so this is ALWAYS the graceful-degradation
+    # case here: title=null and the renderer falls back to ref-only. The
+    # field exists for shape parity with CF so the renderer code path is the
+    # same regardless of which producer fed the snapshot.
     proj_json=$(printf '%s' "$proj_json" | jq -c \
         --argjson r "$rec" --arg cap "$cap" \
         '. + [{project_ref:$r.project_ref,
@@ -1405,6 +1411,7 @@ co__work_snapshot() {
                              liveness:$r.liveness,
                              last_heartbeat_at:$r.last_heartbeat_at,
                              current_task_ref:$r.current_task_ref,
+                             current_task_title:null,
                              desired_actual_mismatch:$r.desired_actual_mismatch},
                lease:$r.lease,
                capacity_strip:{cost_class:"standard", verdict:$cap,

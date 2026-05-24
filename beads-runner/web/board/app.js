@@ -236,10 +236,21 @@
       st.appendChild(mk('span', null, r.state_label));
       box.appendChild(st);
       // 8ag — a live runner's current task ref as a secondary line under the
-      // pill. Ref-only (no title lookup yet — see board-view.js). Dropped for
-      // stale runners by the view (S-1: their last task is honestly unknown).
+      // pill. claude-tools-4g5o — extended to optionally include a TITLE from
+      // the §4.6 workspace_inventory join (graceful fallback to ref-only when
+      // the projection has no title). Dropped for stale runners by the view
+      // (S-1: their last task is honestly unknown).
       if (r.current_task) {
-        box.appendChild(mk('code', 'workspace-current-task', r.current_task));
+        var line = mk('code', 'workspace-current-task', r.current_task);
+        if (r.current_task_title) {
+          // Em-dash separator + a visually subordinate title span so the user
+          // can still scan refs quickly. Truncate to 60 chars with ellipsis.
+          var t = r.current_task_title;
+          if (t.length > 60) t = t.slice(0, 60) + '…';
+          line.appendChild(document.createTextNode(' — '));
+          line.appendChild(mk('span', 'workspace-current-task-title', t));
+        }
+        box.appendChild(line);
       }
       // S-1: the last-reported actual of a stale runner is muted CONTEXT,
       // never promoted to a live state (board-view.js guarantees this).

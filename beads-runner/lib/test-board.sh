@@ -334,6 +334,80 @@ ck "app.js renders r.current_task as the secondary line"         has "r.current_
 ck "app.js uses the .workspace-current-task class for the line"  has "workspace-current-task" "$(cat "$APP")"
 ck "board.css styles .workspace-current-task (secondary text)"   has "workspace-current-task" "$(cat "$CSS")"
 
+echo "── EXIT-6b: 4g5o — workspace strip surfaces TITLE alongside current_task_ref ──"
+# claude-tools-4g5o — the CF projection now joins workspace_inventory's
+# in_progress_beads[] to add `current_task_title` on each runner_state.
+# The view model carries it through and the app renders it after the ref as
+# a visually subordinate span. Falls back to ref-only when the title is
+# absent (graceful — the producer may not have published yet).
+#
+# These cases drive the renderer through crafted snapshots (the bash
+# coordinator has no workspace_inventory store; CF tests cover the join).
+render_snap() { printf '%s' "$1" | node -e '
+  let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+    const BV=require(process.argv[1]);
+    let snap; try{snap=JSON.parse(s);}catch(e){snap=s;}
+    process.stdout.write(JSON.stringify(BV.deriveBoardView(snap)));
+  });' "$VIEW"; }
+mk_snap_rs() {  # <ref> <title-or-null-literal>
+  local ref="$1" title_lit="$2"
+  jq -cn --arg ref "$ref" --argjson title "$title_lit" \
+    '{schema_version:1,principal:"PRINCIPAL_V1",read_only:true,
+      lifecycle_columns:{},waiting_on_you:[],machines:[],
+      projects:[{project_ref:"projG5",
+        runner_state:{desired:"running",actual:"running",liveness:"live",
+                      last_heartbeat_at:(now|todateiso8601),
+                      current_task_ref:$ref,current_task_title:$title,
+                      desired_actual_mismatch:false},
+        lease:null}]}'
+}
+# Case E — ref + title BOTH set ⇒ view carries both; rendered line contains
+# both. (The render check is structural: app.js must emit a span with the
+# title-subordinate class so the title actually paints in the live DOM.)
+VE_SNAP="$(mk_snap_rs claude-tools-xyz '"Short title"')"
+VE_M="$(render_snap "$VE_SNAP")"
+RE_M="$(jq -c '.runners[]|select(.project_ref=="projG5")' <<<"$VE_M")"
+ck "Case E — view model carries current_task ref"               eq "$(jq -r '.current_task' <<<"$RE_M")" "claude-tools-xyz"
+ck "Case E — view model carries current_task_title"             eq "$(jq -r '.current_task_title' <<<"$RE_M")" "Short title"
+ck "Case E — app.js renders r.current_task_title (uses field)"  has "r.current_task_title" "$(cat "$APP")"
+ck "Case E — app.js uses .workspace-current-task-title class"   has "workspace-current-task-title" "$(cat "$APP")"
+ck "Case E — board.css styles the subordinate title span"       has "workspace-current-task-title" "$(cat "$CSS")"
+# Case F — ref present, no title ⇒ view's title=null (fallback to ref-only).
+VF_SNAP="$(mk_snap_rs claude-tools-xyz 'null')"
+RF_M="$(jq -c '.runners[]|select(.project_ref=="projG5")' <<<"$(render_snap "$VF_SNAP")")"
+ck "Case F — ref-only fallback: current_task carries ref"       eq "$(jq -r '.current_task' <<<"$RF_M")" "claude-tools-xyz"
+ck "Case F — ref-only fallback: current_task_title is null"     eq "$(jq -r '.current_task_title' <<<"$RF_M")" "null"
+# Case G — neither ref nor title ⇒ no current-task line at all (current
+# behavior preserved; app.js gates the line on r.current_task being truthy).
+VG_SNAP="$(mk_snap_rs '' 'null')"
+RG_M="$(jq -c '.runners[]|select(.project_ref=="projG5")' <<<"$(render_snap "$VG_SNAP")")"
+ck "Case G — no ref ⇒ current_task is null (no line at all)"    eq "$(jq -r '.current_task' <<<"$RG_M")" "null"
+ck "Case G — no ref ⇒ current_task_title is also null"          eq "$(jq -r '.current_task_title' <<<"$RG_M")" "null"
+# Case H — a >60-char title is truncated with an ellipsis when rendered.
+# The view model preserves the full title (truncation is a presentation
+# decision in app.js); STRUCTURAL: app.js carries a length>60 guard and
+# appends an ellipsis so a runaway title cannot push the row off-screen.
+LONG='A very long workspace_inventory bead title that is well past sixty characters in length'
+VH_SNAP="$(mk_snap_rs claude-tools-xyz "$(jq -n --arg t "$LONG" '$t')")"
+RH_M="$(jq -c '.runners[]|select(.project_ref=="projG5")' <<<"$(render_snap "$VH_SNAP")")"
+ck "Case H — view preserves the full long title"                eq "$(jq -r '.current_task_title|length' <<<"$RH_M")" "${#LONG}"
+ck "Case H — app.js truncates titles >60 chars"                 has ".length > 60" "$(cat "$APP")"
+ck "Case H — app.js appends an ellipsis after truncation"       has "'…'" "$(cat "$APP")"
+# A STALE runner's last-reported task is honestly unknown (S-1) — and so is
+# any joined title. The view model must drop BOTH for a stale runner.
+STALE_SNAP="$(jq -cn '{schema_version:1,principal:"PRINCIPAL_V1",read_only:true,
+  lifecycle_columns:{},waiting_on_you:[],machines:[],
+  projects:[{project_ref:"projStale",
+    runner_state:{desired:"running",actual:"running",liveness:"stale",
+                  last_heartbeat_at:"2026-05-23T00:00:00Z",
+                  current_task_ref:"claude-tools-xyz",
+                  current_task_title:"Shouldnt show",
+                  desired_actual_mismatch:false},
+    lease:null}]}')"
+RST_M="$(jq -c '.runners[]|select(.project_ref=="projStale")' <<<"$(render_snap "$STALE_SNAP")")"
+ck "Stale runner — current_task dropped (S-1)"                  eq "$(jq -r '.current_task' <<<"$RST_M")" "null"
+ck "Stale runner — current_task_title dropped (S-1)"            eq "$(jq -r '.current_task_title' <<<"$RST_M")" "null"
+
 echo "── EXIT-7: g2s — soft 'thinking' visual between 90s and 180s heartbeat age ──"
 # A purely-presentational threshold: when liveness=='live' AND the heartbeat
 # is between 90s and 180s old AND actual=='running', the renderer paints a

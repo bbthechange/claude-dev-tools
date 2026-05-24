@@ -193,6 +193,16 @@ ck "fully-resolved dossier is NOT in WAITING-ON-YOU"          eq "$woyN" "1"
 ck "capacity strip surfaced (verdict from §6.3 aggregation)"  nz "$(jq -r '.projects[0].capacity_strip.verdict' <<<"$SNAP")"
 ck "capacity strip names its source as T4.4 §6.3 (surfaced)"  has "T4.4" "$(jq -r '.projects[0].capacity_strip.source' <<<"$SNAP")"
 
+echo "── EXIT-3b: 4g5o — current_task_title field present in projection (graceful) ──"
+# claude-tools-4g5o — the projection's runner_state MUST carry a
+# current_task_title field for the Board renderer to read. The bash
+# coordinator has no workspace_inventory store (that lives in CF), so the
+# title is ALWAYS null here — exactly the Case C "no record ⇒ null" the CF
+# join also exhibits when the producer hasn't published yet. This proves
+# the shape parity without requiring the bash to mirror the CF join.
+ck "projection runner_state HAS current_task_title field"     eq "$(jq -r '.projects[0].runner_state|has("current_task_title")' <<<"$SNAP")" "true"
+ck "bash projection — current_task_title is null (no store)"  eq "$(jq -r '.projects[0].runner_state.current_task_title' <<<"$SNAP")" "null"
+
 echo "── EXIT-3: NO write path from any reader (read-only invariant) ──"
 sig() { ( cd "$CO_STORE/records" 2>/dev/null && ls -1 2>/dev/null | sort | shasum ); }
 before="$(sig)"

@@ -163,6 +163,7 @@
       // unknown ("we don't know what it's doing now"); do NOT promote it
       // as the "currently working on" secondary line.
       row.current_task = null;
+      row.current_task_title = null;
     } else {
       var isActive = actual && ACTUAL_HEALTHY_ACTIVE[actual];
       // g2s — soft 'thinking' visual between 90s and 180s heartbeat age.
@@ -195,12 +196,14 @@
       }
       row.actual_note = null;
       // 8ag — a live runner's current_task_ref is the secondary "currently
-      // working on" line on the workspace strip. Ref-only (no title lookup);
-      // the projection's lifecycle_columns is empty in production today, so
-      // a title would be undefined for every workspace — wait for the future
-      // workspace_inventory producer (claude-tools-1y0 Issue 4 reservation).
+      // working on" line on the workspace strip. claude-tools-4g5o — the
+      // CF projection now joins the §4.6 workspace_inventory record's
+      // in_progress_beads[] to surface a title for the ref; absent record
+      // or no match degrades gracefully to ref-only (title=null).
       row.current_task = (typeof rs.current_task_ref === 'string' && rs.current_task_ref)
         ? rs.current_task_ref : null;
+      row.current_task_title = (typeof rs.current_task_title === 'string' && rs.current_task_title)
+        ? rs.current_task_title : null;
     }
 
     // F2 — per-row controls. `active` is the button matching CURRENT ACTUAL

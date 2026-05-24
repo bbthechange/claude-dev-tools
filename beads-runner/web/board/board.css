@@ -155,11 +155,16 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .runner.stale .rstate{color:var(--coral)}
 .runner .rnote{margin-top:8px;font-size:10px;color:var(--faint);letter-spacing:.04em}
 /* 8ag — secondary "currently working on" line under the workspace state pill.
- * Live-only (board-view.js drops it for stale runners — S-1). Ref-only for
- * now; title lookup is deferred to workspace_inventory (claude-tools-1y0). */
+ * Live-only (board-view.js drops it for stale runners — S-1). claude-tools-4g5o
+ * — extended to optionally carry a TITLE from the §4.6 workspace_inventory join
+ * after the em-dash; the title span is visually subordinate so the ref still
+ * scans first. Falls back to ref-only when no title is present. */
 .runner .workspace-current-task{
   display:block;margin-top:6px;font-family:var(--mono);font-size:11px;
   color:var(--dim);letter-spacing:.02em;
+}
+.runner .workspace-current-task .workspace-current-task-title{
+  color:var(--faint);font-weight:normal;
 }
 /* .runner .rcap was removed in claude-tools-zdxd.5 (C4) — per-machine
  * usage now lives in the top-of-board .machines strip (MACHINE-STATE.md
