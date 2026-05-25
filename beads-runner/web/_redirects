@@ -1,1 +1,5 @@
-/    /board    302
+# q6z7 — serve the Board at the apex path. Status 200 = rewrite (URL stays /,
+# no redirect roundtrip). Destination must be /board/ (with trailing slash);
+# /board/index.html does not work because Pages normalizes index.html paths.
+# board/index.html uses absolute /board/* asset paths so it loads at either URL.
+/    /board/    200

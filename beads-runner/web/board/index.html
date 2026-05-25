@@ -16,7 +16,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./board.css">
+<!-- Asset refs are absolute (/board/*) because this page is also served at / via
+     the Pages rewrite in beads-runner/web/_redirects (q6z7). Keep them absolute. -->
+<link rel="stylesheet" href="/board/board.css">
 </head>
 <body>
   <main class="app" id="app" aria-live="polite">
@@ -78,7 +80,8 @@
     </footer>
   </main>
 
-  <script src="./board-view.js"></script>
-  <script src="./app.js"></script>
+  <!-- Absolute paths: see comment near board.css link above (q6z7). -->
+  <script src="/board/board-view.js"></script>
+  <script src="/board/app.js"></script>
 </body>
 </html>
