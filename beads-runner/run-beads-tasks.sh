@@ -921,8 +921,23 @@ EOF
         analysis_task_id:$atid, analysis_desc:$adesc,
         runner_notes:$notes }' 2>/dev/null) || analysis_input=""
     if [[ -n "$analysis_input" ]]; then
-      did=$(dg_from_analysis_task "$bearer" \
-        "analysis-$task_id" "$task_id" "$analysis_input" 2>/dev/null || true)
+      # claude-tools-ccnl: mirror the Flow B / sr_route_stuck wiring (5me) so
+      # Flow G analysis dossiers are authored by the dossier-builder agent
+      # instead of the deterministic jq fallback. Scoped to this command
+      # substitution's subshell — does not leak to other dg__author callers.
+      # Absent bridge / unavailable claude ⇒ dg__author classifies as
+      # agent_unavailable, audits, and the labeled-degraded jq path runs.
+      local DG_BRIDGE
+      DG_BRIDGE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/dg-author-bridge.sh"
+      did=$(
+        if [[ -x "$DG_BRIDGE" ]]; then
+          export DG_AUTHOR_CMD="$DG_BRIDGE"
+          export DG_AUTHOR_TIMEOUT_SEC="${DG_AUTHOR_TIMEOUT_SEC:-300}"
+          export DG_AUTHOR_BRIDGE_WORKSPACE="$PWD"
+        fi
+        dg_from_analysis_task "$bearer" \
+          "analysis-$task_id" "$task_id" "$analysis_input" 2>/dev/null || true
+      )
       if [[ -n "$did" ]]; then
         echo "  Inbox analysis dossier: $did (bead $task_id)"
         # §4.3/C3 — pair with the SINGLE Notification at creation if no_emit is
