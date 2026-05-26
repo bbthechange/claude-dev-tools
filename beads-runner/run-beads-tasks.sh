@@ -94,6 +94,16 @@ IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}                # seconds of stream silence bef
 # as in-flight) still eventually gets killed. Default 6× ⇒ 1h on a stock
 # 600s IDLE_TIMEOUT.
 IDLE_TIMEOUT_INFLIGHT_MULT=${IDLE_TIMEOUT_INFLIGHT_MULT:-6}  # multiplier while ≥1 Task subagent is in-flight
+# claude-tools-td0y: post-terminal SIGKILL grace. Once the SDK emits its
+# terminal record (`terminal_reason` or `type:"result"` in the stream-json),
+# claude is contract-done. If the process is still alive after this many
+# seconds it is wedged on an orphan child (the krxv incident: Node won't exit
+# while a `run_in_background:true` Bash poller is still alive). Independent
+# of IDLE_TIMEOUT — that's about stream silence inside an active task; this
+# is about a known-completed task that won't release. 60s is comfortably
+# longer than any legitimate Node teardown but ~360× faster than the 6h
+# IDLE_TIMEOUT_INFLIGHT_MULT ceiling. Env-overridable per workspace.
+POST_TERMINAL_GRACE=${POST_TERMINAL_GRACE:-60}   # seconds after SDK terminal record before SIGKILL backstop
 LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-14}     # rotation: delete runner-logs older than this
 LOG_DIR=".beads/runner-logs"                     # post-mortem artifacts (stream-json, ps/lsof snapshots, incidents.log)
 
@@ -320,6 +330,13 @@ if [[ -d "$LOG_DIR" ]]; then
   find "$LOG_DIR" -type f ! -name '.gitignore' ! -name 'incidents.log' \
     -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null || true
 fi
+
+# claude-tools-td0y: clear any stale current-task pointer left by a previous
+# runner that died without clearing (SIGKILL, machine crash, etc.). The file
+# is regenerated per-task at claim time. A stale id here would cause the
+# close-discipline hook to enforce against the wrong bead on the FIRST tool
+# call of the next task before the new id is written.
+rm -f "$LOG_DIR/current-task" 2>/dev/null || true
 
 INCIDENTS_LOG="$LOG_DIR/incidents.log"
 
@@ -1346,6 +1363,13 @@ while true; do
   esac
 
   CURRENT_TASK_ID="$TASK_ID"
+  # claude-tools-td0y: surface CURRENT_TASK_ID to hook scripts. Export so the
+  # claude-p worker (and its hook subprocesses) inherit it; also write a file
+  # as fallback for the case where a hook lands in a subshell that dropped
+  # env. The hook reads env first, file second.
+  export CURRENT_TASK_ID
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '%s' "$TASK_ID" > "$LOG_DIR/current-task" 2>/dev/null || true
   bd update "$TASK_ID" --status=in_progress 2>/dev/null || true
   hb running "$TASK_ID"   # §4.2: actual=running + current_task_ref, re-registers liveness
   # gk17 / epic vvgy: emit a workspace_inventory snapshot at pickup so the
@@ -1487,6 +1511,39 @@ $PROMPT"
 
   STREAM_FILE=$(mktemp)
 
+  # claude-tools-td0y: POST_TERMINAL_FILE records the epoch at which the SDK
+  # emitted its terminal record. Set by the stream parser below; read by the
+  # watchdog to SIGKILL claude POST_TERMINAL_GRACE seconds later if still
+  # alive. Per-task file (under LOG_DIR with task id in name) so a leak from
+  # a killed iteration is cleanable on the next loop top.
+  POST_TERMINAL_FILE="$LOG_DIR/$LOG_BASE.post-terminal"
+  rm -f "$POST_TERMINAL_FILE" 2>/dev/null || true
+
+  # claude-tools-td0y: wire the close-discipline hook (Stop + PreToolUse on
+  # `bd close|done|--status=closed`) via runner-injected --settings. The hook
+  # itself lives in this repo under beads-runner/hooks/close-checklist.sh and
+  # is versioned with the runner. Per-task file in LOG_DIR (cleanable). The
+  # BEADS_RUNNER_SESSION=1 env var gates the hook so interactive claude
+  # sessions in the same workspace are unaffected even if they happen to
+  # load the same --settings file.
+  HOOK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/hooks/close-checklist.sh"
+  HOOK_SETTINGS_FILE="$LOG_DIR/$LOG_BASE.hook-settings.json"
+  HOOK_SETTINGS_FLAGS=()
+  if [[ -x "$HOOK_SCRIPT" ]]; then
+    if command -v jq >/dev/null 2>&1; then
+      jq -n --arg cmd "$HOOK_SCRIPT" '{
+        hooks: {
+          PreToolUse: [{ matcher: "Bash",  hooks: [{ type: "command", command: $cmd }] }],
+          Stop:       [{ matcher: "",      hooks: [{ type: "command", command: $cmd }] }]
+        }
+      }' > "$HOOK_SETTINGS_FILE" 2>/dev/null && HOOK_SETTINGS_FLAGS=(--settings "$HOOK_SETTINGS_FILE")
+    fi
+  else
+    echo "  WARN: close-discipline hook not executable at $HOOK_SCRIPT — running WITHOUT hook enforcement (claude-tools-td0y)." >&2
+  fi
+
+  BEADS_RUNNER_SESSION=1 \
+  POST_TERMINAL_FILE="$POST_TERMINAL_FILE" \
   claude -p "$PROMPT" \
     --output-format stream-json \
     --verbose \
@@ -1494,6 +1551,7 @@ $PROMPT"
     "${GUARDRAIL_FLAGS[@]+"${GUARDRAIL_FLAGS[@]}"}" \
     "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
     "${TASK_PERMISSION_FLAGS[@]+"${TASK_PERMISSION_FLAGS[@]}"}" \
+    "${HOOK_SETTINGS_FLAGS[@]+"${HOOK_SETTINGS_FLAGS[@]}"}" \
     > "$STREAM_FILE" 2>&1 &
   CLAUDE_PID=$!
 
@@ -1518,6 +1576,23 @@ $PROMPT"
     tail -f "$STREAM_FILE" 2>/dev/null | while IFS= read -r line; do
       TS=$(date +%H:%M:%S)
       date +%s > "$ACTIVITY_FILE"
+      # claude-tools-td0y: detect SDK terminal record. The new SDK emits a
+      # JSON line containing "terminal_reason" (observed in the krxv wedge);
+      # the older format is `type":"result"` (already handled in the case
+      # below). Either marker stamps POST_TERMINAL_FILE — the watchdog reads
+      # it to SIGKILL claude POST_TERMINAL_GRACE seconds later if Node
+      # refuses to exit (orphan child wedge). Idempotent: stamp once per
+      # session; only write if file doesn't exist so a second result line
+      # doesn't reset the grace clock. Cheap substring match (no jq per
+      # line; the parser hot loop is already jq-heavy).
+      if [[ -n "${POST_TERMINAL_FILE:-}" && ! -e "$POST_TERMINAL_FILE" ]]; then
+        case "$line" in
+          *'"terminal_reason"'*|*'"type":"result"'*)
+            date +%s > "$POST_TERMINAL_FILE" 2>/dev/null || true
+            echo "  [$TS] SDK terminal record detected — watchdog will SIGKILL claude in ${POST_TERMINAL_GRACE:-60}s if still alive (claude-tools-td0y)"
+            ;;
+        esac
+      fi
       TYPE=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)
       case "$TYPE" in
         assistant)
@@ -1647,6 +1722,33 @@ $PROMPT"
       sleep 15
       kill -0 "$CLAUDE_PID" 2>/dev/null || break
       [[ -f "$STOP_FILE" ]] && break
+      # claude-tools-td0y: post-terminal SIGKILL backstop. If the stream parser
+      # observed the SDK terminal record (POST_TERMINAL_FILE stamped) and
+      # claude is STILL alive POST_TERMINAL_GRACE seconds later, Node is
+      # wedged on an orphan child (the krxv pattern: a run_in_background:true
+      # poller keeps the event loop alive long past terminal_reason). The
+      # hook layer is supposed to prevent this, but if it fails for any
+      # reason (8-block cap, agent bypass, hook crash, schema drift) this
+      # is the reliable fallback. Independent of IDLE_TIMEOUT; cannot be
+      # masked by IDLE_TIMEOUT_INFLIGHT_MULT.
+      if [[ -n "${POST_TERMINAL_FILE:-}" && -f "$POST_TERMINAL_FILE" ]]; then
+        PT_AT=$(cat "$POST_TERMINAL_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [[ "$PT_AT" =~ ^[0-9]+$ ]] && (( PT_AT >= 1704067200 )); then
+          PT_AGE=$(( $(date +%s) - PT_AT ))
+          if (( PT_AGE >= POST_TERMINAL_GRACE )); then
+            echo "  POST-TERMINAL SIGKILL: SDK terminal record was ${PT_AGE}s ago (grace=${POST_TERMINAL_GRACE}s); claude pid=$CLAUDE_PID still alive — likely orphan child wedge (claude-tools-td0y)."
+            echo "POST_TERMINAL_KILL=1" >> "$SIGNAL_FILE"
+            { echo "=== post-terminal snapshot (age=${PT_AGE}s, grace=${POST_TERMINAL_GRACE}s) ==="
+              ps -o pid,stat,etime,pcpu,pmem,command -p "$CLAUDE_PID" 2>&1 || true
+              echo ""
+              echo "=== children of claude ($CLAUDE_PID) ==="
+              pgrep -P "$CLAUDE_PID" 2>/dev/null | xargs -I{} ps -o pid,etime,command -p {} 2>/dev/null || true
+            } >> "$PROC_SNAPSHOT" 2>&1 || true
+            kill -KILL "$CLAUDE_PID" 2>/dev/null || true
+            break
+          fi
+        fi
+      fi
       if [[ -f "$ACTIVITY_FILE" ]]; then
         LAST=$(cat "$ACTIVITY_FILE" 2>/dev/null | tr -d '[:space:]')
         # claude-tools-h7n: sanity-guard LAST before the IDLE arithmetic. An
@@ -1974,7 +2076,7 @@ $PROMPT"
       record_incident "$TASK_ID" "AUTH_FAILURE" "-"
       notify_user "beads-runner: auth failure" "$TASK_ID — runner stopped"
       runner_cleanup
-      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
+      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE" "${POST_TERMINAL_FILE:-}" "${HOOK_SETTINGS_FILE:-}"
       echo "Results: $COMPLETED completed, $FAILED failed"
       print_incidents_summary
       lease_release_seam "$TASK_ID"   # §6.1 release ⇒ bead open (fatal exit)
@@ -1992,7 +2094,7 @@ $PROMPT"
       record_incident "$TASK_ID" "BILLING_ERROR" "-"
       notify_user "beads-runner: billing error" "$TASK_ID — runner stopped"
       runner_cleanup
-      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
+      rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE" "${POST_TERMINAL_FILE:-}" "${HOOK_SETTINGS_FILE:-}"
       echo "Results: $COMPLETED completed, $FAILED failed"
       print_incidents_summary
       lease_release_seam "$TASK_ID"   # §6.1 release ⇒ bead open (fatal exit)
@@ -2094,7 +2196,7 @@ $PROMPT"
     echo "  Stopping to avoid closing healthy tasks as skipped."
     notify_user "beads-runner: stopped" "$MAX_CONSECUTIVE_FAILURES consecutive failures"
     runner_cleanup
-    rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE"
+    rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "$USAGE_CACHE_FILE" "${POST_TERMINAL_FILE:-}" "${HOOK_SETTINGS_FILE:-}"
     echo "Results: $COMPLETED completed, $FAILED failed"
     print_incidents_summary
     lease_release_seam "${TASK_ID:-}"   # §6.1 release ⇒ bead open (fatal exit)
@@ -2108,7 +2210,7 @@ $PROMPT"
   # --status=open above) — release pairs the acquire so the lease never
   # outlives the work (release/expiry ⇒ bead open; orphan recovery = expiry).
   lease_release_seam "$TASK_ID"
-  rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE"
+  rm -f "$STREAM_FILE" "$ACTIVITY_FILE" "$TASK_INFLIGHT_FILE" "$SIGNAL_FILE" "${POST_TERMINAL_FILE:-}" "${HOOK_SETTINGS_FILE:-}"
   # gk17 / epic vvgy: emit a workspace_inventory snapshot at completion so the
   # Board reflects the post-task queue (the just-closed bead leaves
   # in_progress, counts update, the next ready bead becomes visible).
@@ -2116,6 +2218,9 @@ $PROMPT"
     && la_publish_workspace_inventory || true
   CLAUDE_PID=""
   CURRENT_TASK_ID=""
+  # claude-tools-td0y: clear the current-task file so a between-tasks hook
+  # invocation (e.g., an idle Stop) doesn't see a stale id.
+  rm -f "$LOG_DIR/current-task" 2>/dev/null || true
   echo ""
 done
 

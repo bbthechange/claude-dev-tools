@@ -70,6 +70,16 @@ git status     # MUST show "up to date with origin"
 
 If beads issues were updated this session, also run `bd dolt push`.
 
+## Step 5: Record Wrapup Completion (if a bd issue is associated)
+
+If this work tracks against a bd issue (`bd ready` claimed one, or you ran `bd update <id> --claim` during the session), append the `wrapup-reviewed` marker to its notes. The beads-runner's close-discipline hook checks for this marker and refuses `bd close` if absent.
+
+```bash
+bd update <id> --append-notes "wrapup-reviewed: $(date -u +%Y-%m-%dT%H:%M:%SZ) sha=$(git rev-parse HEAD) clean=$(git status --porcelain | wc -l | tr -d ' ')"
+```
+
+Write the marker AFTER push so it reflects the pushed state. If push fails, the marker is not written — that is correct (do not claim wrapup-reviewed when the diff is still local).
+
 Report to the user: one sentence on what was committed and pushed, plus anything that needs follow-up.
 
 ## Do NOT

@@ -1,0 +1,279 @@
+#!/bin/bash
+# beads-runner/hooks/close-checklist.sh
+#
+# Stop + PreToolUse hook for beads-runner workers. Enforces five close-time
+# preconditions before allowing `bd close` (PreToolUse) or end-of-turn (Stop):
+#   1. no orphan background processes still alive under this session
+#   2. clean git tree (excluding debrief / runner-log scratch files)
+#   3. closed bead has a commit referencing it (Stop only — PreToolUse fires
+#      BEFORE close so the inconsistency can't yet exist)
+#   4. /wrapup skill was invoked (wrapup-reviewed marker in bd notes)
+#   5. a debrief was appended to bd notes
+#
+# Emits ONE comprehensive block per round so the agent can fix all failures in
+# a single retry — Stop hooks are capped at 8 consecutive blocks (overridable
+# via CLAUDE_CODE_STOP_HOOK_BLOCK_CAP) and one block per check would exhaust
+# the budget on a multi-failure session. The runner's post-terminal watchdog
+# (run-beads-tasks.sh) is the backstop for cases where the cap exhausts.
+#
+# Gating (silently allows the stop / tool call):
+#   - BEADS_RUNNER_SESSION != "1"  (not a runner-spawned session)
+#   - no CURRENT_TASK_ID            (idle session, no bead in flight)
+#   - stop_hook_active=true         (Stop hook continuation loop — yield)
+#   - PreToolUse on non-Bash tool   (only acts on Bash close commands)
+#   - PreToolUse Bash that isn't a close command
+#
+# Parent bead: claude-tools-td0y. Plan: ~/.claude/plans/yeah-look-into-everything-toasty-papert.md
+#
+# Contract surface (DO NOT change without re-verifying against Claude Code docs):
+#   Input stdin (Stop)        : { session_id, transcript_path, cwd, hook_event_name="Stop", stop_hook_active }
+#   Input stdin (PreToolUse)  : { session_id, transcript_path, cwd, hook_event_name="PreToolUse",
+#                                 tool_name, tool_input.command, tool_use_id }
+#   Output (Stop block)       : { "decision": "block", "reason": "..." }      (exit 0 + stdout JSON)
+#   Output (PreToolUse block) : { "hookSpecificOutput": { "hookEventName": "PreToolUse",
+#                                 "permissionDecision": "deny",
+#                                 "permissionDecisionReason": "..." } }       (exit 0 + stdout JSON)
+#   Allow                     : exit 0 with no stdout
+#
+# Env vars consumed:
+#   BEADS_RUNNER_SESSION   "1" → enforce; anything else → noop
+#   CURRENT_TASK_ID        bead id (falls back to .beads/runner-logs/current-task)
+#   CLAUDE_PROJECT_DIR     workspace root
+#   CLAUDE_SESSION_ID      session id (falls back to stdin .session_id)
+#   BEADS_HOOK_LOG         override log file path
+#   POST_TERMINAL_GRACE    (referenced only in remediation text; runner reads it)
+#
+# Tools assumed present: jq, git, bd, pgrep, ps. Missing tools → check is skipped,
+# not a hard fail (graceful degrade for minimal environments).
+
+set -uo pipefail
+
+# ── 0. Read stdin ───────────────────────────────────────────────────────────
+INPUT_JSON="$(cat 2>/dev/null || echo '{}')"
+
+jqr() {  # jqr <jq-expr> → echoes value or empty on any error
+  printf '%s' "$INPUT_JSON" | jq -r "$1" 2>/dev/null || true
+}
+
+event_name="$(jqr '.hook_event_name // empty')"
+session_id_stdin="$(jqr '.session_id // empty')"
+cwd_stdin="$(jqr '.cwd // empty')"
+stop_hook_active="$(jqr '.stop_hook_active // false')"
+tool_name="$(jqr '.tool_name // empty')"
+tool_command="$(jqr '.tool_input.command // empty')"
+
+session_id="${CLAUDE_SESSION_ID:-$session_id_stdin}"
+project_dir="${CLAUDE_PROJECT_DIR:-${cwd_stdin:-$PWD}}"
+
+# ── Logging helper ──────────────────────────────────────────────────────────
+LOG_FILE="${BEADS_HOOK_LOG:-}"
+if [[ -z "$LOG_FILE" && -d "$project_dir/.beads/runner-logs" ]]; then
+  LOG_FILE="$project_dir/.beads/runner-logs/hook-events.jsonl"
+fi
+
+log_event() {  # log_event <decision> <failed_csv> [extra_json]
+  [[ -z "$LOG_FILE" ]] && return 0
+  local now decision failed extra
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')"
+  decision="$1"; failed="${2:-}"; extra="${3:-{\}}"
+  jq -nc \
+    --arg ts "$now" \
+    --arg event "$event_name" \
+    --arg decision "$decision" \
+    --arg task_id "${task_id:-}" \
+    --arg session_id "$session_id" \
+    --arg failed "$failed" \
+    --argjson extra "$extra" \
+    '{ts:$ts, event:$event, decision:$decision, task_id:$task_id, session_id:$session_id, failed:$failed, extra:$extra}' \
+    >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# ── 1. Gate: runner-spawned sessions only ───────────────────────────────────
+task_id=""  # declare early so log_event references work
+if [[ "${BEADS_RUNNER_SESSION:-}" != "1" ]]; then
+  log_event allow "" '{"reason":"not_runner_session"}'
+  exit 0
+fi
+
+# ── 2. Gate: must have a task id ────────────────────────────────────────────
+task_id="${CURRENT_TASK_ID:-}"
+if [[ -z "$task_id" && -f "$project_dir/.beads/runner-logs/current-task" ]]; then
+  task_id="$(tr -d '[:space:]' < "$project_dir/.beads/runner-logs/current-task" 2>/dev/null || echo '')"
+fi
+if [[ -z "$task_id" ]]; then
+  log_event allow "" '{"reason":"no_task_id"}'
+  exit 0
+fi
+
+# ── 3. Gate: PreToolUse only on close-shaped commands ───────────────────────
+if [[ "$event_name" == "PreToolUse" ]]; then
+  if [[ "$tool_name" != "Bash" ]]; then
+    log_event allow "" '{"reason":"not_bash_tool"}'
+    exit 0
+  fi
+  # Match: `bd close|done <ids>`, `--status=closed`, `--status closed`, `-s closed`
+  if ! printf '%s' "$tool_command" | grep -qE '\bbd[[:space:]]+(close|done)\b|--status[= ]closed\b|(^|[[:space:]])-s[[:space:]]+closed([[:space:]]|$)'; then
+    log_event allow "" '{"reason":"not_close_cmd"}'
+    exit 0
+  fi
+fi
+
+# ── 4. Gate: Stop hook respects stop_hook_active ────────────────────────────
+if [[ "$event_name" == "Stop" && "$stop_hook_active" == "true" ]]; then
+  log_event allow "" '{"reason":"stop_hook_active"}'
+  exit 0
+fi
+
+# ── 5. Five checks ──────────────────────────────────────────────────────────
+failures=()
+remediation=()
+
+claude_pid="$PPID"
+
+# Build MCP exclusion regex from ~/.claude.json (canonical source of registered MCPs).
+# Each line: command + space-joined args. We escape regex metachars and OR them.
+mcp_excludes=()
+if command -v jq >/dev/null 2>&1 && [[ -f "$HOME/.claude.json" ]]; then
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    mcp_excludes+=("$line")
+  done < <(jq -r '.mcpServers // {} | to_entries[] | .value.command + " " + ((.value.args // []) | join(" "))' "$HOME/.claude.json" 2>/dev/null)
+fi
+# Generic fallback pattern for node-mcp-* layouts not yet registered
+generic_mcp_re='node[^[:space:]]*[[:space:]][^[:space:]]*/mcp-[^/[:space:]]+/(server|index)\.(mjs|js|cjs)'
+
+is_mcp() {
+  local cmd="$1"
+  for ex in "${mcp_excludes[@]}"; do
+    # Substring match (cheap, no regex escape needed)
+    if [[ "$cmd" == *"$ex"* ]]; then
+      return 0
+    fi
+  done
+  if printf '%s' "$cmd" | grep -qE "$generic_mcp_re"; then
+    return 0
+  fi
+  return 1
+}
+
+# Check 1: orphan bg processes ────────────────────────────────────────────
+orphan_descs=()
+if command -v pgrep >/dev/null 2>&1; then
+  for pid in $(pgrep -P "$claude_pid" 2>/dev/null); do
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null)"
+    [[ -z "$cmd" ]] && continue
+    if is_mcp "$cmd"; then
+      continue
+    fi
+    orphan_descs+=("pid=$pid cmd=$(printf '%s' "$cmd" | cut -c1-120)")
+  done
+fi
+
+if (( ${#orphan_descs[@]} > 0 )); then
+  # Try to also enumerate /tmp/claude-$UID/.../tasks/*.output filenames so the
+  # agent can map orphans to the task ids it spawned. Best-effort; the orphan
+  # list above is the authoritative signal.
+  active_tasks=""
+  if [[ -n "$session_id" ]]; then
+    slug="$(printf '%s' "$project_dir" | sed 's|/|-|g')"
+    task_dir="/tmp/claude-$(id -u)/${slug}/${session_id}/tasks"
+    if [[ -d "$task_dir" ]]; then
+      active_tasks="$(find "$task_dir" -maxdepth 1 -name '*.output' -type f 2>/dev/null \
+        | xargs -n1 basename 2>/dev/null | sed 's/\.output$//' | paste -sd ',' - 2>/dev/null || echo '')"
+    fi
+  fi
+
+  failures+=("orphan_bg_tasks")
+  msg="${#orphan_descs[@]} background process(es) are still alive under this session:"$'\n'
+  for d in "${orphan_descs[@]}"; do
+    msg+="  - $d"$'\n'
+  done
+  if [[ -n "$active_tasks" ]]; then
+    msg+=$'\n'"Background task ids in your session: $active_tasks"$'\n'
+  fi
+  msg+=$'\n'"Use the tool you used to spawn each background task to read its pending output. Stop any that are no longer needed. Do NOT end the turn while orphan children exist — Node will not exit, and the runner's post-terminal watchdog will SIGKILL the process after ${POST_TERMINAL_GRACE:-60}s."
+  remediation+=("$msg")
+fi
+
+# Check 2: dirty tree ─────────────────────────────────────────────────────
+if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
+  # Exclude beads/* debrief files, runner-logs, the .stop-beads signal file.
+  # Use grep -vE on the porcelain output (2-char status code + space + path).
+  # --untracked-files=all expands directory entries so an untracked
+  # .beads/foo-debrief.txt appears as a file we can filter, not as `?? .beads/`.
+  # (Note: `-u all` is wrong — git parses "all" as a pathspec; must use `=` or `-uall`.)
+  dirty="$(git -C "$project_dir" status --porcelain --untracked-files=all 2>/dev/null \
+    | grep -vE '^.{3}(\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
+    || true)"
+  if [[ -n "$dirty" ]]; then
+    failures+=("dirty_tree")
+    msg="Uncommitted changes in the working tree (debrief / runner-log scratch files excluded):"$'\n'"$dirty"$'\n\n'
+    msg+="Commit them — referencing the bead id ($task_id) in the message so 'git log --grep' can find them — or 'git restore <path>' / 'git clean' if they were exploratory. Do NOT close a bead with uncommitted work; the next runner iteration would smuggle this diff into an unrelated bead's commit."
+    remediation+=("$msg")
+  fi
+fi
+
+# Check 3: close-without-commit consistency (Stop only) ───────────────────
+if [[ "$event_name" == "Stop" ]] && command -v bd >/dev/null 2>&1; then
+  status="$(bd show "$task_id" --json 2>/dev/null | jq -r '.[0].status // empty' 2>/dev/null)"
+  if [[ "$status" == "closed" ]]; then
+    if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
+      grep_count="$(git -C "$project_dir" log --grep="$task_id" -1 --since='1 hour ago' --pretty=format:'%h' 2>/dev/null | wc -l | tr -d ' ')"
+      if [[ "${grep_count:-0}" -eq 0 ]]; then
+        failures+=("close_without_commit")
+        remediation+=("Bead $task_id is closed but no commit in the last hour references its id. Either (a) commit referencing $task_id in the message, or (b) 'bd reopen $task_id' and finish the work properly. A closed bead with no commit is the exact failure mode this hook exists to prevent (incident: thirsty-backend-krxv).")
+      fi
+    fi
+  fi
+fi
+
+# Check 4: wrapup-reviewed marker (only if a /wrapup skill exists) ────────
+if [[ -f "$project_dir/.claude/skills/wrapup/SKILL.md" ]] && command -v bd >/dev/null 2>&1; then
+  notes="$(bd show "$task_id" --long --json 2>/dev/null | jq -r '.[0].notes // ""' 2>/dev/null)"
+  if ! printf '%s' "$notes" | grep -q 'wrapup-reviewed:'; then
+    failures+=("wrapup_not_invoked")
+    remediation+=("The /wrapup skill has not been invoked for $task_id (no 'wrapup-reviewed:' marker in bead notes). Run /wrapup before closing — it enforces code review, quality gates, production-risk analysis, and writes the marker as its final step. The skill is at .claude/skills/wrapup/SKILL.md.")
+  fi
+fi
+
+# Check 5: debrief presence ───────────────────────────────────────────────
+if command -v bd >/dev/null 2>&1; then
+  notes="$(bd show "$task_id" --long --json 2>/dev/null | jq -r '.[0].notes // ""' 2>/dev/null)"
+  if [[ -z "$notes" || ${#notes} -lt 40 ]]; then
+    failures+=("missing_debrief")
+    remediation+=("No debrief notes on $task_id. Append a debrief before closing: bd update $task_id --append-notes \"<what you did, difficulties or unexpected behavior, anything you weren't sure about, follow-up suggestions>\"")
+  fi
+fi
+
+# ── 6. Emit decision ────────────────────────────────────────────────────────
+if (( ${#failures[@]} == 0 )); then
+  log_event allow ""
+  exit 0
+fi
+
+failed_csv="$(printf '%s,' "${failures[@]}" | sed 's/,$//')"
+
+reason="BLOCKED ($event_name on bead $task_id): $failed_csv"$'\n\n'
+for r in "${remediation[@]}"; do
+  reason+="$r"$'\n\n'
+done
+reason+="Fix all of the above, then retry. This hook intentionally returns every failure at once so you can address them in a single pass — Stop hooks are capped at 8 consecutive blocks before being overridden."
+
+log_event block "$failed_csv"
+
+if [[ "$event_name" == "PreToolUse" ]]; then
+  jq -n --arg reason "$reason" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+else
+  jq -n --arg reason "$reason" '{
+    decision: "block",
+    reason: $reason
+  }'
+fi
+
+exit 0
