@@ -156,6 +156,20 @@ if [[ -f .beads/runner.sh ]]; then
   source .beads/runner.sh 2>/dev/null || echo "degrade: CONFIG_UNREADABLE — .beads/runner.sh failed to source; using defaults" >&2
 fi
 
+# claude-tools-qcoe: per-task permission mode. Opus supports `--permission-mode auto`
+# (LLM-classified auto-approval, still honors permissions.deny). Sonnet silently
+# downgrades auto→default in headless = block on first prompt = watchdog kill, so
+# non-Opus stays on the workspace PERMISSION_FLAGS (acceptEdits + allowlist).
+# Resolved against DEFAULT_MODEL post-source so a `.beads/runner.sh` DEFAULT_MODEL
+# override routes correctly. The bare-"opus"→"opus[1m]" upgrade lives in
+# run-beads-tasks.sh's per-task path; runner.sh's DEFAULT_MODEL skeleton default
+# is already "opus[1m]" so `opus*)` matches both forms.
+# FORWARD COMPAT: when Sonnet gains auto support, change `opus*)` to `opus*|sonnet*)`.
+TASK_PERMISSION_FLAGS=("${PERMISSION_FLAGS[@]}")
+case "$DEFAULT_MODEL" in
+  opus*) TASK_PERMISSION_FLAGS=(--permission-mode auto) ;;
+esac
+
 # ── The callee surface: in-process NO-OP stubs (T2.1). Integration/T-final
 #    swaps these for the real Local Agent (T3, lib/local-agent.sh) +
 #    Coordinator (T4) — the runner's job call sites below DO NOT change. ───────
@@ -1291,7 +1305,7 @@ st_run_task() {
     --model "$DEFAULT_MODEL" \
     "${GUARDRAIL_FLAGS[@]+"${GUARDRAIL_FLAGS[@]}"}" \
     "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
-    "${PERMISSION_FLAGS[@]+"${PERMISSION_FLAGS[@]}"}" \
+    "${TASK_PERMISSION_FLAGS[@]+"${TASK_PERMISSION_FLAGS[@]}"}" \
     > "$STREAM_FILE" 2>&1 &
   CLAUDE_PID=$!
 

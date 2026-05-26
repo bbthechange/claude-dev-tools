@@ -257,9 +257,11 @@ lease_release_seam() {  # <task_ref> — release pairs the acquire (⇒ bead ope
 # ── Handle --yolo flag ───────────────────────────────────────────────────────
 
 MODE_LABEL="scoped permissions"
+YOLO=0
 if [[ "${1:-}" == "--yolo" ]]; then
   PERMISSION_FLAGS=(--dangerously-skip-permissions)
   MODE_LABEL="all permissions bypassed"
+  YOLO=1
 fi
 
 # ── Node v25 PATH prime (claude-tools-4tj; shared with specialist.sh /
@@ -1219,6 +1221,19 @@ while true; do
   # (sonnet[1m] requires "extra usage" which this org has disabled, so leave sonnet alone.)
   [[ "$TASK_MODEL" == "opus" ]] && TASK_MODEL="opus[1m]"
 
+  # claude-tools-qcoe: per-task permission mode. Opus supports `--permission-mode auto`
+  # (LLM-classified auto-approval, still honors permissions.deny). Sonnet silently
+  # downgrades auto→default in headless = block on first prompt = watchdog kill, so
+  # non-Opus stays on the workspace PERMISSION_FLAGS (acceptEdits + allowlist).
+  # FORWARD COMPAT: when Sonnet gains auto support, change `opus*)` to `opus*|sonnet*)`.
+  # --yolo wins (--dangerously-skip-permissions in PERMISSION_FLAGS flows through).
+  TASK_PERMISSION_FLAGS=("${PERMISSION_FLAGS[@]}")
+  if [[ ${YOLO:-0} != 1 ]]; then
+    case "$TASK_MODEL" in
+      opus*) TASK_PERMISSION_FLAGS=(--permission-mode auto) ;;
+    esac
+  fi
+
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "  $TASK_TITLE ($TASK_ID) [$TASK_MODEL]"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1478,7 +1493,7 @@ $PROMPT"
     --model "$TASK_MODEL" \
     "${GUARDRAIL_FLAGS[@]+"${GUARDRAIL_FLAGS[@]}"}" \
     "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
-    "${PERMISSION_FLAGS[@]+"${PERMISSION_FLAGS[@]}"}" \
+    "${TASK_PERMISSION_FLAGS[@]+"${TASK_PERMISSION_FLAGS[@]}"}" \
     > "$STREAM_FILE" 2>&1 &
   CLAUDE_PID=$!
 
