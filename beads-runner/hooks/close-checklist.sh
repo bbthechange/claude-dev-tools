@@ -267,8 +267,11 @@ if [[ "$event_name" == "Stop" ]] && command -v bd >/dev/null 2>&1; then
   status="$(bd show "$task_id" --json 2>/dev/null | jq -r '.[0].status // empty' 2>/dev/null)"
   if [[ "$status" == "closed" ]]; then
     if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
-      grep_count="$(git -C "$project_dir" log --grep="$task_id" -1 --since='1 hour ago' --pretty=format:'%h' 2>/dev/null | wc -l | tr -d ' ')"
-      if [[ "${grep_count:-0}" -eq 0 ]]; then
+      # NB: --format=%h (and --pretty=format:%h) emit NO trailing newline, so
+      # `wc -l` on a single matching hash returns 0 — indistinguishable from
+      # no-match. Test emptiness directly instead. (claude-tools-m3mx)
+      grep_out="$(git -C "$project_dir" log --grep="$task_id" -1 --since='1 hour ago' --format=%h 2>/dev/null)"
+      if [[ -z "$grep_out" ]]; then
         failures+=("close_without_commit")
         remediation+=("Bead $task_id is closed but no commit in the last hour references its id. Either (a) commit referencing $task_id in the message, or (b) 'bd reopen $task_id' and finish the work properly. A closed bead with no commit is the exact failure mode this hook exists to prevent (incident: thirsty-backend-krxv).")
       fi

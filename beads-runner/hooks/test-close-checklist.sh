@@ -210,6 +210,18 @@ out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "P
 assert_block_stop "T11 closed-without-commit" "$out" "closed but no commit"
 rm -rf "$ws" "$shim"
 
+# T11a: Closed bead + commit DOES reference it → allow (regression guard for
+# claude-tools-m3mx: previously check 3 used `wc -l` on `--pretty=format:%h`
+# which always returned 0, so this branch was indistinguishable from T11).
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"closed\",\"notes\":\"a debrief that is plenty long for the threshold; wrapup-reviewed: 2026-01-01\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"closed\"}]' ;; esac"
+echo "ref" > "$ws/ref.txt"
+git -C "$ws" add ref.txt 2>/dev/null
+git -C "$ws" -c user.email=t@t -c user.name=t commit -q -m "work referencing foo bead" 2>/dev/null
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T11a closed-with-commit allowed" "$out"
+rm -rf "$ws" "$shim"
+
 # T12: Missing debrief → block
 ws=$(mkworkspace); shim=$(mkshim_dir)
 write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"wrapup-reviewed: 2026-01-01\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
