@@ -3,10 +3,11 @@
 ## When
 
 You've edited any file under `beads-runner/web/{board,inbox,intake}/` (HTML,
-app.js, board-view.js, inbox-view.js, CSS) or under
-`beads-runner/web/functions/api/{board,inbox,intake}/...`. The committed code
-change does NOT automatically reach the deployed Pages site — you must
-explicitly redeploy.
+app.js, board-view.js, inbox-view.js, CSS), under
+`beads-runner/web/functions/api/{board,inbox,intake}/...`, or the
+`beads-runner/web/_redirects` routing config. The committed code change does
+NOT automatically reach the deployed Pages site — you must explicitly
+redeploy.
 
 This is the most common source of "wired but not actually live" bugs in this
 project. See HANDOFF.md "loose threads" for the pattern.
@@ -16,12 +17,20 @@ project. See HANDOFF.md "loose threads" for the pattern.
 Board, Inbox, and Intake are routes inside ONE responsive web app (UX-DESIGN
 §2; consolidation in claude-tools-b59):
 
+- `claude-wrangler.pages.dev/`        → rewrite to `/board/` (200, no redirect;
+                                         see `beads-runner/web/_redirects`, q6z7)
 - `claude-wrangler.pages.dev/board`   → `web/board/`
 - `claude-wrangler.pages.dev/inbox`   → `web/inbox/`
 - `claude-wrangler.pages.dev/intake`  → `web/intake/`
 - `claude-wrangler.pages.dev/api/board/*`  → `web/functions/api/board/...`
 - `claude-wrangler.pages.dev/api/inbox/*`  → `web/functions/api/inbox/...`
 - `claude-wrangler.pages.dev/api/intake/*` → `web/functions/api/intake/...`
+
+The apex `/` rewrite means `board/index.html` is served at two URLs. For that
+to keep working, its asset refs MUST stay absolute (`/board/board.css`,
+`/board/board-view.js`, `/board/app.js`) — relative paths break when the same
+HTML is served at `/`. There are reminder comments on those lines in
+`board/index.html`.
 
 ## Deploy
 

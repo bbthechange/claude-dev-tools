@@ -78,6 +78,30 @@ for proj in "${routes[@]}"; do
   done < <(find "$root" -maxdepth 1 -type f -print0)
 done
 
+# Apex / check (mlyp). The /_redirects rewrite serves /board/ at the apex with
+# status 200. The verifier confirms (a) / returns 200, and (b) its body is
+# byte-identical to /board/'s body. Only meaningful when board was in scope.
+if printf '%s\n' "${routes[@]}" | grep -qx board; then
+  echo "==> /  (apex rewrite → /board/, see beads-runner/web/_redirects)"
+  apex_status="$(curl -fsSLo "$tmp/apex" -w '%{http_code}' "https://$HOST/" 2>/dev/null || echo "000")"
+  curl -fsSL "https://$HOST/board/" -o "$tmp/board-root" 2>/dev/null || true
+  if [ "$apex_status" != "200" ]; then
+    echo "MISS    /  (expected 200, got $apex_status)"
+    total_mismatches=$((total_mismatches + 1))
+  elif [ ! -s "$tmp/board-root" ]; then
+    echo "MISS    /  (could not fetch /board/ to compare)"
+    total_mismatches=$((total_mismatches + 1))
+  elif ! cmp -s "$tmp/apex" "$tmp/board-root"; then
+    apex_bytes="$(wc -c < "$tmp/apex" | tr -d ' ')"
+    board_bytes="$(wc -c < "$tmp/board-root" | tr -d ' ')"
+    echo "DRIFT   /  (apex=$apex_bytes bytes, /board/=$board_bytes bytes — bodies differ)"
+    total_mismatches=$((total_mismatches + 1))
+  else
+    echo "ok      /  ($(wc -c < "$tmp/apex" | tr -d ' ') bytes, body == /board/)"
+  fi
+  total_checked=$((total_checked + 1))
+fi
+
 echo "----"
 echo "checked=$total_checked  mismatches=$total_mismatches  host=$HOST"
 if [ "$total_mismatches" -gt 0 ]; then
