@@ -131,8 +131,13 @@ if [[ "$event_name" == "PreToolUse" ]]; then
     # `(^|[^[:alnum:]_])bd ` ensures `mybd close` doesn't match but `bd close`,
     # `/usr/bin/bd close`, `;bd close`, etc. do.
     args="$(printf '%s' "$tool_command" | sed -nE 's/.*(^|[^[:alnum:]_])bd[[:space:]]+(close|done)[[:space:]]+(.*)/\3/p')"
-    # Strip trailing pipe/redirect tail so `bd close foo | tail` doesn't count `tail` as an id
-    args="${args%%|*}"; args="${args%%;*}"; args="${args%%&*}"; args="${args%%>*}"
+    # Strip trailing pipe/redirect tail so `bd close foo | tail` doesn't count `tail` as an id.
+    # Single regex (not sequential `${var%%X*}` strips): the old four-step form ran the strips
+    # in the order `| ; & >`, so for `bd close foo 2>&1 | tail` the `|` strip yielded `foo 2>&1 `,
+    # the `&` strip yielded `foo 2>`, and the `>` strip left `foo 2` — two tokens, false-positive
+    # multi_id_close. Cut at the first shell-special metachar AND eat any preceding ` <digits>` FD
+    # prefix so the `2` from `N>&M` doesn't survive as a phantom id.
+    args="$(printf '%s' "$args" | sed -E 's/[[:space:]]*[0-9]*[|;&<>].*$//')"
     id_count=0
     for tok in $args; do
       [[ "$tok" == -* ]] && continue

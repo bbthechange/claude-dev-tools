@@ -178,6 +178,16 @@ out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'
 assert_allow "T8e single-id with pipe tail allowed" "$out"
 rm -rf "$ws" "$shim"
 
+# T8e2: Single id with `2>&1 | tail` redirect-tail not counted as multi-id
+# (regression for thirsty-backend-gi9z: the old sequential `${var%%X*}` strips
+# ran `| ; & >` in that order, so `foo 2>&1 | tail` was reduced to `foo 2` →
+# two tokens → false-positive multi_id_close even on a single-id invocation.)
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"a long enough debrief here; wrapup-reviewed: 2026-01-01 sha=abc clean=0\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd close foo 2>&1 | tail -3"}}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T8e2 single-id with 2>&1 | tail allowed" "$out"
+rm -rf "$ws" "$shim"
+
 # T8f: Non-close `bd update --notes "we closed the loop"` does NOT trigger
 ws=$(mkworkspace); shim=$(mkshim_dir)
 out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd update foo --notes \"we closed the loop\""}}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
