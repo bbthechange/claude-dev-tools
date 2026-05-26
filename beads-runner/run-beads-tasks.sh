@@ -398,7 +398,10 @@ cleanup() {
   if command -v la_report_terminal_reason >/dev/null 2>&1; then
     la_report_terminal_reason INTERRUPTED 1 "${CURRENT_TASK_ID:-}" "${PROJECT_REF:-}" || true
   fi
-  rm -f "$USAGE_CACHE_FILE" "${SIGNAL_FILE:-}"
+  rm -f "$USAGE_CACHE_FILE" "${SIGNAL_FILE:-}" "${POST_TERMINAL_FILE:-}" "${HOOK_SETTINGS_FILE:-}"
+  # claude-tools-td0y: also clear the current-task pointer on interrupt so
+  # a respawning runner doesn't see a stale id on its first hook firing.
+  rm -f "$LOG_DIR/current-task" 2>/dev/null || true
   echo "Results: $COMPLETED completed, $FAILED failed"
   exit 1
 }

@@ -143,6 +143,47 @@ out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'
 assert_block_pretool "T8 --status=closed matched" "$out" "BLOCKED"
 rm -rf "$ws" "$shim"
 
+# T8a: PreToolUse matches `--status='closed'` (shell-quoted single)
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+out=$(run_hook "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"s1\",\"cwd\":\"$ws\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bd update foo --status='closed'\"}}" "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_pretool "T8a --status='closed' (quoted) matched" "$out" "BLOCKED"
+rm -rf "$ws" "$shim"
+
+# T8b: PreToolUse matches `--status \"closed\"` (double-quoted, space-separated)
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+out=$(run_hook "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"s1\",\"cwd\":\"$ws\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bd update foo --status \\\"closed\\\"\"}}" "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_pretool "T8b --status \"closed\" (quoted, space-separated) matched" "$out" "BLOCKED"
+rm -rf "$ws" "$shim"
+
+# T8c: PreToolUse matches `-s closed` short form
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd update foo -s closed"}}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_pretool "T8c -s closed (short form) matched" "$out" "BLOCKED"
+rm -rf "$ws" "$shim"
+
+# T8d: Multi-id close blocked outright with multi_id_close failure
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"a long enough debrief here; wrapup-reviewed: 2026-01-01 sha=abc clean=0\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd close foo bar baz"}}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_pretool "T8d multi-id close denied" "$out" "Multi-bead close"
+rm -rf "$ws" "$shim"
+
+# T8e: Single id with redirect tail not counted as multi-id
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"a long enough debrief here; wrapup-reviewed: 2026-01-01 sha=abc clean=0\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd close foo | tail -3"}}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T8e single-id with pipe tail allowed" "$out"
+rm -rf "$ws" "$shim"
+
+# T8f: Non-close `bd update --notes "we closed the loop"` does NOT trigger
+ws=$(mkworkspace); shim=$(mkshim_dir)
+out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd update foo --notes \"we closed the loop\""}}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T8f bd update --notes (contains 'closed') not a close" "$out"
+rm -rf "$ws" "$shim"
+
 echo "[Checks]"
 
 # T9: Dirty tree (Stop) blocks

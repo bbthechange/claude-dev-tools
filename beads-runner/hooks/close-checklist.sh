@@ -106,13 +106,51 @@ if [[ -z "$task_id" ]]; then
 fi
 
 # ── 3. Gate: PreToolUse only on close-shaped commands ───────────────────────
+# Fail-open matcher: if the command looks anything like closing a bead, fire
+# the hook. False positive cost = one extra log entry; false negative cost =
+# the discipline gate is bypassed. Catches:
+#   bd close <ids>         bd done <ids>          (and aliases)
+#   bd update <id> --status=closed
+#   bd update <id> --status closed
+#   bd update <id> --status='closed' / "closed"   (shell-quoted value)
+#   bd update <id> -s closed / -s 'closed' / -s "closed"
+is_close_cmd=0
+multi_id_close=0
 if [[ "$event_name" == "PreToolUse" ]]; then
   if [[ "$tool_name" != "Bash" ]]; then
     log_event allow "" '{"reason":"not_bash_tool"}'
     exit 0
   fi
-  # Match: `bd close|done <ids>`, `--status=closed`, `--status closed`, `-s closed`
-  if ! printf '%s' "$tool_command" | grep -qE '\bbd[[:space:]]+(close|done)\b|--status[= ]closed\b|(^|[[:space:]])-s[[:space:]]+closed([[:space:]]|$)'; then
+  # Pattern A: `bd close|done <args>` direct form
+  if printf '%s' "$tool_command" | grep -qE '\bbd[[:space:]]+(close|done)([[:space:]]|$)'; then
+    is_close_cmd=1
+    # Extract args after `bd close|done` and count non-flag tokens (the ids).
+    # If >1 id, deny — checks below only validate CURRENT_TASK_ID; closing
+    # sibling beads in the same call would bypass discipline for the others.
+    # BSD sed (macOS) does not support `\b`; use an explicit boundary class.
+    # `(^|[^[:alnum:]_])bd ` ensures `mybd close` doesn't match but `bd close`,
+    # `/usr/bin/bd close`, `;bd close`, etc. do.
+    args="$(printf '%s' "$tool_command" | sed -nE 's/.*(^|[^[:alnum:]_])bd[[:space:]]+(close|done)[[:space:]]+(.*)/\3/p')"
+    # Strip trailing pipe/redirect tail so `bd close foo | tail` doesn't count `tail` as an id
+    args="${args%%|*}"; args="${args%%;*}"; args="${args%%&*}"; args="${args%%>*}"
+    id_count=0
+    for tok in $args; do
+      [[ "$tok" == -* ]] && continue
+      id_count=$((id_count + 1))
+    done
+    if (( id_count > 1 )); then
+      multi_id_close=1
+    fi
+  fi
+  # Pattern B: `--status … closed` (any whitespace/quote/=  between flag and value)
+  if printf '%s' "$tool_command" | grep -qE -- '--status[=[:space:]]+["'"'"']?closed(["'"'"'[:space:]]|$)'; then
+    is_close_cmd=1
+  fi
+  # Pattern C: `-s … closed` (short form)
+  if printf '%s' "$tool_command" | grep -qE -- '(^|[[:space:]])-s[=[:space:]]+["'"'"']?closed(["'"'"'[:space:]]|$)'; then
+    is_close_cmd=1
+  fi
+  if (( is_close_cmd == 0 )); then
     log_event allow "" '{"reason":"not_close_cmd"}'
     exit 0
   fi
@@ -124,11 +162,19 @@ if [[ "$event_name" == "Stop" && "$stop_hook_active" == "true" ]]; then
   exit 0
 fi
 
-# ── 5. Five checks ──────────────────────────────────────────────────────────
+# ── 5. Five (six) checks ────────────────────────────────────────────────────
 failures=()
 remediation=()
 
-claude_pid="$PPID"
+claude_pid="$PPID"  # verified: Claude Code spawns the hook directly, so PPID==claude pid (probed against `claude -p` empirically — see claude-tools-td0y debrief)
+
+# Check 0: multi-id close — deny outright (the checks below only validate
+# CURRENT_TASK_ID; closing sibling beads in the same call would silently
+# bypass discipline for every id except CURRENT_TASK_ID).
+if (( multi_id_close == 1 )); then
+  failures+=("multi_id_close")
+  remediation+=("Multi-bead close detected. The close-discipline checks only validate CURRENT_TASK_ID ($task_id). Run one bead per close call so each can be properly verified (commit references, debrief, wrapup marker). Example: instead of 'bd close foo bar baz', run 'bd close foo' then 'bd close bar' then 'bd close baz'.")
+fi
 
 # Build MCP exclusion regex from ~/.claude.json (canonical source of registered MCPs).
 # Each line: command + space-joined args. We escape regex metachars and OR them.
@@ -143,8 +189,11 @@ fi
 generic_mcp_re='node[^[:space:]]*[[:space:]][^[:space:]]*/mcp-[^/[:space:]]+/(server|index)\.(mjs|js|cjs)'
 
 is_mcp() {
-  local cmd="$1"
-  for ex in "${mcp_excludes[@]}"; do
+  local cmd="$1" ex
+  # Guarded array expansion — `${arr[@]}` errors under `set -u` on bash 3.2
+  # (macOS default /bin/bash) when arr is empty. The `${arr[@]+...}` pattern
+  # makes empty-array iteration a no-op. Matches the runner's existing style.
+  for ex in "${mcp_excludes[@]+"${mcp_excludes[@]}"}"; do
     # Substring match (cheap, no regex escape needed)
     if [[ "$cmd" == *"$ex"* ]]; then
       return 0
