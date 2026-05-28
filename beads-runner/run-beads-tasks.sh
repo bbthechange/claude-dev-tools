@@ -1119,13 +1119,16 @@ post_close_audit() {
     fi
   fi
 
-  # Check 2: dirty tree (excluding debrief / runner-log scratch). Mirrors
-  # close-checklist.sh check 2 — a closed bead with a dirty tree means the
-  # worker's diff is about to be smuggled into the next bead's commit.
+  # Check 2: dirty tree (excluding .beads/issues.jsonl, debrief, runner-log
+  # scratch, .stop-beads). Mirrors close-checklist.sh check 2 — a closed bead
+  # with a dirty tree means the worker's diff is about to be smuggled into the
+  # next bead's commit. issues.jsonl is excluded because bd close itself writes
+  # to it as a side-effect of flipping status; authoritative state is in Dolt
+  # (claude-tools-u4ms).
   if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
     local dirty
     dirty="$(git -C "$project_dir" status --porcelain --untracked-files=all 2>/dev/null \
-      | grep -vE '^.{3}(\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
+      | grep -vE '^.{3}(\.beads/issues\.jsonl$|\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
       || true)"
     if [[ -n "$dirty" ]]; then
       failures+=("dirty_tree")

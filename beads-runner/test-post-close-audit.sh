@@ -226,6 +226,78 @@ else
 fi
 rm -rf "$ws" "$shim"
 
+# T5: Closed bead, clean tree EXCEPT .beads/issues.jsonl (the bd-close
+#     side-effect file). Audit must NOT fire — that was the rhythmGame
+#     overnight false-positive cascade (claude-tools-u4ms).
+ws=$(mkfixture); shim=$(mkshim)
+write_shim "$shim" bd "
+case \"\$*\" in
+  'show foo-5 --json')
+    printf '%s' '[{\"status\":\"closed\"}]' ;;
+  'show foo-5 --long --json')
+    printf '%s' '[{\"status\":\"closed\",\"notes\":\"Proper debrief content that is over forty characters long.\nwrapup-reviewed: 2026-05-28T00:00:00Z sha=abc clean=0\"}]' ;;
+  create*) echo \"\$*\" >> '$ws/.beads/runner-logs/bd-create-calls.log' ;;
+esac
+exit 0
+"
+mkdir -p "$ws/.claude/skills/wrapup" && echo stub > "$ws/.claude/skills/wrapup/SKILL.md"
+( cd "$ws" \
+  && git init -q 2>/dev/null \
+  && git -c user.email=t@t -c user.name=t add . \
+  && git -c user.email=t@t -c user.name=t commit -q -m 'work on foo-5 — closing it out' )
+# Simulate bd close's side-effect: an untracked .beads/issues.jsonl appears
+# in the working tree after the close commit.
+echo '{"id":"foo-5","status":"closed"}' > "$ws/.beads/issues.jsonl"
+
+run_audit "$ws" "foo-5" "$shim" >/dev/null 2>&1
+
+if [[ ! -s "$ws/.beads/runner-logs/incidents.log" ]] \
+   && [[ ! -s "$ws/.beads/runner-logs/bd-create-calls.log" ]]; then
+  PASS=$((PASS+1)); echo "  PASS: T5 issues.jsonl-only dirty tree does NOT fire audit"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES+=("T5")
+  echo "  FAIL: T5 issues.jsonl-only dirty fired audit (should not):"
+  [[ -s "$ws/.beads/runner-logs/incidents.log" ]] && \
+    echo "    incident:"; cat "$ws/.beads/runner-logs/incidents.log" | sed 's/^/      /' 2>/dev/null
+  [[ -s "$ws/.beads/runner-logs/bd-create-calls.log" ]] && \
+    echo "    bd create:"; cat "$ws/.beads/runner-logs/bd-create-calls.log" | sed 's/^/      /' 2>/dev/null
+fi
+rm -rf "$ws" "$shim"
+
+# T6: Closed bead, dirty tree contains both .beads/issues.jsonl AND a real
+#     source file. Audit MUST still fire dirty_tree — the exclusion is
+#     scoped to issues.jsonl, not a blanket suppression (claude-tools-u4ms).
+ws=$(mkfixture); shim=$(mkshim)
+write_shim "$shim" bd "
+case \"\$*\" in
+  'show foo-6 --json')
+    printf '%s' '[{\"status\":\"closed\"}]' ;;
+  'show foo-6 --long --json')
+    printf '%s' '[{\"status\":\"closed\",\"notes\":\"Proper debrief content that is over forty characters long.\nwrapup-reviewed: 2026-05-28T00:00:00Z sha=abc clean=0\"}]' ;;
+  create*) echo \"\$*\" >> '$ws/.beads/runner-logs/bd-create-calls.log' ;;
+esac
+exit 0
+"
+mkdir -p "$ws/.claude/skills/wrapup" && echo stub > "$ws/.claude/skills/wrapup/SKILL.md"
+( cd "$ws" \
+  && git init -q 2>/dev/null \
+  && git -c user.email=t@t -c user.name=t add . \
+  && git -c user.email=t@t -c user.name=t commit -q -m 'work on foo-6 — closing it out' )
+echo '{"id":"foo-6","status":"closed"}' > "$ws/.beads/issues.jsonl"
+echo 'package main' > "$ws/real.go"  # this is the genuine dirty file
+
+run_audit "$ws" "foo-6" "$shim" >/dev/null 2>&1
+
+inc_log="$ws/.beads/runner-logs/incidents.log"
+if [[ -s "$inc_log" ]] && grep -q "dirty_tree" "$inc_log"; then
+  PASS=$((PASS+1)); echo "  PASS: T6 genuine dirty file still fires audit"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES+=("T6")
+  echo "  FAIL: T6 expected dirty_tree incident, got:"
+  [[ -s "$inc_log" ]] && cat "$inc_log" | sed 's/^/    /' || echo "    (no incident)"
+fi
+rm -rf "$ws" "$shim"
+
 # ── Summary ─────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

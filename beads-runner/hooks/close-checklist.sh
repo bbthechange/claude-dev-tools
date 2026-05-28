@@ -251,17 +251,19 @@ fi
 
 # Check 2: dirty tree ─────────────────────────────────────────────────────
 if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
-  # Exclude beads/* debrief files, runner-logs, the .stop-beads signal file.
+  # Exclude .beads/issues.jsonl (bd close itself writes to it as a side-effect;
+  # authoritative state is in Dolt — claude-tools-u4ms), beads/* debrief files,
+  # runner-logs, the .stop-beads signal file.
   # Use grep -vE on the porcelain output (2-char status code + space + path).
   # --untracked-files=all expands directory entries so an untracked
   # .beads/foo-debrief.txt appears as a file we can filter, not as `?? .beads/`.
   # (Note: `-u all` is wrong — git parses "all" as a pathspec; must use `=` or `-uall`.)
   dirty="$(git -C "$project_dir" status --porcelain --untracked-files=all 2>/dev/null \
-    | grep -vE '^.{3}(\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
+    | grep -vE '^.{3}(\.beads/issues\.jsonl$|\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
     || true)"
   if [[ -n "$dirty" ]]; then
     failures+=("dirty_tree")
-    msg="Uncommitted changes in the working tree (debrief / runner-log scratch files excluded):"$'\n'"$dirty"$'\n\n'
+    msg="Uncommitted changes in the working tree (issues.jsonl / debrief / runner-log scratch files excluded):"$'\n'"$dirty"$'\n\n'
     msg+="Commit them — referencing the bead id ($task_id) in the message so 'git log --grep' can find them — or 'git restore <path>' / 'git clean' if they were exploratory. Do NOT close a bead with uncommitted work; the next runner iteration would smuggle this diff into an unrelated bead's commit."
     remediation+=("$msg")
   fi
