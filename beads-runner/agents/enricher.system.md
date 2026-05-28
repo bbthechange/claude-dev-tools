@@ -98,6 +98,7 @@ Refusing is not failure; it's the lovable outcome when a real ambiguity exists. 
 - Never write to a file outside `.beads/`. Your only side effect is `bd` calls (which write to `.beads/`) and stdout.
 - Never use `EnterPlanMode` / `ExitPlanMode` / `AskUserQuestion`. You're headless; those are forbidden by the launcher's guardrail anyway.
 - Never silently skip the dedup pass. If you didn't run `bd ready` / `bd list` / `bd search`, you didn't do the job.
+- Never append `2>&1` (or any other shell redirect) to your `bd` calls. The launcher's allowlist matches `Bash(bd:*)` against the bare command; a redirect re-routes the call through Claude Code's "multiple operations" permission parser and trips an instant denial in non-interactive `claude -p` (claude-tools-e5aq, 2026-05-28: 192 such denials, zero beads created). `bd ready`, `bd list --status=open`, `bd search <kw>` — bare, no redirects.
 - Never fabricate a stage for an unknown preset. Refuse via Step 4.
 - Never leave the `intake-<intake_id>` label off — that label is how the daemon and Brian trace a bead back to the phone tap.
 

@@ -157,6 +157,14 @@ fi
 grep -q -- "--permission-mode default" <<<"$DB" \
   && pass "dossier-builder: --permission-mode default" \
   || fail "dossier-builder: expected --permission-mode default"
+# claude-tools-e5aq: --allowedTools must include Bash(bd:*) (and the
+# read-only-bash family) so the bd subprocess + git/grep/etc actually run in
+# non-interactive `claude -p`. Without this every Bash invocation is sent to
+# the permission prompt and instantly denied — observed on 2026-05-28 in
+# rhythmGame: 16 enricher runs, 192 denials, zero beads created.
+grep -q -- "--allowedTools .* Bash(bd:\\*)" <<<"$DB" \
+  && pass "dossier-builder: --allowedTools includes Bash(bd:*) (claude-tools-e5aq)" \
+  || fail "dossier-builder: --allowedTools missing Bash(bd:*) — enricher-style 192-denial regression"
 
 REC=$(stream_for reconciler)
 # After M6: full no-code-edits set, but Bash itself is KEPT (the `bd` subprocess
@@ -168,6 +176,9 @@ if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteE
 else
   fail "reconciler: expected Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits forbidden AND bare Bash kept"
 fi
+grep -q -- "--allowedTools .* Bash(bd:\\*)" <<<"$REC" \
+  && pass "reconciler: --allowedTools includes Bash(bd:*) (claude-tools-e5aq)" \
+  || fail "reconciler: --allowedTools missing Bash(bd:*)"
 
 ENR=$(stream_for enricher)
 if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteEdits" <<<"$ENR" \
@@ -176,6 +187,12 @@ if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteE
 else
   fail "enricher: expected Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits forbidden AND bare Bash kept"
 fi
+grep -q -- "--allowedTools .* Bash(bd:\\*)" <<<"$ENR" \
+  && pass "enricher: --allowedTools includes Bash(bd:*) (claude-tools-e5aq)" \
+  || fail "enricher: --allowedTools missing Bash(bd:*) — the exact bug e5aq fixes"
+grep -q -- "--allowedTools .* Bash(git:\\*)" <<<"$ENR" \
+  && pass "enricher: --allowedTools includes Bash(git:*) (read-only git for dedup pass)" \
+  || fail "enricher: --allowedTools missing Bash(git:*)"
 
 IMPL=$(stream_for impl)
 grep -q -- "--permission-mode acceptEdits" <<<"$IMPL" \
@@ -186,6 +203,14 @@ if grep -q -- "--disallowedTools .* Write" <<<"$IMPL"; then
 else
   pass "impl: writes kept (real-work hat)"
 fi
+# claude-tools-e5aq: real-work hats also need Bash(bd:*) in the allowlist;
+# acceptEdits auto-accepts file edits but Bash is still permission-gated.
+grep -q -- "--allowedTools .* Bash(bd:\\*)" <<<"$IMPL" \
+  && pass "impl: --allowedTools includes Bash(bd:*) (claude-tools-e5aq)" \
+  || fail "impl: --allowedTools missing Bash(bd:*)"
+grep -q -- "--allowedTools .* Write " <<<"$IMPL" \
+  && pass "impl: --allowedTools includes Write (real-work hat needs file writes)" \
+  || fail "impl: --allowedTools missing Write — real-work hat cannot edit files"
 
 # ── arg-form parity + workspace with spaces ──────────────────────────────────
 echo '── arg forms + spaces ──'

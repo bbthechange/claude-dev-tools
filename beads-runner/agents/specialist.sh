@@ -136,6 +136,48 @@ GUARDRAIL=(AskUserQuestion EnterPlanMode ExitPlanMode)
 # disallow these; they need them.
 NO_CODE_EDITS=(Write Edit MultiEdit NotebookEdit BashWriteEdits)
 
+# Common allowlist every hat needs (claude-tools-e5aq): without --allowedTools,
+# `--permission-mode default` (and acceptEdits, for Bash) sends every tool call
+# to the permission prompt, which in non-interactive `claude -p` is an instant
+# denial. Observed on 2026-05-28 in rhythmGame: 16 enricher runs, 192 denials,
+# zero beads created — `bd --version` was rejected, never mind `bd create`.
+# The enricher/reconciler/dossier-builder prompts are explicit that the bd
+# subprocess is the agent's only writer; without Bash(bd:*) the hat is
+# structurally unable to do its job.
+#
+# This list mirrors the worker's `.beads/runner.sh` PERMISSION_FLAGS allowlist
+# for the read-only bash family (bd, git, grep, find, ls, cat, head, tail, jq,
+# etc.) plus the non-Bash read tools the hats use (Read/Grep/Glob/LS). The
+# real-work hats below extend it with write tools and a broader Bash surface.
+COMMON_ALLOWED=(
+  Read Grep Glob LS
+  "Bash(bd:*)"
+  "Bash(git:*)"
+  "Bash(grep:*)" "Bash(rg:*)" "Bash(find:*)"
+  "Bash(ls:*)" "Bash(cat:*)" "Bash(head:*)" "Bash(tail:*)"
+  "Bash(wc:*)" "Bash(diff:*)" "Bash(cmp:*)" "Bash(sort:*)" "Bash(uniq:*)"
+  "Bash(jq:*)" "Bash(awk:*)" "Bash(sed:*)"
+  "Bash(date:*)" "Bash(basename:*)" "Bash(dirname:*)" "Bash(realpath:*)"
+  "Bash(which:*)" "Bash(command:*)" "Bash(echo:*)" "Bash(printf:*)"
+  "Bash(tree:*)" "Bash(env:*)" "Bash(test:*)"
+)
+
+# Real-work hats also need the write tools and the broader bash surface (so
+# they can edit files, run builds, invoke node/wrangler, etc.).
+REAL_WORK_EXTRA=(
+  Write Edit MultiEdit NotebookEdit Task WebFetch WebSearch
+  "Bash(mkdir:*)" "Bash(cp:*)" "Bash(mv:*)" "Bash(rm:*)"
+  "Bash(chmod:*)" "Bash(touch:*)" "Bash(ln:*)" "Bash(mktemp:*)"
+  "Bash(bash:*)" "Bash(sh:*)" "Bash(make:*)"
+  "Bash(node:*)" "Bash(npm:*)" "Bash(npx:*)" "Bash(pnpm:*)" "Bash(yarn:*)"
+  "Bash(wrangler:*)" "Bash(miniflare:*)"
+  "Bash(tsc:*)" "Bash(tsx:*)" "Bash(vitest:*)" "Bash(vite:*)" "Bash(esbuild:*)"
+  "Bash(python:*)" "Bash(python3:*)" "Bash(curl:*)"
+  "Bash(ps:*)" "Bash(lsof:*)" "Bash(kill:*)" "Bash(pkill:*)" "Bash(wait:*)"
+  "Bash(sleep:*)" "Bash(timeout:*)" "Bash(tee:*)" "Bash(xargs:*)"
+  "Bash(security:*)" "Bash(shellcheck:*)"
+)
+
 case "$KIND" in
   dossier-builder)
     # B2 surface, B6 (claude-tools-lhc) fix: Bash is REQUIRED. The B1 prompt
@@ -147,6 +189,7 @@ case "$KIND" in
     # engine is the writer). NO_CODE_EDITS still covers Write/Edit/Multi/
     # NotebookEdit/BashWriteEdits so the agent physically cannot mutate
     # files outside .beads.
+    ALLOWED=("${COMMON_ALLOWED[@]}")
     DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}")
     PERMISSION_MODE=(--permission-mode default)
     ;;
@@ -157,11 +200,13 @@ case "$KIND" in
     # BashWriteEdits — the M6 spec is precise about this so the bd-surgery
     # agent physically cannot edit code or commit (AD8 read-only-outside-
     # .beads/ contract).
+    ALLOWED=("${COMMON_ALLOWED[@]}")
     DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}")
     PERMISSION_MODE=(--permission-mode default)
     ;;
   ux|design|impl|docs|tests)
     # Real work: writes + bd allowed; same posture as a per-task worker.
+    ALLOWED=("${COMMON_ALLOWED[@]}" "${REAL_WORK_EXTRA[@]}")
     DISALLOWED=("${GUARDRAIL[@]}")
     PERMISSION_MODE=(--permission-mode acceptEdits)
     ;;
@@ -218,7 +263,9 @@ log_event start
 # workspace explicitly (cwd + --add-dir + workspace CLAUDE.md, per UX-DESIGN
 # §2.1). Stream-json captured (merged stdout+stderr, BC-39 idiom) to the
 # self-gitignored stream file. --disallowedTools is LAST so the variadic
-# tool list does not gobble a following --flag.
+# tool list does not gobble a following --flag; --allowedTools is sandwiched
+# between --add-dir and --disallowedTools and explicitly terminated by the
+# next named flag (--permission-mode) before --disallowedTools is appended.
 (
   # Exit 70 (sysexits EX_SOFTWARE) on cd failure — distinct enough from any
   # plausible claude exit that a caller inspecting CLAUDE_EXIT can disambiguate
@@ -232,6 +279,7 @@ log_event start
     --no-chrome \
     --add-dir "$WORKSPACE" \
     --append-system-prompt "$SYS_PROMPT" \
+    --allowedTools "${ALLOWED[@]}" \
     "${PERMISSION_MODE[@]}" \
     --disallowedTools "${DISALLOWED[@]}" \
     > "$STREAM_FILE" 2>&1
