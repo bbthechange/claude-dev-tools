@@ -775,6 +775,20 @@ async function itemApply(co, principal, did, iid, respArg) {
   } else {
     return rej(`consequence: apply REJECTED — Item '${iid}' in unexpected state '${st}'`);
   }
+  // ── L1 (claude-tools-uxvl1) §5.6 — EMPTY-PAYLOAD HARD REJECT ────────────────
+  // A §5.2 response MUST carry a non-empty `decision`. An empty/contentless
+  // payload ({} — e.g. a mis-wired "dismiss" tap, or a decision-less recorded
+  // response) is REJECTED here: it must NEVER fall through to the §5.2.2
+  // reconciler (which would mark the Item `applied` and emit a follow-up; the
+  // runner's resume poll would then re-dispatch the worker with "Raw response
+  // (§5.2): {}"). No verb may default to another verb's payload — "dismiss as
+  // stale" is its OWN verb (item-set-state→expired), never an empty apply
+  // (inbox-lifecycle §5.4/§5.6). The §7.4 idempotency latch is NOT touched on a
+  // reject (NO write), so a later real decision on this Item still applies.
+  if (typeof resp.decision !== "string" || resp.decision.trim() === "")
+    return rej(
+      `consequence: apply REJECTED — Item '${iid}' response carries no §5.2 decision (empty/contentless payload). Each Inbox verb sends its own decision; an empty payload never defaults to "apply the recommendation" (inbox-lifecycle §5.4/§5.6).`
+    );
   if (!stateCheck("answered", "applied"))
     return rej(`consequence: apply — answered→applied illegal (§4.1.1/§5.2)`);
 

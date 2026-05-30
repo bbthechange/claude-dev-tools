@@ -264,6 +264,8 @@ ck "respond proxy exports NO onRequestGet (no read/mutate mix)" hasnt "onRequest
 ck "respond proxy pins the ONE write op 'item-apply'"         has "COORDINATOR_OP = 'item-apply'" "$(cat "$P_RESP")"
 ck "respond proxy: exactly ONE op literal on the wire"        eq "$(opn "$P_RESP")" "1"
 ck "respond proxy strips any client-sent principal (§9.1)"    has "delete response.principal" "$(cat "$P_RESP")"
+ck "respond proxy HARD-REJECTS a decisionless payload (claude-tools-uxvl1 §5.6)" \
+                                                              has "typeof response.decision !== 'string'" "$(cat "$P_RESP")"
 ck "bearer is a server-side env binding in ALL 5 proxies"     eq "$(grep -l 'env.COORDINATOR_TOKEN' "$P_INBOX" "$P_DOSS" "$P_RESP" "$P_FOR" "$P_EXP" | wc -l | tr -d ' ')" "5"
 ck "no token literal in the client app"                       hasnt "COORDINATOR_TOKEN" "$(cat "$APP")"
 ck "no token literal in the shipped shell HTML"               hasnt "COORDINATOR_TOKEN" "$(cat "$SHELL_HTML")"

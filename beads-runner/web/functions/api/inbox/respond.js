@@ -74,6 +74,27 @@ export async function onRequestPost(context) {
   if (!dossierId || !itemId || !response || typeof response !== 'object') {
     return json({ ok: false, error: 'need {dossier_id,item_id,response:{…}} — exactly ONE Item per call (AD7 partial)' }, 400);
   }
+  // L1 (claude-tools-uxvl1) §5.6 — a §5.2 response MUST carry a non-empty
+  // `decision`. An empty/contentless payload ({} — e.g. a mis-wired "dismiss"
+  // tap) is HARD-REJECTED here, BEFORE the engine, so it can NEVER silently
+  // default to "apply the recommendation". Each Inbox verb sends its own
+  // decision; "dismiss as stale" is the DISTINCT verb /api/inbox/expire
+  // (item-set-state→expired), never an empty respond payload (inbox-lifecycle
+  // §5.4/§5.6). The CF engine (dossier.js itemApply) re-enforces this as the
+  // authoritative write gate — this proxy guard just surfaces a clean 400.
+  if (typeof response.decision !== 'string' || response.decision.trim() === '') {
+    return json(
+      {
+        ok: false,
+        error:
+          'response carries no §5.2 decision — an empty/contentless payload is ' +
+          'rejected (it must never default to "apply the recommendation"). ' +
+          '"Dismiss as stale" is a distinct verb (/api/inbox/expire), not an ' +
+          'empty respond (inbox-lifecycle §5.4/§5.6).'
+      },
+      400
+    );
+  }
   // The client never picks the principal (§9.1). Strip any client-sent one so
   // the chokepoint stays the sole authority (defensive — C4 seam).
   if ('principal' in response) delete response.principal;

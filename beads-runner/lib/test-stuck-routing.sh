@@ -230,6 +230,36 @@ ckn  "stuck-restart rejects unsafe task_ref"            sr_stuck_restart "$GOOD"
 ck   "stuck-restart on a never-stuck task_ref ⇒ ok no-op" \
                                                           sr_stuck_restart "$GOOD" "never-stuck-fork"
 
+# ── claude-tools-uxvl1 (inbox-lifecycle §5) — DISMISS-AS-STALE must NOT
+#    auto-re-dispatch. DISTINCT from stuck-restart: the human taps "Dismiss as
+#    stale" on the Inbox → /api/inbox/expire → item-set-state expired. That
+#    expires the Item but does NOT touch the S-2 bfh record (it stays
+#    resolved:false). The dossier then rolls up `resolved` (all Items terminal),
+#    but there is NO answered/applied human DECISION to resume WITH. sr_poll
+#    MUST keep the fork PARKED — never fall back to the expired Item and flip
+#    S-2 / re-dispatch the worker with an empty "Raw response (§5.2): {}" (the
+#    §5 live P1). bfh staying resolved:false is the gate that prevents the
+#    reconcile from lifting the bead, so the worker is never re-dispatched.
+echo ""
+echo "── claude-tools-uxvl1 — dismiss-as-stale parks the fork (no false resume) ──"
+DSM=stuck-dismiss-bead
+DIDM="$(sr_route_stuck "$GOOD" "$DSM" worker_stuck "$ASK_JSON" 2>/dev/null)"
+ck   "dismiss fixture: bfh raised + Dossier authored"   test -n "$DIDM"
+eq   "before dismiss: fork parked (bfh resolved:false)" "$(BFHJQ "$DSM" '.resolved')" "false"
+IIDM="$(DJQ "$DIDM" '.items[0].id')"
+# the human taps "Dismiss as stale" — the §4.1 open→expired terminal, NO bfh flip
+do_item_set_state "$GOOD" "$DIDM" "$IIDM" expired >/dev/null
+eq   "every Item expired (the dismiss)" \
+       "$(DJQ "$DIDM" '[.items[]?|select(.state=="expired")]|length')" "1"
+eq   "dossier rolls up resolved (all Items terminal)" \
+       "$(do_dossier_rollup "$(GET "$DIDM")" 2>/dev/null)" "resolved"
+nDM="$(sr_poll_hosted_resolution "$GOOD" "$DSM" 2>/dev/null)"
+eq   "poll reports ZERO newly-resolved forks (a dismiss ≠ a decision)" "${nDM:-x}" "0"
+eq   "fork STAYS parked (bfh resolved:false — no false resume / no re-dispatch)" \
+       "$(BFHJQ "$DSM" '.resolved')" "false"
+ckn  "NO resume-answer captured (a dismiss carries no decision to resume WITH)" \
+       sr_resume_answer "$DSM"
+
 echo ""
 echo "── stuck-routing: $PASS passed, $FAIL failed ────────────────────────────"
 [[ $FAIL -eq 0 ]] && { echo "ALL GREEN"; exit 0; } || { echo "RED"; exit 1; }

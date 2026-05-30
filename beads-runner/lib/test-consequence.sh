@@ -291,6 +291,21 @@ ckn "expired Item ⇒ apply REJECTED"                    do_item_apply "$GOOD" d
 # missing Item id rejected (§0.4).
 ckn "apply on a MISSING Item id REJECTED (§0.4)"       do_item_apply "$GOOD" dN nope "$RESP_APPROVE"
 ckn "apply on a MISSING dossier REJECTED"              do_item_apply "$GOOD" nodoss x "$RESP_APPROVE"
+# claude-tools-uxvl1 (inbox-lifecycle §5.6) — EMPTY-PAYLOAD HARD REJECT. An
+# apply with no §5.2 `decision` is rejected, never routed to the reconciler; the
+# Item stays OPEN (latch clear, no follow-up clone) so a real later decision
+# still applies. The §5 live-P1 fix in the bash twin: an empty {} must NOT
+# default to "apply the recommendation".
+do_dossier_put "$GOOD" "$(mk dEM 2 "[$(item_ar z1 open)]")" >/dev/null
+: > "$BD_LOG"
+ckn "empty {} apply REJECTED (no §5.2 decision)"       do_item_apply "$GOOD" dEM z1 '{}'
+ckn "decision-less {responded_at} apply REJECTED"      do_item_apply "$GOOD" dEM z1 '{"responded_at":"2026-05-30T00:00:00Z"}'
+ckn "blank-string decision apply REJECTED"             do_item_apply "$GOOD" dEM z1 '{"decision":"  "}'
+ck  "rejected empty apply left z1 OPEN (latch clear)"  eq "$(ISTATE dEM z1)" "open"
+ck  "rejected empty apply did NOT latch z1"            eq "$(ICA dEM z1)" "false"
+ck  "rejected empty apply ran NO §5.3 work-plane op"   eq "$(BDN 'create --title new z1')" "0"
+ck  "a REAL decision still applies after the empty reject" do_item_apply "$GOOD" dEM z1 "$RESP_APPROVE"
+ck  "post-reject real apply ⇒ z1 applied"              eq "$(ISTATE dEM z1)" "applied"
 
 echo ""
 echo "── ANTI-DRIFT (structural — sibling surfaces untouched) ──"

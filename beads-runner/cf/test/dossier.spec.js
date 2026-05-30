@@ -407,6 +407,25 @@ it("CF.6 Dossier/Item DO is behaviour-identical to the bash T5 trio + their test
   ck("§5.3 create ran EXACTLY ONCE under 8-way race (S-6)", (await BDN("create --title new c1")) === 1);
   ck("every concurrent caller returned success (idempotent)", applyRace.every((r) => good(r)));
 
+  // ── claude-tools-uxvl1 (inbox-lifecycle §5.6) — EMPTY-PAYLOAD HARD REJECT ──
+  // An apply with no §5.2 `decision` is REJECTED, never silently routed to the
+  // reconciler. The Item stays OPEN (latch clear, no follow-up clone) so a real
+  // later decision still applies. This is the §5 live-P1 fix at the engine: an
+  // empty {} must NOT default to "apply the recommendation".
+  // NOTE: no resetBd() here — the work-plane sink is shared and the EXIT-4
+  // assertions below count c1's ops; `z1` is a unique id, so its op count is
+  // already 0 without a reset (a reject must add nothing of its own).
+  await call(GOOD, "dossier-put", [mk("dEmpty", 2, [item_ar("z1", "open")])]);
+  ck("empty {} apply REJECTED (no §5.2 decision)", !good(await call(GOOD, "item-apply", ["dEmpty", "z1", {}])));
+  ck("decision-less {responded_at} apply REJECTED", !good(await call(GOOD, "item-apply", ["dEmpty", "z1", { responded_at: "2026-05-30T00:00:00Z" }])));
+  ck("blank-string decision apply REJECTED", !good(await call(GOOD, "item-apply", ["dEmpty", "z1", { decision: "  " }])));
+  ck("rejected empty apply left the Item OPEN (latch clear)", istate(await GET("dEmpty"), "z1") === "open");
+  ck("rejected empty apply did NOT flip consequence_applied", ica(await GET("dEmpty"), "z1") === false);
+  ck("rejected empty apply emitted NO follow-up clone", !(await GET("dEmpty-fu-z1")));
+  ck("rejected empty apply ran NO §5.3 work-plane op", (await BDN("create --title new z1")) === 0);
+  ck("a REAL decision still applies after the empty reject", good(await call(GOOD, "item-apply", ["dEmpty", "z1", RESP_APPROVE])));
+  ck("post-reject real apply ⇒ state applied", istate(await GET("dEmpty"), "z1") === "applied");
+
   // ── test-consequence.sh — EXIT-4: §5.3 hits ALL FOUR work-plane kinds ──
   ck("creates[]        ⇒ bd create", (await BDN("create --title new c1")) >= 1);
   ck("creates[].deps[] ⇒ bd dep add <new> <dep>", (await BDN("dep add bd-fake-.* claude-tools-dep")) >= 1);

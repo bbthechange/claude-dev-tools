@@ -420,6 +420,23 @@ do__item_apply_locked() {
     return 2
   fi
 
+  # ── L1 (claude-tools-uxvl1) §5.6 — EMPTY-PAYLOAD HARD REJECT ───────────────
+  # Parity with the CF engine (dossier.js itemApply): a §5.2 response MUST carry
+  # a non-empty `decision`. An empty/contentless payload ({} — e.g. a mis-wired
+  # "dismiss" tap, or a decision-less recorded response) is REJECTED: it must
+  # NEVER fall through to the §5.2.2 reconciler (which would mark the Item
+  # applied; the resume poll would then re-dispatch the worker with "Raw
+  # response (§5.2): {}"). "Dismiss as stale" is its OWN verb (item-set-state→
+  # expired), never an empty apply — no verb defaults to another's payload
+  # (inbox-lifecycle §5.4/§5.6). NO write happens on this reject, so the §7.4
+  # latch stays clear and a later real decision on this Item still applies.
+  local _l1_dec
+  _l1_dec=$(printf '%s' "$resp" | jq -r '.decision // ""' 2>/dev/null) || _l1_dec=""
+  if [[ -z "${_l1_dec//[[:space:]]/}" ]]; then
+    echo "consequence: apply REJECTED — Item '$iid' response carries no §5.2 decision (empty/contentless payload); an empty payload never defaults to 'apply the recommendation' (inbox-lifecycle §5.4/§5.6)." >&2
+    return 2
+  fi
+
   # answered→applied must be legal (T5.1 pure checker — no state-machine
   # re-implementation here; we only CONSULT the frozen legality table).
   do_item_state_check answered applied \

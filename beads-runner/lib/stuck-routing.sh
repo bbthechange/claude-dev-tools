@@ -544,7 +544,7 @@ sr_format_resume_directive() {
 #   record. Echoes the count of forks newly observed-resolved; ALWAYS returns 0
 #   (a poll never aborts the runner — exactly like the reconcile).
 sr_poll_hosted_resolution() {
-  local bearer="${1:-}" only="${2:-}" dir adir n=0 f tref did dossier rolled
+  local bearer="${1:-}" only="${2:-}" dir adir n=0 f tref did dossier
   command -v do_dossier_get >/dev/null 2>&1 || { echo 0; return 0; }
   [[ -n "$bearer" ]] || bearer="bearer-runner-stuck"
   dir="$(sr__bfh_dir)"
@@ -575,32 +575,30 @@ sr_poll_hosted_resolution() {
     dossier="$(do_dossier_get "$bearer" "$did" 2>/dev/null)" || continue
     [[ -n "$dossier" ]] || continue
     printf '%s' "$dossier" | jq -e 'type=="object"' >/dev/null 2>&1 || continue
-    rolled="$(do_dossier_rollup "$dossier" 2>/dev/null)"   # self-defaults to 'open'
-    # Decided iff an Item the human acted on is terminal-or-answered, OR the
-    # whole Dossier rolled up resolved. An untouched fork (Brian has not
-    # answered) is NOT decided — the parked agent correctly stays parked.
+    # DECIDED iff an Item carries a REAL human decision — state answered|applied.
+    # The §4.1 rollup is informational and is deliberately NOT consulted here
+    # ("NEVER A GATE", dossier.js §4.1): a `resolved` rollup with NO answered/
+    # applied Item means every Item is `expired`, i.e. the human DISMISSED the
+    # card as stale (inbox-lifecycle §5). A dismiss drops the card off the Inbox
+    # (its Items are terminal) but carries NO decision to resume WITH, and MUST
+    # NOT auto-re-dispatch (§5.4). So an UNDECIDED fork stays PARKED: no S-2
+    # flip, no resume splice. The bead stays blocked-for-human until the human
+    # acts on it directly (close/reopen → L2 work→control auto-close,
+    # claude-tools-uxvl2).
+    #
+    # [claude-tools-uxvl1] THE §5 LIVE-P1 FIX: previously an all-expired
+    # (dismissed) dossier rolled up `resolved`, fell back to the first non-open
+    # (expired) Item, flipped S-2 and re-dispatched the worker with an empty
+    # "Raw response (§5.2): {}". An `expired` Item is never a human resume
+    # answer — only answered|applied is. The §7.3 must-not-falsely-resume
+    # discipline now holds on the dismiss path too.
     local decided_item
     decided_item="$(printf '%s' "$dossier" | jq -c '
       ( .items // [] ) | map(select(.state=="answered" or .state=="applied")) | .[0] // empty
     ' 2>/dev/null)" || decided_item=""
-    if [[ -z "$decided_item" && "$rolled" != "resolved" ]]; then
+    if [[ -z "$decided_item" ]]; then
       continue
     fi
-    # If the rollup says resolved but every Item is `expired` (timed-FYI / no
-    # human decision), there is no answer to act on — the reconcile still lifts
-    # it via the timer path; the resume directive only fires on a real human
-    # response. Fall back to the first non-open Item otherwise.
-    if [[ -z "$decided_item" ]]; then
-      decided_item="$(printf '%s' "$dossier" | jq -c '
-        ( .items // [] ) | map(select(.state!="open")) | .[0] // empty' 2>/dev/null)" || decided_item=""
-    fi
-    # All-`expired` (timed-FYI / no human decision): there is nothing to
-    # SPLICE — flip S-2 so the reconcile lifts the bead via the timer path,
-    # but do NOT count it in `n` (n = forks with a captured human DECISION the
-    # runner will resume WITH; the bead-lift is separately reported by the
-    # reconcile's own count). Keeps the runner's "will RESUME with the
-    # decision" line honest.
-    [[ -n "$decided_item" ]] || { sr__resolve_bfh "$tref" || true; continue; }
     # Build a self-contained, human-readable answer record: the chosen option's
     # label/blast-radius is resolved HERE (from the Item's own §5.2 options[])
     # so the resume prompt needs no second hosted fetch.
