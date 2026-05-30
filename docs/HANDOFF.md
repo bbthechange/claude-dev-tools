@@ -1,6 +1,6 @@
 # Handoff — claude-tools rescue epic state and operational map
 
-Last updated: 2026-05-21 evening
+Last updated: 2026-05-29
 
 ## What this is
 
@@ -16,14 +16,19 @@ Three tiers:
 - **The per-machine daemon** — a launchd LaunchAgent (`com.beads-runner.daemon.plist`) that runs continuously on Brian's Mac. Owns the Anthropic usage poll, the workspace registry, desired-state polling per workspace, the continuous hosted-resolution poll for answered dossiers, and the resume-dispatch logic.
 - **The per-workspace runner** — a bash loop (`beads-runner/run-beads-tasks.sh`) per workspace that picks up bd tasks and spawns a fresh `claude -p` worker agent for each. When a worker hits a fork it can't resolve, it calls the `mcp__askbrian__ask-brian` MCP tool, which spawns the dossier-builder agent, writes a polished dossier to the Cloudflare engine, and blocks until Brian responds.
 
-The rescue epic `claude-tools-kie` ("The actual tool") replaced what was a stubbed proof-of-concept with the actual product. 48 child tasks closed; the spine is built and most of the wiring is live. Only one task remains under the epic: `claude-tools-bzc`, the live end-to-end session with Brian, which is human-gated.
+The rescue epic `claude-tools-kie` ("The actual tool") replaced what was a stubbed proof-of-concept with the actual product. The spine is built and the wiring is live. The epic itself is **DEFERRED until 2030-01-01** along with its sole remaining child `claude-tools-bzc` (the live end-to-end session with Brian) — per the 8bm/38y churn-stop precedent, the closing gate is a HUMAN GATE that only un-defers when Brian is ready to drive the session on his phone. From an autonomous-work perspective, kie is complete; the un-defer protocol is `bd undefer claude-tools-bzc claude-tools-kie`, reclaim, and drive it live.
+
+The companion epic `claude-tools-ir7` ("beads-runner reliability") that tracked runner self-modification / queue-starvation bugs is now **closed** (2026-05-24, all six children resolved; two residual P3 slivers split out as `claude-tools-507` + `claude-tools-7my` and themselves closed). It was kept human-triaged throughout so the live runner did not auto-rewrite the script it was executing.
 
 ## Status snapshot
 
 ### Done
 
 - **Per-machine daemon**: installed, running, polling. See `runbooks/daemon-control.md` to stop/start/check.
-- **Workspace runner**: spawned by the daemon when desired-state is `running` for a workspace. Has idle-poll behavior (stays alive between tasks). Has the MCP allowlist fix. Has the watchdog cleanup fix. Has Node v25 PATH-prime protection. Has Fix B auto-flip on agent slip.
+- **Workspace runner**: spawned by the daemon when desired-state is `running` for a workspace. Has idle-poll behavior (`giu`, stays alive between tasks). Has the MCP allowlist fix (`qxz`). Has the watchdog cleanup fix. Has Node v25 PATH-prime protection (`4tj`) + heartbeat-null fix (`3w8`). Has Fix B auto-flip on agent slip. Has watchdog guard against empty/non-numeric `LAST` (`h7n`). Has watchdog+tail subshell-leak fixes (`8mb`, `yva`). Has `TASK_COST_CLASS` per-iteration reset (`hkwg`). Has `next_task()` epic exclusion + hot-loop backoff (`dzc`, `g20`, `8ux`). Has stuck-backstop bead-drive to `blocked` + human label (`2y1`) plus dedicated stuck-restart op (`daw`, `5os`).
+- **Production MCP + dossier-builder reliability**: builder timeout raised past real Opus 4.7 authoring time and `§7.3` backstop dossiers now reach the hosted engine (`cxj`); builder emits JSON dossiers instead of answering the question, workers stop over-escalating trivial asks (`cvj`); `specialist.sh` grants Bash to the builder so it can actually gather context (`lhc`); `qxz` live-verified end-to-end against `claude-tools-240` (`f0e`).
+- **Close discipline**: Stop + PreToolUse hooks + post-terminal watchdog enforce that bd state matches the work actually done (`td0y`); `.beads/issues.jsonl` excluded from the dirty_tree audit so JSONL churn no longer false-flags closes (`u4ms`).
+- **Specialist hats**: enricher (and the rest of the hat set) granted `Bash(bd:*)` so they can actually use `bd` (`e5aq`).
 - **Hosted Cloudflare engine**: deployed, includes all op handlers (put/get/poll/set-desired/timer-*/work-snapshot/item-apply). Token in macOS Keychain at service `claude-beads-runner.coordinator-token`.
 - **Board**: deployed with per-workspace start/stop toggles, capacity strip, failure badges, lifecycle columns. See `https://claude-wrangler.pages.dev/board` (route inside the unified `claude-wrangler` Pages project per claude-tools-b59).
 - **Inbox**: deployed with Mermaid rendering, tolerant degradation for non-conformant dossiers, redacted forensic blob view. See `https://claude-wrangler.pages.dev/inbox`.
@@ -34,17 +39,22 @@ The rescue epic `claude-tools-kie` ("The actual tool") replaced what was a stubb
 - **Lifecycle stages**: `stage:<value>` label discipline (idea/ux/design/impl/docs/tests/done) applied to all 49 kie children. See `beads-runner/agents/lifecycle.md` and `beads-runner/agents/gate-policy.md`.
 - **Capacity gating**: workspace runner consults daemon's `ask-capacity` on every pickup. Spare-cycles 14.2%/day ramp implemented.
 
-### Not done
+### Not done (autonomous-reachable)
 
-- **`claude-tools-bzc`** — the live closing-gate session with Brian (currently set up but the dossier loop hasn't produced a visible artifact end-to-end on Brian's phone yet; see "active situation" below).
-- **`claude-tools-23r`** — Inbox lacks a dismiss/delete affordance for stale dossiers. P3. Important for UX hygiene because old test dossiers accumulate.
-- **`claude-tools-240`** — the engineered fixture task ("terminology doc decision"). Created to drive the closing-gate; currently in a known-stuck state because the runner has been picking it up and falling through to the bd-notes fallback before the MCP fix was live. With the fix now live, the next attempt should produce a real dossier — see "active situation."
+Nothing. `bd ready` returns zero open issues and `bd list --status=in_progress` is empty as of 2026-05-29. All P1 bugs flagged in the prior handoff (`h7n`, and the `ir7` epic with its last child `1yt`) closed 2026-05-23 / 2026-05-24.
+
+The only remaining work is the human-gated deferral below.
+
+### Human-gated / deferred
+
+- **`claude-tools-bzc`** — the live closing-gate session. DEFERRED until 2030-01-01 per the 8bm churn-stop precedent. Un-defer only when Brian is ready to drive the full session on his phone. This is the final gate for the kie epic.
+- **`claude-tools-kie`** — the epic itself, deferred along with bzc.
 
 ### Active situation (where we are right now)
 
-- **The runner is alive** (pid 32894 was the last seen claude -p; check `pgrep -fl run-beads-tasks`).
-- **`claude-tools-240` is OPEN at the top of the ready queue**, waiting for the runner to finish its current task and pick it up. The runner has the MCP tool allowlisted; next pickup of 240 should successfully call `mcp__askbrian__ask-brian` and produce a real dossier in Brian's Inbox.
-- **The Inbox currently shows 13 testing dossiers** from earlier work (most are on `claude-tools-txj`, 9 duplicates). The new fixture dossier, when it arrives, should sort to the top by `created_at` (per `claude-tools-56h` fix, deployed). Look for an item titled with the actual TL;DR, not "1 thing needs you".
+- **Runner-instance accumulation appears resolved.** `pgrep -fl run-beads-tasks` shows 4 live processes as of 2026-05-29, down from 20+ on 2026-05-23. The subshell-leak fixes (`8mb`, `yva`) plus the watchdog-guard fix (`h7n`) likely account for it. The loose-thread item below should be considered cured pending the next extended autonomous run.
+- **Queue is empty.** `bd ready` returns no open issues; `bd list --status=in_progress` is empty. All `ir7` reliability work landed.
+- **`claude-tools-240` (the terminology-doc fixture) is CLOSED + deferred** along with `bzc`. The closing-gate test has not yet been driven live end-to-end; it's been intentionally parked under the same un-defer protocol as the epic.
 
 ## Loose threads — things we flagged but haven't fully closed
 
@@ -67,34 +77,34 @@ Instances:
 
 `claude-tools-2ir` ("Fix B") relaxed `detect_worker_stuck_primary` to auto-flip status=blocked when an agent set the `human` label and a STUCK_NEEDS_HUMAN note but missed step 1. The implementation tests for the literal string `STUCK_NEEDS_HUMAN` anywhere in the bd notes — including stale text from prior attempts. As a result, once a bead has had a stuck attempt, any subsequent re-pickup that re-applies the human label triggers the auto-flip even if the underlying problem is resolved.
 
-Practical symptom: `claude-tools-240` keeps getting re-blocked even after manual reset, until the agent actually succeeds in calling ask-brian (which doesn't add the human label, so the auto-flip doesn't fire). Worth tightening the Fix B predicate to "recent" (e.g., last N seconds) rather than "any presence anywhere in notes."
+Practical symptom: `claude-tools-240` kept getting re-blocked even after manual reset, until the agent actually succeeded in calling ask-brian (which doesn't add the human label, so the auto-flip doesn't fire). 240 is now CLOSED + deferred alongside `bzc`, so the live symptom is gone, but the underlying predicate-tightness is unchanged: a future bead that legitimately gets a stuck attempt and is then resolved will still trip the same auto-flip on re-pickup. Worth tightening the Fix B predicate to "recent" (e.g., last N seconds) rather than "any presence anywhere in notes" before the next bead hits the same shape. The `daw`/`5os`/`2y1` stuck-restart op + bead-drive fixes are adjacent but do not address the predicate-window itself.
 
 ### Multiple runner accumulation
 
-Across this session, runner instances accumulated repeatedly. Causes identified:
+Across the 2026-05-17–2026-05-23 sessions, runner instances accumulated repeatedly. Causes identified:
 - Daemon respawning when desired-state stays `running` and pidfile points at a dead pid (correct behavior).
-- Watchdog subshells outliving their parent claude (`t7i`, closed).
+- Watchdog subshells outliving their parent claude (`t7i`, closed; `8mb` + `yva` closed the SIGTERM-path and ~50%-rate leaks).
 - Manual launches not tracked by the daemon's adopt logic.
 
-`runbooks/cleanup-orphan-runners.md` documents the cleanup. Worth monitoring whether this recurs after extended autonomous operation — if it does, the daemon's adopt logic may need hardening.
+`runbooks/cleanup-orphan-runners.md` documents the cleanup. **As of 2026-05-29 this appears cured** — `pgrep -fl run-beads-tasks` shows 4 live instances after a multi-day autonomous run. Leave the runbook in place as a safety net, but the daemon adopt logic likely no longer needs a hardening pass; re-check after the next extended autonomous session.
 
 ### Token-in-MCP-config security wart
 
 The production `mcp__askbrian__ask-brian` MCP registration requires `COORDINATOR_TOKEN` to be passed via `claude mcp add -e COORDINATOR_TOKEN=...`, which lands the token in `~/.claude.json`. The token is the same one in macOS Keychain at service `claude-beads-runner.coordinator-token`. Worth migrating the MCP server to read from Keychain at startup instead of taking the env var, so the secret doesn't sit in a config file. Not blocking, but a real cleanup.
 
-### Dossier-cleanup hygiene
+### Dossier-cleanup hygiene (shipped, still worth a sweep)
 
-The Inbox has 13 stale dossiers from testing (9 of which are duplicates on a single bead `claude-tools-txj`). There's no dismiss/delete UI today. `claude-tools-23r` (P3) is filed. `claude-tools-vxs` (P2, closed) cleaned up some duplicate sources but didn't remove existing dossiers. Worth a one-time cleanup pass against the engine plus a delete affordance.
+`claude-tools-23r` shipped a "Dismiss as stale" affordance in the Inbox (POSTs `/api/expire` to flip every open item to state=expired, gated behind a `window.confirm`). `claude-tools-vxs` had earlier cleaned up duplicate sources. Existing stale dossiers from prior testing can now be dismissed from the UI rather than wedging the lane.
 
 ### The closing-gate test itself
 
-`claude-tools-bzc` requires Brian to experience the full dossier loop end-to-end on his phone. The fixture `claude-tools-240` was set up to drive this. As of this handoff the next pickup attempt with the MCP fix live should be the first honest test. If it succeeds — a real dossier renders on the phone, Brian taps responses, the worker resumes in-session — the rescue epic closes.
+`claude-tools-bzc` requires Brian to experience the full dossier loop end-to-end on his phone. Per the 8bm/38y churn-stop precedent it is DEFERRED until 2030-01-01 rather than left open to be re-triaged each session. The un-defer is a deliberate, human-initiated action: `bd undefer claude-tools-bzc claude-tools-kie`, reclaim, drive the live session. If/when it passes (all 9 acceptance criteria — workspace registration, phone toggle, real dossier with real Mermaid, phone answer, mid-task daemon surgery, resume, stop/restart from phone, no ssh) the kie epic closes.
 
 ### Things deferred to the future
 
 - **`claude-tools-r0m`** — cross-workspace agent-to-agent communication (frontend agent asks backend agent a question via MCP). Deferred until 2030; revisit post-Z if the manual-relay pain persists.
 - **`claude-tools-bcm`** — Claude Agent SDK + `canUseTool` research. Deferred until post-June-15-2026 when the SDK pricing may change (per the support doc citation in the bead). If the SDK becomes subscription-covered then, evaluate migrating from the MCP-blocking pattern.
-- **The terminology doc decision itself** — the `claude-tools-240` fixture is asking for a real architectural decision about a per-workspace terminology document. When that decision lands, it shapes how every future agent reads consistent vocabulary. Real product work.
+- **The terminology-doc decision** — was set up as the closing-gate fixture (`claude-tools-240`); now closed + deferred alongside bzc. The actual architectural choice (where the per-workspace glossary lives, what format, how agents reference it) hasn't been made — it surfaces again when bzc un-defers and the live session asks Brian to pick.
 
 ## Where to find everything
 
