@@ -149,7 +149,7 @@ bodies — it must never page anyone by itself. Op name (A.4): **`agent-activity
 The hot parser loop must **not** block on the network. Mirror the existing
 `ACTIVITY_FILE`/`SIGNAL_FILE` pattern: the parser writes the derived state to a
 local `ACTIVITY_STATE_FILE`; a **separate throttled reporter** (fold into the
-existing 15s watchdog cadence at `:840-998`, or a sibling ticker) POSTs
+existing 15s watchdog cadence at `:1857-1958`, or a sibling ticker) POSTs
 `agent-activity-report` on **state transitions** and on a freshness heartbeat
 (≤60s) so liveness stays current during a long single-state stretch. Report body:
 
@@ -263,10 +263,10 @@ surfacing + making the four actions tappable instead of ssh-only.**
 
 | Action | What it does | Reversible? | Wires to |
 |---|---|---|---|
-| **Nudge** | veto the watchdog's pending kill for one more soft window (and, where a live control channel exists, send *continue*) — poke, don't terminate | yes — pure grace extension | watchdog grace (`:840-998`) |
+| **Nudge** | veto the watchdog's pending kill for one more soft window (and, where a live control channel exists, send *continue*) — poke, don't terminate | yes — pure grace extension | watchdog grace (`:1857-1958`) |
 | **Escalate to decision** | convert the stuck task into a Flow B **dossier** (reuses the v1 "intervene in a running task" reframe); the Inbox then drives it | yes — dossier is ephemeral | dossier op (Inbox) |
 | **Kill + retry** | terminate the worker (existing SIGINT→SIGKILL watchdog path) and let the loop **re-dispatch a fresh worker** on the same bead | partly — work lost, bead intact | retry loop |
-| **Kill + Gate** | terminate **and** place a `gate:<id>` (Track J) with a reason, so the bead stops being retried until the gate lifts | yes — lift the gate | `gate-meta-set` (J1) + runner-respect |
+| **Kill + Gate** | terminate **and** place a `gate:<id>` (Track J) with a reason, so the bead stops being retried until the gate lifts | yes — lift the gate | `agent-action gate-apply` (label) + worker-kill + J4 runner-respect; why/unblock via `gate-meta-set` |
 
 A fifth action — **Attach** (tmux/ssh live take-over, UX-DESIGN-V2 §5.3) — is
 **deferred** ("secondary, later" in the source; v1 §7 deferred). Not in I4's
@@ -274,13 +274,20 @@ scope; named here only so the omission is deliberate, not a gap.
 
 **Routing — through the control plane, not a direct web→process kill.** The web
 tier never signals a process directly (Local==remote; the web side holds no host
-access). An action POSTs an **intent** that the daemon/runner reconciles
-out-of-band, exactly like the existing **desired-state-poll** flips
-`desired=running|stopped`. Recommended op: **`agent-action`**
-`{ workspace, bead_ref, action: nudge|escalate|kill-retry|kill-gate, reason? }`;
-the runner/daemon honors it at its next safe point. (Kill+Gate's suppression rides
-the same `RUNNER_NO_CLAIM_LABELS` / `gate-policy.sh` mechanism Track J defines —
-D.2 runner-respect; production-runner placement per ARCH §9 decision 1.)
+access). An action POSTs an **intent** that the daemon reconciles out-of-band,
+exactly like the existing **desired-state-poll** flips `desired=running|stopped`.
+The op is **frozen in [agent-action.md](agent-action.md)** (`claude-tools-uxcap`):
+**`agent-action(intent, target, args)`** with the **closed, host-effecting** enum
+`nudge | kill-retry | kill-gate | gate-apply | gate-lift`, enqueued into a transient
+`agent_actions` queue and executed by the daemon's `agent-action-poll.sh`. I4 wires
+its three buttons to `intent ∈ {nudge, kill-retry, kill-gate}` (each reuses the
+watchdog kill-path at `:1857-1958` via a control marker the runner honors — the §4
+runner-side seam). **Escalate is NOT an agent-action** — it creates a Flow B
+dossier (a pure engine write, no host effect) via the existing dossier op, per the
+§4 action table above. (Kill+Gate places the gate **first** via `gate-defer.sh
+apply` so J4's `gate:*` pickup-refusal then suppresses re-dispatch — the
+runner-respect Track J defines; production-runner placement per ARCH §9 decision 1.
+The gate's why/unblock is `gate-meta-set` — engine-direct, not part of the action.)
 
 **Must-protect #12 (Fix-B over-trigger):** kill+retry re-dispatch keys on the
 `STUCK_NEEDS_HUMAN` predicate; tighten that match to a **recent window**, not

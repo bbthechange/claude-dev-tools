@@ -301,8 +301,12 @@ Rendering rules (the §7.2 mock is normative):
 - **All three hold types in one list per workspace**, grouped `HELD IN <ws>`.
   Each row carries its type glyph + the unblock condition.
 - **Only `type:"gate"` rows are editable.** Gate rows expose `[ lift gate ]`
-  `[ edit why ]` `[ edit unblock ]`; the lift action calls `gate-defer.sh lift
-  --commit` (via its op surface), edits call `gate-meta-set`. **Dependency and
+  `[ edit why ]` `[ edit unblock ]`. The lift runs `gate-defer.sh lift --commit`
+  **on the host** — the web tier has no host access, so it goes through the
+  **`agent-action gate-lift`** intent (frozen in [agent-action.md](agent-action.md),
+  `claude-tools-uxcap`: the daemon polls the recorded intent and executes the `bd`
+  mutation in the workspace). The `edit why`/`edit unblock` are pure engine writes —
+  `gate-meta-set`, called **directly** (no host needed). **Dependency and
   Scheduled rows are read-only**, rendered with their native `unblocks_when` and
   the honest note `(beads-native — read-only)` / `(beads-native; gate-owned)`.
   The `editable:false` flag from the projection (3.1) is what the renderer keys
@@ -311,7 +315,11 @@ Rendering rules (the §7.2 mock is normative):
   lifting the Gate visibly accounts for the defers it owns (§7.2). This is the
   existing apply/lift mechanic surfaced, not a new one.
 - **Add-a-Gate** affordance: a form that `gate-meta-set`s the why/unblock/scope
-  and `gate-defer.sh apply`s the label to the selected task(s). `owner:"you"`.
+  (engine-direct) **and** places the label on the selected task(s) via the
+  **`agent-action gate-apply`** intent ([agent-action.md](agent-action.md)) — the
+  host runs `gate-defer.sh apply <gate> <bead> <date>`, which couples the `gate:<id>`
+  label *with* a defer date (so the add-gate form supplies a date: the unblock date,
+  or a far-future sentinel for "indefinite until lifted"). `owner:"you"`.
 - **Tolerance (B.4):** a malformed/missing hold field → honest placeholder + a
   `degraded[]` note, never a blank row or a throw. The only refusal is the
   integer `schema_version` gate (the `inbox-view.js` `schemaGate` pattern).
