@@ -75,6 +75,20 @@ echo ""
 echo "── PART A — LIVE deployed coordinator-cf · I0 D0–D3 closed (401 posture) ──"
 echo "   target: $LIVE_URL  (no real token — the by-design D0 withholding)"
 
+# §8 / TESTING-STRATEGY: this LIVE coordinator-cf probe is T8 — "expected to be
+# skipped/SKIP without a prod token — that SKIP is not a failure." The offline
+# gate (run-tests.sh) runs with NO token resolvable, so detect a prod token and
+# SKIP the live hop when none resolves: no network below T8, and the gate stays
+# green even on a network-less checkout (a no-bearer probe there is a transport
+# error, NOT a 401). PART B re-proves the transport's 401/contract mapping
+# against the local byte-identical engine.
+A_TOKEN=""
+if [[ -n "${COORDINATOR_TOKEN:-}" ]]; then A_TOKEN="env"
+elif security find-generic-password -s "claude-beads-runner.coordinator-token" \
+       -a "$(hostname)" -w >/dev/null 2>&1; then A_TOKEN="keychain"; fi
+if [[ -z "$A_TOKEN" ]]; then
+  note "PART A SKIPPED — no §9.2 prod token resolves; the live coordinator-cf 401 probe is T8 (§8: that SKIP is not a failure). The offline transport contract is proven by PART B."
+else
 (
   set +u
   WORK_A="$(mktemp -d)"
@@ -117,6 +131,7 @@ echo "   target: $LIVE_URL  (no real token — the by-design D0 withholding)"
 
   rm -rf "$WORK_A"
 )
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART B — LOCAL byte-identical engine: SUCCESS + REJECT paths, oracle-equiv,

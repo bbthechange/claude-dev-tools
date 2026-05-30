@@ -58,7 +58,13 @@ echo "── PART 0 — workspace 2 wired + detached launcher present (static) �
 TW="/Users/brianbutler/code/thirsty/.beads/runner.sh"
 if [[ -f "$TW" ]]; then
   ok "thirsty/.beads/runner.sh exists (workspace 2 config seam)"
-  grep -q '^COORDINATOR_URL=' "$TW" \
+  # Accept an optional `export ` prefix: thirsty pins `export COORDINATOR_URL=…`
+  # because the export is LOAD-BEARING (claude-tools-cxj — without it
+  # co-http-transport.sh stays dormant in subshells → outbox-only mode → the
+  # hosted engine never sees thirsty's heartbeats). Same `(export …)?` shape the
+  # COORDINATOR_TOKEN guard below already uses; a bare `^COORDINATOR_URL=` anchor
+  # would falsely fail on the (correct) exported form.
+  grep -Eq '^[[:space:]]*(export[[:space:]]+)?COORDINATOR_URL=' "$TW" \
     && ok "thirsty config sets COORDINATOR_URL (hosted transport activates there)" \
     || bad "thirsty config sets COORDINATOR_URL"
   pr="$(grep -o '^PROJECT_REF="[^"]*"' "$TW" | head -1 | cut -d'"' -f2)"
@@ -122,6 +128,15 @@ else
   echo "   target: $LIVE_URL  (no real token — the by-design D0 401 withholding)"
 fi
 
+# §8 / TESTING-STRATEGY: with NO prod token this PART A is the T8 live probe —
+# SKIP it ("expected to be skipped/SKIP without a prod token — that SKIP is not a
+# failure"): no network below T8, and the gate stays green even on a network-less
+# checkout. The §4.2 line well-formedness + the registration SUCCESS path are
+# re-proven offline by PART B (local byte-identical engine). With a real token
+# this is the authed I5 hop and runs as before.
+if [[ -z "$A_TOKEN" ]]; then
+  note "PART A SKIPPED — no §9.2 prod token resolves; the live heartbeat/reconcile probe is T8 (§8: that SKIP is not a failure). PART B proves the registration contract offline."
+else
 (
   set +u
   WORK_A="$(mktemp -d)"
@@ -222,6 +237,7 @@ fi
 
   rm -rf "$WORK_A"
 )
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART B — LOCAL byte-identical engine: the SUCCESS path. thirsty REGISTERS;

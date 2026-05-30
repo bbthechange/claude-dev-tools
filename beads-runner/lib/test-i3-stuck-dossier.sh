@@ -139,8 +139,14 @@ if [[ -f "$RUNNER" ]]; then
     || bad "wwl/§7.6: --disallowedTools guardrail present"
   # §7.2 PRIMARY positive path in the worker prompt (research Q5: a bare
   # prohibition is insufficient — it must be paired with the deliberate path).
-  grep -q 'take the deliberate stuck-signal path' "$RUNNER" \
-    && ok "wwl/§7.2: the worker prompt INSTRUCTS the deliberate stuck path (not just the bare prohibition)" \
+  # Anchor on the deliberate-escalation MECHANISM, not a prose phrase: cf6/B4
+  # (commit 6360fb5) replaced the old "take the deliberate stuck-signal path"
+  # 4-step bd-notes wording with the SHORT-trigger ask-brian MCP path, so the
+  # literal phrase is gone but the deliberate path is STILL instructed — now via
+  # the mcp__askbrian__ask-brian escalation tool (§8: assert structure/capability,
+  # not a prose string that legitimately changes).
+  grep -q 'mcp__askbrian__ask-brian' "$RUNNER" \
+    && ok "wwl/§7.2: the worker prompt INSTRUCTS the deliberate stuck path — the ask-brian escalation (not just the bare prohibition)" \
     || bad "wwl/§7.2: prompt instructs the deliberate primary path"
   # §7.1 precedence: the two FLEET-FATAL classes still outrank STUCK.
   grep -q '"\$CLASSIFICATION" != "AUTH_FAILURE" && "\$CLASSIFICATION" != "BILLING_ERROR"' "$RUNNER" \
@@ -221,6 +227,19 @@ fi
 echo ""
 echo "── PART A — LIVE deployed coordinator-cf · dossier+notification 401 posture ──"
 echo "   target: $LIVE_URL  (no real token — the by-design D0 withholding)"
+# §8 / TESTING-STRATEGY: this LIVE coordinator-cf probe is T8 — "expected to be
+# skipped/SKIP without a prod token — that SKIP is not a failure." The offline
+# gate runs with NO token resolvable, so SKIP the live hop when none resolves:
+# no network below T8, and the gate stays green even on a network-less checkout
+# (a no-bearer probe there is a transport error, not a 401). The local S-2
+# control-record behaviour is covered offline by test-stuck-routing.sh.
+A_TOKEN=""
+if [[ -n "${COORDINATOR_TOKEN:-}" ]]; then A_TOKEN="env"
+elif security find-generic-password -s "claude-beads-runner.coordinator-token" \
+       -a "$(hostname)" -w >/dev/null 2>&1; then A_TOKEN="keychain"; fi
+if [[ -z "$A_TOKEN" ]]; then
+  note "PART A SKIPPED — no §9.2 prod token resolves; the live dossier+notification 401 probe is T8 (§8: that SKIP is not a failure). sr_route_stuck's local S-2 record is proven offline by test-stuck-routing.sh."
+else
 (
   set +u
   WA="$(mktemp -d)"
@@ -273,6 +292,7 @@ eq "$(ag A_PUTNOT_RC)" "1" "the NEW I3 hop: live put notification 401 ⇒ co_req
 eq "$(ag A_PUTNOT_STDOUT)" "empty" "live put notification 401 ⇒ EMPTY stdout (I0 D2/D3 closed for the notification hop too)"
 eq "$(ag A_PUTNOT_STDERR)" "co401" "live put notification 401 ⇒ diagnostic on STDERR (the dossier+notification spine reaches the real engine; success is token-gated → I5)"
 rm -f "$HERE/../.i3-a.txt" 2>/dev/null
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART B — LOCAL byte-identical engine: the SUCCESS path. The genuine stuck

@@ -159,6 +159,19 @@ note "S-2 flip → reconcile → resume splice) is exercised UNMOCKED end to end
 echo ""
 echo "── PART A — LIVE deployed coordinator-cf · the return-leg READ 401 posture ──"
 echo "   target: $LIVE_URL  (no real token — the by-design D0 withholding)"
+# §8 / TESTING-STRATEGY: this LIVE coordinator-cf probe is T8 — "expected to be
+# skipped/SKIP without a prod token — that SKIP is not a failure." The offline
+# gate runs with NO token resolvable, so SKIP the live hop when none resolves:
+# no network below T8, and the gate stays green even on a network-less checkout
+# (a no-bearer probe there is a transport error, not a 401). The local S-2 PARK
+# / no-false-resume behaviour is covered offline by test-stuck-routing.sh.
+A_TOKEN=""
+if [[ -n "${COORDINATOR_TOKEN:-}" ]]; then A_TOKEN="env"
+elif security find-generic-password -s "claude-beads-runner.coordinator-token" \
+       -a "$(hostname)" -w >/dev/null 2>&1; then A_TOKEN="keychain"; fi
+if [[ -z "$A_TOKEN" ]]; then
+  note "PART A SKIPPED — no §9.2 prod token resolves; the live return-leg READ 401 probe is T8 (§8: that SKIP is not a failure). The PARK / no-false-resume contract is proven offline by test-stuck-routing.sh + PART B."
+else
 (
   set +u
   WA="$(mktemp -d)"
@@ -217,6 +230,7 @@ eq "$(ag A_BFH_RESOLVED1)" "false" "after the poll the S-2 record is STILL {reso
 eq "$(ag A_ANSWER)" "absent" "NO answer captured under the 401 (the parked agent must not resume without a real decision)"
 eq "$(ag A_RESUME)" "absent" "sr_resume_answer yields nothing (the §7.3 must-not-rot discipline mirrored on the return leg)"
 rm -f "$HERE/../.i4-a.txt" 2>/dev/null
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART B — LOCAL byte-identical engine: the FULL closed loop, ≡ the bash oracle

@@ -19,6 +19,15 @@
 
 set -u
 
+# claude-tools-43m gated detect_worker_stuck_primary behind ASK_BRIAN_ENABLED:
+# in an opted-OUT workspace the worker prompt never mentions the stuck protocol,
+# so any "stuck" signal would be spurious and the detector silently no-ops
+# (returns 1, empty). This test pins the OPTED-IN relaxed contract, so it must
+# opt in — exported so the per-case command-substitution subshells inherit it.
+# (Added after the 2ir test was written; without it every positive case below
+# returns empty and 7 assertions fail — see claude-tools-rznj.7 triage.)
+export ASK_BRIAN_ENABLED=1
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER="$HERE/../run-beads-tasks.sh"
 
