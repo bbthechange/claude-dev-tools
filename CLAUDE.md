@@ -52,13 +52,33 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-_Add your build and test commands here_
+### Offline regression gate — `beads-runner/run-tests.sh`
+
+`beads-runner/run-tests.sh` is **the one offline regression gate** (TESTING-STRATEGY.md
+§7.1). It runs every offline, deterministic test tier (T1–T7) with a unified
+per-tier tally and a single exit code. Run it before every `bd close` on
+beads-runner work — a green run is the §5 acceptance bar's "the full offline
+suite is green" step (the only defence against a sibling break in the shared
+`workSnapshot()` seam).
 
 ```bash
-# Example:
-# npm install
-# npm test
+bash beads-runner/run-tests.sh            # full gate (all offline tiers)
+bash beads-runner/run-tests.sh --changed  # only tiers touched by the git diff (fast, pre-close)
+bash beads-runner/run-tests.sh --tier lib # one tier (repeatable / comma-list: --tier lib,cf)
+bash beads-runner/run-tests.sh --list     # list tier names
 ```
+
+Tiers (discovered by **glob**, never a hardcoded list — new `test-*.sh` and
+`cf/test/conformance-*.sh` auto-enroll): `cf` (vitest engine differential),
+`lib` `daemon` `hooks` `agents` `top` (the bash `test-*.sh` suites),
+`conformance` (runner BC harness), `contract` (machine-state + UX-v2 A–D
+guardian). It prints `TIER <name> pass=N fail=M` per tier and a final
+`TOTAL pass=N fail=M`, exiting non-zero (and naming the failing tier) on any fail.
+
+**It deliberately EXCLUDES the one networked tier (T8)** — `verify-pages-deploy.sh`,
+`cf/pages-dev/verify.sh`, and any live-Worker probe stay **manual at close** (the
+bgw/2dk acceptance step below). `run-tests.sh` green is the regression gate;
+T8 live-verify is the separate, required acceptance gate.
 
 ## Architecture Overview
 
