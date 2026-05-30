@@ -1,0 +1,80 @@
+{
+  "_comment_DO_NOT_REMOVE": "Contract A (op-wiring) fixture — UX-V2-ARCHITECTURE.md §2 (A.1 'Adding an op — the end-to-end checklist'). The guardian for R3/2dk: a new op that is not wired through EVERY layer it needs is silently half-built. Each row declares the layers a given op MUST appear in; cf/test/conformance-contract-v2.sh greps each declared layer and FAILS if one is missing. Seeded with the EXISTING wired ops as the passing baseline; each v2 track flips its 'planned' row to 'wired' (and corrects the proxy/migration paths to what it actually shipped) when it lands. Layer fields: module = cf/src/<concern>.js whose *_OPS Set lists the op (null for a substrate-switch op handled directly in coordinator.js); ops_set = that Set's name (null for substrate); guard = the coordinator.js dispatch (a Set name => grep '<SET>.has'; 'substrate' => grep 'case \"<op>\"'); proxy = web/functions/api/<area>/<name>.js that hard-codes the op (null for a daemon-emitted/internal op with no web surface); adapter = true if cf/pages-dev/adapter.js maps it (grep 'op === \"<op>\"'); migration = cf/migrations/NNNN_<name>.sql that must exist if the op added a table (null otherwise).",
+  "ops": [
+    {
+      "op": "work-snapshot", "track": "baseline", "status": "wired",
+      "module": "cf/src/reconcile.js", "ops_set": "RECONCILE_OPS", "guard": "RECONCILE_OPS",
+      "proxy": "web/functions/api/board/index.js", "adapter": true, "migration": null
+    },
+    {
+      "op": "set-desired", "track": "baseline", "status": "wired",
+      "module": null, "ops_set": null, "guard": "substrate",
+      "proxy": "web/functions/api/board/set-desired.js", "adapter": true, "migration": null
+    },
+    {
+      "op": "item-apply", "track": "baseline", "status": "wired",
+      "module": "cf/src/dossier.js", "ops_set": "DOSSIER_OPS", "guard": "DOSSIER_OPS",
+      "proxy": "web/functions/api/inbox/respond.js", "adapter": true, "migration": null
+    },
+    {
+      "op": "item-set-state", "track": "baseline", "status": "wired",
+      "module": "cf/src/dossier.js", "ops_set": "DOSSIER_OPS", "guard": "DOSSIER_OPS",
+      "proxy": "web/functions/api/inbox/expire.js", "adapter": true, "migration": null
+    },
+    {
+      "op": "forensic-fetch", "track": "baseline", "status": "wired",
+      "module": "cf/src/forensic.js", "ops_set": "FORENSIC_OPS", "guard": "FORENSIC_OPS",
+      "proxy": "web/functions/api/inbox/forensic.js", "adapter": true, "migration": "cf/migrations/0003_forensic.sql"
+    },
+    {
+      "op": "forensic-dismiss", "track": "baseline", "status": "wired",
+      "module": "cf/src/forensic.js", "ops_set": "FORENSIC_OPS", "guard": "FORENSIC_OPS",
+      "proxy": "web/functions/api/inbox/forensic.js", "adapter": true, "migration": "cf/migrations/0003_forensic.sql"
+    },
+    {
+      "op": "put", "track": "baseline", "status": "wired",
+      "module": null, "ops_set": null, "guard": "substrate",
+      "proxy": "web/functions/api/intake/index.js", "adapter": true, "migration": null
+    },
+    {
+      "op": "get", "track": "baseline", "status": "wired",
+      "module": null, "ops_set": null, "guard": "substrate",
+      "proxy": "web/functions/api/inbox/dossier.js", "adapter": true, "migration": null
+    },
+
+    {
+      "_planned_note": "Track H (Blueprint) — H1. blueprint §4 record + get/put. Flip to 'wired' and confirm the proxy/migration paths when H1 lands (A.4 names are conventions; correct them to what shipped).",
+      "op": "blueprint-put", "track": "H", "status": "planned",
+      "module": "cf/src/blueprint.js", "ops_set": "BLUEPRINT_OPS", "guard": "BLUEPRINT_OPS",
+      "proxy": "web/functions/api/ws/blueprint-put.js", "adapter": true, "migration": "cf/migrations/0007_blueprint.sql"
+    },
+    {
+      "op": "blueprint-get", "track": "H", "status": "planned",
+      "module": "cf/src/blueprint.js", "ops_set": "BLUEPRINT_OPS", "guard": "BLUEPRINT_OPS",
+      "proxy": "web/functions/api/ws/blueprint.js", "adapter": true, "migration": "cf/migrations/0007_blueprint.sql"
+    },
+    {
+      "_planned_note": "Track J (Gates/Hold) — J1. gate_metadata transient table + gate-meta ops (why/unblock/owner). Transient per A.2 (annotates a beads label, no §4 lifecycle).",
+      "op": "gate-meta-set", "track": "J", "status": "planned",
+      "module": "cf/src/gate.js", "ops_set": "GATE_OPS", "guard": "GATE_OPS",
+      "proxy": "web/functions/api/ws/gate-meta.js", "adapter": true, "migration": "cf/migrations/0008_gate_metadata.sql"
+    },
+    {
+      "_planned_note": "Track K (Cross-WS) — K2. relay_log transient (append-only, forensic_audit precedent) + relay-log-append/-tail.",
+      "op": "relay-log-append", "track": "K", "status": "planned",
+      "module": "cf/src/relay.js", "ops_set": "RELAY_OPS", "guard": "RELAY_OPS",
+      "proxy": "web/functions/api/cross-ws/relay-append.js", "adapter": true, "migration": "cf/migrations/0009_relay_log.sql"
+    },
+    {
+      "op": "relay-log-tail", "track": "K", "status": "planned",
+      "module": "cf/src/relay.js", "ops_set": "RELAY_OPS", "guard": "RELAY_OPS",
+      "proxy": "web/functions/api/cross-ws/relay.js", "adapter": true, "migration": "cf/migrations/0009_relay_log.sql"
+    },
+    {
+      "_planned_note": "Track I (Activity) — I1. agent_activity transient (latest-wins per agent, machine_state_reports precedent). DAEMON-EMITTED like report-machine-state/report-capacity: NO web proxy, NOT adapter-mapped (proxy:null, adapter:false) — that is correct, not a missing layer.",
+      "op": "agent-activity-report", "track": "I", "status": "planned",
+      "module": "cf/src/activity.js", "ops_set": "ACTIVITY_OPS", "guard": "ACTIVITY_OPS",
+      "proxy": null, "adapter": false, "migration": "cf/migrations/0010_agent_activity.sql"
+    }
+  ]
+}
