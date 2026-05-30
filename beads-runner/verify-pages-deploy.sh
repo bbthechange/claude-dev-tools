@@ -4,10 +4,15 @@
 # deploying" failure mode (claude-tools-bgw).
 #
 # Usage:
-#   beads-runner/verify-pages-deploy.sh                # verifies all three routes
+#   beads-runner/verify-pages-deploy.sh                # verifies ALL routes
 #   beads-runner/verify-pages-deploy.sh board          # verifies just /board
 #   beads-runner/verify-pages-deploy.sh inbox
 #   beads-runner/verify-pages-deploy.sh intake
+#   beads-runner/verify-pages-deploy.sh workspaces     # C-shell global hub (B6)
+#   beads-runner/verify-pages-deploy.sh capacity       # C-shell global capacity view
+#   beads-runner/verify-pages-deploy.sh cross-ws       # C-shell Cross-WS surface
+#   beads-runner/verify-pages-deploy.sh workspace      # C-shell /ws/* facet shell
+#   beads-runner/verify-pages-deploy.sh shared          # C-shell shared modules (net/dom/shell/tokens)
 #
 # Exit 0 if every static asset under each route prefix matches the deployed byte
 # count; non-zero (and prints the mismatched files) otherwise.
@@ -24,10 +29,15 @@ HOST="claude-wrangler.pages.dev"
 WEB_ROOT="beads-runner/web"
 
 route_arg="${1:-all}"
+# `shared` is an ASSET dir, not a nav route — but every page hard-depends on
+# /shared/{net,dom,shell}.js + /shared/tokens.css, so a stale/failed shared
+# deploy breaks all routes at runtime while their own bytes still match. It is
+# therefore verified as part of `all` (and addressable on its own) — otherwise
+# `mismatches=0` would be a false green (the exact closed-but-not-shipped trap).
 case "$route_arg" in
-  board|inbox|intake) routes=("$route_arg") ;;
-  all) routes=(board inbox intake) ;;
-  *) echo "usage: $0 [board|inbox|intake|all]" >&2; exit 2 ;;
+  board|inbox|intake|workspaces|capacity|cross-ws|workspace|shared) routes=("$route_arg") ;;
+  all) routes=(board inbox intake workspaces capacity cross-ws workspace shared) ;;
+  *) echo "usage: $0 [board|inbox|intake|workspaces|capacity|cross-ws|workspace|shared|all]" >&2; exit 2 ;;
 esac
 
 if [ ! -d "$WEB_ROOT" ]; then
@@ -101,6 +111,36 @@ if printf '%s\n' "${routes[@]}" | grep -qx board; then
   fi
   total_checked=$((total_checked + 1))
 fi
+
+# Clean-URL rewrite checks (the C-shell route shape, Contract C.2). For each
+# global clean route in scope, confirm the bare path 200-rewrites to its served
+# directory index (not a 404 / redirect roundtrip) and the body matches — the
+# same discipline as the apex check above, extended to the v2 routes. The
+# /ws/<ref>/<facet> catch-all is sampled with a synthetic ref; any ref serves
+# the one /workspace/ shell, so the body must equal /workspace/'s.
+check_rewrite() {
+  local clean="$1" served="$2" st
+  echo "==> $clean  (clean-route rewrite → $served, see beads-runner/web/_redirects)"
+  st="$(curl -fsSLo "$tmp/clean" -w '%{http_code}' "https://$HOST$clean" 2>/dev/null || echo "000")"
+  curl -fsSL "https://$HOST$served" -o "$tmp/servd" 2>/dev/null || true
+  if [ "$st" != "200" ]; then
+    echo "MISS    $clean  (expected 200, got $st)"; total_mismatches=$((total_mismatches + 1))
+  elif [ ! -s "$tmp/servd" ]; then
+    echo "MISS    $clean  (could not fetch $served to compare)"; total_mismatches=$((total_mismatches + 1))
+  elif ! cmp -s "$tmp/clean" "$tmp/servd"; then
+    echo "DRIFT   $clean  (body differs from served $served)"; total_mismatches=$((total_mismatches + 1))
+  else
+    echo "ok      $clean  (200, body == $served)"
+  fi
+  total_checked=$((total_checked + 1))
+}
+in_scope() { printf '%s\n' "${routes[@]}" | grep -qx "$1"; }
+
+if in_scope inbox;      then check_rewrite /inbox            /inbox/;      fi
+if in_scope workspaces; then check_rewrite /workspaces       /workspaces/; fi
+if in_scope capacity;   then check_rewrite /capacity         /capacity/;   fi
+if in_scope cross-ws;   then check_rewrite /cross-ws         /cross-ws/;   fi
+if in_scope workspace;  then check_rewrite /ws/_verify/board /workspace/;  fi
 
 echo "----"
 echo "checked=$total_checked  mismatches=$total_mismatches  host=$HOST"

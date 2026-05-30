@@ -1,0 +1,82 @@
+/* beads-runner/web/shared/tokens.css — C-shell (claude-tools-uxvsh).
+ *
+ * THE single source of the design tokens + reset that every view shares
+ * (Contract C.1, UX-V2-ARCHITECTURE §4). Until now the :root custom-property
+ * block, the `*` reset, the `body` base, and `::selection` were copy-pasted
+ * byte-for-byte into board.css / inbox.css / intake.css. They now live here
+ * ONCE; each page links this FIRST, then its own page-specific stylesheet.
+ *
+ * Superset note: the union of all three pages' tokens — `--font-read` (Inbox
+ * reading prose) and `--tap` (Intake ≥44px touch targets) are included so no
+ * page loses a token it relied on. Adding a page-specific token is still fine
+ * in that page's own CSS; this file holds only what is genuinely shared.
+ *
+ * Also owns the persistent NAV chrome (Contract C.2) painted by shared/shell.js
+ * so the global nav + workspace facet tabs look identical on every route.
+ * Presentation only; no behavior. */
+
+:root{
+  --ink:#080a0e; --ink-2:#0b0e14; --panel:#10141c; --panel-2:#161b25;
+  --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.12);
+  --text:#e8ebf1; --dim:#8b94a6; --faint:#535b6b;
+  --amber:#ffb454; --amber-soft:#ffcd86; --amber-glow:rgba(255,180,84,.22);
+  --mint:#4fd6a0; --coral:#ff6b6b; --sky:#74a8ff; --slate:#5b6577;
+  --font-display:'Fraunces',Georgia,serif;
+  --font-read:'Newsreader',Georgia,serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --tap:44px; /* Intake (I1): ≥44px touch targets */
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--ink);color:var(--text);font-family:var(--mono);
+  min-height:100vh;-webkit-font-smoothing:antialiased;
+  background-image:
+    radial-gradient(900px 600px at 78% -5%, rgba(116,168,255,.06), transparent 60%),
+    radial-gradient(800px 700px at 8% 105%, rgba(79,214,160,.05), transparent 55%);
+}
+::selection{background:var(--amber);color:#1a1206}
+
+/* ── persistent NAV chrome (Contract C.2) — painted by shared/shell.js ──────
+ * Global row (Inbox · Workspaces · Capacity · Cross-WS) is always present.
+ * When inside a workspace context the facet row (Board · Blueprint · Activity
+ * · Gates) renders below it. The active link/tab carries .active. The nav is
+ * sticky so it stays reachable as a view scrolls (the Inbox stays the product
+ * — it is one tap from anywhere; UX-DESIGN-V2 §2.3). */
+.shell-nav{
+  position:sticky;top:0;z-index:40;
+  background:linear-gradient(180deg,rgba(8,10,14,.96),rgba(8,10,14,.86));
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line);
+  padding:max(8px,env(safe-area-inset-top)) 14px 0;
+}
+.shell-nav .shell-row{
+  display:flex;gap:4px;align-items:stretch;max-width:1320px;margin:0 auto;
+  overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
+}
+.shell-nav .shell-row::-webkit-scrollbar{display:none}
+.shell-nav .shell-global{padding-bottom:0}
+.shell-nav a{
+  display:inline-flex;align-items:center;gap:6px;flex:none;
+  font-family:var(--mono);font-size:12px;letter-spacing:.04em;
+  text-decoration:none;color:var(--dim);
+  padding:9px 13px;border-radius:9px 9px 0 0;
+  border:1px solid transparent;border-bottom:none;min-height:var(--tap);
+  white-space:nowrap;transition:color .2s,background .2s;
+}
+.shell-nav a:hover{color:var(--text)}
+.shell-nav a.active{
+  color:var(--text);background:var(--panel);
+  border-color:var(--line-2);
+  box-shadow:inset 0 2px 0 var(--amber);
+}
+.shell-nav .shell-tabs{
+  border-top:1px solid var(--line);margin-top:6px;padding-top:4px;
+}
+.shell-nav .shell-tabs a{font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+.shell-nav .shell-ws-label{
+  display:flex;align-items:center;font-family:var(--font-display);
+  font-size:14px;color:var(--text);padding:6px 10px 6px 2px;flex:none;
+  letter-spacing:-.01em;
+}
+.shell-nav .shell-ws-label .crumb{color:var(--slate);margin-right:8px;font-family:var(--mono);font-size:11px}

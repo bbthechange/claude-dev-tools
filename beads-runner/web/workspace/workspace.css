@@ -1,0 +1,118 @@
+/* beads-runner/web/workspace/workspace.css — C-shell (claude-tools-uxvsh).
+ * The WORKSPACE-CONTEXT SHELL page styles. tokens.css is linked FIRST and owns
+ * the shared :root custom properties + reset + the .shell-nav chrome; this file
+ * only styles the page frame, #facet-host, the scoped board facet, and the
+ * honest placeholders. Dark theme — every color is a tokens.css var.
+ * Responsive: phone-first single column → wide desktop. No build step. */
+
+.app{display:flex;flex-direction:column;min-height:100vh;max-width:1320px;margin:0 auto}
+.apphead{display:flex;align-items:center;justify-content:space-between;
+  padding:max(18px,env(safe-area-inset-top)) 22px 14px;flex:none;gap:12px}
+.apphead .t{font-family:var(--font-display);font-size:25px;font-weight:400;
+  letter-spacing:-.01em;display:flex;align-items:center;gap:11px}
+.apphead .t .dot{width:8px;height:8px;border-radius:50%;background:var(--mint);
+  box-shadow:0 0 9px var(--mint);transition:.3s;flex:none}
+.apphead .t .dot.bad{background:var(--coral);box-shadow:0 0 9px var(--coral)}
+.apphead .who{font-size:11px;letter-spacing:.12em;color:var(--slate);
+  text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+#facet-host{flex:1;padding:0 0 24px}
+
+/* shared link affordance (matches the amber-forward board idiom) */
+.facet-link{display:inline-block;text-decoration:none;color:var(--amber);
+  font-size:12px;letter-spacing:.08em;padding:8px 0;min-height:var(--tap)}
+.facet-link:hover{color:var(--amber-soft)}
+.facet-link:focus-visible{outline:2px solid var(--amber);outline-offset:2px;border-radius:6px}
+
+/* ── no-context (bare /workspace/) + placeholder facets ─────────────────────── */
+.facet-empty,.facet-placeholder{
+  margin:32px 18px;border:1px solid var(--line);border-radius:16px;
+  background:linear-gradient(180deg,var(--panel),var(--ink-2));padding:26px 22px}
+.facet-empty-h,.facet-placeholder-h{font-family:var(--font-display);
+  font-size:21px;font-weight:400;color:#fff;letter-spacing:-.01em;margin-bottom:11px}
+.facet-empty-b{color:var(--dim);font-size:13px;line-height:1.6;margin-bottom:16px}
+.facet-placeholder-b{color:var(--slate);font-size:12px;letter-spacing:.1em;
+  text-transform:uppercase}
+.facet-placeholder{
+  border-style:dashed;border-color:var(--line-2);
+  background:repeating-linear-gradient(135deg,var(--panel),var(--panel) 12px,var(--ink-2) 12px,var(--ink-2) 24px)}
+
+/* ── scoped board facet ────────────────────────────────────────────────────── */
+.bf-wrap{padding:8px 0 0}
+.bf-loading{padding:40px 22px;color:var(--dim);font-size:13px;letter-spacing:.08em}
+.bf-sec{margin:6px 0 0;padding:14px 0 16px;border-top:1px solid var(--line)}
+.bf-sl{font-size:10px;letter-spacing:.32em;color:var(--slate);
+  padding:0 20px 13px;text-transform:uppercase}
+.bf-empty{color:var(--faint);font-size:12px;padding:0 22px;line-height:1.6}
+
+/* scoped runner (reuses the board's runner visual register) */
+.bf-runner-host{display:flex;flex-wrap:wrap;gap:10px;padding:0 14px}
+.runner{flex:1 1 240px;min-width:0;border:1px solid var(--line);border-radius:13px;
+  background:var(--panel);padding:13px 14px}
+.runner .rp{font-size:11px;color:var(--dim);letter-spacing:.06em;margin-bottom:9px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.runner .rstate{display:flex;align-items:center;gap:9px;font-size:13px;
+  font-family:var(--font-display);letter-spacing:-.01em}
+.runner .pill{width:8px;height:8px;border-radius:50%;flex:none}
+.runner .pill.live{background:var(--mint);box-shadow:0 0 7px var(--mint)}
+.runner .pill.thinking{background:var(--mint);opacity:.55;
+  animation:ws-thinking-pulse 1.6s ease-in-out infinite}
+.runner .pill.attention{background:var(--amber);box-shadow:0 0 7px var(--amber)}
+.runner .pill.unknown{background:var(--slate)}
+.runner .pill.stale{background:var(--coral);box-shadow:0 0 7px var(--coral)}
+@keyframes ws-thinking-pulse{0%,100%{opacity:.35}50%{opacity:.75}}
+@media (prefers-reduced-motion:reduce){.runner .pill.thinking{animation:none;opacity:.55}}
+.runner.stale{border-color:rgba(255,107,107,.32);
+  background:linear-gradient(160deg,rgba(255,107,107,.09),var(--panel))}
+.runner.stale .rstate{color:var(--coral)}
+.runner .rnote{margin-top:8px;font-size:10px;color:var(--faint);letter-spacing:.04em}
+.runner .rstale{margin-top:8px;font-size:10px;letter-spacing:.04em;color:var(--coral)}
+.runner .workspace-current-task{display:block;margin-top:6px;font-family:var(--mono);
+  font-size:11px;color:var(--dim);letter-spacing:.02em}
+.runner .workspace-current-task .workspace-current-task-title{color:var(--faint);font-weight:normal}
+
+/* scoped lifecycle columns (reuses the board's col/bead visual register) */
+.cols{display:flex;gap:9px;overflow-x:auto;padding:0 14px 4px;scrollbar-width:thin}
+.col{flex:none;width:160px}
+.col-h{display:flex;align-items:center;justify-content:space-between;font-size:10px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+  padding:0 3px 9px;border-bottom:1px solid var(--line);margin-bottom:9px}
+.col-h .c{color:var(--faint)}
+.bead{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:9px 10px;margin-bottom:7px}
+.bead .bt{font-size:11px;line-height:1.35;color:var(--text);margin-bottom:7px}
+.bead .bf{display:flex;align-items:center;justify-content:space-between;
+  font-size:9px;color:var(--faint);gap:6px}
+.bead .bf .wo{color:var(--dim)}
+.bead .bf .rn{color:var(--dim)}
+.bead.failbead{border-color:rgba(255,107,107,.32);
+  background:linear-gradient(160deg,rgba(255,107,107,.1),var(--panel))}
+.bead.failbead.silent{border-color:rgba(255,107,107,.62);
+  background:linear-gradient(160deg,rgba(255,107,107,.22),var(--panel));
+  box-shadow:0 0 0 1px rgba(255,107,107,.18),inset 3px 0 0 0 var(--coral)}
+.bead .warn{color:var(--coral);font-size:9px;letter-spacing:.06em;margin-top:6px;
+  display:block;text-decoration:none}
+a.warn{color:var(--coral);cursor:pointer;padding:4px 0;min-height:24px}
+a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-radius:4px}
+.bead.failbead.silent .warn{color:#ff8a8a;font-weight:500}
+
+/* facet foot: link to the full board + a quiet updated stamp */
+.bf-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  flex-wrap:wrap;padding:14px 22px max(14px,env(safe-area-inset-bottom));
+  border-top:1px solid var(--line);margin-top:8px}
+.bf-updated{font-size:10px;letter-spacing:.12em;color:var(--faint);text-transform:uppercase}
+
+/* facet error box */
+.bf-errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
+  background:rgba(255,107,107,.08);border-radius:14px;padding:18px}
+.bf-err-h{color:var(--coral);font-size:13px;letter-spacing:.12em;
+  text-transform:uppercase;margin-bottom:9px}
+.bf-err-b{color:var(--amber-soft);font-size:13px;line-height:1.6}
+
+/* desktop breathing room (mirrors board.css breakpoints) */
+@media (min-width:880px){
+  .bf-runner-host{padding:0 22px}
+  .cols{padding:0 22px 6px}
+  .col{width:190px}
+  .facet-empty,.facet-placeholder{margin:32px 22px}
+}

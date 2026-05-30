@@ -21,7 +21,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./intake.css">
+<!-- Absolute asset paths (/intake/*, /shared/*): this page is served under clean routes,
+     so a relative ./ path would 404 (the board page is the reference). tokens.css first. -->
+<link rel="stylesheet" href="/shared/tokens.css">
+<link rel="stylesheet" href="/intake/intake.css">
 </head>
 <body>
   <main class="app" id="app" aria-live="polite">
@@ -93,6 +96,10 @@
 
   <div class="pop" id="pop"><span id="popmsg"></span></div>
 
-  <script src="./app.js"></script>
+  <script src="/shared/net.js"></script>
+  <script src="/shared/dom.js"></script>
+  <script src="/shared/shell.js"></script>
+  <script src="/intake/app.js"></script>
+  <script>Shell.mount({active:null});</script>
 </body>
 </html>

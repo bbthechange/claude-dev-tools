@@ -1,0 +1,61 @@
+/* beads-runner/web/cross-ws/cross-ws.css — CROSS-WS (label: cross-ws).
+ * Page-specific styles for the HONEST placeholder only. Tokens (:root vars,
+ * reset, body base, .shell-nav chrome) come from /shared/tokens.css, linked
+ * FIRST. This file styles the .apphead (mirroring the board header) plus a
+ * single placeholder panel that states the surface ships with track K.
+ * Presentation only; no behavior. Phone-first single column → wide desktop. */
+
+.app{display:flex;flex-direction:column;min-height:100vh;max-width:1320px;margin:0 auto}
+
+/* header — mirrors board/board.css .apphead so the chrome reads identically */
+.apphead{display:flex;align-items:center;justify-content:space-between;
+  padding:max(18px,env(safe-area-inset-top)) 22px 14px;flex:none}
+.apphead .t{font-family:var(--font-display);font-size:25px;font-weight:400;
+  letter-spacing:-.01em;display:flex;align-items:center;gap:11px}
+.apphead .t .dot{width:8px;height:8px;border-radius:50%;background:var(--mint);
+  box-shadow:0 0 9px var(--mint);transition:.3s}
+/* the surface is not yet wired — a slate (neutral) dot, never a live mint one */
+.apphead .t .dot.pending{background:var(--slate);box-shadow:none}
+.apphead .who{font-size:11px;letter-spacing:.18em;color:var(--slate);
+  text-transform:uppercase}
+
+.scroll{flex:1;overflow-y:auto;padding:0 0 24px;
+  display:flex;align-items:flex-start;justify-content:center}
+
+/* placeholder panel — rounded dark panel, generous spacing, monospace meta */
+.placeholder{margin:8px 14px 0;max-width:560px;width:100%;
+  border:1px solid var(--line);border-radius:18px;
+  background:linear-gradient(180deg,var(--panel),var(--ink-2));
+  padding:24px 22px 22px}
+.ph-tag{display:inline-block;font-size:10px;letter-spacing:.3em;
+  color:var(--slate);border:1px solid var(--line-2);border-radius:7px;
+  padding:5px 10px;margin-bottom:16px}
+.ph-h{font-family:var(--font-display);font-size:22px;font-weight:400;
+  line-height:1.3;letter-spacing:-.01em;color:#fff;margin-bottom:14px}
+.ph-b{font-size:13px;line-height:1.6;color:var(--dim);margin-bottom:16px}
+
+.ph-list{list-style:none;display:flex;flex-direction:column;gap:9px;margin-bottom:18px}
+.ph-list li{display:flex;flex-direction:column;gap:3px;
+  border:1px solid var(--line);border-radius:11px;
+  background:var(--panel-2);padding:11px 13px}
+.ph-list .k{font-size:13px;color:var(--text);letter-spacing:.02em}
+.ph-list .when{font-size:11px;color:var(--faint);letter-spacing:.04em}
+.ph-list code{font-family:var(--mono);font-size:11px;color:var(--sky)}
+
+.ph-ask{font-size:13px;line-height:1.6;color:var(--dim);
+  border-left:2px solid var(--amber);padding-left:13px;margin-bottom:16px}
+.ph-ask em{font-family:var(--font-display);font-style:italic;
+  font-size:15px;color:var(--amber-soft)}
+.ph-foot{font-size:11px;line-height:1.5;color:var(--faint);letter-spacing:.02em}
+
+/* footer — same register as board */
+.foot{flex:none;display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  padding:14px 22px max(14px,env(safe-area-inset-bottom));
+  border-top:1px solid var(--line);
+  font-size:10px;letter-spacing:.1em;color:var(--faint)}
+.foot .foot-sep{color:var(--line-2)}
+
+@media (min-width:640px){
+  .placeholder{padding:30px 28px 26px}
+  .ph-h{font-size:25px}
+}

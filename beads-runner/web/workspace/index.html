@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Beads Runner — Workspace</title>
+<!--
+  C-shell (claude-tools-uxvsh) — the WORKSPACE-CONTEXT SHELL (label: workspace-shell).
+  THE FRAME the facet UIs plug into. _redirects rewrites every /ws/<ref>/<facet>
+  request to /workspace/, so this ONE page serves every facet of every workspace;
+  Shell.parseWorkspacePath(location.pathname) tells it which ref + facet to render.
+
+  Because it is served under /ws/<ref>/<facet> at arbitrary depth, EVERY asset
+  ref is ABSOLUTE (the q6z7 lesson — a relative ./x would resolve against the
+  request path and 404). Link /shared/tokens.css FIRST, then /workspace/workspace.css.
+
+  The 'board' facet REUSES window.BoardView (loaded by absolute path from
+  /board/board-view.js — never modified, never copied). Blueprint/Activity/Gates
+  are HONEST placeholders that name the track that ships them (H3/I3/J3).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- tokens.css FIRST (shared :root + nav chrome), then this page's CSS. Both absolute. -->
+<link rel="stylesheet" href="/shared/tokens.css">
+<link rel="stylesheet" href="/workspace/workspace.css">
+</head>
+<body>
+  <main class="app" id="app" aria-live="polite">
+    <header class="apphead">
+      <div class="t"><span class="dot" id="health-dot"></span>Workspace</div>
+      <div class="who" id="who" title="The workspace this facet is scoped to">—</div>
+    </header>
+
+    <div id="facet-host"></div>
+  </main>
+
+  <!-- Absolute paths — this page is served at /ws/<ref>/<facet> at arbitrary depth. -->
+  <script src="/shared/net.js"></script>
+  <script src="/shared/dom.js"></script>
+  <script src="/shared/shell.js"></script>
+  <!-- REUSE the Board renderer verbatim by absolute path (do NOT modify it). -->
+  <script src="/board/board-view.js"></script>
+  <script src="/workspace/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Beads Runner — Cross-WS</title>
+<!--
+  CROSS-WS (label: cross-ws) — the global cross-workspace surface ROUTE + nav
+  shell (UX-DESIGN-V2 §2.1; Brian B2/C4). This is the HONEST placeholder only:
+  the real content — the FE↔BE coupling map (track K5) and the relay log
+  (track K2 builds relay_log + relay-log-tail) — DOES NOT EXIST YET. This page
+  deliberately makes NO /api call and fabricates NO exchange/coupling data; it
+  states what the surface will answer once track K lands.
+  Asset refs are ABSOLUTE (/shared/*, /cross-ws/*) because /cross-ws is a Pages
+  rewrite to /cross-ws/ — a relative ./x would resolve against the clean URL and
+  404 (the q6z7 lesson). Tokens.css is linked FIRST, then the page CSS.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/shared/tokens.css">
+<link rel="stylesheet" href="/cross-ws/cross-ws.css">
+</head>
+<body>
+  <main class="app" id="app">
+    <header class="apphead">
+      <div class="t"><span class="dot pending" id="health-dot"></span>Cross-WS</div>
+      <div class="who" title="ships with track K">not yet wired</div>
+    </header>
+
+    <div class="scroll">
+      <section class="placeholder" aria-label="Cross-WS placeholder">
+        <div class="ph-tag">NOT YET WIRED</div>
+        <h1 class="ph-h">The cross-workspace surface ships with track K.</h1>
+        <p class="ph-b">
+          This route and its persistent nav are in place, but the two things that
+          will live here have not been built yet:
+        </p>
+        <ul class="ph-list">
+          <li><span class="k">relay log</span><span class="when">track K2 — builds <code>relay_log</code> + <code>relay-log-tail</code></span></li>
+          <li><span class="k">FE↔BE coupling map</span><span class="when">track K5</span></li>
+        </ul>
+        <p class="ph-ask">
+          Once those land, this surface answers one question at a glance:
+          <em>Are the workspaces in sync, and did any relay need me?</em>
+        </p>
+        <p class="ph-foot">No data is shown because none exists yet — this page makes no API call and invents no exchanges.</p>
+      </section>
+    </div>
+
+    <footer class="foot">
+      <span>cross-workspace surface · placeholder</span>
+      <span class="foot-sep">·</span>
+      <span>content arrives with track K (K2 relay log · K5 coupling map)</span>
+    </footer>
+  </main>
+
+  <!-- Shared chrome: absolute src so the rewrite at /cross-ws still loads them. -->
+  <script src="/shared/dom.js"></script>
+  <script src="/shared/shell.js"></script>
+  <script>
+    // Mount ONLY the persistent nav shell (Cross-WS active). No view-model, no
+    // /api/board fetch, no relay-log-tail call — there is nothing to read yet.
+    if (window.Shell) window.Shell.mount({ active: 'cross-ws' });
+  </script>
+</body>
+</html>

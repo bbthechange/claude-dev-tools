@@ -19,118 +19,89 @@
   'use strict';
   var IV = window.InboxView;
 
-  var el = function (id) { return document.getElementById(id); };
-  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
-  function mk(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  }
+  // Shared glue (UMD): network (window.Net) + DOM helpers (window.Dom) + the
+  // persistent nav shell (window.Shell) now live ONCE in /shared/*.js — see
+  // index.html. Call sites below use Net.* / Dom.* directly; behavior is
+  // byte-identical (pure dedup, no logic change).
   function show(view) {
     ['v-list', 'v-dossier', 'v-confirm', 'v-failure', 'errbox'].forEach(function (v) {
-      el(v).hidden = v !== view;
+      Dom.el(v).hidden = v !== view;
     });
-    el('loading').hidden = true;
-    el('ddock').hidden = view !== 'v-dossier';
-    el('back').hidden = view === 'v-list';
-    el('scroll').scrollTop = 0;
+    Dom.el('loading').hidden = true;
+    Dom.el('ddock').hidden = view !== 'v-dossier';
+    Dom.el('back').hidden = view === 'v-list';
+    Dom.el('scroll').scrollTop = 0;
   }
   function showError(h, b) {
-    el('err-h').textContent = h || 'Cannot render';
-    el('err-b').textContent = b || '';
-    el('dot').classList.add('bad');
+    Dom.el('err-h').textContent = h || 'Cannot render';
+    Dom.el('err-b').textContent = b || '';
+    Dom.el('dot').classList.add('bad');
     show('errbox');
   }
   function toast(m) {
-    var p = el('pop'); el('popmsg').textContent = m;
+    var p = Dom.el('pop'); Dom.el('popmsg').textContent = m;
     p.classList.add('on'); clearTimeout(toast._t);
     toast._t = setTimeout(function () { p.classList.remove('on'); }, 2800);
   }
-  function stamp() { el('foot-updated').textContent = 'updated ' + new Date().toLocaleTimeString(); }
+  function stamp() { Dom.el('foot-updated').textContent = 'updated ' + new Date().toLocaleTimeString(); }
 
-  // ── network: every call is same-origin + credential-less (§9.1) ───────────
-  function getJSON(url) {
-    return fetch(url, { method: 'GET', headers: { accept: 'application/json' } })
-      .then(function (r) {
-        return r.text().then(function (t) {
-          var d; try { d = JSON.parse(t); } catch (e) {
-            throw new Error('proxy returned non-JSON (HTTP ' + r.status + ')');
-          }
-          if (d && d.ok === false && d.error) throw new Error(d.error);
-          if (!r.ok) throw new Error('proxy HTTP ' + r.status);
-          return d;
-        });
-      });
-  }
-  function postJSON(url, body) {
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify(body)
-    }).then(function (r) {
-      return r.text().then(function (t) {
-        var d; try { d = JSON.parse(t); } catch (e) { d = { ok: r.ok, raw: t }; }
-        if (d && d.ok === false && d.error) throw new Error(d.error);
-        if (!r.ok) throw new Error('write proxy HTTP ' + r.status);
-        return d;
-      });
-    });
-  }
+  // ── network: every call is same-origin + credential-less (§9.1). The
+  // getJSON/postJSON impls now live ONCE in /shared/net.js (window.Net) — same
+  // honest error discipline; call sites use Net.getJSON / Net.postJSON directly.
 
   // ── INBOX LIST + Flow-G glance ────────────────────────────────────────────
   var lastSnapshot = null;
   function loadList() {
-    show('loading'); el('loading').hidden = false;
-    getJSON('/api/inbox').then(function (snap) {
+    show('loading'); Dom.el('loading').hidden = false;
+    Net.getJSON('/api/inbox').then(function (snap) {
       lastSnapshot = snap;
       var v = IV.deriveInboxList(snap, Date.now());
       if (!v.ok) { showError('Cannot render the Inbox', v.error); return; }
-      el('who').textContent = v.principal;
-      el('title').textContent = 'Inbox';
-      el('dot').classList.toggle('bad', v.failures.length > 0);
-      el('list-sub').textContent = v.items.length === 0
+      Dom.el('who').textContent = v.principal;
+      Dom.el('title').textContent = 'Inbox';
+      Dom.el('dot').classList.toggle('bad', v.failures.length > 0);
+      Dom.el('list-sub').textContent = v.items.length === 0
         ? 'The product. Nothing needs you — everything is flowing.'
         : 'The product. ' + v.items.length +
           (v.items.length === 1 ? ' thing' : ' things') + ' need you' +
           (v.failures.length ? ' · ' + v.failures.length + ' failing' : '') + '.';
-      var rows = el('rows'); clear(rows);
-      el('list-empty').hidden = v.items.length !== 0;
+      var rows = Dom.el('rows'); Dom.clear(rows);
+      Dom.el('list-empty').hidden = v.items.length !== 0;
       v.items.forEach(function (it) {
-        var a = mk('a', 'inrow t-' + it.tier);
+        var a = Dom.mk('a', 'inrow t-' + it.tier);
         a.setAttribute('href', it.dossier_href || '#/');
         // claude-tools-56h — tier strip now carries bead_ref + time-ago + an
         // item-count badge (when > 1). Without these, 9 dossiers on the same
         // bead were visually identical and the user had to tap each one to
         // tell them apart.
-        var tier = mk('div', 'tier');
-        tier.appendChild(mk('span', 'tg', it.tier));
+        var tier = Dom.mk('div', 'tier');
+        tier.appendChild(Dom.mk('span', 'tg', it.tier));
         var refTxt = it.bead_ref || it.dossier_ref || '';
         if (it.time_ago) refTxt = refTxt ? refTxt + ' · ' + it.time_ago : it.time_ago;
         if (it.dossier_short) refTxt = refTxt ? refTxt + ' · #' + it.dossier_short : '#' + it.dossier_short;
-        tier.appendChild(mk('span', 'ref', refTxt));
+        tier.appendChild(Dom.mk('span', 'ref', refTxt));
         if (it.count_badge) {
-          var cnt = mk('span', 'cnt', it.count_badge + (it.item_count === 1 ? ' item' : ' items'));
+          var cnt = Dom.mk('span', 'cnt', it.count_badge + (it.item_count === 1 ? ' item' : ' items'));
           tier.appendChild(cnt);
         }
         a.appendChild(tier);
         // Title prefers the dossier's tldr (the skim entry point — AD7); falls
         // back to the legacy "N things need you" phrase for any item the
         // producer couldn't enrich (older snapshot / body-less dossier).
-        a.appendChild(mk('div', 'h', it.tldr || it.label));
-        a.appendChild(mk('div', 'd', it.auto_proceeds
+        a.appendChild(Dom.mk('div', 'h', it.tldr || it.label));
+        a.appendChild(Dom.mk('div', 'd', it.auto_proceeds
           ? 'Read-mostly — auto-proceeds on silence (reversible). Open to skim or object.'
           : 'Open the dossier — skim it, then resolve in any mix. Your “no” is one tap.'));
         rows.appendChild(a);
       });
-      var fg = el('flowg'); var fails = el('fails'); clear(fails);
+      var fg = Dom.el('flowg'); var fails = Dom.el('fails'); Dom.clear(fails);
       fg.hidden = v.failures.length === 0;
       v.failures.forEach(function (f) {
-        var c = mk('a', 'failrow');
+        var c = Dom.mk('a', 'failrow');
         c.setAttribute('href', f.failure_href || '#/');
-        c.appendChild(mk('div', 'fbadge', f.badge));
-        c.appendChild(mk('div', 'h', f.title + '  ·  ' + f.bead_ref));
-        c.appendChild(mk('div', 'd', f.class_plain));
+        c.appendChild(Dom.mk('div', 'fbadge', f.badge));
+        c.appendChild(Dom.mk('div', 'h', f.title + '  ·  ' + f.bead_ref));
+        c.appendChild(Dom.mk('div', 'd', f.class_plain));
         fails.appendChild(c);
       });
       show('v-list'); stamp();
@@ -144,8 +115,8 @@
   var density = 'skim';
 
   function loadDossier(id) {
-    show('loading'); el('loading').hidden = false;
-    getJSON('/api/inbox/dossier?id=' + encodeURIComponent(id)).then(function (rec) {
+    show('loading'); Dom.el('loading').hidden = false;
+    Net.getJSON('/api/inbox/dossier?id=' + encodeURIComponent(id)).then(function (rec) {
       curDossier = rec;
       var v = IV.deriveDossierView(rec);
       curView = v;
@@ -173,9 +144,9 @@
   // never blocked (a malformed diagram is a generator bug surfaced honestly,
   // not a dead Inbox).
   function diagramFallback(host, src, why) {
-    clear(host);
-    host.appendChild(mk('div', 'dgerr', why || 'could not render — showing Mermaid source'));
-    host.appendChild(mk('pre', 'dgc dgc-fallback', src));
+    Dom.clear(host);
+    host.appendChild(Dom.mk('div', 'dgerr', why || 'could not render — showing Mermaid source'));
+    host.appendChild(Dom.mk('pre', 'dgc dgc-fallback', src));
   }
   function renderDiagrams(pending) {
     // Skip a host detached by a re-render between schedule and settle (a new
@@ -208,28 +179,28 @@
   }
 
   function renderDossier(v) {
-    el('title').textContent = v.profile === 'overview' ? 'Overview' : 'Dossier';
-    el('back').hidden = false;
-    el('d-tier').textContent = v.tier;
-    el('d-tier').className = 'badge t-' + v.tier;
-    el('d-meta').textContent = v.bead_ref + ' · ' + (v.trigger || v.kind) +
+    Dom.el('title').textContent = v.profile === 'overview' ? 'Overview' : 'Dossier';
+    Dom.el('back').hidden = false;
+    Dom.el('d-tier').textContent = v.tier;
+    Dom.el('d-tier').className = 'badge t-' + v.tier;
+    Dom.el('d-meta').textContent = v.bead_ref + ' · ' + (v.trigger || v.kind) +
       ' · ' + v.rollup.total + ' call' + (v.rollup.total === 1 ? '' : 's');
-    el('d-eyer').textContent = (v.profile === 'overview' ? 'PROACTIVE OVERVIEW' : 'DECISION DOSSIER') +
+    Dom.el('d-eyer').textContent = (v.profile === 'overview' ? 'PROACTIVE OVERVIEW' : 'DECISION DOSSIER') +
       ' · ' + (v.trigger || v.kind);
-    el('d-title').textContent = v.body.tldr;
-    el('d-tldr').textContent = v.body.tldr;
-    var fb = el('fyi-banner');
+    Dom.el('d-title').textContent = v.body.tldr;
+    Dom.el('d-tldr').textContent = v.body.tldr;
+    var fb = Dom.el('fyi-banner');
     fb.hidden = !v.auto_proceeds;
     if (v.auto_proceeds) fb.textContent = 'Read-mostly brief — not a blocker. ' + v.timer_note +
       '. Flag a concern on anything that looks wrong; silence is a valid input (principle 6).';
 
-    var secs = el('d-sections'); clear(secs);
+    var secs = Dom.el('d-sections'); Dom.clear(secs);
     // claude-tools-4xe — a non-blocking, honest notice when this accepted
     // dossier had to be shown best-effort (legacy/pre-write-gate record). It
     // never blocks reading or answering; it just refuses to silently paper
     // over a gap.
     if (v.degraded && v.degraded.length) {
-      var dn = mk('div', 'dgerr d-degraded',
+      var dn = Dom.mk('div', 'dgerr d-degraded',
         'Shown best-effort — some parts were incomplete: ' + v.degraded.join(' '));
       secs.appendChild(dn);
     }
@@ -240,50 +211,50 @@
     // generic .degraded notice above so a fallback-authored dossier is never
     // just rendered as if it were normal.
     if (v.body && v.body.authored_by === 'fallback') {
-      var meta = el('d-meta');
+      var meta = Dom.el('d-meta');
       if (meta && !meta.querySelector('.d-author-badge')) {
-        var ab = mk('span', 'd-author-badge',
+        var ab = Dom.mk('span', 'd-author-badge',
           v.body.authored_by_reason === 'no_DG_AUTHOR_CMD' ? 'fallback author' : 'degraded author');
         ab.title = v.body.authored_by_note || 'Authored by the deterministic fallback.';
         meta.appendChild(ab);
       }
       if (v.body.authored_by_note) {
-        secs.appendChild(mk('div', 'dgerr d-author-note', v.body.authored_by_note));
+        secs.appendChild(Dom.mk('div', 'dgerr d-author-note', v.body.authored_by_note));
       }
     }
     v.body.sections.forEach(function (s) {
-      var d = mk('div', 'dsec');
-      d.appendChild(mk('h2', null, s.heading));
-      d.appendChild(mk('p', 'prose', s.prose));
+      var d = Dom.mk('div', 'dsec');
+      d.appendChild(Dom.mk('h2', null, s.heading));
+      d.appendChild(Dom.mk('p', 'prose', s.prose));
       secs.appendChild(d);
     });
-    var dgs = el('d-diagrams'); clear(dgs);
+    var dgs = Dom.el('d-diagrams'); Dom.clear(dgs);
     var pending = [];
     v.body.diagrams.forEach(function (g) {
-      var d = mk('div', 'diagram');
-      d.appendChild(mk('div', 'dgl', g.caption));
+      var d = Dom.mk('div', 'diagram');
+      d.appendChild(Dom.mk('div', 'dgl', g.caption));
       if (g.degraded) {
         // Not Mermaid / empty: a clearly-LABELED warning block + the raw text,
         // never a silent <pre> masquerading as a rendered diagram, never a
         // dropped diagram (claude-tools-4xe criterion 2 / INTERFACE §5.1).
-        d.appendChild(mk('div', 'dgerr', g.note || 'This diagram could not be rendered.'));
-        if (g.content) d.appendChild(mk('pre', 'dgc dgc-fallback', g.content));
+        d.appendChild(Dom.mk('div', 'dgerr', g.note || 'This diagram could not be rendered.'));
+        if (g.content) d.appendChild(Dom.mk('pre', 'dgc dgc-fallback', g.content));
         dgs.appendChild(d);
         return;
       }
-      var host = mk('div', 'dgsvg');
+      var host = Dom.mk('div', 'dgsvg');
       // The Mermaid SOURCE goes in as textContent (never innerHTML);
       // mermaid.run() replaces this node's content with sanitized SVG.
-      var node = mk('pre', 'mermaid', g.content);
+      var node = Dom.mk('pre', 'mermaid', g.content);
       host.appendChild(node);
       d.appendChild(host);
       dgs.appendChild(d);
       pending.push({ host: host, node: node, src: g.content });
     });
     if (pending.length) renderDiagrams(pending);
-    el('d-full').textContent = v.body.full_detail;
+    Dom.el('d-full').textContent = v.body.full_detail;
 
-    var box = el('d-items'); clear(box);
+    var box = Dom.el('d-items'); Dom.clear(box);
     v.items.forEach(function (it) { box.appendChild(renderItem(it)); });
     applyDensity();
     recount();
@@ -293,37 +264,37 @@
   // object are each ONE control — symmetric with approve (principle 3 / EXIT
   // crit 2: no penalty path). context_anchor is rendered INLINE, always (AD7).
   function renderItem(it) {
-    var du = mk('div', 'du');
+    var du = Dom.mk('div', 'du');
     du.dataset.item = it.id;
     if (it.terminal) du.classList.add('done');
 
-    var q = mk('div', 'du-q');
-    q.appendChild(mk('div', 'du-tag', it.kind));
-    q.appendChild(mk('div', 'du-ttl', it.framing.ask || '(ask)'));
-    if (it.framing.why) q.appendChild(mk('div', 'du-why', it.framing.why));
+    var q = Dom.mk('div', 'du-q');
+    q.appendChild(Dom.mk('div', 'du-tag', it.kind));
+    q.appendChild(Dom.mk('div', 'du-ttl', it.framing.ask || '(ask)'));
+    if (it.framing.why) q.appendChild(Dom.mk('div', 'du-why', it.framing.why));
     // MANDATORY context_anchor, inline (the AD7 self-contained-context line).
-    var ca = mk('div', 'du-anchor');
-    ca.appendChild(mk('span', 'cl', 'WHERE'));
-    ca.appendChild(mk('span', 'ct', it.context_anchor.where + ' — ' + it.context_anchor.expansion));
+    var ca = Dom.mk('div', 'du-anchor');
+    ca.appendChild(Dom.mk('span', 'cl', 'WHERE'));
+    ca.appendChild(Dom.mk('span', 'ct', it.context_anchor.where + ' — ' + it.context_anchor.expansion));
     q.appendChild(ca);
     if (it.recommendation && it.recommendation.value != null) {
-      var rec = mk('div', 'du-rec');
-      rec.appendChild(mk('span', 'rl', 'REC'));
-      rec.appendChild(mk('span', 'rt', String(it.recommendation.value) +
+      var rec = Dom.mk('div', 'du-rec');
+      rec.appendChild(Dom.mk('span', 'rl', 'REC'));
+      rec.appendChild(Dom.mk('span', 'rt', String(it.recommendation.value) +
         (it.recommendation.why ? ' — ' + it.recommendation.why : '')));
       q.appendChild(rec);
     }
-    q.appendChild(mk('div', 'du-rev', '↩ ' + it.reversible));
+    q.appendChild(Dom.mk('div', 'du-rev', '↩ ' + it.reversible));
     du.appendChild(q);
 
     if (it.terminal) {
-      du.appendChild(mk('div', 'du-resolved', '✓ ' + (it.response_summary || it.state)));
+      du.appendChild(Dom.mk('div', 'du-resolved', '✓ ' + (it.response_summary || it.state)));
       return du;
     }
 
-    var acts = mk('div', 'du-acts');
+    var acts = Dom.mk('div', 'du-acts');
     it.affordances.forEach(function (a) {
-      var b = mk('button', 'k k-' + a, ({
+      var b = Dom.mk('button', 'k k-' + a, ({
         approve: 'Approve', reject: 'Reject', pick: 'Options',
         edit: 'Edit', freeform: 'React', object: 'Object'
       })[a] || a);
@@ -334,14 +305,14 @@
     du.appendChild(acts);
 
     // expandable sub-controls (options / edit / freeform)
-    var ex = mk('div', 'du-ex'); ex.hidden = true;
+    var ex = Dom.mk('div', 'du-ex'); ex.hidden = true;
     if (it.options.length) {
-      var ow = mk('div', 'du-opts'); ow.appendChild(mk('div', 'ol', 'PICK AN OPTION'));
+      var ow = Dom.mk('div', 'du-opts'); ow.appendChild(Dom.mk('div', 'ol', 'PICK AN OPTION'));
       it.options.forEach(function (o) {
-        var ch = mk('button', 'optchip', '');
+        var ch = Dom.mk('button', 'optchip', '');
         ch.type = 'button';
-        ch.appendChild(mk('span', 'oc', o.label));
-        if (o.blast_radius) ch.appendChild(mk('small', null, o.blast_radius));
+        ch.appendChild(Dom.mk('span', 'oc', o.label));
+        if (o.blast_radius) ch.appendChild(Dom.mk('small', null, o.blast_radius));
         ch.addEventListener('click', function () {
           ow.querySelectorAll('.optchip').forEach(function (x) { x.classList.remove('sel'); });
           ch.classList.add('sel');
@@ -352,9 +323,9 @@
       ex.appendChild(ow);
     }
     if (it.affordances.indexOf('edit') >= 0) {
-      var ew = mk('div', 'du-editwrap');
-      ew.appendChild(mk('div', 'el', 'EDIT THE RECOMMENDATION — the reconciler reads this (§5.2.2)'));
-      var ed = mk('div', 'du-edit'); ed.contentEditable = 'true'; ed.spellcheck = false;
+      var ew = Dom.mk('div', 'du-editwrap');
+      ew.appendChild(Dom.mk('div', 'el', 'EDIT THE RECOMMENDATION — the reconciler reads this (§5.2.2)'));
+      var ed = Dom.mk('div', 'du-edit'); ed.contentEditable = 'true'; ed.spellcheck = false;
       ed.textContent = (it.recommendation && it.recommendation.value != null)
         ? String(it.recommendation.value) : '';
       ed.addEventListener('input', function () {
@@ -362,8 +333,8 @@
       });
       ew.appendChild(ed); ex.appendChild(ew);
     }
-    var nw = mk('div', 'du-notewrap');
-    var ta = mk('textarea', 'du-note'); ta.rows = 2;
+    var nw = Dom.mk('div', 'du-notewrap');
+    var ta = Dom.mk('textarea', 'du-note'); ta.rows = 2;
     ta.placeholder = it.kind === 'fyi-objectable'
       ? 'Why are you objecting? (optional)'
       : 'Your reaction or correction…';
@@ -377,7 +348,7 @@
     });
     nw.appendChild(ta); ex.appendChild(nw);
     du.appendChild(ex);
-    du.appendChild(mk('div', 'du-state'));
+    du.appendChild(Dom.mk('div', 'du-state'));
     return du;
   }
 
@@ -427,24 +398,24 @@
     var alreadyTerminal = curView.items.filter(function (x) { return x.terminal; }).length;
     var nowResolved = Object.keys(formState).length;
     var resolved = alreadyTerminal + nowResolved;
-    el('progT').textContent = total;
-    el('progN').textContent = resolved;
-    el('prog').style.width = total ? (resolved / total * 100) + '%' : '0%';
+    Dom.el('progT').textContent = total;
+    Dom.el('progN').textContent = resolved;
+    Dom.el('prog').style.width = total ? (resolved / total * 100) + '%' : '0%';
     var openLeft = total - resolved;
     var ov = curView.profile === 'overview' || curView.auto_proceeds;
-    el('dsum').textContent = nowResolved === 0
+    Dom.el('dsum').textContent = nowResolved === 0
       ? (ov ? 'Read-mostly. Touch only what looks wrong — silence auto-proceeds (reversible).'
             : 'Resolve in any mix. ' + openLeft + ' open · partial is fine, untouched items block nothing (AD7).')
       : nowResolved + ' staged · ' + openLeft + ' still open';
-    el('dsubmit').textContent = ov && nowResolved === 0
+    Dom.el('dsubmit').textContent = ov && nowResolved === 0
       ? 'Acknowledge' : (nowResolved === 0 ? 'Submit' : 'Submit ' + nowResolved);
     // claude-tools-23r — show the dismiss-as-stale button only when there is
     // at least one item in state=open (the only state the engine's stateCheck
     // legally moves to `expired`; an `answered` item is mid-reconcile and is
     // NOT this affordance's target).
     var dismissable = openItemIds().length;
-    el('ddismiss').hidden = dismissable === 0;
-    el('ddismiss').textContent = dismissable > 1
+    Dom.el('ddismiss').hidden = dismissable === 0;
+    Dom.el('ddismiss').textContent = dismissable > 1
       ? 'Dismiss ' + dismissable + ' as stale' : 'Dismiss as stale';
   }
 
@@ -460,10 +431,10 @@
   }
 
   function applyDensity() {
-    el('v-dossier').classList.toggle('d-skim', density === 'skim');
-    el('v-dossier').classList.toggle('d-full', density === 'full');
-    el('den-skim').classList.toggle('on', density === 'skim');
-    el('den-full').classList.toggle('on', density === 'full');
+    Dom.el('v-dossier').classList.toggle('d-skim', density === 'skim');
+    Dom.el('v-dossier').classList.toggle('d-full', density === 'full');
+    Dom.el('den-skim').classList.toggle('on', density === 'skim');
+    Dom.el('den-full').classList.toggle('on', density === 'full');
   }
 
   // ── SUBMIT — one POST per resolved Item; partial is first-class (AD7) ──────
@@ -478,8 +449,8 @@
       toast('Nothing staged. Resolve at least one call, or just leave — untouched items block nothing.');
       return;
     }
-    el('dsubmit').disabled = true;
-    el('dsubmit').textContent = 'Submitting…';
+    Dom.el('dsubmit').disabled = true;
+    Dom.el('dsubmit').textContent = 'Submitting…';
     var chain = Promise.resolve();
     var errs = [];
     ids.forEach(function (iid) {
@@ -487,13 +458,13 @@
       var built = IV.buildItemResponse(it, formState[iid], Date.now());
       if (!built.ok) { errs.push(iid + ': ' + built.error); return; }
       chain = chain.then(function () {
-        return postJSON('/api/inbox/respond', {
+        return Net.postJSON('/api/inbox/respond', {
           dossier_id: curView.id, item_id: iid, response: built.response
         }).catch(function (e) { errs.push(iid + ': ' + e.message); });
       });
     });
     chain.then(function () {
-      el('dsubmit').disabled = false;
+      Dom.el('dsubmit').disabled = false;
       // Honest re-fetch is the source of truth (failed items correctly show
       // as still-open, S-2). errs[] is passed through so the ack states
       // PERSISTENTLY which submits failed and why — not a vanishing toast
@@ -522,21 +493,21 @@
       'Expired is a terminal state — applying a response later is no longer possible. ' +
       'Already-answered items (mid-reconcile) are left alone.';
     if (!window.confirm(msg)) return;
-    el('ddismiss').disabled = true;
-    el('ddismiss').textContent = 'Dismissing…';
-    el('dsubmit').disabled = true;
+    Dom.el('ddismiss').disabled = true;
+    Dom.el('ddismiss').textContent = 'Dismissing…';
+    Dom.el('dsubmit').disabled = true;
     var chain = Promise.resolve();
     var errs = [];
     ids.forEach(function (iid) {
       chain = chain.then(function () {
-        return postJSON('/api/inbox/expire', {
+        return Net.postJSON('/api/inbox/expire', {
           dossier_id: curView.id, item_id: iid
         }).catch(function (e) { errs.push(iid + ': ' + e.message); });
       });
     });
     chain.then(function () {
-      el('ddismiss').disabled = false;
-      el('dsubmit').disabled = false;
+      Dom.el('ddismiss').disabled = false;
+      Dom.el('dsubmit').disabled = false;
       // Honest re-fetch is the source of truth: any item the engine refused
       // to expire (illegal transition) correctly reads back as still-open.
       refetchAck(errs);
@@ -548,32 +519,32 @@
   // Dolt read. "You don't need to go check" is honest because of this.
   function refetchAck(errs) {
     errs = errs || [];
-    getJSON('/api/inbox/dossier?id=' + encodeURIComponent(curView.id)).then(function (rec) {
+    Net.getJSON('/api/inbox/dossier?id=' + encodeURIComponent(curView.id)).then(function (rec) {
       var c = IV.deriveConfirm(rec);
       if (!c.ok) { showError('Cannot render the ack', c.error); return; }
-      el('title').textContent = 'Confirmed';
-      el('cf-h').textContent = errs.length
+      Dom.el('title').textContent = 'Confirmed';
+      Dom.el('cf-h').textContent = errs.length
         ? 'Partial — some submits failed.'
         : (c.all_resolved ? 'One pass. Whole stage cleared.' : 'Partial — and that’s fine.');
-      el('cf-ack').textContent = c.honest_note;
-      var rc = el('cf-receipt'); clear(rc);
+      Dom.el('cf-ack').textContent = c.honest_note;
+      var rc = Dom.el('cf-receipt'); Dom.clear(rc);
       // Persistent, not a toast: exactly which items did NOT apply and why
       // (they correctly read as still-open above — this is the honest cause).
       errs.forEach(function (e) {
-        rc.appendChild(mk('div', 'ri am', '⚠ NOT applied — ' + e));
+        rc.appendChild(Dom.mk('div', 'ri am', '⚠ NOT applied — ' + e));
       });
       if (c.receipt.deterministic_count) {
-        rc.appendChild(mk('div', 'ri', '✓ ' + c.receipt.deterministic_count +
+        rc.appendChild(Dom.mk('div', 'ri', '✓ ' + c.receipt.deterministic_count +
           ' applied deterministically — pre-declared, instant (§5.2.2)'));
       }
       if (c.receipt.reconciler_count) {
-        rc.appendChild(mk('div', 'ri', '↻ ' + c.receipt.reconciler_count +
+        rc.appendChild(Dom.mk('div', 'ri', '↻ ' + c.receipt.reconciler_count +
           ' to the reconciler — re-surfaces only if it conflicts or opens a new question'));
       }
-      rc.appendChild(mk('div', 'ri', '✓ ' + c.bead_ref +
+      rc.appendChild(Dom.mk('div', 'ri', '✓ ' + c.bead_ref +
         ' reconciled by the Coordinator (control→work, S-2) — no Dolt-lag lie'));
       if (c.receipt.still_open) {
-        rc.appendChild(mk('div', 'ri am', '· ' + c.receipt.still_open +
+        rc.appendChild(Dom.mk('div', 'ri am', '· ' + c.receipt.still_open +
           ' left open — partial resolution is first-class (AD7); return anytime'));
       }
       show('v-confirm'); stamp();
@@ -585,32 +556,32 @@
     var run = function (snap) {
       var v = IV.deriveFailureView(snap, beadRef);
       if (!v.ok) { showError('Cannot render the failure', v.error); return; }
-      el('title').textContent = 'Failure';
-      el('dot').classList.add('bad');
-      var fc = el('f-class'); clear(fc);
-      fc.appendChild(mk('div', 'ft', v.glance.class + (v.glance.retry_state ? '  ·  ' + v.glance.retry_state : '')));
-      fc.appendChild(mk('div', 'fp', v.glance.class_plain));
-      el('f-tier').textContent = v.summary.silent
+      Dom.el('title').textContent = 'Failure';
+      Dom.el('dot').classList.add('bad');
+      var fc = Dom.el('f-class'); Dom.clear(fc);
+      fc.appendChild(Dom.mk('div', 'ft', v.glance.class + (v.glance.retry_state ? '  ·  ' + v.glance.retry_state : '')));
+      fc.appendChild(Dom.mk('div', 'fp', v.glance.class_plain));
+      Dom.el('f-tier').textContent = v.summary.silent
         ? v.summary.silent_note : '▸ synced metadata — always visible remote (§4.5).';
-      el('f-tier').classList.toggle('silent', v.summary.silent);
-      var fn = el('f-notes'); clear(fn);
-      if (v.summary.runner_notes.length === 0) fn.appendChild(mk('div', 'dim', 'No Runner: notes in the synced metadata.'));
-      v.summary.runner_notes.forEach(function (n) { fn.appendChild(mk('div', 'rnote', 'Runner: ' + n)); });
-      el('f-forensic-note').textContent = v.forensic.note;
-      el('f-redbox').hidden = true;
-      el('f-redout').textContent = '';
-      var ttl = el('f-ttl'); if (ttl) { ttl.textContent = ''; ttl.classList.remove('expired'); }
+      Dom.el('f-tier').classList.toggle('silent', v.summary.silent);
+      var fn = Dom.el('f-notes'); Dom.clear(fn);
+      if (v.summary.runner_notes.length === 0) fn.appendChild(Dom.mk('div', 'dim', 'No Runner: notes in the synced metadata.'));
+      v.summary.runner_notes.forEach(function (n) { fn.appendChild(Dom.mk('div', 'rnote', 'Runner: ' + n)); });
+      Dom.el('f-forensic-note').textContent = v.forensic.note;
+      Dom.el('f-redbox').hidden = true;
+      Dom.el('f-redout').textContent = '';
+      var ttl = Dom.el('f-ttl'); if (ttl) { ttl.textContent = ''; ttl.classList.remove('expired'); }
       clearForensicTtlTimer();
-      el('f-dismiss').hidden = true;
-      var fb = el('f-fetch');
+      Dom.el('f-dismiss').hidden = true;
+      var fb = Dom.el('f-fetch');
       fb.disabled = false;
       fb.textContent = 'Fetch redacted forensic log';
       fb.onclick = function () { fetchForensic(beadRef); };
-      el('f-dismiss').onclick = function () { dismissForensic(beadRef); };
+      Dom.el('f-dismiss').onclick = function () { dismissForensic(beadRef); };
       show('v-failure'); stamp();
     };
     if (lastSnapshot) run(lastSnapshot);
-    else getJSON('/api/inbox').then(function (s) { lastSnapshot = s; run(s); })
+    else Net.getJSON('/api/inbox').then(function (s) { lastSnapshot = s; run(s); })
       .catch(function (e) { showError('Cannot reach the Inbox proxy', e.message); });
   }
 
@@ -626,7 +597,7 @@
     if (forensicTtlTimer) { clearInterval(forensicTtlTimer); forensicTtlTimer = null; }
   }
   function renderForensicTtl(expiresEpoch) {
-    var ttl = el('f-ttl');
+    var ttl = Dom.el('f-ttl');
     if (!ttl) return;
     clearForensicTtlTimer();
     if (!expiresEpoch || !isFinite(expiresEpoch)) {
@@ -660,7 +631,7 @@
     catch (e) { return text; } // not JSON — show verbatim (§10.2 is opaque here)
   }
   function fetchForensic(beadRef) {
-    var fb = el('f-fetch');
+    var fb = Dom.el('f-fetch');
     fb.disabled = true; fb.textContent = 'Pulling over the authed channel…';
     fetch('/api/inbox/forensic?id=' + encodeURIComponent(beadRef), {
       method: 'GET',
@@ -679,26 +650,26 @@
         return { body: t, expEpoch: expEpoch };
       });
     }).then(function (res) {
-      var det = el('f-redbox');
-      var out = el('f-redout');
+      var det = Dom.el('f-redbox');
+      var out = Dom.el('f-redout');
       out.textContent = prettyForensic(res.body);
       det.hidden = false;
       det.open = true;
       renderForensicTtl(res.expEpoch);
       fb.textContent = '✓ Redacted log fetched · transient, not persisted client-side';
-      el('f-dismiss').hidden = false;
+      Dom.el('f-dismiss').hidden = false;
     }).catch(function (e) {
       fb.disabled = false; fb.textContent = 'Fetch redacted forensic log';
       toast(e.message); // honest: gone/expired/unreachable, never masked
     });
   }
   function dismissForensic(beadRef) {
-    postJSON('/api/inbox/forensic', { id: beadRef }).then(function () {
+    Net.postJSON('/api/inbox/forensic', { id: beadRef }).then(function () {
       clearForensicTtlTimer();
-      el('f-redbox').hidden = true;
-      el('f-dismiss').hidden = true;
-      el('f-fetch').textContent = '✓ Dismissed — hard-deleted server-side (§10.3)';
-      el('f-fetch').disabled = true;
+      Dom.el('f-redbox').hidden = true;
+      Dom.el('f-dismiss').hidden = true;
+      Dom.el('f-fetch').textContent = '✓ Dismissed — hard-deleted server-side (§10.3)';
+      Dom.el('f-fetch').disabled = true;
       toast('Forensic blob hard-deleted (irrecoverable — §10.3).');
     }).catch(function (e) { toast(e.message); });
   }
@@ -706,7 +677,7 @@
   // ── routing ───────────────────────────────────────────────────────────────
   function route() {
     var h = location.hash.replace(/^#/, '');
-    el('dot').classList.remove('bad');
+    Dom.el('dot').classList.remove('bad');
     if (!h || h === '/' || h === '/inbox') return loadList();
     var m;
     if ((m = h.match(/^\/d\/(.+)$/))) return loadDossier(m[1]);
@@ -716,12 +687,15 @@
     return loadList();
   }
 
-  el('back').addEventListener('click', function () { location.hash = '#/'; });
-  el('cf-back').addEventListener('click', function () { location.hash = '#/'; });
-  el('dsubmit').addEventListener('click', submitDossier);
-  el('ddismiss').addEventListener('click', dismissDossier);
-  el('den-skim').addEventListener('click', function () { density = 'skim'; applyDensity(); });
-  el('den-full').addEventListener('click', function () { density = 'full'; applyDensity(); });
+  Dom.el('back').addEventListener('click', function () { location.hash = '#/'; });
+  Dom.el('cf-back').addEventListener('click', function () { location.hash = '#/'; });
+  Dom.el('dsubmit').addEventListener('click', submitDossier);
+  Dom.el('ddismiss').addEventListener('click', dismissDossier);
+  Dom.el('den-skim').addEventListener('click', function () { density = 'skim'; applyDensity(); });
+  Dom.el('den-full').addEventListener('click', function () { density = 'full'; applyDensity(); });
   window.addEventListener('hashchange', route);
+  // Paint the persistent global nav once on load (Contract C.2). The Inbox is
+  // the product — one tap from anywhere; this is the only nav-shell wiring.
+  Shell.mount({ active: 'inbox' });
   route();
 })();

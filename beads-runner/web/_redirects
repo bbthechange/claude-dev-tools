@@ -1,5 +1,25 @@
-# q6z7 — serve the Board at the apex path. Status 200 = rewrite (URL stays /,
-# no redirect roundtrip). Destination must be /board/ (with trailing slash);
-# /board/index.html does not work because Pages normalizes index.html paths.
-# board/index.html uses absolute /board/* asset paths so it loads at either URL.
-/    /board/    200
+# beads-runner/web/_redirects — Cloudflare Pages routing for the unified
+# claude-wrangler app (Contract C.2 route shape; UX-DESIGN-V2 §2).
+#
+# Status 200 = REWRITE (URL stays put, no redirect roundtrip). Every page uses
+# ABSOLUTE asset paths (/inbox/inbox.css, /workspace/app.js, …) so a rewrite at
+# any URL depth still loads its assets (the q6z7 lesson — a relative ./x would
+# resolve against the request path and 404 under /ws/<ref>/<facet>).
+#
+# First match wins; existing static assets (e.g. /board/board.css) are served
+# directly and never hit these rules. Global clean routes first, then the
+# /ws/* workspace-facet catch-all last.
+
+# Apex → Board (q6z7; keep). Destination needs the trailing slash.
+/              /board/        200
+
+# Global surfaces (UX-DESIGN-V2 §2.1) — clean URLs without a trailing slash.
+/inbox         /inbox/        200
+/workspaces    /workspaces/   200
+/capacity      /capacity/     200
+/cross-ws      /cross-ws/     200
+
+# Workspace facets: /ws/<ref>/{board,blueprint,activity,gates} — every facet of
+# every workspace is served by the one workspace-shell page, which parses the
+# path (Shell.parseWorkspacePath) to learn ref + facet and mounts that facet.
+/ws/*          /workspace/    200

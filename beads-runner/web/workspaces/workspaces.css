@@ -1,0 +1,135 @@
+/* beads-runner/web/workspaces/workspaces.css — Workspaces Hub
+ * (label: workspaces-hub; UX-DESIGN-V2 §2.1/§2.2).
+ *
+ * Page styles ONLY. The shared design tokens + reset + the .shell-nav chrome
+ * live in /shared/tokens.css, which the HTML links FIRST (never re-declared
+ * here). Reuses the board/inbox aesthetic via the shared CSS custom properties
+ * (var(--ink), var(--panel), var(--mint), var(--amber), var(--coral), …):
+ * rounded panels, monospace, generous spacing, phone-first single column → a
+ * wide responsive card grid on desktop. Presentation only. */
+
+.app{display:flex;flex-direction:column;min-height:100vh;max-width:1320px;margin:0 auto}
+.apphead{display:flex;align-items:center;justify-content:space-between;
+  padding:max(18px,env(safe-area-inset-top)) 22px 14px;flex:none}
+.apphead .t{font-family:var(--font-display);font-size:25px;font-weight:400;
+  letter-spacing:-.01em;display:flex;align-items:center;gap:11px}
+.apphead .t .dot{width:8px;height:8px;border-radius:50%;background:var(--mint);
+  box-shadow:0 0 9px var(--mint);transition:.3s}
+.apphead .t .dot.bad{background:var(--amber);box-shadow:0 0 9px var(--amber)}
+.apphead .who{font-size:11px;letter-spacing:.18em;color:var(--slate);
+  text-transform:uppercase}
+
+.scroll{flex:1;overflow-y:auto;padding:0 0 24px}
+.loading{padding:48px 22px;color:var(--dim);font-size:13px;letter-spacing:.08em}
+
+/* DECISIONS HERO — the Inbox is still the product; surface the global open-item
+ * total prominently at the top of the hub (UX-DESIGN-V2 §2.3). */
+.dec{margin:0 14px 18px;border:1px solid var(--line);border-radius:16px;
+  background:linear-gradient(180deg,var(--panel),var(--ink-2));
+  padding:16px 18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.dec .dec-num{font-family:var(--font-display);font-size:42px;line-height:1;
+  color:var(--amber-soft);min-width:1ch}
+.dec .dec-body{display:flex;flex-direction:column;gap:5px}
+.dec .dec-lbl{font-size:13px;color:var(--text);letter-spacing:.02em}
+.dec .dec-eye{font-size:10px;letter-spacing:.34em;color:var(--slate);
+  text-transform:uppercase}
+.dec .dec-link{margin-left:auto;font-size:11px;letter-spacing:.14em;
+  color:var(--amber);text-decoration:none;text-transform:uppercase;
+  padding:9px 14px;border:1px solid rgba(255,180,84,.34);border-radius:9px;
+  min-height:var(--tap);display:inline-flex;align-items:center;
+  -webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.dec .dec-link:hover{background:var(--amber-glow)}
+.dec .dec-link:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+
+.section-lbl{font-size:10px;letter-spacing:.32em;color:var(--slate);
+  padding:0 22px 12px;text-transform:uppercase}
+
+/* CARD GRID — phone-first single column → responsive auto-fill on desktop. */
+.cards{display:grid;grid-template-columns:1fr;gap:11px;padding:0 14px}
+.cards-empty{padding:24px 22px;color:var(--faint);font-size:13px}
+
+.ws-card{display:block;text-decoration:none;color:inherit;
+  border:1px solid var(--line);border-radius:14px;background:var(--panel);
+  padding:15px 16px;transition:border-color .2s,transform .12s,box-shadow .2s;
+  -webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.ws-card:hover{border-color:var(--line-2);transform:translateY(-1px)}
+.ws-card:focus-visible{outline:2px solid var(--sky);outline-offset:2px}
+/* health framing — attention (amber) + stale (coral) get a tinted edge so the
+ * "needs me / stuck" cards pull the eye first (they also sort to the top). */
+.ws-card.health-attention{border-color:rgba(255,180,84,.34);
+  background:linear-gradient(160deg,rgba(255,180,84,.07),var(--panel))}
+.ws-card.health-stale{border-color:rgba(255,107,107,.32);
+  background:linear-gradient(160deg,rgba(255,107,107,.08),var(--panel))}
+
+.ws-head{display:flex;align-items:center;justify-content:space-between;
+  gap:10px;margin-bottom:11px;flex-wrap:wrap}
+.ws-id{display:flex;align-items:center;gap:10px;min-width:0}
+.ws-ref{font-family:var(--mono);font-size:14px;color:var(--text);
+  letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* health dots — ok (mint) / attention (amber) / stale (coral). */
+.ws-dot{width:9px;height:9px;border-radius:50%;flex:none}
+.ws-dot.ok{background:var(--mint);box-shadow:0 0 8px var(--mint)}
+.ws-dot.attention{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.ws-dot.stale{background:var(--coral);box-shadow:0 0 8px var(--coral)}
+
+.ws-decisions{font-size:10px;letter-spacing:.06em;padding:4px 9px;
+  border-radius:7px;color:var(--amber-soft);
+  border:1px solid rgba(255,180,84,.4);background:var(--amber-glow);
+  white-space:nowrap}
+
+/* mode pill + honest state label (actual; target: desired; or stale). */
+.ws-state{display:flex;align-items:center;gap:9px;font-size:13px;
+  font-family:var(--font-display);letter-spacing:-.01em;margin-bottom:4px}
+.ws-pill{width:8px;height:8px;border-radius:50%;flex:none}
+.ws-pill.ok{background:var(--mint);box-shadow:0 0 7px var(--mint)}
+.ws-pill.attention{background:var(--amber);box-shadow:0 0 7px var(--amber)}
+.ws-pill.stale{background:var(--coral);box-shadow:0 0 7px var(--coral)}
+.ws-state-label{color:var(--text)}
+.ws-card.health-attention .ws-state-label{color:var(--amber-soft)}
+.ws-card.health-stale .ws-state-label{color:var(--coral)}
+
+.ws-current-task{display:block;margin-top:7px;font-family:var(--mono);
+  font-size:11px;color:var(--dim);letter-spacing:.02em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-current-task .ws-current-task-title{color:var(--faint);font-weight:normal}
+.ws-stale-note{margin-top:7px;font-size:10px;color:var(--faint);
+  letter-spacing:.04em}
+
+/* DERIVED-FROM-BOARD lifecycle tally — honest label: this is INFERRED by
+ * bead_ref prefix, NOT an authoritative per-project projection (the view-model
+ * flags it derived:true). Q1's queue_health supersedes it later. */
+.ws-stages{margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+.ws-stages-lbl{font-size:9px;letter-spacing:.18em;color:var(--slate);
+  text-transform:uppercase;margin-bottom:8px}
+.ws-stages-empty{font-size:10px;color:var(--faint);letter-spacing:.02em}
+.ws-stage-row{display:flex;flex-wrap:wrap;gap:6px}
+.ws-stage{display:inline-flex;align-items:center;gap:5px;font-size:10px;
+  padding:3px 8px;border-radius:7px;border:1px solid var(--line);
+  color:var(--dim)}
+.ws-stage-name{letter-spacing:.04em;text-transform:uppercase}
+.ws-stage-n{color:var(--text);font-weight:500}
+
+.ws-go{margin-top:12px;font-size:11px;letter-spacing:.16em;color:var(--sky)}
+
+.errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
+  background:rgba(255,107,107,.08);border-radius:14px;padding:18px}
+.err-h{color:var(--coral);font-size:13px;letter-spacing:.12em;
+  text-transform:uppercase;margin-bottom:9px}
+.err-b{color:var(--amber-soft);font-size:13px;line-height:1.6}
+
+.foot{flex:none;display:flex;align-items:center;gap:9px;
+  padding:13px 22px max(13px,env(safe-area-inset-bottom));
+  border-top:1px solid var(--line);font-size:10px;letter-spacing:.12em;
+  color:var(--faint);text-transform:uppercase}
+.foot-sep{opacity:.5}
+
+/* desktop: the card grid breathes into multiple columns; hero margins widen. */
+@media (min-width:760px){
+  .cards{grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:13px;
+    padding:0 22px}
+  .dec{margin:0 22px 20px}
+  .section-lbl{padding:0 28px 12px}
+}
+@media (prefers-reduced-motion:reduce){
+  .ws-card:hover{transform:none}
+}

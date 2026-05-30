@@ -18,6 +18,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <!-- Asset refs are absolute (/board/*) because this page is also served at / via
      the Pages rewrite in beads-runner/web/_redirects (q6z7). Keep them absolute. -->
+<link rel="stylesheet" href="/shared/tokens.css">
 <link rel="stylesheet" href="/board/board.css">
 </head>
 <body>
@@ -81,7 +82,9 @@
   </main>
 
   <!-- Absolute paths: see comment near board.css link above (q6z7). -->
+  <script src="/shared/shell.js"></script>
   <script src="/board/board-view.js"></script>
   <script src="/board/app.js"></script>
+  <script>Shell.mount({active:null});</script>
 </body>
 </html>

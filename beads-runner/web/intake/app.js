@@ -17,7 +17,12 @@
 (function () {
   'use strict';
 
-  var el = function (id) { return document.getElementById(id); };
+  // Shared helpers (C-shell): el/clear/mk from window.Dom, getJSON/postJSON
+  // from window.Net. Same byte-for-byte contract as the former inline defs.
+  var el = window.Dom.el;
+  var clear = window.Dom.clear;
+  var getJSON = window.Net.getJSON;
+  var postJSON = window.Net.postJSON;
 
   function show(view) {
     el('form').hidden = view !== 'form';
@@ -30,36 +35,9 @@
   }
 
   // ── network ────────────────────────────────────────────────────────────────
-  // Identical contract on both proxies: { ok: bool, error?: string, ... }.
-  // We always read the body as text first so a non-JSON 5xx still surfaces
-  // the HTTP status honestly (never silently render an empty state).
-  function getJSON(url) {
-    return fetch(url, { method: 'GET', headers: { accept: 'application/json' } })
-      .then(function (r) {
-        return r.text().then(function (t) {
-          var d; try { d = JSON.parse(t); } catch (e) {
-            throw new Error('proxy returned non-JSON (HTTP ' + r.status + ')');
-          }
-          if (d && d.ok === false && d.error) throw new Error(d.error);
-          if (!r.ok) throw new Error('proxy HTTP ' + r.status);
-          return d;
-        });
-      });
-  }
-  function postJSON(url, body) {
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify(body)
-    }).then(function (r) {
-      return r.text().then(function (t) {
-        var d; try { d = JSON.parse(t); } catch (e) { d = { ok: r.ok, raw: t }; }
-        if (d && d.ok === false && d.error) throw new Error(d.error);
-        if (!r.ok) throw new Error('write proxy HTTP ' + r.status);
-        return d;
-      });
-    });
-  }
+  // getJSON/postJSON come from window.Net (shared/net.js) — identical contract
+  // on both proxies ({ ok: bool, error?: string, ... }), body-as-text-first so a
+  // non-JSON 5xx surfaces the HTTP status honestly. See aliases at top.
 
   // ── preset radio cards (I4 · claude-tools-vvh) ────────────────────────────
   // Rendered at run-time from /api/intake/presets so the radio set is
@@ -130,7 +108,7 @@
     var hint = el('ws-hint');
     getJSON('/api/intake/workspaces').then(function (d) {
       // Reset the loading placeholder.
-      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      clear(sel);
       var ws = Array.isArray(d.workspaces) ? d.workspaces : [];
       if (ws.length === 0) {
         // Honest empty — the engine has no known workspaces. The user can
@@ -172,7 +150,7 @@
       // Don't fabricate a workspace list. Show the picker as disabled and
       // surface the honest reason — the user can retry by reloading. The
       // page is not usable until the picker works (no workspace = no write).
-      while (sel.firstChild) sel.removeChild(sel.firstChild);
+      clear(sel);
       var opt = document.createElement('option');
       opt.value = ''; opt.disabled = true; opt.selected = true;
       opt.textContent = 'Cannot load workspaces';

@@ -5,25 +5,7 @@
  * authoritative; this file styles what board-view.js derives from it.
  * Responsive: phone-first single column → wide desktop. No build step. */
 
-:root{
-  --ink:#080a0e; --ink-2:#0b0e14; --panel:#10141c; --panel-2:#161b25;
-  --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.12);
-  --text:#e8ebf1; --dim:#8b94a6; --faint:#535b6b;
-  --amber:#ffb454; --amber-soft:#ffcd86; --amber-glow:rgba(255,180,84,.22);
-  --mint:#4fd6a0; --coral:#ff6b6b; --sky:#74a8ff; --slate:#5b6577;
-  --font-display:'Fraunces',Georgia,serif;
-  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
-}
-*{margin:0;padding:0;box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
-body{
-  background:var(--ink);color:var(--text);font-family:var(--mono);
-  min-height:100vh;-webkit-font-smoothing:antialiased;
-  background-image:
-    radial-gradient(900px 600px at 78% -5%, rgba(116,168,255,.06), transparent 60%),
-    radial-gradient(800px 700px at 8% 105%, rgba(79,214,160,.05), transparent 55%);
-}
-::selection{background:var(--amber);color:#1a1206}
+/* tokens + reset now live in /shared/tokens.css */
 
 .app{display:flex;flex-direction:column;min-height:100vh;max-width:1320px;margin:0 auto}
 .apphead{display:flex;align-items:center;justify-content:space-between;

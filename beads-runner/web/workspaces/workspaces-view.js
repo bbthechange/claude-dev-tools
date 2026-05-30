@@ -1,0 +1,260 @@
+/* beads-runner/web/workspaces/workspaces-view.js — Workspaces Hub
+ * (label: workspaces-hub; Brian ask B6; UX-DESIGN-V2 §2.1/§2.2).
+ *
+ * THE PURE, HEADLESS-TESTABLE CORE of the Workspaces hub — the NEW global view
+ * that answers "Which workspaces are healthy / busy / stuck / need me?" in one
+ * glance, then routes into a workspace's Board. No DOM, no network, no timers:
+ * input is the §4.5 work-snapshot projection JSON (the same /api/board
+ * projection the Board reads), output is a deterministic view model of strings.
+ * lib/test-workspaces-view.sh drives THIS module against a hand-crafted
+ * fixture snapshot — the producer↔renderer seam asserted against the frozen
+ * Contract B.1 shape (UX-V2-ARCHITECTURE §3), never against a faked render.
+ *
+ * BINDS the same projection invariants the Board binds (.cshell-brief §"read-
+ * model" + Honesty discipline):
+ *   • §0.3 — an unknown HIGHER schema_version (sv > 1) is REFUSED with an error
+ *     view; a missing / non-integer schema_version is ALSO refused. Never
+ *     best-effort-render a future schema (the 4xe / §0.3 rule).
+ *   • §4.2 / S-1 — liveness comes ONLY from the projection (Coordinator-derived
+ *     at read time). A `stale` runner is NOT "currently working"; its
+ *     last-reported actual is never promoted to a live state, and its
+ *     `current_task_ref` is dropped (a stale runner is honestly "we don't know
+ *     what it's doing now").
+ *   • principle 4 — honest desired≠actual: show the ACTUAL, then the unreached
+ *     target, never collapse one onto the other.
+ *   • derived/inferred values are LABELED as derived. `stage_counts` is INFERRED
+ *     by bead_ref prefix (the per-workspace lifecycle tally) — it is NOT an
+ *     authoritative per-project projection, so it carries `derived:true` and the
+ *     UI must label it "derived from board". Q1's queue_health supersedes it.
+ *
+ * ANTI-DRIFT: presentation derivation ONLY — no write path, no fetch, no DOM.
+ * Local helpers only (does NOT depend on board-view.js). A field the hub needs
+ * but the projection lacks degrades to a labeled placeholder; the only hard
+ * refusal is the unknown-HIGHER schema_version.
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.WorkspacesView = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  // The contract-bound schema version this view understands (§0.3 / §4.5).
+  var SUPPORTED_SNAPSHOT_SCHEMA = 1;
+
+  // §4.5 lifecycle stage ladder — FROZEN order. "" is the honest un-staged
+  // bucket the producer emits for an unknown/missing stage. We tally the
+  // per-workspace slice across exactly these keys (label-honest below).
+  var STAGE_ORDER = ['idea', 'ux', 'design', 'impl', 'docs', 'tests', 'done', ''];
+
+  // §4.2 `actual` — the closed set of healthy-active live states. A live runner
+  // in one of these reads as "busy/working"; anything else (paused, stopped,
+  // spare-only, unknown) is honestly NOT active even when live.
+  var ACTUAL_HEALTHY_ACTIVE = { running: 1, idle: 1, starting: 1 };
+
+  /* formatAgo(fromIso, nowMs?) → "Ns" | "Nm" | "Nh" | "Nd" | "unknown" — a
+   * PRESENTATION formatting of the §4.2 `last_heartbeat_at` datum (NOT a
+   * liveness decision — that is the Coordinator's, consumed verbatim). Honest
+   * "unknown" when the datum is missing/unparseable. Mirrors board-view.js's
+   * bucketing so the two surfaces format the same number identically (local
+   * copy by design — the hub does NOT depend on board-view.js). */
+  function formatAgo(fromIso, nowMs) {
+    if (!fromIso) return 'unknown';
+    var t = Date.parse(fromIso);
+    if (isNaN(t)) return 'unknown';
+    var now = typeof nowMs === 'number' ? nowMs : Date.now();
+    var s = Math.max(0, Math.floor((now - t) / 1000));
+    if (s < 90) return s + 's';
+    var m = Math.floor(s / 60);
+    if (m < 90) return m + 'm';
+    var h = Math.floor(m / 60);
+    if (h < 48) return h + 'h';
+    return Math.floor(h / 24) + 'd';
+  }
+
+  /* prefixMatch(beadRef, projectRef) → does this bead belong to this project?
+   * The hub slices the GLOBAL queues (waiting_on_you + lifecycle_columns) per
+   * workspace by bead_ref prefix: a bead "claude-tools-99" belongs to project
+   * "claude-tools". The separator is enforced ("claude-tools-" not just
+   * "claude-tools") so "claude-tools-web" does not greedily swallow
+   * "claude-tools-web-extra"'s beads. This is an INFERENCE — see stage_counts'
+   * `derived:true` flag and the UI's "derived from board" label. */
+  function prefixMatch(beadRef, projectRef) {
+    if (typeof beadRef !== 'string' || typeof projectRef !== 'string') return false;
+    if (!projectRef) return false;
+    return beadRef.indexOf(projectRef + '-') === 0;
+  }
+
+  /* deriveWorkspacesView(snapshot, nowMs?) → the whole hub view model.
+   * On an unknown HIGHER (or missing/non-integer) schema_version it returns an
+   * ERROR view (§0.3 — refuse, never best-effort-render). Otherwise:
+   *   { ok:true, principal, schema_version, cards:[…], decisions_total }
+   * one card per snapshot.projects[]. */
+  function deriveWorkspacesView(snapshot, nowMs) {
+    var snap = snapshot && typeof snapshot === 'object' ? snapshot : {};
+
+    var sv = snap.schema_version;
+    if (typeof sv !== 'number' || Math.floor(sv) !== sv) {
+      return {
+        ok: false,
+        error:
+          'snapshot missing an integer schema_version — refusing to render (§4.5/§0.3)'
+      };
+    }
+    if (sv > SUPPORTED_SNAPSHOT_SCHEMA) {
+      return {
+        ok: false,
+        error:
+          'unsupported work-snapshot schema_version ' + sv +
+          ' (this Workspaces hub binds v' + SUPPORTED_SNAPSHOT_SCHEMA +
+          ') — refusing to best-effort-render (§0.3)'
+      };
+    }
+
+    var now = typeof nowMs === 'number' ? nowMs : Date.now();
+    var projects = Array.isArray(snap.projects) ? snap.projects : [];
+    var rawWoy = Array.isArray(snap.waiting_on_you) ? snap.waiting_on_you : [];
+
+    // decisions_total — total OPEN items across the GLOBAL decision queue. Each
+    // waiting_on_you entry carries open_item_count (the §4.5 producer emits
+    // COUNTS only; the body is the Inbox's, never the hub's). The Inbox is
+    // still the product — this is the number the hub surfaces prominently.
+    var decisionsTotal = rawWoy.reduce(function (a, w) {
+      var n = (w && typeof w.open_item_count === 'number') ? w.open_item_count : 0;
+      return a + (n > 0 ? n : 0);
+    }, 0);
+
+    // Lifecycle columns keyed by stage (§4.5). We flatten to a list of
+    // { bead_ref, stage } so the per-workspace tally can slice it by prefix.
+    var cols = (snap.lifecycle_columns && typeof snap.lifecycle_columns === 'object')
+      ? snap.lifecycle_columns : {};
+
+    var cards = projects.map(function (p) {
+      var ref = (p && typeof p.project_ref === 'string' && p.project_ref)
+        ? p.project_ref : '(unknown)';
+      var rs = (p && p.runner_state) || {};
+      var liveness = rs.liveness === 'live' ? 'live' : 'stale'; // honest default
+      var isStale = liveness === 'stale';
+      var actual = (typeof rs.actual === 'string' && rs.actual) ? rs.actual : null;
+      var desired = (typeof rs.desired === 'string' && rs.desired) ? rs.desired : null;
+      var mismatch = rs.desired_actual_mismatch === true;
+      var ago = formatAgo(rs.last_heartbeat_at, now);
+
+      // state_label (honest mode):
+      //   stale          → "stale (last seen Nh ago)"  (S-1: its own state)
+      //   live, mismatch → "actual (target: desired)"  (principle 4)
+      //   live           → "actual"
+      var stateLabel;
+      if (isStale) {
+        stateLabel = 'stale (last seen ' + ago + ' ago)';
+      } else if (mismatch && desired) {
+        stateLabel = (actual || 'unknown') + ' (target: ' + desired + ')';
+      } else {
+        stateLabel = actual || 'unknown';
+      }
+
+      // current_task — a LIVE runner's current_task_ref (+ optional title). S-1:
+      // a stale runner's last-reported task is honestly unknown ⇒ NULL.
+      var currentTask = null;
+      var currentTaskTitle = null;
+      if (!isStale) {
+        if (typeof rs.current_task_ref === 'string' && rs.current_task_ref) {
+          currentTask = rs.current_task_ref;
+        }
+        if (currentTask && typeof rs.current_task_title === 'string' && rs.current_task_title) {
+          currentTaskTitle = rs.current_task_title;
+        }
+      }
+
+      // decisions — the per-workspace slice of the GLOBAL Inbox: open items on
+      // waiting_on_you entries whose bead_ref is prefixed by this project_ref.
+      var decisions = rawWoy.reduce(function (a, w) {
+        if (!w || !prefixMatch(w.bead_ref, ref)) return a;
+        var n = typeof w.open_item_count === 'number' ? w.open_item_count : 0;
+        return a + (n > 0 ? n : 0);
+      }, 0);
+
+      // stage_counts — DERIVED per-workspace lifecycle tally. For each stage we
+      // count the lifecycle cards whose bead_ref is prefixed by this project.
+      // INFERRED by ref-prefix, NOT an authoritative per-project projection —
+      // hence `derived:true` and the UI's mandatory "derived from board" label
+      // (Q1's queue_health supersedes this later).
+      var stageCounts = {};
+      var stageTotal = 0;
+      STAGE_ORDER.forEach(function (stage) {
+        var list = Array.isArray(cols[stage]) ? cols[stage] : [];
+        var n = 0;
+        list.forEach(function (c) {
+          if (c && prefixMatch(c.bead_ref, ref)) n += 1;
+        });
+        stageCounts[stage] = n;
+        stageTotal += n;
+      });
+
+      // health — 'stale' when liveness stale; 'attention' when a live mismatch
+      // OR a failing lifecycle card attributable to this workspace by prefix;
+      // otherwise 'ok'. Every input is a projection fact — nothing fabricated.
+      var hasFailure = false;
+      STAGE_ORDER.forEach(function (stage) {
+        var list = Array.isArray(cols[stage]) ? cols[stage] : [];
+        list.forEach(function (c) {
+          if (c && c.failure && prefixMatch(c.bead_ref, ref)) hasFailure = true;
+        });
+      });
+      var health;
+      if (isStale) health = 'stale';
+      else if (mismatch || hasFailure) health = 'attention';
+      else health = 'ok';
+
+      return {
+        project_ref: ref,
+        liveness: liveness,
+        mode: actual,                       // the ACTUAL runner state (§4.2)
+        is_stale: isStale,
+        mismatch: mismatch,
+        desired: desired,
+        ago: ago,
+        state_label: stateLabel,
+        current_task: currentTask,
+        current_task_title: currentTaskTitle,
+        health: health,
+        decisions: decisions,
+        // DERIVED — labeled. The UI MUST surface this as "derived from board".
+        stage_counts: stageCounts,
+        stage_total: stageTotal,
+        derived: true,
+        href: '/ws/' + encodeURIComponent(ref) + '/board'
+      };
+    });
+
+    // Sort: attention/stale first (surface what needs you), then live, then by
+    // project_ref. We rank by a health weight, falling back to a stable
+    // alphabetic tiebreak so the order is deterministic for the test harness.
+    function weight(card) {
+      if (card.health === 'stale') return 0;
+      if (card.health === 'attention') return 1;
+      if (card.liveness === 'live') return 2;
+      return 3;
+    }
+    cards.sort(function (a, b) {
+      var wa = weight(a), wb = weight(b);
+      if (wa !== wb) return wa - wb;
+      return a.project_ref < b.project_ref ? -1 : (a.project_ref > b.project_ref ? 1 : 0);
+    });
+
+    return {
+      ok: true,
+      principal: snap.principal || '(unresolved)',
+      schema_version: sv,
+      cards: cards,
+      decisions_total: decisionsTotal
+    };
+  }
+
+  return {
+    deriveWorkspacesView: deriveWorkspacesView,
+    formatAgo: formatAgo,
+    prefixMatch: prefixMatch,
+    STAGE_ORDER: STAGE_ORDER,
+    SUPPORTED_SNAPSHOT_SCHEMA: SUPPORTED_SNAPSHOT_SCHEMA
+  };
+});

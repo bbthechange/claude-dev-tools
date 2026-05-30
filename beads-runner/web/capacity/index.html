@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Beads Runner — Capacity</title>
+<!--
+  C-shell CAPACITY global view (unit label: capacity-view; UX-DESIGN-V2
+  §2.1/§2.2). The dedicated detailed budget surface: "How much Claude budget is
+  left, and what mode is each project in?" Reads ONLY the §4.5 projection via
+  the same-origin /api/board read proxy (the §9.1 chokepoint). NO write path.
+  Per-machine usage is the PRIMARY content here (the Board shows only a compact
+  inline strip). Band + allowed semantics mirror the Board exactly
+  (MACHINE-STATE.md v1 §4.B / §4.A) so the two surfaces agree.
+
+  ABSOLUTE asset paths throughout (/capacity/*, /shared/*) — this page is served
+  at the clean route /capacity via the Pages rewrite in beads-runner/web/_redirects;
+  a relative ./x would resolve against the request URL and 404 (the q6z7 lesson).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- tokens.css FIRST (shared :root tokens + reset + nav chrome), then the page CSS. -->
+<link rel="stylesheet" href="/shared/tokens.css">
+<link rel="stylesheet" href="/capacity/capacity.css">
+</head>
+<body>
+  <main class="app" id="app" aria-live="polite">
+    <header class="apphead">
+      <div class="t"><span class="dot" id="head-dot"></span>Capacity</div>
+      <div class="who" id="who" title="The §9.1 constant principal">—</div>
+    </header>
+
+    <div class="scroll" id="scroll">
+      <p class="loading" id="loading">Reading the projection…</p>
+
+      <section id="cap" hidden>
+        <!-- PER-MACHINE BUDGET — the primary, detailed capacity surface -->
+        <div class="section">
+          <div class="sl">PER MACHINE · budget &amp; gate (machine_state v1) <span class="ln"></span></div>
+          <div class="machines" id="machines"></div>
+          <p class="ms-empty" id="ms-empty" hidden>no telemetry yet — the daemon hasn't reported usage for any machine</p>
+        </div>
+
+        <!-- PROJECT MODES — honest actual mode per project -->
+        <div class="section">
+          <div class="sl">PROJECT MODES · honest actual <span class="ln"></span></div>
+          <div class="modes" id="modes"></div>
+          <p class="modes-empty" id="modes-empty" hidden>No projects reported.</p>
+        </div>
+      </section>
+
+      <section class="errbox" id="errbox" hidden>
+        <div class="err-h">Cannot render Capacity</div>
+        <p class="err-b" id="err-b"></p>
+      </section>
+    </div>
+
+    <footer class="foot" id="foot">
+      <span id="foot-status">read-only projection · no write path</span>
+      <span class="foot-sep">·</span>
+      <span id="foot-updated">—</span>
+    </footer>
+  </main>
+
+  <!-- Absolute paths (see header comment). Shared modules first, then the
+       view-model, then the app glue. -->
+  <script src="/shared/net.js"></script>
+  <script src="/shared/dom.js"></script>
+  <script src="/shared/shell.js"></script>
+  <script src="/capacity/capacity-view.js"></script>
+  <script src="/capacity/app.js"></script>
+</body>
+</html>
