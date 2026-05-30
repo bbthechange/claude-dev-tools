@@ -10,12 +10,17 @@
 #   (DESIGN §1/§7). This file is the SKELETON: the enumerated states +
 #   transitions, the six-job call surface (INTERFACE.md v1 §3) wired against
 #   in-process NO-OP stubs, BC-01 (fresh process/context per task) and the
-#   BC-42 typed-error POSTURE every sibling inherits. It is deliberately
-#   incomplete: classification/retry/breaker (T2.2), idle watchdog (T2.3),
-#   process-tree teardown/interrupt cleanup/artifact basenames (T2.4) and the
-#   real worker prompt + AD3.5 guardrail + STUCK primary/backstop (T2.5) are
-#   each a marked SEAM here, owned by a sibling, and MUST NOT be implemented in
-#   this file (non-overlapping ownership — epic ANTI-DRIFT).
+#   BC-42 typed-error POSTURE every sibling inherits. The T2.x mechanism seams
+#   are now FILLED IN PLACE (epic claude-tools-glk closed GREEN, PASS=99/FAIL=0):
+#   classification/retry/breaker (T2.2, claude-tools-8nn), idle watchdog (T2.3,
+#   claude-tools-9e7), process-tree teardown/interrupt cleanup/artifact basenames
+#   (T2.4, claude-tools-7hx) and the real worker prompt + AD3.5 guardrail + STUCK
+#   primary/backstop (T2.5, claude-tools-kqn) — each is marked in-body with its
+#   owning bead + a "RE-IMPLEMENTED" banner (e.g. the T2.3 watchdog banner near
+#   st_run_task). The one surface that remains a genuine CALLEE seam is the
+#   six-job BACKEND: it is selectable via RUNNER_BACKEND (`stub` | `real`) — see
+#   the backend block below (T-final wiring, claude-tools-v2c2). Per-section
+#   ANTI-DRIFT ownership (non-overlapping, owned by a sibling) is unchanged.
 #
 # OWNS — INTERFACE.md v1 (FROZEN):
 #   §1.2  exit-0-on-drain ≠ stop-the-project (the runner PROCESS preserves the
@@ -170,13 +175,45 @@ case "$DEFAULT_MODEL" in
   opus*) TASK_PERMISSION_FLAGS=(--permission-mode auto) ;;
 esac
 
-# ── The callee surface: in-process NO-OP stubs (T2.1). Integration/T-final
-#    swaps these for the real Local Agent (T3, lib/local-agent.sh) +
-#    Coordinator (T4) — the runner's job call sites below DO NOT change. ───────
-# shellcheck source=/dev/null
-source "$RUNNER_DIR/lib/coordinator-stub.sh"
-# shellcheck source=/dev/null
-source "$RUNNER_DIR/lib/local-agent-stub.sh"
+# ── The callee surface: a SELECTABLE six-job backend (BC §3 callees; T-final
+#    wiring, claude-tools-v2c2). The runner is the CALLER of the six §3 jobs; the
+#    callee bodies live in a swappable backend chosen by RUNNER_BACKEND:
+#      stub  — in-process NO-OP stubs (T2.1; lib/coordinator-stub.sh +
+#              lib/local-agent-stub.sh). Zero external deps. This is what the
+#              FROZEN conformance harness and any bare `bash runner.sh` get, and
+#              what proves the loop SHAPE with no Coordinator/Local-Agent/daemon
+#              present. DEFAULT — deliberately fail-safe.
+#      real  — the real Local Agent (T3, lib/local-agent.sh) + Coordinator (T5,
+#              lib/coordinator.sh, HTTP-overridden by lib/co-http-transport.sh
+#              when COORDINATOR_URL is set — the daemon/hosted path), behind a
+#              thin name/arg adapter (lib/runner-backend-real.sh) so the runner's
+#              job_* call sites below DO NOT change (the stub↔real total swap).
+#    Defaulting to `stub` keeps every FROZEN conformance assertion GREEN with
+#    ZERO rig edits (ANTI-DRIFT: never edit an assertion to make it pass). The
+#    staged cutover (claude-tools-v2c4) is what flips the production launcher to
+#    RUNNER_BACKEND=real; the daemon already sets the sibling COORDINATOR_URL env
+#    the same way (daemon/*-poll.sh). degrade() is defined below, so the unknown
+#    fallback emits a raw `degrade:` line in the same format. ──────────────────
+RUNNER_BACKEND="${RUNNER_BACKEND:-stub}"
+case "$RUNNER_BACKEND" in
+  real)
+    # shellcheck source=/dev/null
+    source "$RUNNER_DIR/lib/runner-backend-real.sh"
+    ;;
+  stub)
+    # shellcheck source=/dev/null
+    source "$RUNNER_DIR/lib/coordinator-stub.sh"
+    # shellcheck source=/dev/null
+    source "$RUNNER_DIR/lib/local-agent-stub.sh"
+    ;;
+  *)
+    echo "degrade: BACKEND_UNKNOWN — RUNNER_BACKEND='$RUNNER_BACKEND' not in {stub,real}; using stub" >&2
+    # shellcheck source=/dev/null
+    source "$RUNNER_DIR/lib/coordinator-stub.sh"
+    # shellcheck source=/dev/null
+    source "$RUNNER_DIR/lib/local-agent-stub.sh"
+    ;;
+esac
 
 # ── Node v25 PATH prime (claude-tools-18c; shared lib at lib/node25-prime.sh,
 #    pattern proven in specialist.sh = claude-tools-3kd and run-beads-tasks.sh
