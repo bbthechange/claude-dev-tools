@@ -458,3 +458,117 @@ no__dispatch_locked() {
 no_dispatch_for_dossier() {
   no_dispatch "${1:-}" "$(no__notif_id "${2:-}")" "${3:-}"
 }
+
+# ════════════════════════════════════════════════════════════════════════════
+# K3 (claude-tools-uxvk3) — the always-FYI DIGEST ROLLUP (read-side, shared
+# with N1). NO schema change: the §4.3 `channel` field ALREADY exists (the
+# `channel` clause in no__validate + the closed §4.3 set above) and is the only
+# thing the rollup keys off — "a later read-side digest rollup keys off this
+# tag with NO schema change (C3)" (no_dispatch comment). This is a pure READ:
+# it enumerates the §4.3 notification records and groups DIGEST-ELIGIBLE ones
+# by `channel`. It adds NO §4 record type, edits NO registry, touches NO write
+# path. K3 OWNS the cross-WS `xws:` channel convention + the rollup copy; the
+# ENGINE (no__group_digests) is channel-agnostic so N1 reuses it verbatim.
+#
+# TIER DISCIPLINE (D.2 — the whole point): ONLY `timed-fyi`/`digest`-tier
+# notifications roll up. A `blocking` notification is NEVER swept into a digest
+# (mechanical sync → batched FYI; real conflict → an immediate decision). A
+# `channel=null` record is likewise excluded (no group to join).
+# ════════════════════════════════════════════════════════════════════════════
+
+# [free] K3 defaults (named constants, cross-ws.md §9 "deliberately free").
+# Digest CADENCE is daily (UX-DESIGN-V2 §8.2 / ARCH §14.4 "assumed daily").
+NO_DIGEST_CADENCE="${NO_DIGEST_CADENCE:-daily}"
+# CHANNEL GRANULARITY for cross-WS: `xws:<project_ref>` (the coarser §4.2
+# option); finer `xws:<from>:<to>` is [free] — a caller may pass a finer
+# channel verbatim and the engine groups on whatever opaque string is stored.
+NO__XWS_PREFIX="xws:"
+
+# no__xws_channel <project_ref> — the cross-WS channel convention (K3-OWNED):
+# "xws:<project_ref>", the opaque `channel` tag a cross-WS exchange stamps on
+# its timed-fyi notification so the rollup groups its syncs into ONE digest
+# entry. 1:1 with JS `xwsChannel`.
+no__xws_channel() { printf '%s%s' "$NO__XWS_PREFIX" "${1:-}"; }
+
+# no__digest_copy <channel> <count> — the K3-OWNED rollup summary copy: the
+# "BE↔FE: N syncs — all resolved, none needed you." one-liner for a digest
+# group. The cross-WS phrasing applies to `xws:`-prefixed channels; any other
+# channel degrades to a generic "<channel>: N updates" line (channel-agnostic
+# engine — N1's non-xws channels still get an honest summary). 1:1 with JS
+# `digestCopy`. NEVER carries dossier content (the digest is the SUMMARY; the
+# relay-log-tail/dossier is the detail behind it — principle 2).
+no__digest_copy() {
+  local ch="${1:-}" n="${2:-0}" noun ref gnoun
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  if [[ "$n" -eq 1 ]]; then noun="sync"; else noun="syncs"; fi
+  if [[ "$ch" == "$NO__XWS_PREFIX"* ]]; then
+    ref="${ch#"$NO__XWS_PREFIX"}"
+    printf '%s: %s %s — all resolved, none needed you.' "$ref" "$n" "$noun"
+    return 0
+  fi
+  if [[ "$n" -eq 1 ]]; then gnoun="update"; else gnoun="updates"; fi
+  printf '%s: %s %s.' "$ch" "$n" "$gnoun"
+}
+
+# no__group_digests [channel_prefix]  (reads §4.3 records on stdin, one JSON
+# per line) — the GENERIC rollup ENGINE (channel-agnostic — N1 reuses it).
+# Group DIGEST-ELIGIBLE notification records by `channel` into one entry per
+# channel. DIGEST-ELIGIBLE = tier ∈ {timed-fyi, digest} (EXCLUDE blocking —
+# never rolled up) AND a non-null, non-empty `channel`. Optional <channel_prefix>
+# filters to channels starting with it (e.g. "xws:" for cross-WS only),
+# mirroring relay-log-tail's optional filter. Deterministic order: channel asc,
+# then id asc within `dossier_refs`. Emits ONE JSON object:
+#   { "digests": [ { channel, count, tier, dossier_refs:[...] } ] }
+# `tier` reports "digest" if a channel mixes both tiers (the broader bucket);
+# `dossier_refs` is a list of REFS (UI expands via relay-log-tail/dossier) —
+# NEVER content (principle 2).
+no__group_digests() {
+  local prefix="${1:-}"
+  jq -cs --arg prefix "$prefix" '
+    [ .[]
+      | select(type=="object")
+      | select((.tier|type)=="string" and (.tier|IN("timed-fyi","digest")))
+      | select((.channel|type)=="string" and (.channel|length)>0)
+      | select(($prefix|length)==0 or (.channel|startswith($prefix)))
+    ]
+    | group_by(.channel)
+    | map({
+        channel: (.[0].channel),
+        count: (length),
+        tier: (if any(.[]; .tier=="digest") then "digest" else "timed-fyi" end),
+        dossier_refs: (
+          [ .[] | { id: ((.id // "")|tostring), ref: ((.dossier_ref // "")|tostring) } ]
+          | sort_by(.id, .ref)
+          | map(.ref)
+          | map(select(.!=""))
+        )
+      })
+    | sort_by(.channel)
+    | { digests: . }'
+}
+
+# no_digest <bearer> [channel_prefix] — the read-side rollup op. Enumerate
+# every §4.3 notification record from the §4 store (mirroring NCOUNT's store
+# layout: records/notification.*.json), read each under the §0.3-bound read
+# path (no_get rejects unknown-higher/unreadable rows; those are SKIPPED, never
+# best-effort-parsed), and feed the readable records to the channel-agnostic
+# no__group_digests engine. Pure READ — no lock, no write. Echoes the
+# { "digests":[...] } projection. <channel_prefix> (optional) scopes to e.g.
+# "xws:" for cross-WS only.
+no_digest() {
+  local bearer="${1:-}" prefix="${2:-}" store f rec
+  store="$(co_store_dir 2>/dev/null)" || store="${CO_STORE:-${TMPDIR:-/tmp}/claude-beads-coordinator}"
+  {
+    for f in "$store"/records/notification.*.json; do
+      [[ -e "$f" ]] || continue
+      # derive the notif id from the filename (records/notification.<id>.json),
+      # then read THROUGH the §0.3-bound read path so an unknown-higher /
+      # unreadable row is skipped (never best-effort-parsed — §0.3).
+      local base nid
+      base="${f##*/}"; base="${base%.json}"; nid="${base#notification.}"
+      rec="$(no_get "$bearer" "$nid" 2>/dev/null)" || continue
+      [[ -n "$rec" ]] || continue
+      printf '%s\n' "$rec"
+    done
+  } | no__group_digests "$prefix"
+}

@@ -102,7 +102,144 @@ export const NOTIFICATION_OPS = new Set([
   "notif-dispatch", // no_dispatch (the C3 false→true-once latch)
   "notif-dispatch-for-dossier", // no_dispatch_for_dossier
   "notif-for-generation", // no_for_generation (the C3 creation hook)
+  "notif-digest", // no_digest (K3 — the read-side group-by-channel rollup)
 ]);
+
+// ════════════════════════════════════════════════════════════════════════════
+// K3 (claude-tools-uxvk3) — the always-FYI DIGEST ROLLUP (read-side, shared
+// with N1). NO schema change: the §4.3 `channel` field ALREADY exists (see the
+// `channel` clause in validateNotification + CLOSED_43 above) and is the only
+// thing the rollup keys off — "a later read-side digest rollup keys off this
+// tag with NO schema change (C3)" (noDispatch comment). This is a pure READ
+// op: it enumerates notification records and groups DIGEST-ELIGIBLE ones by
+// `channel`. It adds NO §4 record type, edits NO registry, touches NO write
+// path. K3 OWNS the cross-WS `xws:` channel convention + the rollup copy; the
+// ENGINE (groupDigests) is channel-agnostic so N1 reuses it verbatim.
+//
+// TIER DISCIPLINE (D.2 — the whole point): ONLY `timed-fyi`/`digest`-tier
+// notifications roll up. A `blocking` notification is NEVER swept into a digest
+// — it surfaces individually elsewhere (mechanical sync → batched FYI; real
+// conflict → an immediate decision). A `channel=null` record is likewise
+// excluded (it has no group to join).
+// ════════════════════════════════════════════════════════════════════════════
+
+// The tiers a digest is allowed to roll up. `blocking` is DELIBERATELY ABSENT.
+const DIGEST_TIERS = ["timed-fyi", "digest"];
+
+// ── [free] K3 defaults (named constants, §9 "deliberately free") ────────────
+// Digest CADENCE is daily (UX-DESIGN-V2 §8.2 / ARCH §8 §14.4 "assumed daily").
+// This rollup is the read-side projection consumed at digest time; the cadence
+// constant documents the assumed sweep interval without coupling the mechanism
+// to it (the engine is pull, the cadence is the caller's poll frequency).
+export const DIGEST_CADENCE = "daily";
+// CHANNEL GRANULARITY for cross-WS: `xws:<project_ref>` (the coarser of the two
+// §4.2 options `xws:<project_ref>` vs `xws:<from>:<to>`); finer granularity is
+// [free] and a caller may pass a finer channel verbatim — the engine groups on
+// whatever opaque string the record carries.
+const XWS_PREFIX = "xws:";
+
+// ── the cross-WS channel convention (K3-OWNED) ──────────────────────────────
+// xwsChannel(project_ref) => "xws:<project_ref>" — the opaque `channel` tag a
+// cross-WS exchange stamps on its `timed-fyi` notification so the rollup can
+// group its syncs into ONE digest entry. 1:1 with bash `no__xws_channel`.
+export function xwsChannel(projectRef) {
+  return `${XWS_PREFIX}${projectRef == null ? "" : projectRef}`;
+}
+
+// digestCopy(group) — the K3-OWNED rollup summary copy. Renders the
+// "BE↔FE: N syncs today — all resolved, none needed you." style one-liner from
+// a digest group. The cross-WS phrasing applies to `xws:`-prefixed channels;
+// any other channel degrades to a generic "<channel>: N updates" line (the
+// engine is channel-agnostic — N1's non-xws channels still get an honest
+// summary). 1:1 with bash `no__digest_copy`. NEVER carries dossier content
+// (the digest is the SUMMARY; the relay-log-tail/dossier is the detail behind
+// it — principle 2 "the notification carries no content").
+export function digestCopy(group) {
+  if (!group || typeof group !== "object") return "";
+  const ch = typeof group.channel === "string" ? group.channel : "";
+  const n = Number.isInteger(group.count) ? group.count : 0;
+  const noun = n === 1 ? "sync" : "syncs";
+  if (ch.startsWith(XWS_PREFIX)) {
+    const ref = ch.slice(XWS_PREFIX.length);
+    // "BE↔FE: 6 syncs — all resolved, none needed you." (cross-WS copy)
+    return `${ref}: ${n} ${noun} — all resolved, none needed you.`;
+  }
+  // Generic (N1) channels: an honest non-cross-WS summary.
+  const gnoun = n === 1 ? "update" : "updates";
+  return `${ch}: ${n} ${gnoun}.`;
+}
+
+// ── the generic rollup ENGINE (channel-agnostic — N1 reuses it) ─────────────
+// groupDigests(records [, channelPrefix]) — group DIGEST-ELIGIBLE notification
+// records by `channel` into one entry per channel. DIGEST-ELIGIBLE =
+// tier ∈ {timed-fyi, digest} (EXCLUDE blocking — never rolled up) AND a
+// non-null, non-empty `channel`. Optional `channelPrefix` filters to channels
+// starting with it (e.g. "xws:" for cross-WS only), mirroring relay-log-tail's
+// optional filter. Deterministic order: channel asc, then id asc within
+// `dossier_refs`. Returns one entry per channel:
+//   { channel, count, tier, dossier_refs:[...] }
+// `tier` is the group's tier; if a channel mixes timed-fyi and digest records
+// it reports "digest" (the broader bucket). `dossier_refs` is a list of REFS
+// (so the UI can expand via relay-log-tail/dossier) — NEVER content.
+export function groupDigests(records, channelPrefix) {
+  const prefix = neStr(channelPrefix) ? channelPrefix : null;
+  const byChannel = new Map();
+  for (const rec of records || []) {
+    if (!isObj(rec)) continue;
+    if (!(typeof rec.tier === "string" && DIGEST_TIERS.includes(rec.tier))) continue;
+    const ch = rec.channel;
+    if (!neStr(ch)) continue; // channel=null / "" excluded
+    if (prefix !== null && !ch.startsWith(prefix)) continue;
+    if (!byChannel.has(ch)) byChannel.set(ch, { tiers: new Set(), refs: [], ids: [] });
+    const g = byChannel.get(ch);
+    g.tiers.add(rec.tier);
+    if (neStr(rec.id)) g.ids.push(rec.id);
+    if (neStr(rec.dossier_ref)) g.refs.push({ id: neStr(rec.id) ? rec.id : "", ref: rec.dossier_ref });
+  }
+  const channels = Array.from(byChannel.keys()).sort();
+  const digests = channels.map((ch) => {
+    const g = byChannel.get(ch);
+    // dossier_refs deterministic by id asc (the record id), then ref.
+    const refs = g.refs
+      .slice()
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0))
+      .map((r) => r.ref);
+    return {
+      channel: ch,
+      count: g.ids.length,
+      tier: g.tiers.has("digest") ? "digest" : "timed-fyi",
+      dossier_refs: refs,
+    };
+  });
+  return { digests };
+}
+
+// noDigest: the read-side rollup op body. Enumerate every §4.3 notification
+// record via the SAME typed-SELECT read pattern getRaw uses (read-only, NO
+// co._serialize — a pure read like the notif-get read path / forensic tail),
+// then hand the parsed records to the channel-agnostic groupDigests engine.
+// Only §0.3-readable records participate (an unparseable / unknown-higher row
+// is skipped, never best-effort-parsed — the read-path §0.3 discipline).
+async function noDigest(co, channelPrefix) {
+  const rows = await co.db
+    .prepare("SELECT json FROM records WHERE type = 'notification'")
+    .all();
+  const recs = [];
+  const list = (rows && rows.results) || [];
+  for (const row of list) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(row.json);
+    } catch {
+      continue; // unparseable — skip (never best-effort-parse — §0.3)
+    }
+    if (!isObj(parsed)) continue;
+    const sv = intSv(parsed.schema_version);
+    if (sv === null || sv > notifBoundSv()) continue; // §0.3: skip unknown-higher/malformed
+    recs.push(parsed);
+  }
+  return groupDigests(recs, channelPrefix);
+}
 
 // ── primitive shape predicates (mirror the jq type/length tests verbatim) ───
 function isObj(v) {
@@ -481,6 +618,14 @@ export async function handleNotificationOp(co, op, args, principal) {
     if (op === "notif-validate") {
       const r = validateNotification(a[0]);
       return jsonRes(r, r.ok ? 200 : 422);
+    }
+    // notif-digest (K3): a PURE READ — enumerate notification records and group
+    // digest-eligible ones by channel. NO co._serialize (the read-only
+    // short-circuit, the notif-get/forensic-tail precedent). Optional arg[0] =
+    // a channel prefix filter (e.g. "xws:" for cross-WS only).
+    if (op === "notif-digest") {
+      const r = await noDigest(co, a[0]);
+      return jsonRes(r, 200);
     }
 
     // ── STORE-TOUCHING ops — serialized through the one single-threaded

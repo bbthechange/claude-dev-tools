@@ -33,6 +33,10 @@
 
 import { env, SELF } from "cloudflare:test";
 import { it, expect } from "vitest";
+// K3 (claude-tools-uxvk3) — the exported channel-convention + copy helpers +
+// the channel-agnostic rollup engine (consumed directly, the pure-helper
+// analogue of the bash test calling no__xws_channel/no__digest_copy).
+import { xwsChannel, digestCopy, groupDigests } from "../src/notification.js";
 
 const GOOD = "bearer-runner-secret-xyz";
 
@@ -297,4 +301,122 @@ it("CF.9 §4.3 Notification is behaviour-identical to lib/notification.sh + its 
     console.log("FAILED:\n  - " + fails.join("\n  - "));
   }
   expect(FAIL, `differential clauses failed: ${fails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// K3 (claude-tools-uxvk3) — always-FYI digest rollup (read-side, by channel).
+// Mirrors the K3 clauses of lib/test-notification.sh clause-for-clause, driving
+// the REAL engine via SELF.fetch (notif-digest) + the exported pure helpers.
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.9 K3 digest rollup is behaviour-identical to lib/notification.sh K3 clauses", async () => {
+  let P = 0;
+  let F = 0;
+  const ff = [];
+  const k = (name, cond) => {
+    if (cond) {
+      P++;
+    } else {
+      F++;
+      ff.push(name);
+    }
+  };
+  // emit + dispatch a dossier's notification with a channel tag.
+  const emitDisp = async (id, tier, channel) => {
+    await call(GOOD, "dossier-put", [mk(id, tier, [item("k1")])]);
+    await call(GOOD, "notif-emit", [id]);
+    await call(GOOD, "notif-dispatch-for-dossier", channel ? [id, channel] : [id]);
+  };
+  const XBE = xwsChannel("BE"); // "xws:BE"
+  const XFE = xwsChannel("FE"); // "xws:FE"
+
+  // (e) the channel convention + the rollup copy.
+  k("(e) xwsChannel produces the xws: convention", XBE === "xws:BE");
+  k(
+    "(e) digestCopy renders the 'N syncs' cross-WS line",
+    digestCopy({ channel: XBE, count: 6, tier: "timed-fyi", dossier_refs: [] }) ===
+      "BE: 6 syncs — all resolved, none needed you."
+  );
+  k(
+    "(e) digestCopy singular 'sync'",
+    digestCopy({ channel: XBE, count: 1, tier: "timed-fyi", dossier_refs: [] }) ===
+      "BE: 1 sync — all resolved, none needed you."
+  );
+
+  // (a) N notifications on the SAME channel (timed-fyi) → ONE group, count N.
+  await emitDisp("kdigA1", "timed-fyi", XBE);
+  await emitDisp("kdigA2", "timed-fyi", XBE);
+  await emitDisp("kdigA3", "timed-fyi", XBE);
+  // (b) a blocking-tier notification on a channel → NEVER in any digest group.
+  await emitDisp("kdigBlock", "blocking", XBE);
+  // (c) a timed-fyi notification with channel=null → excluded.
+  await emitDisp("kdigNull", "timed-fyi", null);
+  // (d) a distinct channel (digest tier) → its own group.
+  await emitDisp("kdigD1", "digest", XFE);
+
+  const dg = await call(GOOD, "notif-digest", []);
+  const digests = (dg.body && dg.body.digests) || [];
+  const grp = (ch) => digests.find((d) => d.channel === ch);
+
+  k("(a) same-channel timed-fyi rolls up to ONE group", !!grp(XBE));
+  k("(a) that group's count is N (3 syncs on xws:BE)", grp(XBE) && grp(XBE).count === 3);
+  k(
+    "(b) blocking-tier dossier_ref is NEVER in the xws:BE group",
+    grp(XBE) && !grp(XBE).dossier_refs.includes("kdigBlock")
+  );
+  k(
+    "(c) a channel=null notification forms NO digest group",
+    digests.filter((d) => d.channel === null || d.channel === "").length === 0
+  );
+  const xwsGroups = digests.filter((d) => typeof d.channel === "string" && d.channel.startsWith("xws:"));
+  k("(d) two distinct channels → two groups (xws:BE + xws:FE)", xwsGroups.length === 2);
+  k(
+    "(d) groups are in deterministic channel-asc order (xws:BE before xws:FE)",
+    xwsGroups.map((d) => d.channel).join(",") === "xws:BE,xws:FE"
+  );
+  k("the xws:FE (digest-tier) group reports tier=digest", grp(XFE) && grp(XFE).tier === "digest");
+  k("the xws:BE group's tier is timed-fyi", grp(XBE) && grp(XBE).tier === "timed-fyi");
+  k(
+    "dossier_refs are deterministically sorted (kdigA1,kdigA2,kdigA3)",
+    grp(XBE) && grp(XBE).dossier_refs.join(",") === "kdigA1,kdigA2,kdigA3"
+  );
+
+  // optional channel-prefix filter: scope to cross-WS only.
+  const dgx = await call(GOOD, "notif-digest", ["xws:"]);
+  const dx = (dgx.body && dgx.body.digests) || [];
+  k(
+    "optional channel-prefix filter ('xws:') returns only xws: groups",
+    dx.every((d) => typeof d.channel === "string" && d.channel.startsWith("xws:"))
+  );
+
+  // a digest entry carries NO content (only channel/count/tier/dossier_refs).
+  k(
+    "a digest entry carries NO content (only channel/count/tier/dossier_refs)",
+    digests.length > 0 &&
+      Object.keys(digests[0]).every((key) => ["channel", "count", "tier", "dossier_refs"].includes(key))
+  );
+
+  // the engine is channel-agnostic (N1 reuse): groupDigests excludes blocking,
+  // excludes channel=null, groups by channel — proven on a hand-built batch.
+  const eng = groupDigests([
+    { id: "n1", tier: "timed-fyi", channel: "c:x", dossier_ref: "rb" },
+    { id: "n2", tier: "timed-fyi", channel: "c:x", dossier_ref: "ra" },
+    { id: "n3", tier: "blocking", channel: "c:x", dossier_ref: "rblock" },
+    { id: "n4", tier: "digest", channel: null, dossier_ref: "rnull" },
+    { id: "n5", tier: "digest", channel: "c:y", dossier_ref: "ry" },
+  ]);
+  k("(engine) channel-agnostic groupDigests → 2 groups (c:x, c:y)", eng.digests.length === 2);
+  k("(engine) blocking excluded from c:x", eng.digests.find((d) => d.channel === "c:x").count === 2);
+  k(
+    "(engine) dossier_refs sorted by record id (n1→rb before n2→ra)",
+    eng.digests.find((d) => d.channel === "c:x").dossier_refs.join(",") === "rb,ra"
+  );
+  k("(engine) channel=null produced no group", !eng.digests.find((d) => d.channel === null));
+
+  // eslint-disable-next-line no-console
+  console.log(`\n══ CF.9 K3 digest rollup: PASS=${P} FAIL=${F} ══`);
+  if (F > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + ff.join("\n  - "));
+  }
+  expect(F, `K3 digest clauses failed: ${ff.join("; ")}`).toBe(0);
 });

@@ -197,6 +197,60 @@ ck  "creation≠dispatch holds via the hook (dispatched=false at creation)" \
     eq "$(NF dGen .dispatched)" "false"
 
 echo ""
+echo "── K3 (claude-tools-uxvk3): always-FYI digest rollup (read-side, by channel) ──"
+# Seed a fresh batch of dossiers + emit + dispatch with channels covering all
+# the rollup cases. Helper: emit then dispatch with a channel tag.
+DIG_emit_disp() {  # DIG_emit_disp <dossier_id> <tier> <channel|"">
+  do_dossier_put "$GOOD" "$(mk "$1" "$2" "[$(item k1)]")" >/dev/null
+  no_emit "$GOOD" "$1" >/dev/null
+  if [[ -n "${3:-}" ]]; then no_dispatch_for_dossier "$GOOD" "$1" "$3" >/dev/null
+  else                       no_dispatch_for_dossier "$GOOD" "$1" >/dev/null; fi
+}
+XBE="$(no__xws_channel BE)"          # "xws:BE"
+XFE="$(no__xws_channel FE)"          # "xws:FE"
+# (a) N notifications on the SAME channel (timed-fyi) → ONE group, count N.
+DIG_emit_disp digA1 timed-fyi "$XBE"
+DIG_emit_disp digA2 timed-fyi "$XBE"
+DIG_emit_disp digA3 timed-fyi "$XBE"
+# (b) a blocking-tier notification on a channel → NEVER in any digest group.
+DIG_emit_disp digBlock blocking "$XBE"
+# (c) a timed-fyi notification with channel=null → excluded.
+DIG_emit_disp digNull timed-fyi ""
+# (d) a distinct channel (digest tier) → its own group.
+DIG_emit_disp digD1 digest "$XFE"
+DIG="$(no_digest "$GOOD")"
+ck  "(e) no__xws_channel produces the xws: convention"  eq "$XBE" "xws:BE"
+ck  "(e) no__digest_copy renders the 'N syncs' cross-WS line" \
+    eq "$(no__digest_copy "$XBE" 6)" "BE: 6 syncs — all resolved, none needed you."
+ck  "(e) no__digest_copy singular 'sync'" \
+    eq "$(no__digest_copy "$XBE" 1)" "BE: 1 sync — all resolved, none needed you."
+ck  "(a) same-channel timed-fyi rolls up to ONE group" \
+    eq "$(printf '%s' "$DIG" | jq -r '[.digests[]|select(.channel=="xws:BE")]|length')" "1"
+ck  "(a) that group's count is N (3 syncs on xws:BE)" \
+    eq "$(printf '%s' "$DIG" | jq -r '.digests[]|select(.channel=="xws:BE")|.count')" "3"
+ck  "(b) blocking-tier dossier_ref is NEVER in the xws:BE group" \
+    eq "$(printf '%s' "$DIG" | jq -r '[.digests[]|select(.channel=="xws:BE")|.dossier_refs[]|select(.=="digBlock")]|length')" "0"
+ckn "(c) a channel=null notification forms NO digest group" \
+    test "$(printf '%s' "$DIG" | jq -r '[.digests[]|select(.channel==null or .channel=="")]|length')" -gt 0
+ck  "(d) two distinct channels → two groups (xws:BE + xws:FE)" \
+    eq "$(printf '%s' "$DIG" | jq -r '[.digests[]|select(.channel|startswith("xws:"))]|length')" "2"
+ck  "(d) groups are in deterministic channel-asc order (xws:BE before xws:FE)" \
+    eq "$(printf '%s' "$DIG" | jq -r '[.digests[]|select(.channel|startswith("xws:"))|.channel]|join(",")')" "xws:BE,xws:FE"
+ck  "the xws:FE (digest-tier) group reports tier=digest" \
+    eq "$(printf '%s' "$DIG" | jq -r '.digests[]|select(.channel=="xws:FE")|.tier')" "digest"
+ck  "the xws:BE group's tier is timed-fyi (no digest-tier record mixed in)" \
+    eq "$(printf '%s' "$DIG" | jq -r '.digests[]|select(.channel=="xws:BE")|.tier')" "timed-fyi"
+ck  "dossier_refs are deterministically sorted (digA1,digA2,digA3)" \
+    eq "$(printf '%s' "$DIG" | jq -r '.digests[]|select(.channel=="xws:BE")|.dossier_refs|join(",")')" "digA1,digA2,digA3"
+# optional channel-prefix filter: scope to cross-WS only (here all are xws:).
+DIGX="$(no_digest "$GOOD" "xws:")"
+ck  "optional channel-prefix filter ('xws:') returns only xws: groups" \
+    eq "$(printf '%s' "$DIGX" | jq -r '[.digests[]|select(.channel|startswith("xws:")|not)]|length')" "0"
+# the rollup carries NO content — only channel/count/tier/dossier_refs keys.
+ck  "a digest entry carries NO content (only channel/count/tier/dossier_refs)" \
+    eq "$(printf '%s' "$DIG" | jq -r '[.digests[0]|keys[]|select(.=="channel" or .=="count" or .=="tier" or .=="dossier_refs"|not)]|length')" "0"
+
+echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-notification (T5.6, claude-tools-ks2):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
