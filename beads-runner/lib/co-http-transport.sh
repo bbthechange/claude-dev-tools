@@ -294,6 +294,7 @@ co_request() {
 #     report=="heartbeat"          → co_request … heartbeat              <line>  (reconcile.js)
 #     report=="machine_state"      → co_request … report-machine-state   <line>  (machine-state.js)
 #     report=="workspace_inventory"→ co_request … workspace-inventory-put<line>  (claude-tools-8dfb)
+#     report=="bead_status_changed"→ co_request … bead-status-changed     <line>  (claude-tools-uxvl2 / dossier.js — L2 work→control auto-close)
 # A line with any other `report` (e.g. the §8.2 terminal-reason re-home, whose
 # authoritative sink is the LOCAL $LOG_DIR/terminal-reason file + the
 # heartbeat-absence channel — there is deliberately NO hosted terminal-reason
@@ -341,6 +342,7 @@ la_outbox_drain() {
       heartbeat)           op="heartbeat" ;;
       machine_state)       op="report-machine-state" ;;
       workspace_inventory) op="workspace-inventory-put" ;;
+      bead_status_changed) op="bead-status-changed" ;;   # claude-tools-uxvl2 (L2 work→control auto-close)
       *)
         # No hosted op for this report kind — retain verbatim, do not 422 it.
         echo "co: outbox-drain — retaining line with no hosted op (report='${report:-<none>}')" >&2

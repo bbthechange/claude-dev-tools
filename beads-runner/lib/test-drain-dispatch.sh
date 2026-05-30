@@ -1,10 +1,11 @@
 #!/bin/bash
 # beads-runner/lib/test-drain-dispatch.sh — claude-tools-1p0u
 # Focused smoke test for la_outbox_drain dispatch table:
-#   capacity      → report-capacity
-#   heartbeat     → heartbeat
-#   machine_state → report-machine-state   (the 1p0u gap)
-#   unknown       → retained (not 422'd)
+#   capacity            → report-capacity
+#   heartbeat           → heartbeat
+#   machine_state       → report-machine-state   (the 1p0u gap)
+#   bead_status_changed → bead-status-changed    (the L2 work→control gap)
+#   unknown             → retained (not 422'd)
 # Also covers the optional [outbox_path] arg (the daemon's path-override).
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,6 +26,7 @@ cat > "$OBX" <<JSON
 {"report":"capacity","verdict":"ok"}
 {"report":"heartbeat","ts":"x"}
 {"report":"machine_state","pct_5h":1.0,"pct_7d":2.0}
+{"report":"bead_status_changed","bead_ref":"thirsty-9wgz","status":"closed"}
 {"report":"weird","x":1}
 JSON
 
@@ -41,6 +43,7 @@ LOG="$(cat "$DISPATCH_LOG")"
 chk "capacity to report-capacity"           "OP=report-capacity"      "$LOG"
 chk "heartbeat to heartbeat"                "OP=heartbeat"            "$LOG"
 chk "machine_state to report-machine-state" "OP=report-machine-state" "$LOG"
+chk "bead_status_changed to bead-status-changed" "OP=bead-status-changed" "$LOG"
 
 WEIRD_DISPATCH="$(echo "$LOG" | grep weird || true)"
 [[ -z "$WEIRD_DISPATCH" ]] && { echo "  OK: weird not dispatched"; PASS=$((PASS+1)); } \

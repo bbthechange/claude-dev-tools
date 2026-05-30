@@ -80,6 +80,11 @@ export const DOSSIER_OPS = new Set([
   "dossier-generate",
   "dossier-from-worker-ask",
   "item-apply",
+  // L2 (claude-tools-uxvl2) — WORK→CONTROL auto-close. inbox-lifecycle §7
+  // (Option 2): when a bead resolves OUTSIDE the dossier tap, the per-machine
+  // daemon publishes this over the zdxd D2 channel and the engine expires /
+  // applies-preserving the still-open items for that bead_ref.
+  "bead-status-changed",
 ]);
 
 // ── primitive shape predicates (mirror the jq type/length tests verbatim) ───
@@ -837,6 +842,134 @@ async function itemSetState(co, principal, did, iid, to, respArg) {
   return { ok: true };
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// L2 (claude-tools-uxvl2) — WORK→CONTROL auto-close. inbox-lifecycle §7 (Opt 2).
+//
+// When a bead resolves OUTSIDE the dossier tap (bd close / blocked→open /
+// `human` label dropped), the per-machine daemon publishes a
+// `bead_status_changed` report over the zdxd D2 channel (the SAME outbox →
+// la_outbox_drain → co_request transport the machine_state telemetry rides).
+// This op looks up THIS principal's dossiers for that bead_ref and drops the
+// stale card off the Inbox by moving every still-open item to a terminal state.
+//
+// POLICY (§7.6.3 decision-vs-expiry):
+//   • open      → expired   — no decision was ever made; the bead moved on.
+//   • answered  → applied   — a human decision IS recorded; PRESERVE it (the
+//                             item's .response is carried verbatim) but DO NOT
+//                             fire the §5.3 ConsequenceBlock. The `applied`
+//                             path that fires the CB stays reserved for an
+//                             explicit Inbox tap (item-apply); auto-firing it
+//                             here would be wrong on the audit plane.
+//   • applied / expired     — already terminal ⇒ untouched (idempotent no-op).
+//
+// THE §7.9 GOTCHA — this MUST go through the item-set-state STATE MOVE, never
+// item-apply: item-apply on a non-deterministic answer CLONES a `<did>-fu-`
+// follow-up dossier (§5.2.2 reconciler) AND fires the CB. itemSetState moves
+// `.state` ONLY (the §4.1.1 legal-transition gate already permits open→expired
+// and answered→applied), applies NO ConsequenceBlock, and re-reads the dossier
+// fresh per call — so per-item moves compose correctly inside the one serialized
+// critical section handleDossierOp wraps this in.
+//
+// IDEMPOTENT (§7.6.4): a duplicate event (or one racing the bead's last open
+// item already gone terminal) is a no-op — returns { ok:true, idempotent:true },
+// NEVER a hard rej; the §4.1.1 state machine is monotonic so a re-move would be
+// illegal-and-rejected, and this op simply skips terminal items instead.
+//
+// v1 SKIP (§7.9 gotcha): a stored sub-bound (v1) dossier CANNOT be written back
+// (the write gate binds v(bound)); itemSetState's putDossier would reject it. We
+// SKIP such a dossier (leave its items as-is, count it) rather than crash. A
+// separate v1-purge pass is the contract-defined way to retire those.
+//
+// The `bead_status_changed` REPORT itself binds a v1 WIRE schema (the D2-family
+// report version, DISTINCT from the dossier envelope's bound version).
+const BSC_REPORT_SV = 1;
+
+function parseBscReport(a0) {
+  if (isObj(a0)) return a0;
+  if (typeof a0 === "string") {
+    try {
+      const o = JSON.parse(a0);
+      return isObj(o) ? o : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function beadStatusChanged(co, principal, a0) {
+  const rep = parseBscReport(a0);
+  if (!rep) return rej("bead-status-changed: reject — report not a JSON object");
+  if (rep.report !== "bead_status_changed")
+    return rej('bead-status-changed: reject — report!="bead_status_changed" (§1.1 shape)');
+  const rsv = intSv(rep.schema_version);
+  if (rsv === null)
+    return rej("bead-status-changed: reject — missing integer schema_version (§0.3)");
+  if (rsv > BSC_REPORT_SV)
+    return rej(`bead-status-changed: reject — schema_version ${rsv} is an unknown higher version (bound=${BSC_REPORT_SV}; §0.3, never best-effort-parse)`);
+  if (rsv !== BSC_REPORT_SV)
+    return rej(`bead-status-changed: reject — schema_version ${rsv} unsupported (binds v${BSC_REPORT_SV} only; §0.3)`);
+  if (!neStr(rep.bead_ref))
+    return rej("bead-status-changed: reject — §1.1 bead_ref: non-empty string required");
+  const bref = rep.bead_ref;
+
+  const bound = boundSv();
+  // Scan stored Dossiers; act ONLY on THIS principal's dossiers for this
+  // bead_ref — the SAME principal+bead scoping the waiting_on_you projection
+  // (reconcile.js) uses. COUNTS the cross-cutting outcomes for an audit record.
+  const { results: drows } = await co.db
+    .prepare("SELECT json FROM records WHERE type = ? ORDER BY id")
+    .bind("dossier")
+    .all();
+  const transitions = [];
+  let skipped_v1 = 0;
+  let matched_dossiers = 0;
+  for (const dr of drows || []) {
+    let d;
+    try {
+      d = JSON.parse(dr.json);
+    } catch {
+      continue;
+    }
+    if (!isObj(d) || d.principal !== principal || d.bead_ref !== bref) continue;
+    // TIER SCOPING — auto-close targets BLOCKING decision dossiers ONLY. A
+    // `timed-fyi` / `digest` dossier (e.g. a Flow F `overview-<bead_ref>`, which
+    // FIRES when the bead closes) rides its OWN §2.2 auto-proceed timer (CF.7);
+    // force-expiring it on bead-resolution would defeat the 24h objection window
+    // that is Flow F's entire point. A bead can carry BOTH a `stuck-<ref>`
+    // (blocking) and an `overview-<ref>` (timed-fyi) — this preserves the latter.
+    if (d.tier !== "blocking") continue;
+    matched_dossiers++;
+    // §7.9 v1-skip: a sub-bound stored dossier cannot be written back.
+    if (intSv(d.schema_version) !== bound) {
+      skipped_v1++;
+      continue;
+    }
+    const items = Array.isArray(d.items) ? d.items : [];
+    for (const it of items) {
+      if (!isObj(it)) continue;
+      let to = null;
+      if (it.state === "open") to = "expired";
+      else if (it.state === "answered") to = "applied"; // preserve .response
+      else continue; // applied|expired ⇒ terminal, idempotent no-op
+      // item-set-state STATE MOVE ONLY (NOT item-apply — §7.9). respArg omitted
+      // ⇒ the recorded .response is carried verbatim (apply-preserving). A
+      // rejected move (should not happen — the gate already permits these two)
+      // is logged in the count but does not abort the sweep.
+      const r = await itemSetState(co, principal, d.id, it.id, to);
+      if (r.ok) transitions.push({ dossier_id: d.id, item_id: it.id, from: it.state, to });
+    }
+  }
+  return {
+    ok: true,
+    idempotent: transitions.length === 0,
+    bead_ref: bref,
+    matched_dossiers,
+    skipped_v1,
+    transitions,
+  };
+}
+
 // ── PRIMITIVE 1: the per-Item consequence_applied latch (port of
 // do_item_latch). Flips false→true EXACTLY ONCE + stamps applied_at; a SECOND
 // writer (latch already true) is REJECTED. Exactly-once is BY CONSTRUCTION of
@@ -1006,6 +1139,13 @@ export async function handleDossierOp(co, op, args, principal) {
       }
       if (op === "item-apply") {
         const r = await itemApply(co, principal, a[0], a[1], a[2]);
+        return jsonRes(r, r.ok ? 200 : 422);
+      }
+      if (op === "bead-status-changed") {
+        // L2 (claude-tools-uxvl2) — WORK→CONTROL auto-close. Runs inside the
+        // one serialized critical section so its per-item itemSetState moves
+        // never interleave with a racing Inbox tap on the same dossier (AD1).
+        const r = await beadStatusChanged(co, principal, a[0]);
         return jsonRes(r, r.ok ? 200 : 422);
       }
       if (op === "dossier-generate") {

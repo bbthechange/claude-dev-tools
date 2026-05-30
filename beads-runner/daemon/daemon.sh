@@ -58,6 +58,12 @@ INTAKE_POLL_INTERVAL="${BEADS_DAEMON_INTAKE_POLL_INTERVAL:-30}"
 # tight cadence buys nothing. Matches the M3 desired-state cadence so the
 # daemon's per-workspace bd reads cluster at the same beat.
 FLOW_F_POLL_INTERVAL="${BEADS_DAEMON_FLOW_F_POLL_INTERVAL:-60}"
+# L2 (claude-tools-uxvl2): WORK→CONTROL auto-close reconcile cadence. On this
+# beat the daemon asks the engine which blocking dossiers are still on the Inbox
+# and auto-closes any whose bead has resolved outside the dossier tap. Matches
+# the Flow F / M3 cadence so the per-workspace bd reads cluster at the same beat
+# (the trigger — a bd close/unblock — is a low-rate event; ~30s lag is fine).
+WORK_CONTROL_POLL_INTERVAL="${BEADS_DAEMON_WORK_CONTROL_POLL_INTERVAL:-60}"
 # M2: Anthropic-usage poll cadence (claude-tools-8mz). Default tracks
 # §0.5 USAGE_CACHE_SECONDS so the daemon's cache refresh rate matches the
 # constant the runner-side cache used to honour. One central poll per
@@ -99,6 +105,14 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # main loop calls into it.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/flow-f-overview-poll.sh"
+# L2 (claude-tools-uxvl2): WORK→CONTROL auto-close reconciler — when a bead
+# behind a BLOCKING dossier resolves outside the dossier tap (bd close /
+# self-unblock / human-label drop), publish a bead_status_changed event over the
+# zdxd D2 outbox so the engine expires/applies-preserving the stale Inbox card
+# (inbox-lifecycle §7 Option 2). Defines daemon_wc_reconcile_once +
+# daemon_wc_* helpers. Strict no-op until the main loop calls into it.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/work-control-reconcile-poll.sh"
 # M2 (claude-tools-8mz): the Anthropic-usage poll — one Keychain read +
 # one API call per machine per USAGE_POLL_INTERVAL, with the verdict
 # published atomically to $DAEMON_CACHE_DIR/capacity.json (UX 0.A "one
@@ -231,7 +245,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -252,6 +266,7 @@ main() {
   local _last_desired_poll=0
   local _last_intake_poll=0
   local _last_flow_f_poll=0
+  local _last_wc_poll=0
   local _last_usage_poll=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
@@ -298,6 +313,18 @@ main() {
     if [ "$((_now - _last_flow_f_poll))" -ge "$FLOW_F_POLL_INTERVAL" ] || [ "$_last_flow_f_poll" -eq 0 ]; then
       _last_flow_f_poll="$_now"
       daemon_flow_f_poll_once || true
+    fi
+    # L2 (claude-tools-uxvl2): on cadence, ask the engine which blocking dossiers
+    # are still on the Inbox and auto-close any whose bead has resolved outside
+    # the dossier tap — publish bead_status_changed onto the daemon outbox; the
+    # 1p0u drain below ships it to the engine bead-status-changed op. The first
+    # iteration runs at boot so a bead that closed while the daemon was down is
+    # reconciled promptly. Strict no-op when nothing is stale.
+    if [ "$((_now - _last_wc_poll))" -ge "$WORK_CONTROL_POLL_INTERVAL" ] || [ "$_last_wc_poll" -eq 0 ]; then
+      _last_wc_poll="$_now"
+      if declare -F daemon_wc_reconcile_once >/dev/null 2>&1; then
+        daemon_wc_reconcile_once || true
+      fi
     fi
     # M2 (claude-tools-8mz): on cadence, refresh the machine-level
     # Anthropic-usage cache so workspaces' la__capacity_via_daemon picks
