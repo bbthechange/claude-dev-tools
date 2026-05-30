@@ -33,7 +33,22 @@ H_init_test() {
   export HARNESS_OUT="$WORKDIR/.out"
   export HARNESS_CLAUDE_PLAN="$WORKDIR/.claude-plan"
   export HARNESS_CLAUDE_COUNT="$WORKDIR/.claude-count"
-  mkdir -p "$BD_STORE" "$HARNESS_OUT"
+  # claude-tools-d3w9: isolate the §6.2 capacity cache into the per-test WORKDIR.
+  # check_usage delegates to la_capacity_check (lib/local-agent.sh), which FIRST
+  # consults the daemon's machine-level verdict at la__daemon_capacity_file ⇒
+  # ${BEADS_DAEMON_CACHE_DIR:-$HOME/.cache/claude-tools}/capacity.json, BEFORE
+  # the BC-34 §6.2 keychain/API fallback that emits the asserted skip-notes. That
+  # file is SHARED machine-wide — a live daemon, or any run within 2×
+  # USAGE_CACHE_SECONDS, keeps it warm — and it lives outside WORKDIR so
+  # H_cleanup never clears it. A warm verdict makes check_usage print "Usage (via
+  # daemon)" and SKIP the keychain/API probe, so BC-34's fail-OPEN skip-notes
+  # never emit (the rig passes alone only when the cache happens to be cold;
+  # in-suite, or with the daemon up, it fails deterministically). Point the cache
+  # dir at an empty per-test path so the daemon read always misses and the §6.2
+  # fallback runs deterministically. XDG_CACHE_HOME isolated defensively too.
+  export BEADS_DAEMON_CACHE_DIR="$WORKDIR/.daemon-cache"
+  export XDG_CACHE_HOME="$WORKDIR/.cache"
+  mkdir -p "$BD_STORE" "$HARNESS_OUT" "$BEADS_DAEMON_CACHE_DIR" "$XDG_CACHE_HOME"
   : > "$BD_AUDIT"; : > "$HARNESS_CLAUDE_COUNT"
   mkdir -p "$WORKDIR/.beads"
   ( cd "$WORKDIR" && git init -q 2>/dev/null || true )
@@ -48,6 +63,17 @@ H_init_test() {
   # exercised end-to-end. The production runner default (env unset) is the
   # UX §0.A idle-on-drain loop; the SCAR remains testable via this opt-in.
   export RUNNER_EXIT_ON_DRAIN=1
+  # claude-tools-d3w9: opt OUT of the §apen post-close discipline audit. It is a
+  # post-baseline feature (claude-tools-apen, added after the T1a conformance
+  # GREEN at 4c0748e) that runs real `git log/status` + debrief checks on every
+  # SUCCESS close. Under the faked worker (no real commit, commit-less workdir,
+  # no debrief) it always finds spurious failures and fires side-effects (a
+  # Runner: note, an incidents row, a regression bead) that the §8.2 "clean
+  # SUCCESS" assertions (bc-09 et al.) do not model — AND its bare `git log`
+  # aborts the runner under `set -e` on a commit-less repo. The audited
+  # behaviour is out of this harness's INTERFACE §3/§7/§8 scope and has no BC of
+  # its own, so the harness skips it via the runner's seam.
+  export RUNNER_SKIP_POST_CLOSE_AUDIT=1
   unset HARNESS_BD_SHOW_STATUS_EMPTY HARNESS_KEYCHAIN HARNESS_USAGE HARNESS_HANG_SECONDS 2>/dev/null || true
 }
 

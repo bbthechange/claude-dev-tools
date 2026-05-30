@@ -1095,6 +1095,17 @@ post_close_audit() {
   local task_id="$1" session_anchor="${2:-}"
   local project_dir="$PWD"
 
+  # claude-tools-d3w9 test-isolation seam: the conformance harness fakes the
+  # worker (claude/bd stubbed, commit-less throwaway workdir), so this
+  # discipline audit can only ever fire spurious close_without_commit /
+  # dirty_tree / missing_debrief findings and their side-effects (Runner: note,
+  # incident row, regression bead) — none of which the harness's INTERFACE
+  # §3/§7/§8 classification/lifecycle/exit assertions model. The audited
+  # behaviour is out of that harness's scope and has no BC of its own, so the
+  # harness opts out via this seam (mirrors the RUNNER_EXIT_ON_DRAIN seam).
+  # Defaults OFF — production ALWAYS runs the audit.
+  [[ -n "${RUNNER_SKIP_POST_CLOSE_AUDIT:-}" ]] && return 0
+
   # Re-verify bead is actually closed. SUCCESS classification is fail-open on
   # bd-show errors (line 743) — don't audit if we can't read the status, since
   # we can't tell whether the close even happened.
@@ -1113,7 +1124,7 @@ post_close_audit() {
   # honest signal.
   if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
     local grep_out
-    grep_out="$(git -C "$project_dir" log --grep="$task_id" -1 --since='1 hour ago' --format=%h 2>/dev/null)"
+    grep_out="$(git -C "$project_dir" log --grep="$task_id" -1 --since='1 hour ago' --format=%h 2>/dev/null || true)"
     if [[ -z "$grep_out" ]]; then
       failures+=("close_without_commit")
     fi
