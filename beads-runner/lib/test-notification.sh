@@ -251,6 +251,92 @@ ck  "a digest entry carries NO content (only channel/count/tier/dossier_refs)" \
     eq "$(printf '%s' "$DIG" | jq -r '[.digests[0]|keys[]|select(.=="channel" or .=="count" or .=="tier" or .=="dossier_refs"|not)]|length')" "0"
 
 echo ""
+echo "── N1 (claude-tools-uxvn1): §10.2 trigger catalog + producer batching spine ──"
+# Catalog completeness (the CLOSED §10.2 enum, D.2) + the pure accessors.
+for TR in new_dossier blueprint_changed cross_ws_exchange cross_ws_conflict \
+          task_maybe_stuck runner_wedged intake_failed queue_alarm \
+          agent_gate ready_to_pair; do
+  ck "catalog knows §10.2 trigger '$TR'"                 notif_trigger_known "$TR"
+done
+ckn "an off-catalog trigger is REJECTED (closed enum — D.2)" notif_trigger_known not_a_trigger
+ck  "new_dossier binds tier=blocking (§10.2 r1)"          eq "$(notif_trigger_tiers new_dossier)" "blocking"
+ck  "blueprint_changed binds tier=timed-fyi (r2)"         eq "$(notif_trigger_tiers blueprint_changed)" "timed-fyi"
+ck  "cross_ws_conflict binds tier=blocking (r4)"          eq "$(notif_trigger_tiers cross_ws_conflict)" "blocking"
+ck  "runner_wedged binds tier=blocking (r6)"              eq "$(notif_trigger_tiers runner_wedged)" "blocking"
+ck  "task_maybe_stuck binds BOTH tiers (r5 failure→tier map)" eq "$(notif_trigger_tiers task_maybe_stuck)" "timed-fyi blocking"
+ckn "notif_trigger_tiers REJECTS an off-catalog trigger"  notif_trigger_tiers nope
+# channel convention: cross_ws_exchange REUSES K3's xws: verbatim (no drift).
+ck  "cross_ws_exchange channel == K3 no__xws_channel (shared spine)" \
+    eq "$(notif_trigger_channel cross_ws_exchange BE)" "$(no__xws_channel BE)"
+ck  "blueprint_changed channel is 'blueprint:<scope>'"    eq "$(notif_trigger_channel blueprint_changed projX)" "blueprint:projX"
+ck  "queue_alarm channel is 'queue:<scope>'"              eq "$(notif_trigger_channel queue_alarm projX)" "queue:projX"
+ck  "agent_gate channel is 'agent-gate:<scope>'"          eq "$(notif_trigger_channel agent_gate projX)" "agent-gate:projX"
+ck  "a blocking trigger (new_dossier) has NO channel (never batched)" eq "$(notif_trigger_channel new_dossier projX)" ""
+ck  "cross_ws_conflict (blocking) has NO channel"         eq "$(notif_trigger_channel cross_ws_conflict projX)" ""
+ckn "notif_trigger_channel REJECTS an off-catalog trigger (closed enum on EVERY accessor)" \
+    notif_trigger_channel nope x
+
+# notif_fire: a BLOCKING trigger ⇒ emit, mirror blocking, left PENDING, no channel.
+do_dossier_put "$GOOD" "$(mk nf_block blocking "[$(item b1)]")" >/dev/null
+NFB="$(notif_fire "$GOOD" new_dossier nf_block)"
+ck  "fire(new_dossier) emits the one Notification"        eq "$NFB" "notif.nf_block"
+ck  "fire(new_dossier) mirrors tier=blocking"             eq "$(NF nf_block .tier)" "blocking"
+ck  "fire(new_dossier) leaves it PENDING (blocking not auto-dispatched)" eq "$(NF nf_block .dispatched)" "false"
+ck  "fire(new_dossier) stamps NO channel (never batched)" eq "$(NF nf_block .channel)" "null"
+
+# notif_fire: a BATCHABLE timed-fyi trigger ⇒ emit + route the channel; idempotent.
+do_dossier_put "$GOOD" "$(mk nf_bp1 timed-fyi "[$(item p1)]")" >/dev/null
+NFP="$(notif_fire "$GOOD" blueprint_changed nf_bp1 projX)"
+ck  "fire(blueprint_changed) emits the one Notification"  eq "$NFP" "notif.nf_bp1"
+ck  "fire(blueprint_changed) routes the batching channel 'blueprint:projX'" eq "$(NF nf_bp1 .channel)" "blueprint:projX"
+ck  "fire(blueprint_changed) is dispatched (routed into its digest channel)" eq "$(NF nf_bp1 .dispatched)" "true"
+NFP2="$(notif_fire "$GOOD" blueprint_changed nf_bp1 projX)"
+ck  "re-fire(blueprint_changed) is idempotent (same nid)" eq "$NFP2" "$NFP"
+ck  "re-fire did NOT change the channel"                  eq "$(NF nf_bp1 .channel)" "blueprint:projX"
+# re-fire to a DIFFERENT channel is REJECTED (one dossier ⇒ one batching channel).
+ckn "re-fire(blueprint_changed) to a DIFFERENT channel REJECTED (one dossier ⇒ one channel)" \
+    notif_fire "$GOOD" blueprint_changed nf_bp1 projY
+ck  "rejected re-route did NOT change the channel"        eq "$(NF nf_bp1 .channel)" "blueprint:projX"
+
+# the fired batchable notification ROLLS UP via K3's read engine (the shared spine).
+NDIG="$(no_digest "$GOOD" "blueprint:")"
+ck  "fired blueprint FYI appears in the K3 rollup (one blueprint:projX group)" \
+    eq "$(printf '%s' "$NDIG" | jq -r '[.digests[]|select(.channel=="blueprint:projX")]|length')" "1"
+ck  "that group's dossier_ref is the fired dossier" \
+    eq "$(printf '%s' "$NDIG" | jq -r '.digests[]|select(.channel=="blueprint:projX")|.dossier_refs[0]')" "nf_bp1"
+
+# cross_ws_exchange fired via the spine lands on the SAME xws: channel K3 uses.
+do_dossier_put "$GOOD" "$(mk nf_xws timed-fyi "[$(item x1)]")" >/dev/null
+NFX="$(notif_fire "$GOOD" cross_ws_exchange nf_xws BE)"
+ck  "fire(cross_ws_exchange) succeeds"                    eq "$NFX" "notif.nf_xws"
+ck  "fire(cross_ws_exchange) routes the K3 xws: channel"  eq "$(NF nf_xws .channel)" "$(no__xws_channel BE)"
+
+# TIER GUARD: a trigger fired at the WRONG tier is REJECTED (catalog binds tier).
+do_dossier_put "$GOOD" "$(mk nf_wrong blocking "[$(item w1)]")" >/dev/null
+ckn "fire(blueprint_changed) on a BLOCKING dossier REJECTED (tier guard)" \
+    notif_fire "$GOOD" blueprint_changed nf_wrong projX
+do_dossier_put "$GOOD" "$(mk nf_wrong2 timed-fyi "[$(item w2)]")" >/dev/null
+ckn "fire(new_dossier) on a TIMED-FYI dossier REJECTED (tier guard)" \
+    notif_fire "$GOOD" new_dossier nf_wrong2
+ckn "fire() with an off-catalog trigger REJECTED" \
+    notif_fire "$GOOD" bogus_trigger nf_block
+
+# task_maybe_stuck is VARIABLE (r5): timed-fyi ⇒ batched on stuck:; blocking ⇒ pending.
+do_dossier_put "$GOOD" "$(mk nf_stuckf timed-fyi "[$(item s1)]")" >/dev/null
+NFSF="$(notif_fire "$GOOD" task_maybe_stuck nf_stuckf jobZ)"
+ck  "fire(task_maybe_stuck@timed-fyi) succeeds"           eq "$NFSF" "notif.nf_stuckf"
+ck  "fire(task_maybe_stuck@timed-fyi) batches on 'stuck:jobZ'" eq "$(NF nf_stuckf .channel)" "stuck:jobZ"
+do_dossier_put "$GOOD" "$(mk nf_stuckb blocking "[$(item s2)]")" >/dev/null
+NFSB="$(notif_fire "$GOOD" task_maybe_stuck nf_stuckb jobZ)"
+ck  "fire(task_maybe_stuck@blocking) succeeds (NOT a vacuous PENDING pass)" eq "$NFSB" "notif.nf_stuckb"
+ck  "fire(task_maybe_stuck@blocking) is PENDING, no channel" eq "$(NF nf_stuckb .channel)" "null"
+ck  "fire(task_maybe_stuck@blocking) not auto-dispatched"     eq "$(NF nf_stuckb .dispatched)" "false"
+
+# TRIAGE ONLY: a fired notification carries NO content (the closed §4.3 set).
+ck  "a fired notification carries NO content key (triage only — principle 2)" \
+    eq "$(NREC nf_bp1 | jq -r '[keys[]|select(.=="body" or .=="content" or .=="payload" or .=="items")]|length')" "0"
+
+echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-notification (T5.6, claude-tools-ks2):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"

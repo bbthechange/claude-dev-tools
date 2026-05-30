@@ -103,6 +103,10 @@ export const NOTIFICATION_OPS = new Set([
   "notif-dispatch-for-dossier", // no_dispatch_for_dossier
   "notif-for-generation", // no_for_generation (the C3 creation hook)
   "notif-digest", // no_digest (K3 — the read-side group-by-channel rollup)
+  "notif-triggers", // N1 — the closed §10.2 catalog (pure)
+  "notif-trigger-tiers", // N1 — a trigger's catalog tier(s) (pure)
+  "notif-trigger-channel", // N1 — a trigger's batching channel (pure)
+  "notif-fire", // N1 — the trigger-catalog spine (emit + tier-guard + route)
 ]);
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -239,6 +243,129 @@ async function noDigest(co, channelPrefix) {
     recs.push(parsed);
   }
   return groupDigests(recs, channelPrefix);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// N1 (claude-tools-uxvn1) — the §10.2 TRIGGER CATALOG + the producer-side
+// BATCHING SPINE (§10.3). SHARES K3 (cross-ws.md §4.3): the read-side rollup
+// ENGINE (groupDigests / noDigest) is K3's and is reused VERBATIM — N1 adds the
+// PRODUCER side K3 deferred to it ("K3 owns the cross-WS channel convention +
+// the rollup copy; N1 owns the general ... spine ... for the whole trigger
+// catalog"). N1 GENERALIZES K3's `xws:` convention to every batchable trigger
+// and BINDS each §10.2 trigger to its §4.1 tier. TRIAGE ONLY — the fire path
+// passes ONLY (trigger, dossier_id, opaque scope_ref); it carries NO content
+// (the §5 dossier body does — principle 2), reuses noEmit/noDispatch (NO new
+// write path, NO schema change), and stamps the channel through noDispatch
+// EXACTLY as K3's tests demonstrate. Differential oracle: lib/notification.sh
+// notif__trigger_policy / notif_fire + their clauses in lib/test-notification.sh.
+//
+// TIER DISCIPLINE (D.2 + §10.2): `blocking` triggers are NEVER batched (no
+// channel — and the K3 read engine excludes blocking too: double safety). Only
+// timed-fyi/digest routes a channel. `xws:` is K3-OWNED (reused); the rest
+// (`blueprint:`/`intake:`/`queue:`/`agent-gate:`/`stuck:`) are [free] naming.
+// ════════════════════════════════════════════════════════════════════════════
+
+// The CLOSED §10.2 catalog (D.2 — shared verbatim with the bash
+// notif__trigger_policy `case`). channelPrefix=null ⇒ a non-batched/blocking
+// trigger. cross_ws_exchange reuses K3's XWS_PREFIX so it produces EXACTLY
+// xwsChannel's tag (no drift). task_maybe_stuck's tier is resolved by the
+// I-track failure→tier map (§10.2 r5) — both tiers permitted.
+const NOTIF_TRIGGERS = {
+  new_dossier: { tiers: ["blocking"], channelPrefix: null }, // §10.2 r1  [Brian B5]
+  blueprint_changed: { tiers: ["timed-fyi"], channelPrefix: "blueprint:" }, // r2  [B1/B5]
+  cross_ws_exchange: { tiers: ["timed-fyi"], channelPrefix: XWS_PREFIX }, // r3  [C4] K3-owned
+  cross_ws_conflict: { tiers: ["blocking"], channelPrefix: null }, // r4  [thirsty §8.3]
+  task_maybe_stuck: { tiers: ["timed-fyi", "blocking"], channelPrefix: "stuck:" }, // r5  [B4]
+  runner_wedged: { tiers: ["blocking"], channelPrefix: null }, // r6  [B4 §5.4]
+  intake_failed: { tiers: ["timed-fyi"], channelPrefix: "intake:" }, // r7  [A leak]
+  queue_alarm: { tiers: ["timed-fyi"], channelPrefix: "queue:" }, // r8  [§9 thirsty]
+  agent_gate: { tiers: ["timed-fyi"], channelPrefix: "agent-gate:" }, // r9  [B8 §7.4]
+  ready_to_pair: { tiers: ["blocking"], channelPrefix: null }, // r10 [Brian] blocking-ish
+};
+
+// notifTriggers() — the closed catalog's trigger names (1:1 with the bash
+// `case` arms). notifTriggerKnown / notifTriggerTiers / notifTriggerChannel are
+// the pure catalog accessors (exported for the differential test, the
+// xwsChannel/digestCopy/groupDigests precedent).
+export function notifTriggers() {
+  return Object.keys(NOTIF_TRIGGERS);
+}
+export function notifTriggerKnown(t) {
+  return Object.prototype.hasOwnProperty.call(NOTIF_TRIGGERS, t);
+}
+export function notifTriggerTiers(t) {
+  const e = NOTIF_TRIGGERS[t];
+  return e ? e.tiers.slice() : null;
+}
+// notifTriggerChannel(trigger, scope) => "<prefix><scope>" for a batchable
+// trigger; "" for a KNOWN non-batched (blocking) one; null for an OFF-CATALOG
+// trigger (the closed-enum reject — distinct from a known blocking trigger's
+// "", so an unknown trigger is never silently treated as "no channel"). This
+// is the JS analogue of bash notif_trigger_channel returning nonzero for an
+// off-catalog trigger vs empty-stdout+rc0 for a known blocking one.
+// cross_ws_exchange yields xwsChannel's "xws:<scope>" exactly.
+export function notifTriggerChannel(trigger, scope) {
+  const e = NOTIF_TRIGGERS[trigger];
+  if (!e) return null; // off-catalog (closed enum — D.2)
+  if (!e.channelPrefix) return ""; // known non-batched (blocking) trigger
+  return `${e.channelPrefix}${scope == null ? "" : scope}`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// notifFire(co, principal, trigger, did, scope) — the §10.2 catalog SPINE (port
+// of bash notif_fire). validate trigger → noEmit (mirror §4.1 tier) → TIER
+// GUARD (catalog binds trigger→tier; mismatch ⇒ a loud producer-bug rejection)
+// → CHANNEL ROUTE (batchable + digest-eligible tier ⇒ stamp the channel via
+// noDispatch so K3 rolls it up; blocking ⇒ NO channel, left PENDING). Idempotent
+// (one-per-Dossier; a re-route to the SAME channel is tolerated, a DIFFERENT one
+// rejected). Like noForGeneration this sequences SELF-serialized steps and must
+// NOT be wrapped in an outer co._serialize (that would nest + deadlock).
+// ════════════════════════════════════════════════════════════════════════════
+async function notifFire(co, principal, trigger, did, scope) {
+  // Validation ORDER mirrors the bash oracle (notif_fire): <dossier_id> first,
+  // then the closed-catalog trigger check — so the two engines emit the SAME
+  // diagnostic when BOTH are bad (strict differential equivalence).
+  if (!neStr(did))
+    return rej("notification: fire — need <dossier_id> (the §5 dossier this trigger announces)");
+  if (!notifTriggerKnown(trigger))
+    return rej(`notification: fire — unknown §10.2 trigger '${trigger}' (closed catalog — D.2)`);
+  const tiers = NOTIF_TRIGGERS[trigger].tiers;
+
+  // emit the ONE Notification (mirrors the dossier §4.1 tier) — its own
+  // serialized critical section (NOT nested under an outer serialize).
+  const e = await co._serialize(() => noEmit(co, principal, did));
+  if (!e.ok) return e;
+  const nid = e.id;
+
+  const g = await noGet(co, nid);
+  if (!g.ok) return rej(g.msg || `notification: fire — could not read the emitted Notification '${nid}'`);
+  const tier = typeof g.rec.tier === "string" ? g.rec.tier : "";
+  if (!tier) return rej(`notification: fire — emitted Notification '${nid}' has no tier`);
+
+  // TIER GUARD — the trigger must fire at a catalog-permitted tier.
+  if (!tiers.includes(tier))
+    return rej(
+      `notification: fire REJECTED — trigger '${trigger}' binds tier(s) [${tiers.join(
+        " "
+      )}] but dossier '${did}' is tier '${tier}' (§10.2 catalog binds trigger→tier; a mismatch is a producer bug — NOT routed)`
+    );
+
+  // CHANNEL ROUTE — batchable + digest-eligible tier ⇒ stamp the channel so K3
+  // rolls it up; otherwise leave it PENDING (blocking → individual; never
+  // batched). Idempotent: an existing route to the SAME channel is success.
+  const chan = notifTriggerChannel(trigger, scope);
+  if (chan && (tier === "timed-fyi" || tier === "digest")) {
+    if (g.rec.dispatched === true) {
+      if ((g.rec.channel ?? "") !== chan)
+        return rej(
+          `notification: fire REJECTED — '${nid}' already routed to channel '${g.rec.channel}'; refusing to re-route to '${chan}' (one dossier ⇒ one batching channel)`
+        );
+    } else {
+      const d = await co._serialize(() => noDispatch(co, principal, nid, chan));
+      if (!d.ok) return d;
+    }
+  }
+  return { ok: true, id: nid };
 }
 
 // ── primitive shape predicates (mirror the jq type/length tests verbatim) ───
@@ -627,6 +754,27 @@ export async function handleNotificationOp(co, op, args, principal) {
       const r = await noDigest(co, a[0]);
       return jsonRes(r, 200);
     }
+    // notif-* trigger-catalog accessors (N1): PURE — the closed §10.2 catalog,
+    // no store. notif-trigger-channel returns text (the bash printf analogue);
+    // notif-triggers / notif-trigger-tiers return JSON.
+    if (op === "notif-triggers") {
+      return jsonRes({ ok: true, triggers: notifTriggers() });
+    }
+    if (op === "notif-trigger-tiers") {
+      const t = notifTriggerTiers(a[0]);
+      return t
+        ? jsonRes({ ok: true, tiers: t })
+        : jsonRes({ ok: false, msg: `notification: unknown §10.2 trigger '${a[0]}' (closed catalog — D.2)` }, 422);
+    }
+    if (op === "notif-trigger-channel") {
+      // off-catalog ⇒ 422 (closed enum — D.2), mirroring notif-trigger-tiers
+      // and the bash notif_trigger_channel nonzero reject; a known trigger
+      // returns its channel as text ("" for a blocking trigger).
+      const ch = notifTriggerChannel(a[0], a[1]);
+      return ch === null
+        ? jsonRes({ ok: false, msg: `notification: unknown §10.2 trigger '${a[0]}' (closed catalog — D.2)` }, 422)
+        : textRes(ch);
+    }
 
     // ── STORE-TOUCHING ops — serialized through the one single-threaded
     //    actor (AD1: one-per-Dossier + dispatched-once BY CONSTRUCTION) ───────
@@ -665,6 +813,13 @@ export async function handleNotificationOp(co, op, args, principal) {
       // steps (dossier-generate, then a co._serialize'd emit). Wrapping it
       // would nest co._serialize on the shared tail and deadlock.
       const r = await noForGeneration(co, principal, a[0]);
+      return jsonRes(r, r.ok ? 200 : 422);
+    }
+    if (op === "notif-fire") {
+      // NOT outer-wrapped — notifFire sequences SELF-serialized steps (emit,
+      // then a co._serialize'd route). Wrapping it would nest co._serialize on
+      // the shared tail and deadlock (same as notif-for-generation).
+      const r = await notifFire(co, principal, a[0], a[1], a[2]);
       return jsonRes(r, r.ok ? 200 : 422);
     }
     return jsonRes({ ok: false, error: `co: unknown notification op '${op}'` }, 400);

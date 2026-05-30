@@ -572,3 +572,134 @@ no_digest() {
     done
   } | no__group_digests "$prefix"
 }
+
+# ════════════════════════════════════════════════════════════════════════════
+# N1 (claude-tools-uxvn1) — the §10.2 TRIGGER CATALOG + the producer-side
+# BATCHING SPINE (§10.3). SHARES K3 (cross-ws.md §4.3): the read-side rollup
+# ENGINE (no__group_digests / no_digest) is K3's and is reused VERBATIM — N1
+# adds the PRODUCER side K3 deferred to it ("K3 owns the cross-WS channel
+# convention + the rollup copy; N1 owns the general ... spine ... for the whole
+# trigger catalog"). N1 GENERALIZES K3's `xws:` channel convention to every
+# batchable trigger so all timed-fyi/digest notifications roll up by channel,
+# and BINDS each §10.2 trigger to its §4.1 tier.
+#
+# TRIAGE ONLY, NEVER CARRY CONTENT (§10 intro / principle 2): the fire path
+# passes ONLY (trigger, dossier_id, opaque scope_ref for grouping) — the §5
+# dossier body carries the content; the Notification (and this spine) never
+# does. It REUSES no_emit/no_dispatch: NO new write path, NO schema change —
+# the channel is stamped through no_dispatch EXACTLY as K3's tests demonstrate
+# ("a later read-side digest rollup keys off this tag with NO schema change").
+#
+# TIER DISCIPLINE (D.2 + §10.2): the catalog binds each trigger to its tier(s).
+# `blocking` triggers (new_dossier, cross_ws_conflict, runner_wedged,
+# ready_to_pair) are NEVER batched — they get NO channel, so the K3 read engine
+# (which ALSO excludes blocking) never sweeps them into a digest (double
+# safety): mechanical sync → batched FYI; real decision → an immediate ping.
+# Only a timed-fyi/digest-tier notification routes a channel.
+#
+# CHANNEL PREFIXES: `xws:` is K3-OWNED (cross-ws.md §4.2) and reused verbatim
+# (NO__XWS_PREFIX). The rest (`blueprint:`/`intake:`/`queue:`/`agent-gate:`/
+# `stuck:`) are [free] naming (ARCH A.4) — one opaque grouping namespace per
+# trigger family; the digest copy degrades them to K3's generic honest line.
+# ════════════════════════════════════════════════════════════════════════════
+
+# notif__trigger_policy <trigger>  — the CLOSED §10.2 catalog. Echoes
+# "<allowed_tiers>|<channel_prefix>" (tiers space-separated; prefix EMPTY ⇒ a
+# non-batched/blocking trigger). An unknown trigger ⇒ nonzero (closed-enum
+# discipline, D.2 — never silently accept an off-catalog trigger). 1:1 with the
+# JS NOTIF_TRIGGERS table.
+notif__trigger_policy() {
+  case "${1:-}" in
+    new_dossier)        printf 'blocking|';;                          # §10.2 r1  [Brian B5]  new decision dossier
+    blueprint_changed)  printf 'timed-fyi|blueprint:';;               # §10.2 r2  [B1/B5]     Blueprint materially changed
+    cross_ws_exchange)  printf 'timed-fyi|%s' "$NO__XWS_PREFIX";;     # §10.2 r3  [C4]        cross-WS exchange (K3-owned xws:)
+    cross_ws_conflict)  printf 'blocking|';;                          # §10.2 r4  [thirsty]   cross-WS conflict / missing design
+    task_maybe_stuck)   printf 'timed-fyi blocking|stuck:';;          # §10.2 r5  [B4]        tier per the I-track failure→tier map
+    runner_wedged)      printf 'blocking|';;                          # §10.2 r6  [B4 §5.4]   runner wedged / starved (systemic)
+    intake_failed)      printf 'timed-fyi|intake:';;                  # §10.2 r7  [A leak]    intake failing / gave up
+    queue_alarm)        printf 'timed-fyi|queue:';;                   # §10.2 r8  [§9 thirsty] queue-health alarm
+    agent_gate)         printf 'timed-fyi|agent-gate:';;              # §10.2 r9  [B8 §7.4]   agent placed a Gate holding work
+    ready_to_pair)      printf 'blocking|';;                          # §10.2 r10 [Brian]     ready-to-pair (scheduled session; the
+                                                                      #                        scheduling nuance is beyond this spine)
+    *) return 1;;
+  esac
+}
+
+# notif_trigger_known <trigger> — 0 iff <trigger> is in the closed §10.2 catalog.
+notif_trigger_known() { notif__trigger_policy "${1:-}" >/dev/null 2>&1; }
+
+# notif_trigger_tiers <trigger> — the catalog's allowed §4.1 tier(s)
+# (space-separated). Nonzero + a §-cited diagnostic for an off-catalog trigger.
+notif_trigger_tiers() {
+  local p; p="$(notif__trigger_policy "${1:-}")" \
+    || { echo "notification: unknown §10.2 trigger '${1:-}' (closed catalog — D.2)" >&2; return 1; }
+  printf '%s' "${p%%|*}"
+}
+
+# notif_trigger_channel <trigger> <scope_ref> — the batching channel for a
+# batchable trigger: "<prefix><scope_ref>"; EMPTY for a non-batched (blocking)
+# trigger. cross_ws_exchange yields EXACTLY no__xws_channel's "xws:<ref>" (the
+# K3-owned convention, reused — no drift). 1:1 with JS notifTriggerChannel.
+notif_trigger_channel() {
+  local p prefix; p="$(notif__trigger_policy "${1:-}")" \
+    || { echo "notification: unknown §10.2 trigger '${1:-}' (closed catalog — D.2)" >&2; return 1; }
+  prefix="${p#*|}"
+  [[ -n "$prefix" ]] || { printf ''; return 0; }
+  printf '%s%s' "$prefix" "${2:-}"
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# notif_fire <bearer> <trigger> <dossier_id> [scope_ref] — the §10.2 catalog
+# SPINE. Announce <dossier_id> as a <trigger>-type event:
+#   1. validate <trigger> against the closed catalog (off-catalog ⇒ reject);
+#   2. no_emit the ONE Notification (mirrors the dossier's §4.1 tier — NEVER
+#      recomputed; that is T5.1's);
+#   3. TIER GUARD — assert the mirrored tier is one the catalog permits for
+#      <trigger> (a loud producer-bug rejection if a trigger fires at the wrong
+#      tier — the §10.2 catalog binds trigger→tier; D.2);
+#   4. CHANNEL ROUTE — for a batchable trigger whose RESOLVED tier is
+#      timed-fyi/digest, stamp "<prefix><scope_ref>" via no_dispatch so K3's
+#      read-side rollup groups it (§10.3 "N pending → 1 digest"); a blocking
+#      trigger gets NO channel and is left PENDING for its immediate transport.
+# Idempotent: re-firing the SAME (trigger,dossier) is a no-op success (no_emit
+# is one-per-Dossier; a re-route to the SAME channel is tolerated, a DIFFERENT
+# channel rejected). TRIAGE ONLY — passes no content (principle 2). Echoes the
+# notification id.
+# ════════════════════════════════════════════════════════════════════════════
+notif_fire() {
+  local bearer="${1:-}" trig="${2:-}" did="${3:-}" scope="${4:-}" tiers nid rec tier chan cur_disp cur_chan
+  [[ -n "$did" ]] || { echo "notification: fire — need <dossier_id> (the §5 dossier this trigger announces)" >&2; return 2; }
+  tiers="$(notif_trigger_tiers "$trig")" || return 1
+
+  # emit the ONE Notification (mirrors the dossier §4.1 tier).
+  nid="$(no_emit "$bearer" "$did")" || return $?
+  rec="$(no_get "$bearer" "$nid" 2>/dev/null)" \
+    || { echo "notification: fire — could not read the emitted Notification '$nid'" >&2; return 3; }
+  tier="$(printf '%s' "$rec" | jq -r '.tier // ""' 2>/dev/null)" || tier=""
+  [[ -n "$tier" ]] || { echo "notification: fire — emitted Notification '$nid' has no tier" >&2; return 3; }
+
+  # TIER GUARD — the trigger must fire at a catalog-permitted tier.
+  case " $tiers " in
+    *" $tier "*) : ;;
+    *) echo "notification: fire REJECTED — trigger '$trig' binds tier(s) [$tiers] but dossier '$did' is tier '$tier' (§10.2 catalog binds trigger→tier; a mismatch is a producer bug — NOT routed)" >&2
+       return 3;;
+  esac
+
+  # CHANNEL ROUTE — batchable + digest-eligible tier ⇒ stamp the channel so K3
+  # rolls it up; otherwise leave it PENDING (blocking → individual; never
+  # batched). Idempotent: an existing route to the SAME channel is success.
+  chan="$(notif_trigger_channel "$trig" "$scope")"
+  if [[ -n "$chan" && ( "$tier" == "timed-fyi" || "$tier" == "digest" ) ]]; then
+    cur_disp="$(printf '%s' "$rec" | jq -r '.dispatched' 2>/dev/null)" || cur_disp=""
+    cur_chan="$(printf '%s' "$rec" | jq -r '.channel // ""' 2>/dev/null)" || cur_chan=""
+    if [[ "$cur_disp" == "true" ]]; then
+      if [[ "$cur_chan" != "$chan" ]]; then
+        echo "notification: fire REJECTED — '$nid' already routed to channel '$cur_chan'; refusing to re-route to '$chan' (one dossier ⇒ one batching channel)" >&2
+        return 3
+      fi
+    else
+      no_dispatch "$bearer" "$nid" "$chan" >/dev/null || return $?
+    fi
+  fi
+  printf '%s' "$nid"
+}

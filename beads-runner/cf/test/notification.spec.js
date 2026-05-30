@@ -37,6 +37,13 @@ import { it, expect } from "vitest";
 // the channel-agnostic rollup engine (consumed directly, the pure-helper
 // analogue of the bash test calling no__xws_channel/no__digest_copy).
 import { xwsChannel, digestCopy, groupDigests } from "../src/notification.js";
+// N1 (claude-tools-uxvn1) — the exported §10.2 trigger-catalog accessors (the
+// pure-helper analogue of the bash notif_trigger_known/_tiers/_channel).
+import {
+  notifTriggerKnown,
+  notifTriggerTiers,
+  notifTriggerChannel,
+} from "../src/notification.js";
 
 const GOOD = "bearer-runner-secret-xyz";
 
@@ -419,4 +426,139 @@ it("CF.9 K3 digest rollup is behaviour-identical to lib/notification.sh K3 claus
     console.log("FAILED:\n  - " + ff.join("\n  - "));
   }
   expect(F, `K3 digest clauses failed: ${ff.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// N1 (claude-tools-uxvn1) — the §10.2 trigger catalog + producer batching spine.
+// Mirrors the N1 clauses of lib/test-notification.sh, driving the REAL engine
+// via SELF.fetch (notif-fire / notif-trigger-* / notif-digest) + the exported
+// pure catalog helpers. The read-side rollup engine is K3's, reused verbatim.
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.9 N1 trigger catalog + batching spine is behaviour-identical to lib/notification.sh N1 clauses", async () => {
+  let P = 0;
+  let F = 0;
+  const ff = [];
+  const k = (name, cond) => {
+    if (cond) {
+      P++;
+    } else {
+      F++;
+      ff.push(name);
+    }
+  };
+
+  const TRIGGERS = [
+    "new_dossier",
+    "blueprint_changed",
+    "cross_ws_exchange",
+    "cross_ws_conflict",
+    "task_maybe_stuck",
+    "runner_wedged",
+    "intake_failed",
+    "queue_alarm",
+    "agent_gate",
+    "ready_to_pair",
+  ];
+  // catalog completeness (the CLOSED §10.2 enum) via the exported helper + op.
+  for (const tr of TRIGGERS) k(`catalog knows §10.2 trigger '${tr}'`, notifTriggerKnown(tr));
+  k("an off-catalog trigger is unknown (closed enum — D.2)", !notifTriggerKnown("not_a_trigger"));
+  const trOp = await call(GOOD, "notif-triggers", []);
+  k(
+    "notif-triggers op returns all 10 §10.2 triggers",
+    trOp.body && Array.isArray(trOp.body.triggers) && trOp.body.triggers.length === 10
+  );
+  k("new_dossier binds tier=blocking (r1)", notifTriggerTiers("new_dossier").join(",") === "blocking");
+  k("blueprint_changed binds tier=timed-fyi (r2)", notifTriggerTiers("blueprint_changed").join(",") === "timed-fyi");
+  k(
+    "task_maybe_stuck binds BOTH tiers (r5 failure→tier map)",
+    notifTriggerTiers("task_maybe_stuck").join(",") === "timed-fyi,blocking"
+  );
+  k("notifTriggerTiers(off-catalog) is null", notifTriggerTiers("nope") === null);
+  // channel convention: cross_ws_exchange REUSES K3's xwsChannel verbatim.
+  k(
+    "cross_ws_exchange channel == K3 xwsChannel (shared spine)",
+    notifTriggerChannel("cross_ws_exchange", "BE") === xwsChannel("BE")
+  );
+  k("blueprint_changed channel is 'blueprint:<scope>'", notifTriggerChannel("blueprint_changed", "projX") === "blueprint:projX");
+  k("agent_gate channel is 'agent-gate:<scope>'", notifTriggerChannel("agent_gate", "projX") === "agent-gate:projX");
+  k("a blocking trigger has NO channel (never batched)", notifTriggerChannel("new_dossier", "projX") === "");
+  k("notifTriggerChannel(off-catalog) is null (closed enum on EVERY accessor)", notifTriggerChannel("nope", "x") === null);
+  const chOp = await call(GOOD, "notif-trigger-channel", ["blueprint_changed", "projX"]);
+  k("notif-trigger-channel op returns 'blueprint:projX'", chOp.raw === "blueprint:projX");
+  // op-level closed-enum reject (the 422 dispatcher branches — mirrors bash nonzero).
+  k("notif-trigger-tiers op REJECTS off-catalog (422)", !good(await call(GOOD, "notif-trigger-tiers", ["nope"])));
+  k("notif-trigger-channel op REJECTS off-catalog (422)", !good(await call(GOOD, "notif-trigger-channel", ["nope", "x"])));
+
+  // notif-fire: a BLOCKING trigger ⇒ emit, mirror blocking, PENDING, no channel.
+  await call(GOOD, "dossier-put", [mk("nf_block", "blocking", [item("b1")])]);
+  const fb = await call(GOOD, "notif-fire", ["new_dossier", "nf_block"]);
+  k("fire(new_dossier) emits the one Notification", fb.body && fb.body.id === "notif.nf_block");
+  k("fire(new_dossier) mirrors tier=blocking", (await NF("nf_block", "tier")) === "blocking");
+  k("fire(new_dossier) leaves it PENDING (blocking not auto-dispatched)", (await NF("nf_block", "dispatched")) === false);
+  k("fire(new_dossier) stamps NO channel (never batched)", (await NF("nf_block", "channel")) === null);
+
+  // notif-fire: a BATCHABLE timed-fyi trigger ⇒ emit + route the channel; idempotent.
+  await call(GOOD, "dossier-put", [mk("nf_bp1", "timed-fyi", [item("p1")])]);
+  const fp = await call(GOOD, "notif-fire", ["blueprint_changed", "nf_bp1", "projX"]);
+  k("fire(blueprint_changed) emits the one Notification", fp.body && fp.body.id === "notif.nf_bp1");
+  k("fire(blueprint_changed) routes 'blueprint:projX'", (await NF("nf_bp1", "channel")) === "blueprint:projX");
+  k("fire(blueprint_changed) is dispatched (routed into its digest channel)", (await NF("nf_bp1", "dispatched")) === true);
+  const fp2 = await call(GOOD, "notif-fire", ["blueprint_changed", "nf_bp1", "projX"]);
+  k("re-fire is idempotent (same nid)", fp2.body && fp2.body.id === "notif.nf_bp1");
+  k("re-fire did NOT change the channel", (await NF("nf_bp1", "channel")) === "blueprint:projX");
+  // re-fire to a DIFFERENT channel is REJECTED (one dossier ⇒ one batching channel).
+  const fp3 = await call(GOOD, "notif-fire", ["blueprint_changed", "nf_bp1", "projY"]);
+  k("re-fire to a DIFFERENT channel REJECTED (one dossier ⇒ one channel)", !good(fp3));
+  k("rejected re-route did NOT change the channel", (await NF("nf_bp1", "channel")) === "blueprint:projX");
+
+  // the fired batchable notification ROLLS UP via K3's read engine (shared spine).
+  const ndig = await call(GOOD, "notif-digest", ["blueprint:"]);
+  const bg = ((ndig.body && ndig.body.digests) || []).find((d) => d.channel === "blueprint:projX");
+  k("fired blueprint FYI appears in the K3 rollup (blueprint:projX group)", !!bg);
+  k("that group's dossier_ref is the fired dossier", bg && bg.dossier_refs[0] === "nf_bp1");
+
+  // cross_ws_exchange via the spine lands on the SAME xws: channel K3 uses.
+  await call(GOOD, "dossier-put", [mk("nf_xws", "timed-fyi", [item("x1")])]);
+  const fx = await call(GOOD, "notif-fire", ["cross_ws_exchange", "nf_xws", "BE"]);
+  k("fire(cross_ws_exchange) succeeds", good(fx));
+  k("fire(cross_ws_exchange) routes the K3 xws: channel", (await NF("nf_xws", "channel")) === xwsChannel("BE"));
+
+  // TIER GUARD: a trigger fired at the WRONG tier is REJECTED (catalog binds tier).
+  await call(GOOD, "dossier-put", [mk("nf_wrong", "blocking", [item("w1")])]);
+  k(
+    "fire(blueprint_changed) on a BLOCKING dossier REJECTED (tier guard)",
+    !good(await call(GOOD, "notif-fire", ["blueprint_changed", "nf_wrong", "projX"]))
+  );
+  await call(GOOD, "dossier-put", [mk("nf_wrong2", "timed-fyi", [item("w2")])]);
+  k(
+    "fire(new_dossier) on a TIMED-FYI dossier REJECTED (tier guard)",
+    !good(await call(GOOD, "notif-fire", ["new_dossier", "nf_wrong2"]))
+  );
+  k("fire(off-catalog trigger) REJECTED", !good(await call(GOOD, "notif-fire", ["bogus_trigger", "nf_block"])));
+
+  // task_maybe_stuck VARIABLE (r5): timed-fyi ⇒ batched on stuck:; blocking ⇒ pending.
+  await call(GOOD, "dossier-put", [mk("nf_stuckf", "timed-fyi", [item("s1")])]);
+  const fsf = await call(GOOD, "notif-fire", ["task_maybe_stuck", "nf_stuckf", "jobZ"]);
+  k("fire(task_maybe_stuck@timed-fyi) succeeds", good(fsf));
+  k("fire(task_maybe_stuck@timed-fyi) batches on 'stuck:jobZ'", (await NF("nf_stuckf", "channel")) === "stuck:jobZ");
+  await call(GOOD, "dossier-put", [mk("nf_stuckb", "blocking", [item("s2")])]);
+  const fsb = await call(GOOD, "notif-fire", ["task_maybe_stuck", "nf_stuckb", "jobZ"]);
+  k("fire(task_maybe_stuck@blocking) succeeds (NOT a vacuous PENDING pass)", good(fsb));
+  k("fire(task_maybe_stuck@blocking) is PENDING, no channel", (await NF("nf_stuckb", "channel")) === null);
+  k("fire(task_maybe_stuck@blocking) not auto-dispatched", (await NF("nf_stuckb", "dispatched")) === false);
+
+  // TRIAGE ONLY: a fired notification carries NO content (the closed §4.3 set).
+  const rec = await NREC("nf_bp1");
+  k(
+    "a fired notification carries NO content key (triage only — principle 2)",
+    rec && Object.keys(rec).every((key) => !["body", "content", "payload", "items"].includes(key))
+  );
+
+  // eslint-disable-next-line no-console
+  console.log(`\n══ CF.9 N1 trigger catalog + spine: PASS=${P} FAIL=${F} ══`);
+  if (F > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + ff.join("\n  - "));
+  }
+  expect(F, `N1 clauses failed: ${ff.join("; ")}`).toBe(0);
 });
