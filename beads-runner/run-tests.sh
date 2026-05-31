@@ -45,6 +45,31 @@ set -u
 
 BR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── gate-invocation log (claude-tools-d315) ──────────────────────────────────
+# Append ONE record per gate ENTRY — before arg-parsing and the singleton lock —
+# so EVERY invocation self-identifies its caller: a full run, a --tier/--changed
+# run, a lock-refused run (exit 75), and a SELFTEST all land a row. This exists
+# to explain the unexplained 2026-05-30 nested full gate (a second full run whose
+# parent PID was the first gate) when no code in the repo invokes run-tests.sh:
+# the next nested/concurrent gate now names its parent command, so we learn
+# whether it's a worker relaunch, a sandboxed runner, or a real recursion — and
+# fix the right thing instead of guessing on dead PIDs.
+#
+# The path is derived from BR_DIR (the REAL beads-runner dir, never CWD), so it
+# always points at the real repo's .beads/runner-logs/ even when the gate runs
+# inside a conformance mktemp sandbox — outside every test's asserted surface
+# ($WORKDIR/.beads), and double-gitignored (root .gitignore + the dir's own
+# `*`/`!.gitignore`). The whole block is `|| true`-guarded: a logging failure can
+# NEVER fail or perturb the gate, which stays deterministic.
+{
+  _d315_logdir="$BR_DIR/../.beads/runner-logs"
+  mkdir -p "$_d315_logdir" 2>/dev/null
+  printf '%s\tpid=%s\tppid=%s\targs=%s\tcaller=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PPID" "$*" \
+    "$(ps -o command= -p "$PPID" 2>/dev/null)" \
+    >>"$_d315_logdir/gate-invocations.log"
+} 2>/dev/null || true
+
 # ── colors (used unconditionally, matching the existing test convention) ──
 C_G=$'\033[32m'; C_R=$'\033[31m'; C_Y=$'\033[33m'; C_C=$'\033[36m'; C_0=$'\033[0m'
 
