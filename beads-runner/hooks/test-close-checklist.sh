@@ -48,6 +48,22 @@ mkworkspace() {  # mkworkspace → echoes a tmpdir set up as a fake workspace
   echo "$d"
 }
 
+# Write a session transcript JSONL inside the workspace (under runner-logs, so
+# it's excluded from the dirty-tree check) and echo its path. Each arg is one
+# already-formed JSONL line. Shape mirrors a real Claude Code transcript:
+#   {"type":"assistant", ..., "message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"wrapup"}}]}}
+write_transcript() {  # write_transcript <ws> <jsonl-line> [<jsonl-line> ...]
+  local ws="$1"; shift
+  local tp="$ws/.beads/runner-logs/transcript.jsonl"
+  : > "$tp"
+  local line
+  for line in "$@"; do printf '%s\n' "$line" >> "$tp"; done
+  echo "$tp"
+}
+
+# A canonical "the agent invoked /wrapup" transcript line. $1 = skill name.
+skill_line() { printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_x","name":"Skill","input":{"skill":"%s"}}]}}' "$1"; }
+
 run_hook() {  # run_hook <input_json> <env-prefix-line> → stdout + stderr; exit propagated
   local input="$1" envs="$2"
   # Scrub the runner's session/bead env BEFORE applying the per-test prefix so
@@ -269,6 +285,90 @@ echo "foo" > "$ws/.beads/runner-logs/current-task"
 out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CLAUDE_PROJECT_DIR=$ws")
 # Should trip the missing-debrief check (notes empty), proving the file fallback worked
 assert_block_stop "T15 task-id from file fallback" "$out" "No debrief"
+rm -rf "$ws" "$shim"
+
+echo "[Wrapup hybrid: transcript Skill(wrapup) OR marker — claude-tools-fh87]"
+
+# Long debrief WITHOUT a wrapup-reviewed marker (so the wrapup check is the only
+# variable; the debrief check is satisfied and won't add noise to the block).
+NO_MARKER_NOTES="a sufficiently long debrief here describing what was done, well over the forty char threshold"
+
+# T16: transcript present + Skill(wrapup) in transcript + NO marker → allow
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+tp=$(write_transcript "$ws" "$(skill_line wrapup)")
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T16 transcript Skill(wrapup), no marker → allow" "$out"
+rm -rf "$ws" "$shim"
+
+# T17: transcript present + NO Skill(wrapup) + marker present → allow (marker path)
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES; wrapup-reviewed: 2026-01-01 sha=abc clean=0\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+tp=$(write_transcript "$ws" '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}')
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T17 transcript w/o Skill but marker present → allow" "$out"
+rm -rf "$ws" "$shim"
+
+# T18: transcript present + NO Skill(wrapup) + NO marker → block (wrapup_not_invoked)
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+tp=$(write_transcript "$ws" '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}')
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_stop "T18 transcript w/o Skill + no marker → block" "$out" "has not been invoked"
+rm -rf "$ws" "$shim"
+
+# T19: transcript MISSING + marker present → allow (graceful degrade to marker)
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES; wrapup-reviewed: 2026-01-01 sha=abc clean=0\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T19 no transcript_path + marker → allow (marker fallback)" "$out"
+rm -rf "$ws" "$shim"
+
+# T20: transcript MISSING + NO marker → block (marker-only fallback still enforces)
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_stop "T20 no transcript_path + no marker → block" "$out" "has not been invoked"
+rm -rf "$ws" "$shim"
+
+# T21: custom BEADS_WRAPUP_SKILL_PATTERN + Skill(wrapup-frontend) in transcript → allow.
+# The workspace skill dir must also match the pattern, so create wrapup-frontend/.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+mkdir -p "$ws/.claude/skills/wrapup-frontend"; echo stub > "$ws/.claude/skills/wrapup-frontend/SKILL.md"
+git -C "$ws" rm -q -f .claude/skills/wrapup/SKILL.md 2>/dev/null
+git -C "$ws" -c user.email=t@t -c user.name=t add . 2>/dev/null
+git -C "$ws" -c user.email=t@t -c user.name=t commit -q -m "swap to wrapup-frontend" 2>/dev/null
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+tp=$(write_transcript "$ws" "$(skill_line wrapup-frontend)")
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws BEADS_WRAPUP_SKILL_PATTERN=wrapup*")
+assert_allow "T21 custom pattern + Skill(wrapup-frontend) → allow" "$out"
+rm -rf "$ws" "$shim"
+
+# T22: transcript has a NON-wrapup Skill (code-reviewer) + no marker → block.
+# Guards against false-positive on ANY Skill call.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+tp=$(write_transcript "$ws" "$(skill_line code-reviewer)")
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_stop "T22 non-wrapup Skill only + no marker → block" "$out" "has not been invoked"
+rm -rf "$ws" "$shim"
+
+# T23: live transcript with a partial/malformed final line + a valid Skill(wrapup)
+# line → still allow (per-line scan tolerates the mid-write tail; jq -s would not).
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+tp=$(write_transcript "$ws" "$(skill_line wrapup)" '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Sk')
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T23 partial final line + valid Skill(wrapup) → allow" "$out"
+rm -rf "$ws" "$shim"
+
+# T24: plugin-namespaced Skill("myplugin:wrapup") + default pattern + no marker →
+# allow. The namespace prefix must not defeat the default "wrapup*" match.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$NO_MARKER_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+tp=$(write_transcript "$ws" "$(skill_line myplugin:wrapup)")
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T24 namespaced Skill(myplugin:wrapup) + default pattern → allow" "$out"
 rm -rf "$ws" "$shim"
 
 echo

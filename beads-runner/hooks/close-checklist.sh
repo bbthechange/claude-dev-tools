@@ -7,7 +7,9 @@
 #   2. clean git tree (excluding debrief / runner-log scratch files)
 #   3. closed bead has a commit referencing it (Stop only — PreToolUse fires
 #      BEFORE close so the inconsistency can't yet exist)
-#   4. /wrapup skill was invoked (wrapup-reviewed marker in bd notes)
+#   4. /wrapup was invoked — proven by EITHER signal (claude-tools-fh87):
+#        (a) a Skill(<wrapup-pattern>) tool_use in this session's transcript, OR
+#        (b) a wrapup-reviewed marker in bd notes (durable audit trail)
 #   5. a debrief was appended to bd notes
 #
 # Emits ONE comprehensive block per round so the agent can fix all failures in
@@ -42,6 +44,12 @@
 #   CLAUDE_SESSION_ID      session id (falls back to stdin .session_id)
 #   BEADS_HOOK_LOG         override log file path
 #   POST_TERMINAL_GRACE    (referenced only in remediation text; runner reads it)
+#   BEADS_WRAPUP_SKILL_PATTERN  glob for wrapup skill names (default "wrapup*").
+#                          Used for BOTH the workspace-skill existence gate and
+#                          the transcript Skill-name match, so a workspace can
+#                          tailor its skill (e.g. "wrapup-frontend") and stay in
+#                          contract. The marker fallback ("wrapup-reviewed:") is
+#                          pattern-independent.
 #
 # Tools assumed present: jq, git, bd, pgrep, ps. Missing tools → check is skipped,
 # not a hard fail (graceful degrade for minimal environments).
@@ -286,12 +294,71 @@ if [[ "$event_name" == "Stop" ]] && command -v bd >/dev/null 2>&1; then
   fi
 fi
 
-# Check 4: wrapup-reviewed marker (only if a /wrapup skill exists) ────────
-if [[ -f "$project_dir/.claude/skills/wrapup/SKILL.md" ]] && command -v bd >/dev/null 2>&1; then
-  notes="$(bd show "$task_id" --long --json 2>/dev/null | jq -r '.[0].notes // ""' 2>/dev/null)"
-  if ! printf '%s' "$notes" | grep -q 'wrapup-reviewed:'; then
+# Check 4: /wrapup invoked — accept EITHER signal (claude-tools-fh87 hybrid) ─
+#   (a) transcript signal (primary, content-decoupled): a Skill tool_use whose
+#       input skill name glob-matches $BEADS_WRAPUP_SKILL_PATTERN, recorded in
+#       THIS session's transcript_path.
+#   (b) marker signal (secondary, durable audit trail): a 'wrapup-reviewed:'
+#       line in the bead notes (written by the wrapup skill's final step).
+# Only enforced when a wrapup-pattern skill actually exists in the workspace
+# (nothing to enforce otherwise — preserves the "no wrapup skill → skip" path).
+#
+# Why a hybrid: check #4 used to trust ONLY the marker, an agent-authored line
+# gated on each workspace's wrapup skill telling it to write it. N workspaces ×
+# M skill edits = a silent drift surface — drop the marker step in any workspace
+# and that workspace's workers burn the 8-block cap on every close. The
+# transcript path proves wrapup ran from the tool-call record itself, so the
+# skill content can stay tailored per-workspace without coordination.
+#
+# Transcript JSONL shape (verified claude-tools-fh87 against live transcripts):
+#   {"type":"assistant", ..., "message":{"content":[
+#       {"type":"tool_use","name":"Skill","input":{"skill":"wrapup"}, ...}]}}
+# We scan line-by-line (NOT `jq -s` over the whole file): the transcript is
+# appended live, so its final line may be a partial write — slurping would abort
+# the entire parse on that one malformed line. Per-line jq tolerates it. The
+# grep -F prefilter keeps the scan cheap on long transcripts; if the writer's
+# formatting ever drifts past it we just miss the transcript signal and fall
+# back to the marker (graceful), never a false block.
+wrapup_pattern="${BEADS_WRAPUP_SKILL_PATTERN:-wrapup*}"
+shopt -s nullglob
+_wrapup_skills=("$project_dir"/.claude/skills/$wrapup_pattern/SKILL.md)
+shopt -u nullglob
+if (( ${#_wrapup_skills[@]} > 0 )); then
+  wrapup_ok=0
+  wrapup_checkable=0  # did we have ANY way to verify? if not, skip (don't block)
+
+  # (a) transcript signal
+  transcript_path="$(jqr '.transcript_path // empty')"
+  if [[ -n "$transcript_path" && -f "$transcript_path" ]] && command -v jq >/dev/null 2>&1; then
+    wrapup_checkable=1
+    while IFS= read -r _skill; do
+      [[ -z "$_skill" ]] && continue
+      # Plugin skills serialize namespaced ("beads:close", "<plugin>:wrapup");
+      # bare workspace skills serialize as just "wrapup". Match the pattern
+      # against BOTH the full name and the trailing segment (after the last ':')
+      # so the default "wrapup*" catches a plugin-installed wrapup too, while a
+      # deliberately namespaced BEADS_WRAPUP_SKILL_PATTERN still matches the full.
+      # shellcheck disable=SC2053  — RHS glob match against the configured pattern is intentional
+      if [[ "$_skill" == $wrapup_pattern || "${_skill##*:}" == $wrapup_pattern ]]; then wrapup_ok=1; break; fi
+    done < <(grep -F '"name":"Skill"' "$transcript_path" 2>/dev/null \
+               | while IFS= read -r _line; do
+                   printf '%s' "$_line" \
+                     | jq -r '.message.content[]? | select(.type=="tool_use" and .name=="Skill") | .input.skill // empty' 2>/dev/null
+                 done)
+  fi
+
+  # (b) marker signal (only consulted if the transcript didn't already prove it)
+  if (( wrapup_ok == 0 )) && command -v bd >/dev/null 2>&1; then
+    wrapup_checkable=1
+    notes="$(bd show "$task_id" --long --json 2>/dev/null | jq -r '.[0].notes // ""' 2>/dev/null)"
+    if printf '%s' "$notes" | grep -q 'wrapup-reviewed:'; then
+      wrapup_ok=1
+    fi
+  fi
+
+  if (( wrapup_checkable == 1 && wrapup_ok == 0 )); then
     failures+=("wrapup_not_invoked")
-    remediation+=("The /wrapup skill has not been invoked for $task_id (no 'wrapup-reviewed:' marker in bead notes). Run /wrapup before closing — it enforces code review, quality gates, production-risk analysis, and writes the marker as its final step. The skill is at .claude/skills/wrapup/SKILL.md.")
+    remediation+=("The /wrapup skill has not been invoked for $task_id (no Skill(wrapup) tool-call in this session's transcript, and no 'wrapup-reviewed:' marker in bead notes). Run /wrapup before closing — it enforces code review, quality gates, production-risk analysis, and (recommended) writes the marker as its final step. The skill is at .claude/skills/wrapup/SKILL.md (or your workspace's wrapup-pattern skill).")
   fi
 fi
 
