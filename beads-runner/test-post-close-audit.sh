@@ -298,6 +298,77 @@ else
 fi
 rm -rf "$ws" "$shim"
 
+# T7: Closed bead whose only commit carries the SHORT conventional-commit scope,
+#     not the full bead id → close_without_commit fires. Mirrors close-checklist
+#     T11b so the runner audit and the Stop hook AGREE that a short scope alone
+#     (e.g. `docs(foo): ...`) does not satisfy the full-id grep (claude-tools-02ec
+#     acceptance: both grep sites must agree). Marker + debrief are present so
+#     close_without_commit is isolated.
+ws=$(mkfixture); shim=$(mkshim)
+write_shim "$shim" bd "
+case \"\$*\" in
+  'show claude-tools-foo --json')
+    printf '%s' '[{\"status\":\"closed\"}]' ;;
+  'show claude-tools-foo --long --json')
+    printf '%s' '[{\"status\":\"closed\",\"notes\":\"This is a properly long debrief explaining what happened in detail.\nwrapup-reviewed: 2026-05-31T10:00:00Z sha=abc clean=0\"}]' ;;
+  create*) echo \"\$*\" >> '$ws/.beads/runner-logs/bd-create-calls.log' ;;
+esac
+exit 0
+"
+mkdir -p "$ws/.claude/skills/wrapup" && echo stub > "$ws/.claude/skills/wrapup/SKILL.md"
+( cd "$ws" \
+  && git init -q 2>/dev/null \
+  && git -c user.email=t@t -c user.name=t add . \
+  && git -c user.email=t@t -c user.name=t commit -q -m 'docs(foo): short scope only, no full id' )
+
+run_audit "$ws" "claude-tools-foo" "$shim" >/dev/null 2>&1
+
+inc_log="$ws/.beads/runner-logs/incidents.log"
+if [[ -s "$inc_log" ]] && grep -q "close_without_commit" "$inc_log"; then
+  PASS=$((PASS+1)); echo "  PASS: T7 short-scope-only fires close_without_commit (agrees with hook)"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES+=("T7")
+  echo "  FAIL: T7 expected close_without_commit incident, got:"
+  [[ -s "$inc_log" ]] && cat "$inc_log" | sed 's/^/    /' || echo "    (no incident)"
+fi
+rm -rf "$ws" "$shim"
+
+# T8: Closed bead, commit subject uses the SHORT scope but the BODY carries the
+#     FULL bead id → no audit fires. Mirrors close-checklist T11c: the recommended
+#     wrapup pattern (`docs(foo): ...` subject + `Refs: claude-tools-foo` body)
+#     satisfies the full-id grep at BOTH sites, so a clean close stays clean.
+ws=$(mkfixture); shim=$(mkshim)
+write_shim "$shim" bd "
+case \"\$*\" in
+  'show claude-tools-foo --json')
+    printf '%s' '[{\"status\":\"closed\"}]' ;;
+  'show claude-tools-foo --long --json')
+    printf '%s' '[{\"status\":\"closed\",\"notes\":\"This is a properly long debrief explaining what happened in detail.\nwrapup-reviewed: 2026-05-31T10:00:00Z sha=abc clean=0\"}]' ;;
+  create*) echo \"\$*\" >> '$ws/.beads/runner-logs/bd-create-calls.log' ;;
+esac
+exit 0
+"
+mkdir -p "$ws/.claude/skills/wrapup" && echo stub > "$ws/.claude/skills/wrapup/SKILL.md"
+( cd "$ws" \
+  && git init -q 2>/dev/null \
+  && git -c user.email=t@t -c user.name=t add . \
+  && git -c user.email=t@t -c user.name=t commit -q -m 'docs(foo): short scope subject' -m 'Refs: claude-tools-foo' )
+
+run_audit "$ws" "claude-tools-foo" "$shim" >/dev/null 2>&1
+
+if [[ ! -s "$ws/.beads/runner-logs/incidents.log" ]] \
+   && [[ ! -s "$ws/.beads/runner-logs/bd-create-calls.log" ]]; then
+  PASS=$((PASS+1)); echo "  PASS: T8 full id in body → clean close (agrees with hook)"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES+=("T8")
+  echo "  FAIL: T8 full-id-in-body fired audit (should not):"
+  [[ -s "$ws/.beads/runner-logs/incidents.log" ]] && \
+    echo "    incident:"; cat "$ws/.beads/runner-logs/incidents.log" | sed 's/^/      /' 2>/dev/null
+  [[ -s "$ws/.beads/runner-logs/bd-create-calls.log" ]] && \
+    echo "    bd create:"; cat "$ws/.beads/runner-logs/bd-create-calls.log" | sed 's/^/      /' 2>/dev/null
+fi
+rm -rf "$ws" "$shim"
+
 # ── Summary ─────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

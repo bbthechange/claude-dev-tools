@@ -47,9 +47,13 @@ git commit -m "$(cat <<'EOF'
 <subject — imperative mood, ≤ 72 chars>
 
 <body: why this change exists; the diff shows the what>
+
+Refs: <full bead id, e.g. claude-tools-xxxx>
 EOF
 )"
 ```
+
+**Carry the full bead id.** If this work tracks a bd issue, the commit message MUST contain the full `claude-tools-<id>` — in the subject or the body (a `Refs:` footer is fine). The beads-runner close-discipline check greps `git log` for the full id; a short conventional-commit scope like `feat(xxx):` alone does NOT match it and trips a false `close_without_commit`. Folding the id into the real work commit removes any need for a separate empty "carry full bead id" commit.
 
 Verify:
 

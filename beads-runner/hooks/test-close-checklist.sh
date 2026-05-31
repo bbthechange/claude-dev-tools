@@ -254,6 +254,35 @@ out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "P
 assert_allow "T11a closed-with-commit allowed" "$out"
 rm -rf "$ws" "$shim"
 
+# T11b: Closed bead whose only commit carries the SHORT conventional-commit
+# scope, not the full bead id → block. Locks the limitation that motivates
+# the full-id commit mandate (claude-tools-02ec): `git log --grep` for the full
+# id `claude-tools-foo` cannot match a `docs(foo): ...` subject. If anyone ever
+# loosens the grep to also match the short id (option a), this test must be
+# consciously updated — it is the guard for the chosen behavior.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show claude-tools-foo --long --json') printf '%s' '[{\"status\":\"closed\",\"notes\":\"a debrief that is plenty long for the threshold; wrapup-reviewed: 2026-01-01\"}]'; ;; 'show claude-tools-foo --json') printf '%s' '[{\"status\":\"closed\"}]' ;; esac"
+echo "ref" > "$ws/ref.txt"
+git -C "$ws" add ref.txt 2>/dev/null
+git -C "$ws" -c user.email=t@t -c user.name=t commit -q -m "docs(foo): short scope only, no full id" 2>/dev/null
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=claude-tools-foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_stop "T11b short-scope-only blocks (full id absent)" "$out" "closed but no commit"
+rm -rf "$ws" "$shim"
+
+# T11c: Closed bead, commit subject uses the SHORT scope but the BODY carries
+# the FULL bead id → allow. Validates the recommended wrapup pattern (claude-
+# tools-02ec option b): a `docs(foo): ...` subject + a `Refs: claude-tools-foo`
+# body line satisfies the full-id grep, so the conventional short scope can
+# stay AND close-discipline passes with no separate carry-id commit.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show claude-tools-foo --long --json') printf '%s' '[{\"status\":\"closed\",\"notes\":\"a debrief that is plenty long for the threshold; wrapup-reviewed: 2026-01-01\"}]'; ;; 'show claude-tools-foo --json') printf '%s' '[{\"status\":\"closed\"}]' ;; esac"
+echo "ref" > "$ws/ref.txt"
+git -C "$ws" add ref.txt 2>/dev/null
+git -C "$ws" -c user.email=t@t -c user.name=t commit -q -m "docs(foo): short scope subject" -m "Refs: claude-tools-foo" 2>/dev/null
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=claude-tools-foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "T11c full id in body allowed (short scope subject)" "$out"
+rm -rf "$ws" "$shim"
+
 # T12: Missing debrief → block
 ws=$(mkworkspace); shim=$(mkshim_dir)
 write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"wrapup-reviewed: 2026-01-01\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
