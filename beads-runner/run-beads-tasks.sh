@@ -313,6 +313,21 @@ NP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/node25-pri
 source "$NP_LIB"
 node25_prime_path "${RUNNER_SKIP_NVM_PRIME:-0}"
 
+# ── Trunk pin (claude-tools-trunkpin; shared with runner.sh via
+#    lib/git-pin-main.sh). The runner does per-bead auto-commit on whatever
+#    branch HEAD points at and NEVER creates branches; a worker that manually
+#    `git checkout -b`s and never returns the tree to main makes EVERY later
+#    bead pile onto that feature branch. pin_head_to_main (called at the loop
+#    top below) self-heals a wandered-off tree back to main each iteration when
+#    it is clean. Sourced OPTIONALLY: the self-heal is best-effort, so a missing
+#    lib degrades to a no-op stub rather than aborting the runner.
+pin_head_to_main() { :; }   # default no-op; overridden by the lib if present
+PIN_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/git-pin-main.sh"
+if [[ -f "$PIN_LIB" ]]; then
+  # shellcheck source=lib/git-pin-main.sh
+  source "$PIN_LIB"
+fi
+
 # claude-tools-2fkp: the close-discipline `--settings` JSON shape is now shared
 # with runner.sh (v2) via hooks/build-settings.sh so the PreToolUse(Bash)+Stop
 # wiring can never drift between the two runners. OPTIONAL & guarded like the
@@ -1428,6 +1443,14 @@ while true; do
     rm -f "$STOP_FILE"
     break
   fi
+
+  # claude-tools-trunkpin: pin HEAD back to main at the loop top, BEFORE the
+  # next bead is claimed. The runner auto-commits per bead onto whatever branch
+  # HEAD points at; once a worker wanders the tree onto a feature branch, all
+  # later beads pile there until a human notices. Enforce in the loop (the same
+  # lesson as the gate/close hooks), not by worker discipline. Self-heals only
+  # when the tree is clean; silent no-op on the common already-on-main path.
+  pin_head_to_main "${RUNNER_SKIP_PIN_MAIN:-0}"
 
   # Check usage quota before starting a new task
   while ! check_usage; do

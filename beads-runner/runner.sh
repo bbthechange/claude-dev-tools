@@ -240,6 +240,21 @@ esac
 source "$RUNNER_DIR/lib/node25-prime.sh"
 node25_prime_path "${RUNNER_SKIP_NVM_PRIME:-0}"
 
+# ── Trunk pin (claude-tools-trunkpin; shared lib at lib/git-pin-main.sh, shared
+#    with run-beads-tasks.sh = v1). The runner does per-bead auto-commit on
+#    whatever branch HEAD points at and NEVER creates branches; a worker that
+#    manually `git checkout -b`s and never returns the tree to main makes EVERY
+#    later bead pile onto that feature branch until a human notices. The fix
+#    enforces in the loop (same lesson as the gate/close hooks): pin_head_to_main
+#    runs at THE single reconcile point (st_reconcile, before CLAIM) and
+#    self-heals a wandered-off tree back to main each iteration when it is clean.
+#    OPTIONAL & guarded — a missing lib degrades to a no-op stub, never crashes.
+pin_head_to_main() { :; }   # default no-op; overridden by the lib if present
+if [[ -f "$RUNNER_DIR/lib/git-pin-main.sh" ]]; then
+  # shellcheck source=lib/git-pin-main.sh
+  source "$RUNNER_DIR/lib/git-pin-main.sh"
+fi
+
 # ── close-discipline hook settings builder (claude-tools-2fkp) ────────────────
 # The `--settings` JSON shape that wires the close-checklist hook into each
 # worker is shared with run-beads-tasks.sh (v1) via hooks/build-settings.sh so
@@ -1205,6 +1220,14 @@ st_reconcile() {
     rm -f "$STOP_FILE" 2>/dev/null || true
     transition STOPPING; return
   fi
+
+  # claude-tools-trunkpin: pin HEAD back to main at THE reconcile point, before
+  # CLAIM. The runner auto-commits per bead onto whatever branch HEAD points at;
+  # once a worker wanders the tree onto a feature branch, every later bead piles
+  # there until a human notices. Enforce in the loop, not by worker discipline
+  # (the gate/close-hook lesson). Self-heals only when the tree is clean; silent
+  # no-op on the common already-on-main path. Best-effort: never aborts reconcile.
+  pin_head_to_main "${RUNNER_SKIP_PIN_MAIN:-0}"
 
   # Job 4 — reconcile desired-state (§2.4/§3). The Coordinator owns `desired`.
   local desired
