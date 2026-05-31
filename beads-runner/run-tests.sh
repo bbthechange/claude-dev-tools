@@ -64,9 +64,13 @@ BR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 {
   _d315_logdir="$BR_DIR/../.beads/runner-logs"
   mkdir -p "$_d315_logdir" 2>/dev/null
+  # Sanitize the free-text fields (args, and esp. caller — a parent command line
+  # can carry embedded newlines/TABs; BSD ps escapes them but procps may not) so
+  # each entry stays ONE physical TAB-delimited row for a downstream parser.
   printf '%s\tpid=%s\tppid=%s\targs=%s\tcaller=%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PPID" "$*" \
-    "$(ps -o command= -p "$PPID" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PPID" \
+    "$(printf '%s' "$*" | tr '\n\t' '  ')" \
+    "$(ps -o command= -p "$PPID" 2>/dev/null | tr '\n\t' '  ')" \
     >>"$_d315_logdir/gate-invocations.log"
 } 2>/dev/null || true
 
