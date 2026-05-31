@@ -1,0 +1,15 @@
+# beads-runner/web/_headers — Cloudflare Pages response headers for the unified
+# claude-wrangler app. First match wins; only the paths listed here get extra
+# headers (everything else uses Pages defaults).
+#
+# N2 (claude-tools-uxg1): the Inbox PWA. The service worker must NOT be served
+# from a stale cache (a pushed SW update has to take effect promptly), and the
+# manifest must carry the correct MIME so the browser treats it as a Web App
+# Manifest (installability → Web Push on the installed PWA).
+
+/inbox/sw.js
+  Cache-Control: no-cache
+  Service-Worker-Allowed: /
+
+/inbox/manifest.webmanifest
+  Content-Type: application/manifest+json

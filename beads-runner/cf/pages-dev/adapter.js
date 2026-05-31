@@ -92,12 +92,25 @@ function argsForPost(op, body) {
   // stateCheck is the only gate. The PROXY (expire.js) hard-codes state to
   // 'expired'; the adapter stays dumb plumbing.
   if (op === "item-set-state") return [b.dossier_id, b.item_id, b.state];
+<<<<<<< HEAD
   // L1 follow-up (claude-tools-uxl1b) — the §5.6 defer / escalate verbs. Each
   // narrow proxy (inbox/defer.js, inbox/escalate.js) sends {dossier_id} ONLY;
   // here it unwraps to dossierSetAttention's positional [did]. The engine op
   // (dossier-defer / dossier-escalate) hard-codes the target tier (digest /
   // blocking); the adapter stays dumb plumbing and never picks the op or tier.
   if (op === "dossier-defer" || op === "dossier-escalate") return [b.dossier_id];
+=======
+  // N2 (claude-tools-uxg1) — the Inbox PWA's Web-Push subscribe/unsubscribe.
+  // The browser holds NO secret (§9.1/§9.2): it POSTs the same-origin proxy
+  // (web/functions/api/push/*.js), which attaches the server bearer and calls
+  // `/request?op=push-subscribe`. Here the named body {endpoint,p256dh,auth}
+  // unwraps to handlePushOp's positional [endpoint, p256dh, auth]. The adapter
+  // stays dumb plumbing; the engine owns the store + the input gate. (The
+  // delivery sweep `notif-deliver` is daemon-native — it hits the Worker root
+  // dialect directly and never this `/request` re-frame.)
+  if (op === "push-subscribe") return [b.endpoint, b.p256dh, b.auth];
+  if (op === "push-unsubscribe") return [b.endpoint];
+>>>>>>> origin/n2-uxg1-push-delivery
   // F1 (claude-tools-49w) — Board-side of UX-DESIGN Flow D. The proxy carries
   // the named-JSON-body shape {project_ref, desired:{state,actor}}; here it
   // unwraps to opSetDesired's positional `[proj, state, actor]` (the same

@@ -1,0 +1,19 @@
+{
+  "name": "Beads Runner — Inbox",
+  "short_name": "Beads Inbox",
+  "description": "The attention router: decisions that need you, and nothing that doesn't.",
+  "id": "/inbox/",
+  "start_url": "/inbox/",
+  "scope": "/inbox/",
+  "display": "standalone",
+  "background_color": "#0e0e10",
+  "theme_color": "#0e0e10",
+  "icons": [
+    {
+      "src": "/inbox/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

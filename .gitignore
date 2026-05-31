@@ -25,6 +25,7 @@ mcp-askbrian/node_modules/
 mcp-askbrian/.test-scratch/
 mcp-askbrian/package-lock.json
 
+<<<<<<< HEAD
 # beads-runner/ web tooling deps (re-installed on demand; never committed).
 beads-runner/node_modules/
 
@@ -35,3 +36,10 @@ beads-runner/node_modules/
 
 # /schedule lock file — local scratch, regenerated on demand.
 .claude/scheduled_tasks.lock
+=======
+# N2 (claude-tools-uxg1) — the VAPID PRIVATE key for Web Push. NEVER committed;
+# it is set as a Worker secret (`wrangler secret put VAPID_PRIVATE_KEY`). The
+# matching PUBLIC key is safe and lives in beads-runner/web/inbox/push.js +
+# cf/src/push.js's env. Regenerate the pair to rotate.
+*.vapid-private.local
+>>>>>>> origin/n2-uxg1-push-delivery
