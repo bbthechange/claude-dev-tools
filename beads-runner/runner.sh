@@ -95,6 +95,18 @@ WATCHDOG_SOFT_WARN=180                                 # BC-22 SCAR — HARDCODE
 # genuine deadlocks (the D5 hung-bg-Bash case: in-flight but truly stuck)
 # while protecting legitimate long subagents (R1's 30-min SIGSTOP probes).
 IDLE_TIMEOUT_INFLIGHT_MULT="${IDLE_TIMEOUT_INFLIGHT_MULT:-6}"  # multiplier while ≥1 Task subagent is in-flight
+# claude-tools-2fkp (port of td0y): post-terminal SIGKILL grace. Once the SDK
+# emits its terminal record (`terminal_reason` or `type":"result"`), claude is
+# contract-done; if the process is STILL alive this many seconds later it is
+# wedged on an orphan child (the krxv incident: Node won't exit while a
+# `run_in_background:true` Bash poller keeps its event loop alive). This is
+# ORTHOGONAL to IDLE_TIMEOUT — that's stream/tree silence inside an ACTIVE task;
+# this is a known-COMPLETED task that won't release. 60s is comfortably longer
+# than any legitimate Node teardown but ~360× faster than the inflight-stretched
+# idle ceiling. The watchdog (which already polls every WATCHDOG_POLL while the
+# worker is alive) both STAMPS the terminal marker and ENFORCES this grace —
+# v2 has no concurrent tail -f parser (v1's stamping seam). Env-overridable.
+POST_TERMINAL_GRACE="${POST_TERMINAL_GRACE:-60}"      # secs after SDK terminal record before SIGKILL backstop
 
 # ── Minimal runtime config (skeleton). The full BC-37 config seam — sourced
 #    allowlist, --yolo, runner_setup/runner_cleanup hooks — is NOT T2.1's owned
@@ -228,6 +240,18 @@ esac
 source "$RUNNER_DIR/lib/node25-prime.sh"
 node25_prime_path "${RUNNER_SKIP_NVM_PRIME:-0}"
 
+# ── close-discipline hook settings builder (claude-tools-2fkp) ────────────────
+# The `--settings` JSON shape that wires the close-checklist hook into each
+# worker is shared with run-beads-tasks.sh (v1) via hooks/build-settings.sh so
+# the PreToolUse(Bash)+Stop matcher set can never drift between the two runners.
+# OPTIONAL & guarded: an absent builder DEGRADES to "spawn the worker without
+# the hook" at the st_run_task call site (the §7.2 prompt-instructed discipline
+# + the post-terminal watchdog backstop still apply), never crashes the loop.
+if [[ -f "$RUNNER_DIR/hooks/build-settings.sh" ]]; then
+  # shellcheck source=hooks/build-settings.sh
+  source "$RUNNER_DIR/hooks/build-settings.sh"
+fi
+
 # ── BC-42 typed degradation primitive ────────────────────────────────────────
 # degrade <KIND> <human-msg>            — one visible typed line; never silent.
 # safe_capture <KIND> <fallback> -- cmd…
@@ -271,6 +295,8 @@ WATCHDOG_PID=""          # T2.3 BC-22 watchdog subshell (one per task; in-band-r
 STREAM_FILE=""           # T2.3: worker stream-json capture (watchdog output-progress signal)
 SIGNAL_FILE=""           # T2.3 BC-40 IPC seam: watchdog appends WATCHDOG_KILL=1; T2.2 classify consumes
 PROC_SNAPSHOT=""         # T2.3 BC-22 snapshot-before-signal artifact (T2.2 keeps it ONLY for WATCHDOG_KILL)
+POST_TERMINAL_FILE=""    # claude-tools-2fkp: epoch the SDK terminal record was seen; watchdog stamps + enforces the grace
+HOOK_SETTINGS_FILE=""    # claude-tools-2fkp: per-task close-discipline --settings JSON (cleaned at task-end + teardown)
 STOP_REQUESTED=""        # set when stop/desired∈{stopped} OBSERVED (§2.5); honored AFTER current task
 COMPLETED=0
 PROCESSED=0
@@ -857,6 +883,12 @@ runner_teardown() {
   #     seam — this child owns the BC-29 BASENAME scheme, NOT the retention
   #     policy, and must not destroy that seam's input.
   rm -f "${USAGE_CACHE_FILE:-}" "${SIGNAL_FILE:-}" 2>/dev/null || true
+  # claude-tools-2fkp: the per-task close-discipline ephemera — the post-terminal
+  # stamp, the --settings JSON, and the current-task pointer — are NOT classifier
+  # inputs (unlike STREAM_FILE/PROC_SNAPSHOT, deliberately LEFT above), so they
+  # are cleaned on EVERY exit path. Clearing current-task here stops a respawning
+  # runner from seeing a stale id on its first hook firing.
+  rm -f "${POST_TERMINAL_FILE:-}" "${HOOK_SETTINGS_FILE:-}" "$LOG_DIR/current-task" 2>/dev/null || true
 
   echo "runner: Results: $COMPLETED completed / $PROCESSED processed"
   # NO `exit` — preserve the code set by st_terminal / _on_signal (BC-21).
@@ -992,9 +1024,9 @@ _inflight_tasks() {
 # is preserved (a genuinely deadlocked bg-Bash that registers as in-flight
 # still dies eventually), only deferred for legitimately-slow subagents.
 _watchdog_loop() {
-  local pid="$1" stream="$2" sig="$3" snap="$4"
+  local pid="$1" stream="$2" sig="$3" snap="$4" post_terminal_file="${5:-}"
   local now last_progress prev_bytes prev_cpu bytes cpu idle warned=0
-  local inflight effective_timeout
+  local inflight effective_timeout pt_at pt_age
   now="$(date +%s)"; last_progress="$now"
   prev_bytes="$(wc -c < "$stream" 2>/dev/null | tr -d ' ')"; prev_bytes="${prev_bytes:-0}"
   prev_cpu="$(_tree_cpu_secs "$pid" 2>/dev/null)"; prev_cpu="${prev_cpu:-0}"
@@ -1002,6 +1034,38 @@ _watchdog_loop() {
     sleep "$WATCHDOG_POLL"
     kill -0 "$pid" 2>/dev/null || break
     now="$(date +%s)"
+    # claude-tools-2fkp (port of td0y): post-terminal SIGKILL backstop. The SDK
+    # terminal record (`terminal_reason` or `type":"result"`) means claude is
+    # contract-done; if it is STILL alive POST_TERMINAL_GRACE seconds later it is
+    # wedged on an orphan child (the krxv pattern: a run_in_background Bash poller
+    # keeps Node's event loop alive past the terminal record — which ALSO keeps
+    # stream/CPU "progress" fresh, so the IDLE_TIMEOUT path below NEVER fires).
+    # v2 has no concurrent tail -f parser (v1's stamping seam), so the watchdog
+    # BOTH stamps the marker (first poll it is greppable in the stream) AND
+    # enforces the grace. Independent of IDLE_TIMEOUT; immune to the inflight mult.
+    if [[ -n "$post_terminal_file" ]]; then
+      if [[ ! -e "$post_terminal_file" ]] \
+         && grep -Eq '"terminal_reason"|"type":"result"' "$stream" 2>/dev/null; then
+        echo "$now" > "$post_terminal_file" 2>/dev/null || true
+        echo "  watchdog: SDK terminal record detected — SIGKILL claude in ${POST_TERMINAL_GRACE:-60}s if still alive (claude-tools-2fkp)"
+      fi
+      if [[ -f "$post_terminal_file" ]]; then
+        pt_at="$(tr -d '[:space:]' < "$post_terminal_file" 2>/dev/null)"
+        if [[ "$pt_at" =~ ^[0-9]+$ ]] && (( pt_at >= 1704067200 )); then
+          pt_age=$(( now - pt_at ))
+          if (( pt_age >= ${POST_TERMINAL_GRACE:-60} )); then
+            echo "  POST-TERMINAL SIGKILL: SDK terminal record was ${pt_age}s ago (grace=${POST_TERMINAL_GRACE:-60}s); claude pid=$pid still alive — likely orphan-child wedge (claude-tools-2fkp)."
+            echo "POST_TERMINAL_KILL=1" >> "$sig"
+            { echo "=== post-terminal snapshot (age=${pt_age}s, grace=${POST_TERMINAL_GRACE:-60}s) ==="
+              ps -o pid,ppid,stat,etime,pcpu,pmem,time,command -p \
+                 "$(_tree_pids "$pid" | tr '\n' ',' | sed 's/,$//')" 2>&1 || true
+            } >> "$snap" 2>&1 || true
+            kill -KILL "$pid" 2>/dev/null || true
+            break
+          fi
+        fi
+      fi
+    fi
     bytes="$(wc -c < "$stream" 2>/dev/null | tr -d ' ')"; bytes="${bytes:-0}"
     cpu="$(_tree_cpu_secs "$pid" 2>/dev/null)"; cpu="${cpu:-0}"
     # CPU or output progress anywhere in the agent+child tree ⇒ NOT stuck.
@@ -1078,6 +1142,11 @@ transition() { echo "state: ${STATE:-∅} -> $1"; STATE="$1"; }
 st_starting() {
   echo "runner: principal=$PRINCIPAL runner_id=$RUNNER_ID project=$PROJECT_REF"
   rm -f "$STOP_FILE" 2>/dev/null || true       # clean slate (stop is consumed, not sticky)
+  # claude-tools-2fkp: clear any stale current-task pointer a previous runner
+  # left behind (SIGKILL, crash). It is regenerated per-task at claim; a stale
+  # id here would make the close-discipline hook enforce against the WRONG bead
+  # on the first tool call of the next task before the new id is written.
+  rm -f "$LOG_DIR/current-task" 2>/dev/null || true
   job_heartbeat starting "" "" >/dev/null
   transition RECONCILE
 }
@@ -1276,6 +1345,15 @@ st_claim() {
   # transition — this reorder is in this child's BC-35/BC-36 surface, not the
   # T2.1 state machine's.)
   CURRENT_TASK_ID="$CANDIDATE_ID"
+  # claude-tools-2fkp: surface CURRENT_TASK_ID to the close-discipline hook —
+  # export so the `claude -p` worker (and its hook subprocesses) inherit it, and
+  # write a file fallback for a hook that lands in a subshell that dropped env
+  # (the hook reads env first, file second). Done HERE (claim, before the worker
+  # spawns in st_run_task) so the very first tool call is gated against the right
+  # bead. Cleared at task-end (st_post_task) + on every teardown path.
+  export CURRENT_TASK_ID
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '%s' "$CURRENT_TASK_ID" > "$LOG_DIR/current-task" 2>/dev/null || true
   safe_capture BD_UNAVAILABLE "" -- bd update "$CANDIDATE_ID" --status=in_progress >/dev/null
   IDLE_ANNOUNCED=""   # claude-tools-giu: leaving idle — next drain re-announces
   transition RUN_TASK
@@ -1335,12 +1413,51 @@ st_run_task() {
   : > "$STREAM_FILE" 2>/dev/null && : > "$SIGNAL_FILE" 2>/dev/null \
     || degrade ARTIFACT_UNWRITABLE "could not init stream/signal files — watchdog output-progress signal degraded; loop continues"
 
+  # claude-tools-2fkp: per-task close-discipline artifacts. POST_TERMINAL_FILE
+  # records the epoch the SDK terminal record was first seen — stamped by the
+  # watchdog (v2 has NO concurrent stream parser, v1's stamping seam), which
+  # then SIGKILLs claude POST_TERMINAL_GRACE seconds later if it is still alive
+  # (the orphan-child wedge). Both files share the BC-29 timestamped basename so
+  # a killed iteration's leak is cleanable; mktemp is the symmetric fallback
+  # when log_dir is unwritable (mirrors STREAM/SIGNAL/PROC above).
+  if [[ -d "$log_dir" && -w "$log_dir" ]]; then
+    POST_TERMINAL_FILE="$base.post-terminal"
+    HOOK_SETTINGS_FILE="$base.hook-settings.json"
+  else
+    POST_TERMINAL_FILE="$(mktemp 2>/dev/null)" || POST_TERMINAL_FILE="$base.post-terminal"
+    HOOK_SETTINGS_FILE="$(mktemp 2>/dev/null)" || HOOK_SETTINGS_FILE="$base.hook-settings.json"
+  fi
+  rm -f "$POST_TERMINAL_FILE" 2>/dev/null || true   # stale-leak guard; watchdog re-stamps on the terminal record
+
+  # claude-tools-2fkp: wire the close-discipline hook (PreToolUse on Bash so a
+  # `bd close|done|--status=closed` is gated, + Stop so the 8-block checklist
+  # fires at session end) into THIS worker via runner-injected --settings. The
+  # hook script ships with the runner (hooks/close-checklist.sh); the JSON shape
+  # is the shared hooks/build-settings.sh (sourced at startup) so v1/v2 never
+  # drift. BEADS_RUNNER_SESSION=1 gates the hook so an interactive claude in the
+  # same workspace is unaffected even if it loads the same settings. Absent
+  # builder / no jq / write-failure ⇒ NO --settings (the worker runs, no hook).
+  local hook_script hook_settings_flags=()
+  hook_script="$RUNNER_DIR/hooks/close-checklist.sh"
+  if [[ -x "$hook_script" ]]; then
+    if command -v build_hook_settings >/dev/null 2>&1; then
+      build_hook_settings "$hook_script" "$HOOK_SETTINGS_FILE" \
+        && hook_settings_flags=(--settings "$HOOK_SETTINGS_FILE")
+    fi
+  else
+    echo "  WARN: close-discipline hook not executable at $hook_script — running WITHOUT hook enforcement (claude-tools-2fkp)." >&2
+  fi
+
   # BC-39: stdout+stderr → the one stream file (stderr carries SDK HTTP-retry
   # state; the watchdog's SIGINT-before-SIGKILL exists so it flushes here).
   # §7.6: --output-format stream-json is KEPT (the §7.2(b) backstop reads
   # result.permission_denials[] / the "Entered plan mode." tool_result — `text`
   # hides both); GUARDRAIL_FLAGS removes the interactive tools from the
   # advertised set (defense-in-depth behind the §7.2(a) instructed prompt).
+  # claude-tools-2fkp: BEADS_RUNNER_SESSION + POST_TERMINAL_FILE env + the
+  # close-discipline --settings are injected alongside the existing flags.
+  BEADS_RUNNER_SESSION=1 \
+  POST_TERMINAL_FILE="$POST_TERMINAL_FILE" \
   claude -p "$prompt" \
     --output-format stream-json \
     --verbose \
@@ -1348,6 +1465,7 @@ st_run_task() {
     "${GUARDRAIL_FLAGS[@]+"${GUARDRAIL_FLAGS[@]}"}" \
     "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
     "${TASK_PERMISSION_FLAGS[@]+"${TASK_PERMISSION_FLAGS[@]}"}" \
+    "${hook_settings_flags[@]+"${hook_settings_flags[@]}"}" \
     > "$STREAM_FILE" 2>&1 &
   CLAUDE_PID=$!
 
@@ -1364,7 +1482,7 @@ st_run_task() {
   # intent. T2.3's _watchdog_loop body is byte-unchanged — this is T2.4's
   # trap-isolation, not a watchdog-policy edit.)
   ( trap - EXIT HUP INT TERM
-    _watchdog_loop "$CLAUDE_PID" "$STREAM_FILE" "$SIGNAL_FILE" "$PROC_SNAPSHOT" ) &
+    _watchdog_loop "$CLAUDE_PID" "$STREAM_FILE" "$SIGNAL_FILE" "$PROC_SNAPSHOT" "$POST_TERMINAL_FILE" ) &
   WATCHDOG_PID=$!
 
   # §2.5 DURING-task cadence. We poll on a fine RUNNER_TICK and act on the
@@ -1642,6 +1760,14 @@ st_post_task() {
   job_release_lease "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null
   # Job 5 — publish the §4.5 read-only projection (Dolt stays work-truth).
   job_publish_snapshot >/dev/null
+
+  # claude-tools-2fkp: drop this task's close-discipline ephemera — the
+  # post-terminal stamp, the --settings JSON, and the current-task pointer.
+  # They are NOT classifier inputs (STREAM_FILE/PROC_SNAPSHOT retention is the
+  # T2.2/BC-28 seam above), so they go on the normal task-end path; the teardown
+  # EXIT funnel re-clears them on every abnormal exit (circuit-breaker/fatal).
+  rm -f "${POST_TERMINAL_FILE:-}" "${HOOK_SETTINGS_FILE:-}" "$LOG_DIR/current-task" 2>/dev/null || true
+  POST_TERMINAL_FILE=""; HOOK_SETTINGS_FILE=""
 
   CURRENT_TASK_ID=""; LEASE_GENERATION=""
   echo ""

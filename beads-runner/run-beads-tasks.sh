@@ -292,6 +292,18 @@ NP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/node25-pri
 source "$NP_LIB"
 node25_prime_path "${RUNNER_SKIP_NVM_PRIME:-0}"
 
+# claude-tools-2fkp: the close-discipline `--settings` JSON shape is now shared
+# with runner.sh (v2) via hooks/build-settings.sh so the PreToolUse(Bash)+Stop
+# wiring can never drift between the two runners. OPTIONAL & guarded like the
+# LA/SR/NO libs above: an absent builder DEGRADES to "spawn the worker without
+# the hook" at the call site (the prompt-instructed discipline + the
+# post-terminal watchdog backstop still apply), never crashes the loop.
+BS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/hooks/build-settings.sh"
+if [[ -f "$BS_LIB" ]]; then
+  # shellcheck source=hooks/build-settings.sh
+  source "$BS_LIB"
+fi
+
 STOP_FILE=".stop-beads"
 rm -f "$STOP_FILE"
 
@@ -1757,13 +1769,13 @@ $PROMPT"
   HOOK_SETTINGS_FILE="$LOG_DIR/$LOG_BASE.hook-settings.json"
   HOOK_SETTINGS_FLAGS=()
   if [[ -x "$HOOK_SCRIPT" ]]; then
-    if command -v jq >/dev/null 2>&1; then
-      jq -n --arg cmd "$HOOK_SCRIPT" '{
-        hooks: {
-          PreToolUse: [{ matcher: "Bash",  hooks: [{ type: "command", command: $cmd }] }],
-          Stop:       [{ matcher: "",      hooks: [{ type: "command", command: $cmd }] }]
-        }
-      }' > "$HOOK_SETTINGS_FILE" 2>/dev/null && HOOK_SETTINGS_FLAGS=(--settings "$HOOK_SETTINGS_FILE")
+    # claude-tools-2fkp: the JSON shape now lives in the shared
+    # hooks/build-settings.sh (sourced above) so v1 and v2 stay byte-identical.
+    # Same degrade as before: no jq / write-failure / absent builder ⇒ NO
+    # --settings (the worker still runs, just without the hook).
+    if command -v build_hook_settings >/dev/null 2>&1; then
+      build_hook_settings "$HOOK_SCRIPT" "$HOOK_SETTINGS_FILE" \
+        && HOOK_SETTINGS_FLAGS=(--settings "$HOOK_SETTINGS_FILE")
     fi
   else
     echo "  WARN: close-discipline hook not executable at $HOOK_SCRIPT — running WITHOUT hook enforcement (claude-tools-td0y)." >&2
