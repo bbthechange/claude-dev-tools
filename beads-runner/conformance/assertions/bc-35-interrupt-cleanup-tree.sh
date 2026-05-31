@@ -1,4 +1,8 @@
 #!/bin/bash
+# conformance-lane: serial  (claude-tools-91pi — signals the LIVE runner mid-task
+#   and asserts teardown within a fixed wall-clock backstop; green alone but flakes
+#   under the parallel lane's CPU load → quarantined to the serial lane. Do NOT
+#   loosen the harness backstop to mask load.)
 # BC-35 (FORWARD) — SIGINT/SIGTERM/SIGHUP mid-task resets the in-flight task to
 #         `open` and exits 1; it is NOT stranded `in_progress`. (T2.4,
 #         claude-tools-7hx.)

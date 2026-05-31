@@ -1,4 +1,8 @@
 #!/bin/bash
+# conformance-lane: serial  (claude-tools-91pi — signals the LIVE runner mid-task
+#   and asserts teardown within a fixed wall-clock backstop (wait_runner_exit);
+#   green alone but flakes under the parallel lane's CPU load → quarantined to the
+#   serial lane. Do NOT loosen the harness backstop to mask load.)
 # BC-36 (FORWARD) — the cleanup-ASYMMETRY hazard is CONSCIOUSLY RESOLVED:
 #   runner_cleanup runs SYMMETRICALLY on EVERY exit path (normal completion AND
 #   signal), and NO exit path strands the in-flight task `in_progress`. (T2.4,

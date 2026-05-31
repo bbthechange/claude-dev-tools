@@ -28,7 +28,8 @@ set -u
 CONF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASSERT_DIR="$CONF_DIR/assertions"
 RESULTS="$(mktemp)"
-trap 'rm -f "$RESULTS"' EXIT
+RIGOUT="$(mktemp -d)"           # per-rig captured stdout/stderr + .done markers
+trap 'rm -f "$RESULTS"; rm -rf "$RIGOUT"' EXIT
 
 filter=("$@")
 match() {
@@ -48,15 +49,140 @@ echo "         in the offline rigs below. Re-run on every claude upgrade:"
 echo "         bash $CONF_DIR/probes/o1-headless-version-probe.sh"
 echo "═══════════════════════════════════════════════════════════════════════"
 
-ran=0
+# ── bounded-PARALLEL rig execution (claude-tools-91pi) ───────────────────────
+# The BC rigs are hermetic: harness.sh:H_init_test gives each its own mktemp
+# WORKDIR + BD_STORE + isolated daemon/XDG caches, and `bd`/`claude` are FAKES on
+# FAKE_BIN with NO shared server, port, or lock (the fake `bd` is a per-WORKDIR
+# file store — there is no Dolt sql-server in this tier). So they parallelize
+# cleanly; only CPU is shared. We run up to $JOBS at once, capture each rig's
+# stdout/stderr to a per-rig file, then REPLAY the captures in deterministic GLOB
+# ORDER. The tally, the per-BC rollup, and the printed blocks are therefore
+# identical regardless of completion order — only wall-clock shrinks (the serial
+# loop made the conformance tier the entire ~14-min long-pole of run-tests.sh).
+#
+# Concurrency is a FILE-MARKER pool (each rig's subshell drops $base.done as its
+# last act), NOT a `kill -0`/`wait -n` pool: macOS /bin/bash is 3.2 (no `wait -n`),
+# and a `kill -0` liveness check counts a not-yet-reaped zombie child as "alive",
+# which would wedge the pool. Counting .done markers sidesteps both and stays
+# 3.2-clean with no util-linux-only deps.
+
+# resolve concurrency: cores-2, floor 1; CONFORMANCE_JOBS overrides (tests/CI/serial repro).
+_ncpu="$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+case "$_ncpu" in *[!0-9]*|"") _ncpu=4 ;; esac
+JOBS="${CONFORMANCE_JOBS:-$((_ncpu-2))}"
+case "$JOBS" in *[!0-9]*|"") JOBS=1 ;; esac
+[[ "$JOBS" -lt 1 ]] && JOBS=1
+
+# DELIBERATELY NOT scaling the harness wall-clock backstops (claude-tools-91pi).
+# Loosening wait_runner_exit / RUN_TIMEOUT to absorb parallel CPU load masks a
+# genuinely hung runner AND still flaked ~1-in-5 in testing. Instead the handful
+# of timing-fragile rigs (those that signal the LIVE runner mid-task and assert
+# its teardown within a fixed wall-clock bound) are QUARANTINED to a serial lane
+# below — they run alone on the drained machine, exactly as the old serial loop
+# did, so the fixed backstops stay correct and never fire on slow-but-correct work.
+
+# discover rigs in GLOB ORDER, honoring the substring filter. Partition into the
+# PARALLEL lane (default) and a SERIAL lane (claude-tools-91pi): a rig self-declares
+# serial with a `# conformance-lane: serial` marker. The serial lane holds the
+# timing-fragile rigs that signal the LIVE runner mid-task and assert its teardown
+# completes within a fixed wall-clock backstop (bc-35/36 wait_runner_exit, bc-05
+# idle-drain `waited<=20`). Those are green ALONE but flake ~1-in-5 under the
+# parallel lane's CPU oversubscription, so they run sequentially on the drained
+# machine AFTER the parallel batch. New rigs auto-enroll PARALLEL (glob discovery
+# preserved); a fragile rig opts into serial with the one-line marker.
+rigs=(); parallel_rigs=(); serial_rigs=()
 for rig in "$ASSERT_DIR"/bc-*.sh; do
   base="$(basename "$rig" .sh)"
   match "$base" || continue
-  ran=$((ran+1))
+  rigs+=("$rig")
+  if grep -qiE '^#[[:space:]]*conformance-lane:[[:space:]]*serial' "$rig"; then
+    serial_rigs+=("$rig")
+  else
+    parallel_rigs+=("$rig")
+  fi
+done
+ran=${#rigs[@]}
+if [[ $ran -eq 0 ]]; then
+  echo ""
+  echo "═══════════════════════════════════════════════════════════════════════"
+  echo " no rigs matched filter: ${filter[*]:-<none>}"
+  exit 1
+fi
+echo " concurrency: $JOBS job(s) over ${#parallel_rigs[@]} parallel + ${#serial_rigs[@]} serial rig(s) (cores=$_ncpu, total=$ran)"
+
+# count completed rigs by their .done markers (0 when none match).
+_done_count() { ls "$RIGOUT"/*.done 2>/dev/null | wc -l | tr -d ' '; }
+
+# JOB CONTROL (`set -m`) for the parallel lane: a command backgrounded with `&`
+# from a shell WITHOUT job control is an "asynchronous list" — POSIX requires its
+# SIGINT/SIGQUIT to be set to IGNORED, and a signal ignored at shell entry CANNOT
+# be trapped or reset. Enabling job control puts each `( … ) &` in its own process
+# group and exempts it from that rule, so any runner a parallel rig spawns inherits
+# a DEFAULT (trappable) SIGINT. The rigs that actually depend on this (BC-35/36's
+# `kill -INT` interrupt-cleanup) are quarantined to the serial lane, where they run
+# as foreground commands and get the same trappable disposition for free — so this
+# is now defensive for the parallel lane, kept so a future signal-sensitive rig
+# isn't silently broken by the async-list ignore rule.
+set -m
+launched=0
+_nparallel=${#parallel_rigs[@]}
+for rig in "${parallel_rigs[@]}"; do
+  # throttle: block until in-flight (launched - completed) < JOBS.
+  while :; do
+    d="$(_done_count)"
+    [[ $((launched - d)) -lt $JOBS ]] && break
+    sleep 0.2
+  done
+  base="$(basename "$rig" .sh)"
+  # Each rig prints RESULT|… on stdout, diagnostics on stderr; the trailing
+  # `: > .done` runs after the rig returns (any exit code), marking the slot free.
+  ( bash "$rig" > "$RIGOUT/$base.out" 2> "$RIGOUT/$base.err"; : > "$RIGOUT/$base.done" ) &
+  launched=$((launched+1))
+  printf '   … launched %-34s (%d/%d)\n' "$base" "$launched" "$_nparallel" >&2
+done
+
+# drain: wait for every marker, printing on each change so the watchdog sees life.
+_last=-1
+while :; do
+  d="$(_done_count)"
+  if [[ "$d" != "$_last" ]]; then printf '   … %d/%d parallel rigs complete\n' "$d" "$_nparallel" >&2; _last="$d"; fi
+  [[ "$d" -ge "$launched" ]] && break
+  sleep 0.5
+done
+wait 2>/dev/null || true        # reap parallel subshells (markers already written)
+set +m                          # job control no longer needed (parallel launch over)
+
+# ── SERIAL LANE (claude-tools-91pi) ──────────────────────────────────────────
+# The timing-fragile rigs run ONE AT A TIME on the now-drained machine — no CPU
+# contention, so their signal-teardown wall-clock behaves exactly as it does when
+# the rig is run standalone (where it is green). Plain foreground execution is the
+# faithful reproduction of a standalone `bash rig` run: it inherits the gate's
+# normal INT/HUP disposition, so the runner's interrupt trap is trappable just as
+# in a real (worker-driven) gate invocation. Captured to the same per-rig files so
+# the deterministic replay below treats parallel and serial rigs alike.
+for rig in "${serial_rigs[@]}"; do
+  base="$(basename "$rig" .sh)"
+  printf '   … serial   %-34s (serial lane, %d rig(s))\n' "$base" "${#serial_rigs[@]}" >&2
+  bash "$rig" > "$RIGOUT/$base.out" 2> "$RIGOUT/$base.err"
+  : > "$RIGOUT/$base.done"
+done
+
+# REPLAY captures in deterministic glob order: header, indented stderr, then the
+# formatted RESULT icons — byte-identical output to the old serial loop.
+for rig in "${rigs[@]}"; do
+  base="$(basename "$rig" .sh)"
   echo ""
   echo "▶ $base"
-  # Each rig prints RESULT|… lines on stdout, diagnostics on stderr.
-  bash "$rig" 2> >(sed 's/^/    /' >&2) | tee -a "$RESULTS" \
+  [[ -s "$RIGOUT/$base.err" ]] && sed 's/^/    /' "$RIGOUT/$base.err" >&2
+  # Determinism guard: a rig that emitted NO RESULT line crashed or was killed
+  # (e.g. starved under load). Make that a NAMED red, never a silent coverage
+  # drop — a missing rig must turn the tier RED, not quietly shrink the tally.
+  if ! grep -q '^RESULT|' "$RIGOUT/$base.out" 2>/dev/null; then
+    echo "RESULT|FAIL|$base|-|rig produced no RESULT line (crashed or killed)" >> "$RESULTS"
+    printf '   %s %-9s %-7s %s\n' "✗ FAIL       " "$base" "-" "rig produced no RESULT line"
+    continue
+  fi
+  tee -a "$RESULTS" < "$RIGOUT/$base.out" \
     | while IFS='|' read -r tag status bc cite desc; do
         [[ "$tag" == RESULT ]] || continue
         case "$status" in
@@ -72,11 +198,6 @@ done
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════════════"
-if [[ $ran -eq 0 ]]; then
-  echo " no rigs matched filter: ${filter[*]:-<none>}"
-  exit 1
-fi
-
 pass=$(grep -c '^RESULT|PASS|'         "$RESULTS" || true)
 fail=$(grep -c '^RESULT|FAIL|'         "$RESULTS" || true)
 gpen=$(grep -c '^RESULT|GATE-PENDING|' "$RESULTS" || true)

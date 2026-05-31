@@ -1,4 +1,8 @@
 #!/bin/bash
+# conformance-lane: serial  (claude-tools-91pi — asserts the runner exits within a
+#   fixed wall-clock bound (waited<=20) after .stop-beads; green alone but flakes
+#   under the parallel lane's CPU load → quarantined to the serial lane. Do NOT
+#   loosen the bound to mask load.)
 # claude-tools-giu — runner stays alive on empty queue (UX §0.A), picks up
 # work added later without restart, and honors .stop-beads + Coordinator
 # desired=stopped within RECLAIM_POLL_INTERVAL when idle.
