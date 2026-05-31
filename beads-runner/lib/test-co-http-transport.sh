@@ -35,6 +35,15 @@
 #     autonomous run — that withholding is itself the I0 D0 headline, and the
 #     genuine human-on-phone unmocked proof is consolidated SOLELY into I5).
 #
+#   PART D — K3 (claude-tools-uxvk3) deferred-live-verify, cleared. Same token-
+#     gating as A/C: when a prod token resolves, an authed probe drives the §K3
+#     `notif-digest` read-side rollup against the LIVE deployed coordinator-cf
+#     and asserts the new shape {digests:[{channel,count,tier,dossier_refs},…]}
+#     — the TESTING-STRATEGY §5 item-4 engine live-verify bar (+§7.6 residual
+#     T8 step, the bgw/2dk R1 "local green is not acceptance" anchor). SKIPPED
+#     by-design without a token (run-tests.sh neutralizes it — §8: SKIP is not a
+#     failure); the read CONTRACT is proven offline by the notification twin.
+#
 # Deliberately NOT a member of the T1 conformance suite (beads-runner/
 # conformance/) — its own focused acceptance, same discipline as the other
 # lib/test-*.sh. Run:  bash beads-runner/lib/test-co-http-transport.sh
@@ -371,6 +380,60 @@ else
     ok "LIVE deployed engine: reused do_dossier_put + get round-trip ⇒ rc 0 (the I5 hop, token present)"
   else
     bad "LIVE deployed success path ($(cat "$STATE_DIR/c.txt" 2>/dev/null | tr -d '\n' | head -c 120))"
+  fi
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART D — K3 (claude-tools-uxvk3) LIVE digest rollup: clears the deferred CF
+#          live-verify debt (TESTING-STRATEGY §5 acceptance item 4 + §7.6, the
+#          bgw/2dk R1 anchor). `notif-digest` (no_digest) is the §K3 read-side
+#          group-by-channel rollup — a PURE READ engine op (no co._serialize, no
+#          §4 write, so NO cleanup trap is needed, unlike PART C). The §5 engine
+#          bar for production-touching work is "a real authed probe against
+#          coordinator-cf.bbthechange.workers.dev returning the new shape": this
+#          probe drives notif-digest over the SAME native POST / dialect the
+#          adapter passes through and asserts the deployed Worker returns the K3
+#          shape {digests:[{channel,count,tier,dossier_refs},…]}. Same T8 token-
+#          gating as PART A/C — SKIPs by-design without a prod token (run-tests.sh
+#          neutralizes the token so the offline gate never reaches the network;
+#          §8: that SKIP is not a failure). The notif-digest READ CONTRACT itself
+#          is proven offline by cf/test/notification.spec.js + lib/test-notification.sh;
+#          THIS part proves only that the deployed bytes serve it live.
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART D — LIVE deployed notif-digest (K3) · §5/§7.6 deferred-verify cleared ──"
+echo "   target: $LIVE_URL  (authed probe — the §5 item-4 engine live-verify bar)"
+D_TOKEN=""
+if [[ -n "${COORDINATOR_TOKEN:-}" ]]; then D_TOKEN="$COORDINATOR_TOKEN"
+elif D_TOKEN="$(security find-generic-password -s "claude-beads-runner.coordinator-token" \
+                  -a "$(hostname)" -w 2>/dev/null)"; then :; fi
+if [[ -z "$D_TOKEN" ]]; then
+  note "PART D SKIPPED — no §9.2 prod token resolves; the live notif-digest probe is T8 (§8: that SKIP is not a failure). The notif-digest READ contract is proven offline by cf/test/notification.spec.js + lib/test-notification.sh; only the deployed-bytes-serve-it hop is gated here."
+else
+  dof="$(mktemp)"
+  # Native dialect (POST / {op,args}) — the adapter forwards non-`/request`
+  # paths straight to the FROZEN Worker, so this exercises the byte-unchanged
+  # CF.1 engine + the §9.1 authenticate() chokepoint. The token is NEVER echoed.
+  dhttp="$(curl -sS -m 25 -o "$dof" -w '%{http_code}' \
+            -X POST "$LIVE_URL/" \
+            -H 'content-type: application/json' \
+            -H "authorization: Bearer ${D_TOKEN}" \
+            --data-binary '{"op":"notif-digest","args":[]}' 2>/dev/null)"
+  dbody="$(cat "$dof" 2>/dev/null)"; rm -f "$dof"
+  eq "$dhttp" "200" "LIVE notif-digest ⇒ HTTP 200 (the deployed K3 read op is reachable + authed — NOT a 400 unknown-op nor a 401)"
+  if printf '%s' "$dbody" | jq -e 'type=="object" and (.digests|type=="array")' >/dev/null 2>&1; then
+    ok "LIVE notif-digest ⇒ K3 new shape {digests:[…]} (read-side rollup provably live — §5/§7.6 debt CLEARED)"
+  else
+    bad "LIVE notif-digest ⇒ {digests:[…]} (got: $(printf '%s' "$dbody" | head -c 120))"
+  fi
+  # Every rollup entry carries the §K3 groupDigests fields. Vacuously true when
+  # prod has no digest-eligible record; asserts the channel-group contract when
+  # it does. Structural (D.2 tier discipline lives in the offline twin) — this
+  # only proves the deployed projection SHAPE, never prose.
+  if printf '%s' "$dbody" | jq -e '(.digests|length)==0 or all(.digests[]; has("channel") and has("count") and has("tier") and has("dossier_refs"))' >/dev/null 2>&1; then
+    ok "LIVE notif-digest ⇒ every rollup entry has {channel,count,tier,dossier_refs} (groupDigests projection contract)"
+  else
+    bad "LIVE notif-digest entry shape ($(printf '%s' "$dbody" | head -c 160))"
   fi
 fi
 

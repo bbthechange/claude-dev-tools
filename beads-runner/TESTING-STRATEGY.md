@@ -179,9 +179,16 @@ A track's impl bead is **not closeable** until:
    `coordinator-cf.bbthechange.workers.dev` returning the new shape. **This is the
    bgw/2dk line — local green is not acceptance.**
 
-> Carryover debt to clear: `uxvk3` (K3) is closed with **live-verify deferred** (not
-> CF-deployed). Per this gate it isn't fully accepted until the CF side ships +
-> probes. Track that under the testing epic (§7.6), don't let it set precedent.
+> ~~Carryover debt to clear: `uxvk3` (K3) is closed with **live-verify deferred** (not
+> CF-deployed).~~ **CLEARED 2026-05-31 (`claude-tools-rznj.6`).** K3's `notif-digest`
+> read-side rollup shipped to production in the 2026-05-30/31 `coordinator-cf` redeploys
+> (the digest engine `groupDigests`/`noDigest` is byte-stable from K3→HEAD — N1 reuses it
+> verbatim), and an authed probe against `coordinator-cf.bbthechange.workers.dev` returns
+> the new shape `{digests:[{channel,count,tier,dossier_refs},…]}` with live prod data.
+> That probe is now an institutionalized, re-runnable T8 step (PART D of
+> `lib/test-co-http-transport.sh`, same token-gating as PART A/C — SKIPs without a token,
+> so the offline gate stays network-free). The "closed but not shipped" precedent did not
+> take hold.
 
 ---
 
@@ -251,7 +258,7 @@ runner is **BC conformance**.
   entry; conflict/missing-design → **blocking** Flow B dossier (the two-path branch).
 - **K5** `uxvk5` (web): coupling-map slice (reuses H2 renderer) + relay-log view-model;
   **T4** route `/cross-ws`.
-- *(K3 `uxvk3` done; owes T8 CF live-verify — §7.6.)*
+- *(K3 `uxvk3` done; T8 CF live-verify **CLEARED** 2026-05-31 — `notif-digest` probed live, institutionalized as PART D of `lib/test-co-http-transport.sh`. See §5 note + §7.6.)*
 
 ### Track Q — Queue Health
 - **Q1** `uxvq1` (engine+web): `queue_health` sub-object — ready/held-by-type/
@@ -346,9 +353,17 @@ that runs `run-tests.sh` on push would catch regressions with **no prod secrets*
 (T8 stays manual at close). This needs a Brian yes/no (does this repo want GitHub
 Actions at all?) — filed as a low-priority bead with that question, not assumed.
 
-### 7.6 Clear the deferred-live-verify debt (K3)
-`uxvk3` is closed with CF deploy/live-verify deferred. File the residual T8 step so the
-"closed but not shipped" precedent doesn't take hold (R1).
+### 7.6 Clear the deferred-live-verify debt (K3)  ✅ DONE (`claude-tools-rznj.6`, 2026-05-31)
+`uxvk3` was closed with CF deploy/live-verify deferred. The residual T8 step is now both
+**filed and executed**: K3's `notif-digest` rollup shipped in the 2026-05-30/31
+`coordinator-cf` redeploys (its digest engine is byte-stable K3→HEAD), and an authed probe
+returns the new `{digests:[…]}` shape against the live Worker. The probe is institutionalized
+as **PART D of `lib/test-co-http-transport.sh`** (token-gated like PART A/C: runs at close
+when a prod token resolves, SKIPs by-design otherwise so `run-tests.sh` stays network-free).
+The "closed but not shipped" precedent (R1) did not take hold. Note: the live Worker was
+deployed from a prior `main`-line state; the 3 in-flight worker commits ahead of that deploy
+(N3/G2, `reconcile.js`/`timer.js`) are **other tracks** and ship under their own acceptance —
+this debt-clear did not redeploy them (K3 is byte-stable and already live).
 
 ---
 
