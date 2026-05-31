@@ -43,15 +43,16 @@ _emit_issues() {
     [[ -z "$id" ]] && continue
     [[ $first -eq 1 ]] || printf ','
     first=0
-    local title desc status labels
+    local title desc status labels itype
     title=$(_get "$id" title "$id")
     desc=$(_get "$id" desc "")
     status=$(_get "$id" status open)
     labels=$(_get "$id" labels "")
+    itype=$(_get "$id" issue_type task)   # claude-tools-dzc/v2c1: real bd ready emits issue_type
     jq -cn \
       --arg id "$id" --arg t "$title" --arg d "$desc" --arg s "$status" \
-      --arg L "$labels" \
-      '{id:$id,title:$t,description:$d,status:$s,
+      --arg L "$labels" --arg it "$itype" \
+      '{id:$id,title:$t,description:$d,status:$s,issue_type:$it,
         labels:($L|if .=="" then [] else split(",") end)}' | tr -d '\n'
   done
   printf ']'

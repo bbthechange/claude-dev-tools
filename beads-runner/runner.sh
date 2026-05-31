@@ -1250,20 +1250,38 @@ st_reconcile() {
 
   # New-work poll (§2.5 between-tasks). BC-42: a DEGRADED bd is NOT a drain —
   # only a genuine empty queue drains (§1.2). Typed, explicit, not `|| []`.
+  #
+  # claude-tools-dzc (port-forward, claude-tools-v2c1): exclude EPICs from the
+  # ready query. Epics are CONTAINERS, not workable; an epic-topped queue would
+  # otherwise starve every workable task beneath it — v1 logged 158 epic-skip
+  # spin-cycles in a single detached run (detached-20260524T003251Z.log). The
+  # v1 fix is run-beads-tasks.sh:708-709; this is its belt-and-suspenders shape:
+  #   • `--exclude-type=epic` — now honored by bd (it was empirically a NO-OP at
+  #     dzc's 2026-05-24; current bd filters epics correctly), AND
+  #   • the jq selection below independently drops epics — so the runner is
+  #     robust to bd-flag drift in EITHER direction and to the field-name
+  #     difference (`bd ready` → `issue_type`, `bd list` → `type`).
   local ready_json
-  ready_json="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd ready --json)"
+  ready_json="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd ready --exclude-type=epic --json)"
   if [[ "$ready_json" == "__DEGRADED__" ]]; then
     echo "runner: bd ready degraded — NOT treating as drain; retry in ${RECLAIM_POLL_INTERVAL}s"
     sleep "$RECLAIM_POLL_INTERVAL"
     transition RECONCILE; return
   fi
 
-  CANDIDATE_ID="$(printf '%s' "$ready_json"   | jq -r '.[0].id // empty'    2>/dev/null)"
+  # Select the FIRST NON-EPIC candidate at the ONE reconcile point (no scattered
+  # downstream epic skip — keeps the v2 state-machine shape; claude-tools-dzc).
+  # If EVERY ready item is an epic the candidate is empty and we DRAIN/idle
+  # (§1.2), exactly as v1's empty-after-filter result did: nothing workable ⇒
+  # honest idle, never a claimed epic and never the v1 skip-spin.
+  local candidate_obj
+  candidate_obj="$(printf '%s' "$ready_json" | jq -c 'map(select((.issue_type // .type // "") != "epic")) | .[0] // empty' 2>/dev/null)"
+  CANDIDATE_ID="$(printf '%s' "$candidate_obj"   | jq -r '.id // empty'    2>/dev/null)"
   if [[ -z "$CANDIDATE_ID" ]]; then
-    transition DRAINED; return                 # §1.2 genuine empty queue
+    transition DRAINED; return                 # §1.2 genuine empty (or all-epic) queue
   fi
-  CANDIDATE_TITLE="$(printf '%s' "$ready_json" | jq -r '.[0].title // ""'       2>/dev/null)"
-  CANDIDATE_DESC="$(printf '%s' "$ready_json"  | jq -r '.[0].description // ""' 2>/dev/null)"
+  CANDIDATE_TITLE="$(printf '%s' "$candidate_obj" | jq -r '.title // ""'       2>/dev/null)"
+  CANDIDATE_DESC="$(printf '%s' "$candidate_obj"  | jq -r '.description // ""' 2>/dev/null)"
 
   # ── L2 (claude-tools-1tu) gate-policy consultation ─────────────────────────
   # BEFORE the lease acquire (so a gate-human bead never burns a lease or an
@@ -1534,6 +1552,23 @@ st_run_task() {
     fi
     if [[ $since_hb -ge $HEARTBEAT_INTERVAL ]]; then
       since_hb=0
+      # claude-tools-7v5 (port-forward decision, claude-tools-v2c1): this beat is
+      # DELIBERATELY UNCONDITIONAL — do NOT stream-gate it the way v1's 7v5 gated
+      # `hb running` on ACTIVITY_FILE freshness. In v1 the heartbeat was PURE
+      # liveness (hb()→la_report_heartbeat, no lease; the lease was a separate
+      # `lease acquire/release` seam), so suppressing it on a stuck worker only
+      # let the Board render liveness=stale — harmless. In v2, lease-renewal
+      # RIDES this same call (§3 j3; runner-backend-real.sh la_heartbeat issues
+      # the lease-renew — the runner has no separate per-tick renew site). Gating
+      # it would stop renewing the lease on any CPU-busy-but-stream-quiet worker
+      # (e.g. a long compile/install: the watchdog's tree-CPU check keeps it
+      # ALIVE, so it is NOT killed), and once such a phase exceeds LEASE_TTL
+      # (900s) > IDLE_TIMEOUT (600s) the lease would lapse and a sibling could
+      # double-claim the in-flight bead. The honest-stale-on-stuck signal v1 got
+      # from 7v5 is instead provided in v2 by the watchdog (WATCHDOG_SOFT_WARN +
+      # the WATCHDOG_KILL incident). Re-adding the gate here is a regression, not
+      # a fix; decoupling liveness from lease-renewal would be a §3 job-surface
+      # change (v2c2/§11), out of this port-forward's scope.
       job_heartbeat running "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null  # renews held lease (§3 j3)
     fi
   done

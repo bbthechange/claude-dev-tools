@@ -102,14 +102,17 @@ H_cleanup() {
   [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"
 }
 
-# bd_seed <id> <title> <desc> [status=open] [labels] [deps(comma)]
+# bd_seed <id> <title> <desc> [status=open] [labels] [deps(comma)] [issue_type=task]
+# issue_type (claude-tools-dzc/v2c1): default "task"; pass "epic" to seed an epic
+# container so the runner's epic-exclusion selection can be exercised.
 bd_seed() {
-  local id="$1" title="$2" desc="$3" status="${4:-open}" labels="${5:-}" deps="${6:-}"
+  local id="$1" title="$2" desc="$3" status="${4:-open}" labels="${5:-}" deps="${6:-}" itype="${7:-task}"
   local d="$BD_STORE/$id"; mkdir -p "$d"
   printf '%s' "$title"  > "$d/title"
   printf '%s' "$desc"   > "$d/desc"
   printf '%s' "$status" > "$d/status"
   printf '%s' "$labels" > "$d/labels"
+  printf '%s' "$itype"  > "$d/issue_type"
   printf '%s' "0"       > "$d/attempts"
   : > "$d/notes"
   if [[ -n "$deps" ]]; then printf '%s\n' "${deps//,/$'\n'}" > "$d/deps"; else : > "$d/deps"; fi
