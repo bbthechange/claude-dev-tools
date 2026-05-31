@@ -38,7 +38,9 @@
 #   bash beads-runner/run-tests.sh --help
 #
 # Exit: 0 iff every selected unit passed; non-zero otherwise (and the RED summary
-# names the failing tier(s)). 2 == bad usage / nothing to run.
+# names the failing tier(s)). 2 == bad usage / nothing to run. 75 == another gate
+# is already running (busy — retry later; a single mkdir-based lock serializes all
+# gate forms so concurrent runs can't pile up and contend).
 set -u
 
 BR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,7 +52,7 @@ C_G=$'\033[32m'; C_R=$'\033[31m'; C_Y=$'\033[33m'; C_C=$'\033[36m'; C_0=$'\033[0
 ALL_TIERS=(lib daemon hooks agents top conformance contract cf)
 
 usage() {
-  sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 list_tiers() {
@@ -182,6 +184,113 @@ if [[ $TIER_FLAG -eq 0 && $CHANGED_FLAG -eq 0 ]]; then
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
+# singleton gate lock (claude-tools-fm4r) — portable, refuse-and-report
+# ════════════════════════════════════════════════════════════════════════════
+# This IS the offline regression gate; nothing else serialized it, so a worker
+# that relaunches it could stack N full gates that then contend for CPU, the
+# Dolt sql-server, and the bd lock (observed 2026-05-30: a 4-way pile-up turned
+# a ~few-minute gate into ~16 min). Guard with a portable atomic lock.
+#
+# Portability: macOS (darwin) has NO flock(1) (`which flock` → not found), so we
+# use `mkdir` — atomic create-or-fail on every POSIX filesystem — as the lock
+# token. Posture is REFUSE-AND-REPORT: if a LIVE gate holds the lock we print its
+# pid/start and exit 75 (EX_TEMPFAIL — "busy, retry later", never confused with
+# 1=tests-failed or 2=bad-usage) and touch nothing. We do NOT kill the in-flight
+# gate: the conformance tier spawns sandboxed run-beads-tasks.sh children
+# (conformance/lib/harness.sh H_cleanup) that an abrupt kill would orphan.
+#
+# Scope: ONE lock for ALL gate forms (full / --tier / --changed) — they share the
+# workSnapshot() seam and the single Dolt server, so they must serialize. Keyed
+# by BR_DIR (this checkout) so a different checkout runs independently. A lock
+# whose recorded pid is dead is reclaimed, so a crashed gate never wedges the
+# next one. Acquired HERE (before the token shim / header / any tier) so a refused
+# run does no work and creates no temp dirs.
+#
+# Test hooks (env, mirrors the offline-token knobs above): RUN_TESTS_GATE_LOCK_BASE
+# relocates the lock dir off /tmp for hermetic tests; RUN_TESTS_GATE_SELFTEST, when
+# set, acquires the lock then exits 0 (printing `LOCK-ACQUIRED pid=N`) WITHOUT
+# running any tier — `hold:<secs>` holds the lock that long first. See test-gate-lock.sh.
+GATE_LOCK_BUSY=75
+GATE_LOCK_BASE="${RUN_TESTS_GATE_LOCK_BASE:-/tmp}"
+GATE_LOCK_KEY="$(printf '%s' "$BR_DIR" | cksum | tr ' ' '_')"
+LOCKDIR="$GATE_LOCK_BASE/run-tests-gate-$GATE_LOCK_KEY.lock"
+GATE_LOCK_HELD=0
+GATE_SHIM_DIR=""
+GATE_START_HUMAN="$(date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo unknown)"
+mkdir -p "$GATE_LOCK_BASE" 2>/dev/null || true
+
+# ONE EXIT trap for the whole gate: drop the offline `security` shim AND, only if
+# we actually hold it, release the lock. The HELD guard is load-bearing — the
+# refuse path exits WITHOUT setting it, so a refused run never deletes the live
+# holder's lockdir (it "mutates nothing").
+cleanup_gate() {
+  [[ -n "$GATE_SHIM_DIR" && -d "$GATE_SHIM_DIR" ]] && rm -rf "$GATE_SHIM_DIR"
+  [[ "$GATE_LOCK_HELD" == "1" && -d "$LOCKDIR" ]] && rm -rf "$LOCKDIR"
+  return 0
+}
+trap cleanup_gate EXIT
+
+acquire_gate_lock() {
+  local owner_pid owner_start r tries=0
+  while :; do
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+      GATE_LOCK_HELD=1
+      printf 'pid=%s\nstart=%s\n' "$$" "$GATE_START_HUMAN" > "$LOCKDIR/owner" 2>/dev/null || true
+      return 0
+    fi
+    # Lock dir exists. Read the recorded owner, riding out the sub-millisecond
+    # window between a winner's mkdir and its owner-file write (re-read briefly).
+    owner_pid=""; owner_start=""
+    for r in 1 2 3; do
+      if [[ -s "$LOCKDIR/owner" ]]; then
+        owner_pid="$(sed -n 's/^pid=//p'    "$LOCKDIR/owner" 2>/dev/null | head -1)"
+        owner_start="$(sed -n 's/^start=//p' "$LOCKDIR/owner" 2>/dev/null | head -1)"
+        break
+      fi
+      sleep 1
+    done
+    # NB: kill -0 is the universal PID-based-lock liveness test — it carries the
+    # usual PID-reuse caveat (if the holder died and the OS recycled its exact pid
+    # to an unrelated live process, we'd refuse until that process exits). Self-
+    # healing (it clears once that pid dies) and acceptable for a test gate; not
+    # worth a start-time/ps cross-check here.
+    if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
+      # A LIVE gate holds it → refuse, report, touch nothing.
+      printf '%sgate already running%s (pid %s, started %s) — skipping\n' \
+        "$C_Y" "$C_0" "$owner_pid" "${owner_start:-unknown}" >&2
+      printf '   lock: %s\n' "$LOCKDIR" >&2
+      exit "$GATE_LOCK_BUSY"
+    fi
+    # Holder is dead (kill -0 failed) or its owner file never materialized → the
+    # lock is stale. Reclaim atomically: only the process whose `mv` wins removes
+    # it, so losers re-loop and re-inspect (and correctly refuse if a live winner
+    # has meanwhile re-claimed). Bounded so a pathological recreate-loop can't spin.
+    tries=$((tries+1))
+    if [[ $tries -gt 5 ]]; then
+      printf '%serror:%s could not acquire gate lock after %d reclaim attempts (%s)\n' \
+        "$C_R" "$C_0" "$tries" "$LOCKDIR" >&2
+      exit "$GATE_LOCK_BUSY"
+    fi
+    if mv "$LOCKDIR" "$LOCKDIR.stale.$$.$tries" 2>/dev/null; then
+      rm -rf "$LOCKDIR.stale.$$.$tries" 2>/dev/null || true
+    fi
+  done
+}
+
+acquire_gate_lock
+
+# Test-only fast exit: acquire (above) exercised the real lock; now report and
+# leave WITHOUT running any tier. `hold:<secs>` keeps the lock held that long so a
+# sibling invocation can observe contention. (See the Test hooks note above.)
+if [[ -n "${RUN_TESTS_GATE_SELFTEST:-}" ]]; then
+  printf 'LOCK-ACQUIRED pid=%s\n' "$$"
+  case "$RUN_TESTS_GATE_SELFTEST" in
+    hold:*) sleep "${RUN_TESTS_GATE_SELFTEST#hold:}" ;;
+  esac
+  exit 0
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
 # strictly offline: neutralize the coordinator token
 # ════════════════════════════════════════════════════════════════════════════
 # Several enrolled T1/T3 bash tests carry a TOKEN-GATED live-Worker probe (PART
@@ -195,9 +304,8 @@ fi
 # the network — the very thing "EXCLUDE T8/network" forbids. On CI neither path
 # resolves, so this is a no-op there.
 unset COORDINATOR_TOKEN COORDINATOR_URL CO_EXPECTED_TOKEN 2>/dev/null || true
-GATE_SHIM_DIR=""
-cleanup_gate() { [[ -n "$GATE_SHIM_DIR" && -d "$GATE_SHIM_DIR" ]] && rm -rf "$GATE_SHIM_DIR"; }
-trap cleanup_gate EXIT
+# (GATE_SHIM_DIR is initialized, and cleanup_gate + its EXIT trap installed, in
+#  the singleton gate-lock section above — that one trap covers shim AND lock.)
 # macOS only: a surgical `security` shim that denies ONLY the coordinator-token
 # keychain lookup (so the probes can't resolve it) and delegates every other
 # request to the real binary. (Linux CI has no `security`, so tests skip live
