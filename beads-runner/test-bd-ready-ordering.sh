@@ -64,6 +64,23 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ── startup self-heal (claude-tools-fxsweep) ─────────────────────────────────
+# The EXIT/INT/TERM trap above does NOT fire on SIGKILL, and the runner watchdog
+# kills stuck workers with `kill -9` — so a prior run killed mid-flight leaks its
+# fixtures permanently. Delete any such orphans BEFORE we seed (idempotent; the
+# current run's own per-PID label has no beads yet, so this only catches prior
+# orphans). The sweep matches the real .labels array via jq — bd's
+# --label-pattern/--label-regex are no-ops in this binary (full doc in the helper).
+# Guarded like the run-tests.sh call site: the sweep is auxiliary self-heal, so a
+# missing/broken helper must degrade to a no-op rather than abort the ordering
+# contract test (the helper's "a sweep failure can NEVER fail its caller" promise).
+# shellcheck source=lib/sweep-fixtures.sh
+. "$SCRIPT_DIR/lib/sweep-fixtures.sh" 2>/dev/null || true
+if command -v sweep_fixtures >/dev/null 2>&1; then
+  _swept="$(sweep_fixtures)"
+  [[ -n "$_swept" ]] && info "$_swept"
+fi
+
 # ── seed N beads at varied priority and varied created_at ────────────────────
 # Order of creation matters — created_at is monotonically increasing across
 # the loop, so we can read off which createdAt is "older" / "newer" from the

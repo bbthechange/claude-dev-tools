@@ -445,6 +445,24 @@ echo "════════════════════════�
 echo ""
 
 # ════════════════════════════════════════════════════════════════════════════
+# stale-fixture self-heal (claude-tools-fxsweep)
+# ════════════════════════════════════════════════════════════════════════════
+# The `top` tier runs test-bd-ready-ordering.sh, which seeds fixtures into the
+# LIVE bd workspace and cleans them via an EXIT/INT/TERM trap. That trap does NOT
+# fire on SIGKILL — and the runner watchdog kills stuck workers with `kill -9` —
+# so a run killed mid-flight leaks its fixtures permanently (observed 2026-05-31:
+# 8 orphaned 'ordering-fixture' beads live in `bd ready`). The test now self-heals
+# at its own startup, but that only fires when the test RUNS; a --tier/--changed
+# gate that skips the top tier would never trigger it. This gate-level sweep is the
+# belt-and-suspenders — it runs on EVERY gate form, up front, so a leak is bounded
+# by "next gate run" rather than "next time that one test runs". Fully guarded (see
+# lib/sweep-fixtures.sh): a sweep failure can NEVER fail or perturb the
+# deterministic gate, and in a healthy workspace it deletes nothing and is silent.
+# shellcheck source=lib/sweep-fixtures.sh
+. "$BR_DIR/lib/sweep-fixtures.sh" 2>/dev/null || true
+if command -v sweep_fixtures >/dev/null 2>&1; then sweep_fixtures || true; fi
+
+# ════════════════════════════════════════════════════════════════════════════
 # dispatch (canonical order; only selected tiers run)
 # ════════════════════════════════════════════════════════════════════════════
 run_tier() {
