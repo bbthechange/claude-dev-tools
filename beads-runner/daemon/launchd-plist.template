@@ -53,9 +53,14 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>@@HOME@@</string>
-    <!-- Pause new pickups above 85% of the weekly cap (default 70 was
-         parking workspace runners early in the week with plenty of
-         headroom left). See usage-poll.sh USAGE_POLL_THRESHOLD. -->
+    <!-- Pause new pickups above 95% of the weekly cap (earlier 70/85 values
+         parked workspace runners early in the week with plenty of headroom
+         left). See usage-poll.sh USAGE_POLL_THRESHOLD.
+         NOTE: editing this value is a SILENT NO-OP until you re-run
+         daemon/install.sh — launchd loads env from the RENDERED plist at
+         ~/Library/LaunchAgents/ at bootstrap time, not from this template,
+         and `.stop-beads` only cycles the runner loop, not the daemon
+         (claude-tools-6s6x). Verify with daemon/check-plist-drift.sh. -->
     <key>USAGE_THRESHOLD</key>
     <string>95</string>
   </dict>

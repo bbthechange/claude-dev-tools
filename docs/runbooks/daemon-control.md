@@ -74,9 +74,33 @@ grep "SIGHUP received\|workspace registry reload" ~/.cache/claude-tools/daemon-l
 If you've edited `beads-runner/daemon/daemon.sh` or any of its dependencies, the running daemon is using the OLD code. To pick up changes:
 
 ```bash
-launchctl bootout "gui/$(id -u)/com.beads-runner.daemon"
 bash beads-runner/daemon/install.sh
 ```
+
+`install.sh` boots out an already-loaded agent before re-bootstrapping, so re-running it is an unambiguous reload — you don't need a separate `bootout` first. (The explicit `launchctl bootout … && bash install.sh` still works and is fine if you prefer it.)
+
+### ⚠️ This applies to `launchd-plist.template` env edits too
+
+Editing `beads-runner/daemon/launchd-plist.template` — e.g. bumping `USAGE_THRESHOLD` — and cycling with `touch .stop-beads` is a **silent no-op for the daemon**. `.stop-beads` cycles the *workspace runner loop*, not the LaunchAgent. launchd loads `EnvironmentVariables` from the **rendered** plist at `~/Library/LaunchAgents/com.beads-runner.daemon.plist` at *bootstrap* time only; until you re-run `install.sh`, launchd has no idea the template moved. This bit us once (template said 95, the live daemon kept enforcing 85 for hours, parking every workspace runner). See `claude-tools-6s6x`.
+
+**Editing the template is not "done" until you re-run `install.sh`** (which re-renders the plist *and* re-bootstraps the daemon with the new env). Then verify the change actually loaded — see the next section.
+
+## Verify the daemon's env matches the template
+
+After any template edit + `install.sh`, confirm the live daemon actually loaded the new value (the "Done means verified" step for daemon config):
+
+```bash
+# Drift check: compares the committed template against BOTH the installed plist
+# and the env launchd actually loaded. Prints `mismatches=0` when in sync;
+# names each drifted key (and the fix) and exits non-zero otherwise.
+bash beads-runner/daemon/check-plist-drift.sh
+
+# Or confirm one key directly:
+launchctl print "gui/$(id -u)/com.beads-runner.daemon" | grep USAGE_THRESHOLD
+# Expected: the value matches launchd-plist.template
+```
+
+A `mismatches=0` from `check-plist-drift.sh` is the daemon-config equivalent of `verify-pages-deploy.sh`'s `mismatches=0` — committed config provably matches what's running. A `DRIFT` line means the template moved but `install.sh` wasn't (successfully) re-run; the line tells you the fix.
 
 ## Uninstall
 
