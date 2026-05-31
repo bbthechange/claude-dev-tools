@@ -404,7 +404,11 @@ echo ""
 echo "── PART D — LIVE deployed notif-digest (K3) · §5/§7.6 deferred-verify cleared ──"
 echo "   target: $LIVE_URL  (authed probe — the §5 item-4 engine live-verify bar)"
 D_TOKEN=""
-if [[ -n "${COORDINATOR_TOKEN:-}" ]]; then D_TOKEN="$COORDINATOR_TOKEN"
+# Trust an env COORDINATOR_TOKEN only when COORDINATOR_URL already points AT prod
+# (mirrors PART C's guard exactly) — PART D POSTs to the hardcoded $LIVE_URL, so
+# a token provisioned for a NON-prod COORDINATOR_URL must not be sent to prod;
+# otherwise the Keychain prod token is the source of truth.
+if [[ -n "${COORDINATOR_TOKEN:-}" && "${COORDINATOR_URL:-}" == "$LIVE_URL" ]]; then D_TOKEN="$COORDINATOR_TOKEN"
 elif D_TOKEN="$(security find-generic-password -s "claude-beads-runner.coordinator-token" \
                   -a "$(hostname)" -w 2>/dev/null)"; then :; fi
 if [[ -z "$D_TOKEN" ]]; then
