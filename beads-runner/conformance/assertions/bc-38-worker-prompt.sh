@@ -35,6 +35,21 @@ _need "no literal BEADS_ID token left"      notcontains "$p" "BEADS_ID"
 _need "no literal BEADS_DESC token left"     notcontains "$p" "BEADS_DESC"
 _emit
 
+# claude-tools-m0yv — the worker consumed the offline gate via `| tail -40`
+# (non-streaming), saw zero output, declared it wedged, and RELAUNCHED it,
+# stampeding run-tests.sh. The fix is consumption-side: the shared prompt now
+# pins gate-wait discipline (run once · stream-watch · non-blocking wait · no
+# relaunch). SCAR: a worker that blinds itself to a long gate stalls or piles
+# concurrent gates that contend the shared workSnapshot()/Dolt seam.
+_expect "BC-38" "§7.6" "prompt pins gate-wait discipline (claude-tools-m0yv)"
+_need "names the gate-wait discipline"      contains "$p" "gate-wait discipline"
+_need "run a long command exactly once"     contains "$p" "Run it EXACTLY ONCE"
+_need "never relaunch a quiet gate"         contains "$p" "NEVER relaunch a long-running command because it looks quiet"
+_need "forbids non-streaming tail -N"       contains "$p" "buffers ALL its input and emits nothing until the pipe closes"
+_need "blessed wait: run_in_background"      contains "$p" "run_in_background"
+_need "forbids sleep-chaining"              contains "$p" "the harness blocks sleep-chaining"
+_emit
+
 # ── FORWARD GATE (§7.6): worker guardrail flags ──────────────────────────────
 # §7.6 mandates the worker run with --disallowedTools AskUserQuestion
 # EnterPlanMode ExitPlanMode (defense-in-depth behind the instructed

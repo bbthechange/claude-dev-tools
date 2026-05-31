@@ -327,6 +327,11 @@ IMPORTANT: You are running non-interactively. Do NOT use EnterPlanMode or ExitPl
 
 Follow the instructions in the task description above exactly. The description contains the full workflow for this task type.
 
+When a step needs a long-running command -- the offline test gate (e.g. `bash beads-runner/run-tests.sh`), a build, or a deploy-verify -- follow this gate-wait discipline so you neither blind yourself to it nor stampede it:
+  - Run it EXACTLY ONCE. For a pre-close gate prefer the fast `--changed` path and use the full gate only when required. NEVER relaunch a long-running command because it looks quiet -- a quiet gate is normal (some tiers run for minutes with sparse output), and silence is NOT evidence that it is wedged.
+  - NEVER pipe a long-running command through a non-streaming `tail -N` (e.g. `cmd | tail -40`): `tail -N` without `-f` buffers ALL its input and emits nothing until the pipe closes, so you see zero output until the command exits and wrongly conclude it stalled. Instead watch the live stream: `cmd 2>&1 | tee /tmp/gate-BEADS_ID.log` prints output as it runs AND saves a log; or redirect it to a file (or run it with `run_in_background`) and `tail -f /tmp/gate-BEADS_ID.log` to follow that file.
+  - To WAIT for it, use a non-blocking pattern the harness allows: run it with `run_in_background` (then poll for completion), or `until <done-condition>; do sleep N; done`. NEVER chain `sleep N; <cmd>` -- the harness blocks sleep-chaining and it only degrades into worse polling.
+
 If you reach a genuine fork you must NOT resolve yourself -- an irreversible or judgement-call decision the task description does not settle, where guessing could be wrong and costly -- do NOT pick for the human, do NOT use an interactive tool, and do NOT stop silently. Instead, in THIS exact order:
   1. bd update BEADS_ID --status=blocked
   2. Write the structured ask into the bead:

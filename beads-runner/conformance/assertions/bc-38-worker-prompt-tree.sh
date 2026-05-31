@@ -65,6 +65,20 @@ _need "no literal BEADS_DESC token left"    notcontains "$p" "BEADS_DESC"
 _need "no literal BEADS_STUCK_EXIT left"    notcontains "$p" "BEADS_STUCK_EXIT"
 _emit
 
+# claude-tools-m0yv — same gate-wait discipline carried into the forward
+# rewrite prompt. The v1 worker consumed the offline gate via `| tail -40`
+# (non-streaming), saw nothing, declared it wedged, and RELAUNCHED it. The
+# shared prompt now pins: run once · stream-watch · non-blocking wait · never
+# relaunch a quiet gate. Kept in lockstep with bc-38-worker-prompt.sh.
+_expect "BC-38" "§7.6" "prompt pins gate-wait discipline (claude-tools-m0yv) (runner.sh)"
+_need "names the gate-wait discipline"      contains "$p" "gate-wait discipline"
+_need "run a long command exactly once"     contains "$p" "Run it EXACTLY ONCE"
+_need "never relaunch a quiet gate"         contains "$p" "NEVER relaunch a long-running command because it looks quiet"
+_need "forbids non-streaming tail -N"       contains "$p" "buffers ALL its input and emits nothing until the pipe closes"
+_need "blessed wait: run_in_background"      contains "$p" "run_in_background"
+_need "forbids sleep-chaining"              contains "$p" "the harness blocks sleep-chaining"
+_emit
+
 # ── §7.6 guardrail — now MET on runner.sh (a hard assertion, not a gate) ──────
 _expect "BC-38" "§7.6" "worker invoked with --disallowedTools guardrail + KEEPS stream-json (runner.sh)"
 _need "--disallowedTools on the claude invocation" \
