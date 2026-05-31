@@ -84,6 +84,27 @@ CAPACITY_DENY_BACKOFF=${CAPACITY_DENY_BACKOFF:-60} # C1: per-pickup daemon ask-c
 # extend the gate (e.g. an FE-rooted workspace appending 'backend' so it
 # never auto-claims a backend-impl bead) without editing the runner.
 RUNNER_NO_CLAIM_LABELS=${RUNNER_NO_CLAIM_LABELS:-human-live-session,human-triage,human-action}
+# claude-tools-uxg8 (GAP G8) — cross-workspace scope check. UX-DESIGN-V2 §8.5 /
+# design/cross-ws.md §2.4: a task that references a *cross-repo id* (a bead id
+# belonging to a SIBLING workspace) and isn't a tracking-only task is FLAGGED,
+# not silently claimed by the wrong workspace's runner (the "why is there a
+# backend task in the frontend tracking" frustration — a silent-misclaim hazard
+# amplified by parallel FE/BE runners). RUNNER_SIBLING_PREFIXES is the
+# comma-separated list of sibling bd id prefixes this workspace knows about
+# (e.g. an FE workspace sets 'thirsty-be'); EMPTY by default, so a single-repo
+# runner does nothing. This rides the same skip-not-fail suppression the
+# no-claim-label gate uses rather than inventing a new mechanism (cross-ws.md
+# §2.4); the canonical RUNNER_* env-var-→skip-with-reason shape is the one
+# agents/claim-eligibility.md §"Why no new filter" prescribes for exactly this.
+# List PEER-workspace prefixes only — do NOT list a prefix that is a
+# parent-segment of your own local prefix (e.g. 'thirsty' when you are
+# 'thirsty-be'), or your own local ids would match and self-flag.
+RUNNER_SIBLING_PREFIXES=${RUNNER_SIBLING_PREFIXES:-}
+# Labels that EXEMPT a bead from the cross-repo flag — a coordination / epic /
+# tracking bead is *meant* to reference sibling-workspace ids (the "isn't a
+# tracking-only task" carve-out in §8.5). Sticky + human-controlled like the
+# no-claim labels; comma-separated, overridable per project.
+RUNNER_TRACKING_ONLY_LABELS=${RUNNER_TRACKING_ONLY_LABELS:-tracking-only}
 export WORKER_STUCK_EXIT=${WORKER_STUCK_EXIT:-7} # §7.2/§8.1 worker deliberate-stuck sentinel exit (≠ BC-21 0–4; INTERFACE.md v1 constants). Exported: a stuck-aware worker wrapper reads it; the §7.2 detection below keys on it.
 IDLE_TIMEOUT=${IDLE_TIMEOUT:-600}                # seconds of stream silence before watchdog kills (env-overridable)
 # claude-tools-idg — while a Task subagent is in-flight (task_notification
@@ -754,6 +775,66 @@ validate_task() {
       echo "  Skipping parent task: $open_children of $child_count children still open"
     fi
     return 1
+  fi
+
+  # claude-tools-uxg8 (GAP G8) — cross-workspace scope check. UX-DESIGN-V2 §8.5 /
+  # design/cross-ws.md §2.4. By here the bead is real, workable, non-epic,
+  # non-parent, and carries no no-claim label — everything else says "claim it."
+  # The last eligibility question is "does it belong to THIS workspace?" A bead
+  # that references a SIBLING workspace's id (a cross-repo id) and is not a
+  # tracking-only bead is a silent-misclaim hazard: the wrong runner claims a
+  # task whose code lives in another repo, burns a worker, bails with nothing
+  # written. We FLAG it (a loud skip-not-fail, same posture as the no-claim
+  # gate) instead of silently claiming it. Opt-in: with RUNNER_SIBLING_PREFIXES
+  # empty (the single-repo default) this whole block is skipped — no bd calls,
+  # no work. Only a multi-workspace project that declares its siblings pays.
+  if [[ -n "${RUNNER_SIBLING_PREFIXES:-}" ]]; then
+    # The local prefix is the bead's own id minus its short suffix
+    # (claude-tools-uxg8 → claude-tools; thirsty-fe-93o → thirsty-fe). The bead
+    # lives in THIS workspace's DB, so its own prefix IS the local prefix — no
+    # config needed to know "us."
+    local local_prefix="${task_id%-*}"
+    local show_json title desc haystack
+    show_json=$(bd show "$task_id" --json 2>/dev/null || echo "[]")
+    title=$(echo "$show_json" | jq -r '(if type == "array" then .[0] else . end) | (.title // "")' 2>/dev/null || echo "")
+    desc=$(echo "$show_json" | jq -r '(if type == "array" then .[0] else . end) | (.description // "")' 2>/dev/null || echo "")
+    haystack="$title"$'\n'"$desc"
+    local sib hit=""
+    local -a sib_arr=()
+    IFS=',' read -ra sib_arr <<< "$RUNNER_SIBLING_PREFIXES"
+    for sib in "${sib_arr[@]}"; do
+      sib="${sib## }"; sib="${sib%% }"
+      [[ -z "$sib" ]] && continue
+      [[ "$sib" == "$local_prefix" ]] && continue   # never flag our own prefix
+      # Match a <sibling-prefix>-<shortid> token. The boundary (start-of-line or
+      # a non-id char before the prefix) keeps it from matching inside a longer
+      # hyphenated word; the second grep extracts the clean id for the message.
+      hit=$(printf '%s' "$haystack" \
+            | grep -oE "(^|[^[:alnum:]-])${sib}-[a-z0-9]+" 2>/dev/null \
+            | grep -oE "${sib}-[a-z0-9]+" 2>/dev/null | head -1 || true)
+      [[ -n "$hit" ]] && break
+    done
+    if [[ -n "$hit" ]]; then
+      # A tracking-only bead is allowed to reference sibling ids (that's its
+      # job). Fetch labels only now — the common no-hit path paid nothing.
+      local task_labels tlabel exempt=""
+      local -a tlabel_arr=()
+      task_labels=$(bd label list "$task_id" --json 2>/dev/null | jq -r '.[]?' 2>/dev/null || echo "")
+      IFS=',' read -ra tlabel_arr <<< "$RUNNER_TRACKING_ONLY_LABELS"
+      for tlabel in "${tlabel_arr[@]}"; do
+        tlabel="${tlabel## }"; tlabel="${tlabel%% }"
+        [[ -z "$tlabel" ]] && continue
+        if printf '%s\n' "$task_labels" | grep -qxF "$tlabel" 2>/dev/null; then
+          exempt="$tlabel"; break
+        fi
+      done
+      if [[ -n "$exempt" ]]; then
+        echo "  Note: references cross-repo id '$hit' but is labelled '$exempt' (tracking-only — cross-ref is intentional, claiming normally)"
+      else
+        echo "  Skipping: references cross-repo id '$hit' (workspace-scope check — this looks misfiled in '$local_prefix'; move it to its home repo, or add a '${RUNNER_TRACKING_ONLY_LABELS%%,*}' label if the cross-ref is intentional). Not claimed."
+        return 1
+      fi
+    fi
   fi
 
   return 0

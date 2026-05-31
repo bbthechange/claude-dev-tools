@@ -126,7 +126,7 @@ _done_count() { ls "$RIGOUT"/*.done 2>/dev/null | wc -l | tr -d ' '; }
 set -m
 launched=0
 _nparallel=${#parallel_rigs[@]}
-for rig in "${parallel_rigs[@]}"; do
+for rig in "${parallel_rigs[@]+"${parallel_rigs[@]}"}"; do
   # throttle: block until in-flight (launched - completed) < JOBS.
   while :; do
     d="$(_done_count)"
@@ -160,7 +160,7 @@ set +m                          # job control no longer needed (parallel launch 
 # normal INT/HUP disposition, so the runner's interrupt trap is trappable just as
 # in a real (worker-driven) gate invocation. Captured to the same per-rig files so
 # the deterministic replay below treats parallel and serial rigs alike.
-for rig in "${serial_rigs[@]}"; do
+for rig in "${serial_rigs[@]+"${serial_rigs[@]}"}"; do
   base="$(basename "$rig" .sh)"
   printf '   … serial   %-34s (serial lane, %d rig(s))\n' "$base" "${#serial_rigs[@]}" >&2
   bash "$rig" > "$RIGOUT/$base.out" 2> "$RIGOUT/$base.err"
