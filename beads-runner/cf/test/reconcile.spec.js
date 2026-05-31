@@ -914,3 +914,114 @@ it("CF.3 workSnapshot joins workspace_inventory.in_progress_beads → runner_sta
   }
   expect(pFAIL, `4g5o clauses failed: ${pfails.join("; ")}`).toBe(0);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// claude-tools-7qf7 — the GET-path lifecycle work-truth feed + done·verified.
+// The PRODUCTION Board GET passes NO inline beads (a Worker can't exec bd), so
+// workSnapshot derives the lifecycle work-truth from the runner-published §4.6
+// workspace_inventory records, carrying the per-bead `verified` flag through so
+// the §3 done·code-vs-done·verified split lights up live. Inline beads STILL
+// WIN (the differential oracle path is byte-unchanged).
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 workSnapshot derives lifecycle_columns from stored workspace_inventory on the GET path + carries verified (claude-tools-7qf7)", async () => {
+  let qPASS = 0;
+  let qFAIL = 0;
+  const qfails = [];
+  function qck(name, cond) {
+    if (cond) {
+      qPASS++;
+      // eslint-disable-next-line no-console
+      console.log(`  ✓ ${name}`);
+    } else {
+      qFAIL++;
+      qfails.push(name);
+      // eslint-disable-next-line no-console
+      console.log(`  ✗ ${name}`);
+    }
+  }
+  function wsi(projectRef, inProgress, topN) {
+    return JSON.stringify({
+      report: "workspace_inventory",
+      schema_version: 1,
+      principal: "literal-overwritten",
+      runner_id: "hostQ",
+      project_ref: projectRef,
+      observed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      counts: { open: topN.length, ready: 0, in_progress: inProgress.length, blocked: 0 },
+      in_progress_beads: inProgress,
+      top_n_beads: topN,
+    });
+  }
+  const findCard = (snap, stage, ref) =>
+    ((snap.lifecycle_columns || {})[stage] || []).find((c) => c.bead_ref === ref);
+
+  // A workspace whose published inventory carries two done-stage beads (one
+  // probe-verified, one not) plus an in-progress impl bead.
+  await call(GOOD, "workspace-inventory-put", [
+    wsi(
+      "qf7done",
+      [{ bead_ref: "qf7-impl-1", title: "still building", stage: "impl", verified: false }],
+      [
+        { bead_ref: "qf7-done-ver", title: "shipped + probed", status: "open", stage: "done", verified: true },
+        { bead_ref: "qf7-done-code", title: "code landed, unprobed", status: "open", stage: "done", verified: false },
+      ]
+    ),
+  ]);
+
+  // ── GET path: empty inline beads ⇒ lifecycle derived from the stored feed ──
+  const snap = await callJson("work-snapshot", ["", ""]);
+  qck(
+    "lifecycle_columns is populated on the GET path (was empty before 7qf7)",
+    snap.lifecycle_columns && Array.isArray(snap.lifecycle_columns.done)
+  );
+  const dv = findCard(snap, "done", "qf7-done-ver");
+  const dc = findCard(snap, "done", "qf7-done-code");
+  const im = findCard(snap, "impl", "qf7-impl-1");
+  qck("done-stage verified bead surfaces in the done column", !!dv);
+  qck("done·verified — probe-passed bead carries verified:true", dv && dv.verified === true);
+  qck("done·code — unprobed bead carries verified:false", dc && dc.verified === false);
+  qck("in_progress impl bead buckets under impl (stage ladder honoured)", !!im && im.verified === false);
+  qck(
+    "derived card defaults absent fields to null (inventory carries no failure/age)",
+    dv && dv.failure === null && dv.age === null && dv.waiting_on === null
+  );
+
+  // ── Inline beads STILL WIN: a non-empty inline array bypasses the store ────
+  const inlineSnap = await callJson("work-snapshot", [
+    "",
+    JSON.stringify([{ bead_ref: "qf7-inline", title: "inline only", stage: "idea", verified: false }]),
+  ]);
+  qck(
+    "inline beads win — inline bead present",
+    !!findCard(inlineSnap, "idea", "qf7-inline")
+  );
+  qck(
+    "inline beads win — stored-inventory beads NOT mixed in",
+    !findCard(inlineSnap, "done", "qf7-done-ver")
+  );
+
+  // ── Project filter scopes the derived feed to one workspace ────────────────
+  await call(GOOD, "workspace-inventory-put", [
+    wsi("qf7other", [], [{ bead_ref: "qf7-other-1", title: "elsewhere", status: "open", stage: "design", verified: false }]),
+  ]);
+  const scoped = await callJson("work-snapshot", ["qf7done", ""]);
+  qck("project filter — scoped project's done bead present", !!findCard(scoped, "done", "qf7-done-ver"));
+  qck("project filter — OTHER project's bead excluded", !findCard(scoped, "design", "qf7-other-1"));
+  const allp = await callJson("work-snapshot", ["", ""]);
+  qck("all-projects mode — other project's bead now present", !!findCard(allp, "design", "qf7-other-1"));
+
+  // ── Read-only: the derive-from-store path mutates ZERO records ─────────────
+  const sigBefore = await recordSig();
+  await callJson("work-snapshot", ["", ""]);
+  await callJson("work-snapshot", ["qf7done", ""]);
+  const sigAfter = await recordSig();
+  qck("derive-from-store is READ-ONLY (no record mutated)", sigBefore === sigAfter && sigBefore.length > 0);
+
+  // eslint-disable-next-line no-console
+  console.log(`\n══ CF.3 GET-path lifecycle feed (claude-tools-7qf7): PASS=${qPASS} FAIL=${qFAIL} ══`);
+  if (qFAIL > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + qfails.join("\n  - "));
+  }
+  expect(qFAIL, `7qf7 clauses failed: ${qfails.join("; ")}`).toBe(0);
+});

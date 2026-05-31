@@ -68,9 +68,13 @@ function jerr(msg, status) {
 function argsForGet(op, url) {
   const q = url.searchParams;
   if (op === "work-snapshot") {
-    // The proxy carries an optional read-only `project` filter and NO work
-    // plane (a Worker cannot exec `bd`; the projection is honestly produced
-    // with an empty Work-plane side — reconcile.js workSnapshot default).
+    // The proxy carries an optional read-only `project` filter and NO inline
+    // work plane (a Worker cannot exec `bd`). The empty beads arg is CORRECT
+    // and intentional: the Worker self-sources the lifecycle work-truth from
+    // the runner-published §4.6 workspace_inventory records when no inline
+    // beads are passed (claude-tools-7qf7 — reconcile.js
+    // beadsFromWorkspaceInventory). Do NOT try to pass beads here; the adapter
+    // stays dumb plumbing and the engine owns the read-join.
     return [q.get("project") || "", ""];
   }
   if (op === "get") return [q.get("type") || "", q.get("id") || ""];

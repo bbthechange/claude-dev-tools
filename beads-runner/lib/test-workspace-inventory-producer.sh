@@ -291,6 +291,37 @@ ck "in_progress_beads: all entries have non-empty stage (CF wire contract)" \
 ck "top_n_beads: all entries have non-empty stage (CF wire contract)" \
    test "$(jq_field '[.top_n_beads[].stage] | map(select(. == "")) | length')" = "0"
 
+# ── Case 10: `verified` label → per-bead verified flag (claude-tools-7qf7) ────
+# The done·code-vs-done·verified SOURCE signal. A bead with the `verified` label
+# emits verified:true; without it, verified:false (the strict default the §4.5
+# projection card enforces). Read the same way as stage:* labels.
+echo "── Case 10: 'verified' label drives the per-bead verified flag (7qf7) ──"
+: > "$OUTBOX"
+rm -f "$WIP_BD_FIXTURE"/*.json
+cat > "$WIP_BD_FIXTURE/list-in_progress.json" <<'JSON'
+[
+  {"id":"v","title":"probe passed","status":"in_progress","updated_at":"2026-05-10T00:00:00Z","labels":["stage:done","verified"]},
+  {"id":"u","title":"not yet probed","status":"in_progress","updated_at":"2026-05-11T00:00:00Z","labels":["stage:done"]}
+]
+JSON
+cp "$WIP_BD_FIXTURE/list-in_progress.json" "$WIP_BD_FIXTURE/list-open.json"
+
+la_publish_workspace_inventory
+ck "exactly one line appended"  test "$(wc -l < "$OUTBOX" | tr -d ' ')" = "1"
+
+ck "in_progress: bead with 'verified' label → verified=true" \
+   test "$(jq_field '.in_progress_beads[] | select(.bead_ref=="v") | .verified')" = "true"
+ck "in_progress: bead without 'verified' label → verified=false" \
+   test "$(jq_field '.in_progress_beads[] | select(.bead_ref=="u") | .verified')" = "false"
+ck "top_n: bead with 'verified' label → verified=true" \
+   test "$(jq_field '.top_n_beads[] | select(.bead_ref=="v") | .verified')" = "true"
+ck "top_n: bead without 'verified' label → verified=false" \
+   test "$(jq_field '.top_n_beads[] | select(.bead_ref=="u") | .verified')" = "false"
+ck "verified is a strict boolean (never a string) in_progress" \
+   test "$(jq_field '[.in_progress_beads[].verified | type] | unique | join(",")')" = "boolean"
+ck "verified is a strict boolean (never a string) top_n" \
+   test "$(jq_field '[.top_n_beads[].verified | type] | unique | join(",")')" = "boolean"
+
 echo ""
 echo "── Summary ──"
 echo "  PASS: $PASS"

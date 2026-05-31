@@ -1370,6 +1370,16 @@ co__work_snapshot() {
   # Work-truth read (beads/Dolt). Default empty array if absent/invalid — the
   # Coordinator never fabricates work-truth (Dolt is the source; this is a
   # read-join, not a second store).
+  #
+  # NOTE (claude-tools-7qf7): this bash oracle takes work-truth ONLY as the
+  # inline `beads` arg — it has NO stored-workspace_inventory fallback, on
+  # purpose. workspace_inventory is a CF-only §4.6 producer (this bash
+  # coordinator "does NOT store workspace_inventory", see the proj loop below),
+  # so the GET-path lifecycle feed (derive beads from the stored §4.6 records
+  # when no inline beads are passed) lives in the CF read producer ONLY
+  # (cf/src/reconcile.js beadsFromWorkspaceInventory). The SHARED projection
+  # SHAPE — card normalisation, the stage ladder, the per-card `verified` flag —
+  # stays byte-parallel; only the CF-side stored SOURCE has no bash twin.
   if [[ -z "$beads" ]] || ! printf '%s' "$beads" | jq -e 'type=="array"' >/dev/null 2>&1; then
     beads='[]'
   fi

@@ -319,7 +319,21 @@ AD7);
 per-bead failure metadata for Flow G tiers 1–2 (class + retry-state +
 `Runner:` note timeline — synced metadata, always remote-available; the
 forensic stream is **not** in the projection — §10). Each card: `title ·
-stage · priority · runner state · age · the one thing it waits on`.
+stage · priority · runner state · age · the one thing it waits on`, plus a
+per-card boolean **`verified`** (the §3 *done·code vs done·verified* sub-state;
+uxg2).
+
+**Lifecycle work-truth source on the GET path (claude-tools-7qf7).** The Work
+plane is supplied as an inline `beads` arg when a publisher passes one (the
+differential oracle + tests). The **production Board GET path passes none** (a
+Worker cannot exec `bd`; the cf/pages-dev adapter sends an empty beads arg). So
+when no inline beads are supplied, the CF read producer derives the lifecycle
+work-truth from the already-published **§4.6 `workspace_inventory`** records
+(`reconcile.js` `beadsFromWorkspaceInventory`) — a reprojection of
+runner-published work-truth, never fabricated. `verified` rides through from the
+§4.6 entries. (The bash oracle has no `workspace_inventory` store, so this
+stored fallback is CF-side production infra with no bash twin; the projection
+SHAPE stays parallel.)
 
 ### §4.6 *workspace_inventory* (`schema_version: 1`)
 
@@ -350,8 +364,8 @@ snapshot, not history):
   "project_ref":"<workspace bd prefix>",  // safeKey; the §4 record id
   "observed_at":"<RFC-3339 UTC ...Z>",    // §0.4; pre-2024 rejected (S-1 freshness)
   "counts":      { "open": int, "ready": int, "in_progress": int, "blocked": int },
-  "in_progress_beads": [ { "bead_ref": str, "title": str, "stage": str } ],
-  "top_n_beads":       [ { "bead_ref": str, "title": str, "status": str, "stage": str } ]
+  "in_progress_beads": [ { "bead_ref": str, "title": str, "stage": str, "verified"?: bool } ],
+  "top_n_beads":       [ { "bead_ref": str, "title": str, "status": str, "stage": str, "verified"?: bool } ]
 }
 ```
 
@@ -360,6 +374,22 @@ snapshot, not history):
 but is REQUIRED (no hard cap at the write boundary — bounding is the
 producer's concern; full inventory is **not** the goal of this record — that
 is a Work-plane query, not a control-plane projection).
+
+**`verified` (optional, claude-tools-7qf7).** Each bead entry MAY carry a
+boolean `verified` — the §3 / UX-DESIGN-V2 *done·code vs done·verified* source
+signal. Producer reads it from the bead's `verified` **label** (the same
+label-read as `stage:*`); the label is stamped when the production/contract
+probe passes (web track: deploy + `verify-pages-deploy.sh mismatches=0`;
+contract track: a live integration probe — the CLAUDE.md "Web/Pages
+task-acceptance discipline"). **Strict boolean, default false** (absent /
+non-bool ⇒ false — un-probed is *not* verified). This is **additive at v1 — no
+`schema_version` bump** (same posture as the §4.5 projection card that added
+`verified` in uxg2, and the §4.1 `kind:"pair"`/`scheduled_at` fields in uxg6:
+an optional field a v1 consumer simply ignores is not a breaking change; only a
+version bump is, §0.3). The hosted §4.5 GET-path lifecycle join reads it back
+(`reconcile.js` `beadsFromWorkspaceInventory` → `workSnapshot`) so the Board's
+`done` column can light up `done·verified` from live, runner-published
+work-truth.
 
 ### §4.7 *task_progress* — RESERVED (no producer/consumer)
 

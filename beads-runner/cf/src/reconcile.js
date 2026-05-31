@@ -365,11 +365,13 @@ async function heartbeat(co, principal, jsonStr) {
 //      {open, ready, in_progress, blocked} — a missing or non-int count is a
 //      contract value, not "best-effort 0";
 //   6. `in_progress_beads` is an array (may be empty); each element MUST carry
-//      string `bead_ref` + `title` + `stage`;
+//      string `bead_ref` + `title` + `stage`, and MAY carry boolean `verified`
+//      (claude-tools-7qf7 — optional additive at v1, default false; see below);
 //   7. `top_n_beads` is REQUIRED (array, may be empty); each element MUST carry
-//      string `bead_ref` + `title` + `status` + `stage`. No hard cap on length
-//      at the write boundary — bounding is the producer's concern (the §4.6
-//      contract notes "a small bounded array of top-N most-recently-touched").
+//      string `bead_ref` + `title` + `status` + `stage` (and MAY carry the same
+//      optional `verified`). No hard cap on length at the write boundary —
+//      bounding is the producer's concern (the §4.6 contract notes "a small
+//      bounded array of top-N most-recently-touched").
 // The wire `principal` field is OVERWRITTEN by the resolved §9.1 principal
 // inside `_writeRecord` (NEVER trust the wire's principal — same C7 discipline
 // `heartbeat` follows). Persisted through CF.1's ONE gated `_writeRecord` with
@@ -575,12 +577,20 @@ async function workspaceInventoryPut(co, principal, jsonStr) {
       bead_ref: b.bead_ref,
       title: b.title,
       stage: b.stage,
+      // `verified` (claude-tools-7qf7) — OPTIONAL additive field at v1 (no
+      // schema_version bump; the same posture as the §4.5 projection card that
+      // added `verified` in uxg2 and `kind:"pair"`/`scheduled_at` in uxg6).
+      // STRICT boolean: only literal `true` survives; absent/non-bool ⇒ false
+      // (un-probed is NOT verified). This is the done·code-vs-done·verified
+      // SOURCE the GET-path lifecycle join reads back (see workSnapshot below).
+      verified: b.verified === true,
     })),
     top_n_beads: tn.map((b) => ({
       bead_ref: b.bead_ref,
       title: b.title,
       status: b.status,
       stage: b.stage,
+      verified: b.verified === true,
     })),
     updated_at: now,
   };
@@ -667,6 +677,74 @@ async function reconcileData(co, principal, proj, leaseId) {
 // no-reader-write-path invariant holds BY CONSTRUCTION. `work_snapshot` IS a
 // §4 type (CF.1 registry) for the publisher's STORED envelope; this READ-side
 // producer is a DIFFERENT path and never persists.
+
+// ── beadsFromWorkspaceInventory — the GET-path lifecycle work-truth source ────
+// (claude-tools-7qf7). Reprojects the runner-published §4.6 workspace_inventory
+// records into the flat bead-card array `workSnapshot` buckets into the §4.5
+// lifecycle ladder. Reads ONLY (no write primitive); honest empty on any miss
+// (no table, no row, parse error) — never fabricates work-truth. `proj` scopes
+// to one workspace (the proxy's optional read filter); absent ⇒ all stored
+// inventories. Aggregates each record's `in_progress_beads[]` + `top_n_beads[]`
+// and dedups by `bead_ref` (a bead can appear in both lists / across machines).
+// `verified` is monotonic across duplicates: ANY occurrence marking the bead
+// verified wins (the probe-passed fact does not un-fire). Cards inherit only
+// what the §4.6 inventory carries (bead_ref/title/stage/verified); priority,
+// age, waiting_on, and failure are absent here and the card() builder defaults
+// them to null — honest "the inventory channel doesn't carry these yet."
+async function beadsFromWorkspaceInventory(co, proj) {
+  let rows = [];
+  try {
+    if (proj) {
+      const r = await co.db
+        .prepare("SELECT json FROM records WHERE type = ? AND id = ?")
+        .bind("workspace_inventory", proj)
+        .first();
+      rows = r ? [r] : [];
+    } else {
+      const r = await co.db
+        .prepare("SELECT json FROM records WHERE type = ? ORDER BY id")
+        .bind("workspace_inventory")
+        .all();
+      rows = (r && r.results) || [];
+    }
+  } catch {
+    return []; // table not yet created / read failure ⇒ honest empty
+  }
+  const byRef = new Map();
+  for (const row of rows) {
+    let rec;
+    try {
+      rec = JSON.parse(row.json);
+    } catch {
+      continue;
+    }
+    if (!rec || typeof rec !== "object" || Array.isArray(rec)) continue;
+    const lists = [];
+    if (Array.isArray(rec.in_progress_beads)) lists.push(rec.in_progress_beads);
+    if (Array.isArray(rec.top_n_beads)) lists.push(rec.top_n_beads);
+    for (const list of lists) {
+      for (const b of list) {
+        if (!b || typeof b !== "object" || Array.isArray(b)) continue;
+        if (typeof b.bead_ref !== "string" || b.bead_ref.length === 0) continue;
+        const entry = {
+          bead_ref: b.bead_ref,
+          title: typeof b.title === "string" ? b.title : null,
+          stage: typeof b.stage === "string" ? b.stage : "",
+          verified: b.verified === true,
+        };
+        const prev = byRef.get(b.bead_ref);
+        if (!prev) {
+          byRef.set(b.bead_ref, entry);
+        } else if (!prev.verified && entry.verified) {
+          // monotonic verified — keep the verified view of a duplicated bead
+          byRef.set(b.bead_ref, entry);
+        }
+      }
+    }
+  }
+  return Array.from(byRef.values());
+}
+
 async function workSnapshot(co, principal, proj, beadsStr) {
   // Work-truth read (beads/Dolt). Default empty array if absent/invalid — the
   // Coordinator never fabricates work-truth (Dolt is the source).
@@ -678,6 +756,29 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     } catch {
       beads = [];
     }
+  }
+  // ── TRANSPORT wiring (claude-tools-7qf7) ────────────────────────────────────
+  // The PRODUCTION Board GET path passes NO inline work-truth: the Pages proxy
+  // GETs `?op=work-snapshot` and the cf/pages-dev adapter hard-codes the beads
+  // arg to "" (a Worker cannot exec `bd` — adapter.js:argsForGet). So with only
+  // the inline path, `lifecycle_columns` is EMPTY in prod regardless of stage,
+  // and the §3 done·code/done·verified split (uxg2) stays correct-but-dormant.
+  //
+  // The honest live source is the ALREADY-PUBLISHED work-truth: the §4.6
+  // workspace_inventory records the runner publishes (bd → la_publish_workspace_
+  // inventory → daemon drain → workspace-inventory-put). When no inline beads
+  // are supplied, derive the lifecycle work-truth from those stored records.
+  // This NEVER fabricates work-truth — it reprojects what the runner published.
+  //
+  // Inline beads, when present, still WIN: the differential oracle
+  // (lib/coordinator.sh) + every existing test drives this op with an inline
+  // array, and that path stays byte-identical. The bash oracle deliberately has
+  // NO workspace_inventory store (it is a CF-only §4.6 producer — coordinator.sh
+  // co__work_snapshot notes this), so this fallback is CF-side production infra
+  // with no bash twin; the SHARED projection SHAPE (card normalisation, the
+  // stage ladder, `verified`) stays parallel.
+  if (beads.length === 0) {
+    beads = await beadsFromWorkspaceInventory(co, proj);
   }
   // The lifecycle columns are the C1-seam stage ladder, keyed by each bead's
   // `stage:` label (INTERFACE §4.5). Frozen column order; a bead with no/an

@@ -453,6 +453,15 @@ la_publish_workspace_inventory() {
   # Board needs the full set to render "what is each runner doing right now").
   # Stage: first stage:* label, with "stage:" prefix stripped; empty → "unknown"
   # so the CF wire-contract's non-empty-string requirement is always satisfied.
+  # `verified` (claude-tools-7qf7): the §3/UX-DESIGN-V2 done·code-vs-done·verified
+  # SOURCE SIGNAL — a per-bead boolean read from the `verified` LABEL (the same
+  # label-read pattern as `stage:*` above). The label is stamped on the work-truth
+  # bead when the production/contract probe passes (web track: deploy +
+  # verify-pages-deploy.sh mismatches=0; contract track: a live integration probe
+  # — the CLAUDE.md "Web/Pages task-acceptance discipline"). Absent ⇒ false (the
+  # strict default the §4.5 projection card already enforces: un-probed is NOT
+  # verified). Carried through workspace-inventory-put → the GET-path lifecycle
+  # join (reconcile.js workSnapshot), so done·verified can light up live.
   local ip_beads
   ip_beads=$(bd list --status=in_progress --json 2>/dev/null \
     | jq -c 'map({bead_ref: .id, title: (.title // ""),
@@ -460,13 +469,18 @@ la_publish_workspace_inventory() {
                           | map(select(type=="string" and startswith("stage:")))
                           | (first // "")
                           | sub("^stage:"; "")
-                          | if . == "" then "unknown" else . end)})' 2>/dev/null) || ip_beads="[]"
+                          | if . == "" then "unknown" else . end),
+                  verified: ((.labels // [])
+                          | any(type=="string" and . == "verified"))})' 2>/dev/null) || ip_beads="[]"
   [[ -n "$ip_beads" ]] || ip_beads="[]"
 
   # top_n_beads — at most 20 open beads, ordered by updated_at desc, mapped
-  # to the wire shape {bead_ref, title, status, stage}. The cap is enforced
-  # in jq so a bd that ignores --limit is still bounded. Same stage-normalisation
-  # as in_progress_beads (empty → "unknown").
+  # to the wire shape {bead_ref, title, status, stage, verified}. The cap is
+  # enforced in jq so a bd that ignores --limit is still bounded. Same
+  # stage-normalisation as in_progress_beads (empty → "unknown"); same
+  # `verified` LABEL read (claude-tools-7qf7) — these top open beads are the
+  # bulk of what the GET-path lifecycle board renders, so the done-stage ones
+  # carry their verified sub-state here.
   local top_beads
   top_beads=$(bd list --status=open --json 2>/dev/null \
     | jq -c '(sort_by(.updated_at // "") | reverse)[0:20]
@@ -476,7 +490,9 @@ la_publish_workspace_inventory() {
                             | map(select(type=="string" and startswith("stage:")))
                             | (first // "")
                             | sub("^stage:"; "")
-                            | if . == "" then "unknown" else . end)})' 2>/dev/null) || top_beads="[]"
+                            | if . == "" then "unknown" else . end),
+                    verified: ((.labels // [])
+                            | any(type=="string" and . == "verified"))})' 2>/dev/null) || top_beads="[]"
   [[ -n "$top_beads" ]] || top_beads="[]"
 
   jq -cn \

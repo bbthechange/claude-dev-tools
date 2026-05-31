@@ -255,6 +255,41 @@ it("CF workspace-inventory-put (claude-tools-8dfb) — schema validation + write
   const rNoObs = await put(JSON.stringify(noObs));
   ck("missing observed_at ⇒ reject (required, §0.4)", rNoObs.status === 422);
 
+  // ── CASE 8: `verified` optional additive field round-trips (claude-tools-7qf7)
+  // The done·code-vs-done·verified source signal. Optional at v1 (no bump),
+  // STRICT boolean: only literal true survives; absent/non-bool ⇒ false.
+  const rVer = await put(
+    line({
+      project_ref: "case8-ver",
+      in_progress_beads: [
+        { bead_ref: "case8-001", title: "probed", stage: "done", verified: true },
+        { bead_ref: "case8-002", title: "unprobed", stage: "done" }, // absent ⇒ false
+      ],
+      top_n_beads: [
+        { bead_ref: "case8-003", title: "open probed", status: "open", stage: "done", verified: true },
+        { bead_ref: "case8-004", title: "non-bool", status: "open", stage: "done", verified: "yes" }, // non-bool ⇒ false
+      ],
+    })
+  );
+  ck("verified-carrying payload ⇒ 200", rVer.status === 200);
+  const storedVer = await getRecord("workspace_inventory", "case8-ver");
+  ck(
+    "in_progress_beads[].verified:true round-trips strict-true",
+    storedVer && storedVer.in_progress_beads[0].verified === true
+  );
+  ck(
+    "in_progress_beads[].verified absent ⇒ stored false (un-probed default)",
+    storedVer && storedVer.in_progress_beads[1].verified === false
+  );
+  ck(
+    "top_n_beads[].verified:true round-trips strict-true",
+    storedVer && storedVer.top_n_beads[0].verified === true
+  );
+  ck(
+    "top_n_beads[].verified non-bool ('yes') ⇒ stored false (strict)",
+    storedVer && storedVer.top_n_beads[1].verified === false
+  );
+
   // ── ANTI-DRIFT: schema registry carries workspace_inventory at v1 ─────────
   ck("workspace_inventory IS in the §4 schema registry at v1", schemaVersion("workspace_inventory") === 1);
 

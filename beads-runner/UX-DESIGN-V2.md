@@ -240,6 +240,21 @@ at a glance whether the queue's "done" is real done. [thirsty: "closing on
 code lands + tests pass without integration verification" is the dominant
 leak.]
 
+**Source signal [claude-tools-7qf7].** `verified` is a per-bead boolean carried
+on the work-truth: a bead earns it via a **`verified` label** stamped when the
+probe in the parenthetical above passes (web track: deploy +
+`verify-pages-deploy.sh mismatches=0`; contract track: a live integration
+probe). The label is the simplest signal that matches the existing producer
+(which already reads `stage:*` labels) and stays reversible — the projection
+consumes only a boolean, so the *source* of that boolean (label today; a
+runner-stamped probe-result join later) can change without touching the §4.5
+contract. Flow: `verified` label → §4.6 `workspace_inventory` producer → engine
+→ §4.5 projection card → Board `done` split. Absent ⇒ `done · code` (the honest
+default — un-probed is **not** verified). The stamping moment is the
+already-mandated CLAUDE.md "Web/Pages task-acceptance discipline": a web/contract
+task is done **only** when the deployed bytes/contract verify, so that same
+green probe is what adds the label.
+
 **Vocabulary note:** the lifecycle decision points above are **Checkpoints**
 (the old v1 "GATE (you)"). They are *touchpoints that produce a decision*.
 They are **not** the same thing as **Gates** (§7), which are *holds that
