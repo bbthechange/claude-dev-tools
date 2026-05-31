@@ -85,7 +85,8 @@
       "Bash(python:*)",
       "Bash(python3:*)",
       "Task",
-      "WebFetch"
+      "WebFetch",
+      "Workflow(deep-research)"
     ]
   }
 }

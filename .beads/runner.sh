@@ -146,5 +146,19 @@ export CLOUDFLARE_API_TOKEN="$(security find-generic-password -s 'cloudflare-api
 # now wastes one 6h slot before retry. Acceptable for now.
 IDLE_TIMEOUT=21600
 
+# ── Usage threshold — pause new tasks above N% of usage limit ────────────────
+# TODO this should not be in code it should be modifyable in the GUI. 
+# Not reccommended to go above 98%
+USAGE_THRESHOLD=95
+
+# ── ask-brian / dossier escalation (claude-tools-43m) ───────────────────────
+# This workspace IS the home of the ask-brian flow and the closing-gate
+# fixture (claude-tools-bzc), so we want every worker here to know about
+# `mcp__askbrian__ask-brian` and the §7.3 stuck spine. All other workspaces
+# default OFF (old-script behavior) until they explicitly opt in. See
+# docs/runbooks/add-tool-to-runner-allowlist.md for the companion allowlist
+# entry above; both are required for the flow to actually work end-to-end.
+ASK_BRIAN_ENABLED=1
+
 # ── Project-wide worker guidance (appended to every task prompt; BC-37) ───────
 PROMPT_EXTRA='Watchdog / long operations: a watchdog stops you if your visible activity is silent past the idle timeout. Delegating to subagents (the Task tool) is ENCOURAGED for context isolation and for objective review with a clean context, and is watchdog-safe while the subagent is actively working — do NOT inline context-heavy work into your own thread just to avoid delegating (that causes context overflow, which is worse). The ONLY pattern that trips the watchdog is detaching a long shell command (run_in_background, or a long blocking Bash) and then sitting idle: if you must background a long Bash op, poll it and print a one-line progress note every few minutes so activity stays visible. Prefer foreground for short commands, a subagent for anything heavy or needing objectivity, and background-shell only when necessary with periodic visible progress.'

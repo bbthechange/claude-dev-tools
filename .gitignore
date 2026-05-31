@@ -24,3 +24,14 @@ beads-runner/mocks/
 mcp-askbrian/node_modules/
 mcp-askbrian/.test-scratch/
 mcp-askbrian/package-lock.json
+
+# beads-runner/ web tooling deps (re-installed on demand; never committed).
+beads-runner/node_modules/
+
+# Web Push VAPID private key (N2 — claude-tools-uxg1). The file itself is
+# labelled "GITIGNORED — never commit"; ignore it everywhere so the runner's
+# per-bead auto-commit can never smuggle the secret into history.
+.vapid-private.local
+
+# /schedule lock file — local scratch, regenerated on demand.
+.claude/scheduled_tasks.lock

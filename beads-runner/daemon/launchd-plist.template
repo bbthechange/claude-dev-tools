@@ -53,6 +53,11 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>@@HOME@@</string>
+    <!-- Pause new pickups above 85% of the weekly cap (default 70 was
+         parking workspace runners early in the week with plenty of
+         headroom left). See usage-poll.sh USAGE_POLL_THRESHOLD. -->
+    <key>USAGE_THRESHOLD</key>
+    <string>95</string>
   </dict>
 
   <key>WorkingDirectory</key>
