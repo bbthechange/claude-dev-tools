@@ -107,6 +107,26 @@ RUNNER_NO_CLAIM_LABELS="${RUNNER_NO_CLAIM_LABELS:+$RUNNER_NO_CLAIM_LABELS,}backe
 export COORDINATOR_URL="https://coordinator-cf.bbthechange.workers.dev"
 export COORDINATOR_TOKEN="$(security find-generic-password -s 'claude-beads-runner.coordinator-token' -w 2>/dev/null)"
 
+# ── Cloudflare deploy auth (claude-tools-goym) ───────────────────────────────
+# The headless runner spawns `claude -p` workers (run-beads-tasks.sh:1767) that
+# inherit THIS process's env. Web/Worker beads only close on a real deploy
+# (wrangler deploy / pages deploy + verify-pages-deploy.sh mismatches=0), but
+# wrangler's OAuth login is INTERACTIVE (browser) and its refresh token expires
+# — so a headless worker can NEVER OAuth, and every web/Worker bead stalled at
+# its deploy gate (goym: the dead-refresh-400, no-token state). wrangler reads
+# CLOUDFLARE_API_TOKEN from the env and PREFERS it over OAuth, skipping the
+# browser entirely. We pull a SCOPED token (Workers Scripts:Edit + Cloudflare
+# Pages:Edit + Account Settings:Read) from the Keychain — same posture as
+# COORDINATOR_TOKEN above: NEVER hard-coded, NEVER in any agent context, NEVER
+# in the launchd plist (that would put it plaintext on disk + in logs). The
+# `Bash(npx:*)` / `Bash(wrangler:*)` allowlist entries above are the companion
+# half — permission to RUN wrangler; this is the credential it runs WITH.
+# An empty result is tolerated (a non-web bead doesn't need it, and the empty
+# assignment is safe under `set -e`, exactly as COORDINATOR_TOKEN proves); a
+# web bead whose token is missing fails loudly at the deploy gate, as it should.
+# See docs/runbooks/deploy-cloudflare-worker.md / deploy-pages.md.
+export CLOUDFLARE_API_TOKEN="$(security find-generic-password -s 'cloudflare-api-token' -w 2>/dev/null)"
+
 # ── Watchdog grace (BC-22) ───────────────────────────────────────────────────
 # Overhaul tasks legitimately run quiet for a while (harness spawning claude -p,
 # npm ci, wrangler, blocking review subagents). Default 600s (10m) killed a

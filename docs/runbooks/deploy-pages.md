@@ -32,6 +32,14 @@ to keep working, its asset refs MUST stay absolute (`/board/board.css`,
 HTML is served at `/`. There are reminder comments on those lines in
 `board/index.html`.
 
+## Auth
+
+Same as the Worker: interactive `wrangler login` for your terminal, or a scoped
+`CLOUDFLARE_API_TOKEN` from the Keychain for the headless runner (it needs
+**Cloudflare Pages:Edit**). The runner exports it in `.beads/runner.sh`; see the
+"Auth — interactive vs. the headless runner" section of
+`deploy-cloudflare-worker.md` for provisioning/rotation (claude-tools-goym).
+
 ## Deploy
 
 ```bash

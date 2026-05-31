@@ -4,6 +4,37 @@
 
 You've edited any file under `beads-runner/cf/src/` — the Worker source, op handlers, the CF.10 Pages-dev adapter, or schema. Committed code does NOT automatically deploy to the live Worker at `coordinator-cf.bbthechange.workers.dev`.
 
+## Auth — interactive vs. the headless runner
+
+wrangler authenticates two ways, and they are NOT interchangeable:
+
+- **Interactive (your terminal):** `wrangler login` runs a browser OAuth flow.
+  Fine for a human at a keyboard. Its refresh token expires, so you re-login
+  periodically (a dead refresh token is `Failed to fetch auth token: 400`).
+- **Non-interactive (the beads runner):** the headless LaunchAgent has no
+  browser, so OAuth is impossible. wrangler instead reads `CLOUDFLARE_API_TOKEN`
+  from the environment and **prefers it over OAuth**. The runner exports a
+  scoped token from the macOS Keychain in `.beads/runner.sh` (right next to
+  `COORDINATOR_TOKEN`); the `claude -p` workers it spawns inherit it. This is
+  what makes web/Worker beads closeable headlessly (claude-tools-goym).
+
+Provision or rotate the runner's token:
+
+```bash
+# 1. Mint a SCOPED token at https://dash.cloudflare.com/profile/api-tokens
+#    Scopes: Workers Scripts:Edit, Cloudflare Pages:Edit, Account Settings:Read.
+# 2. Store it in the Keychain under this EXACT service name (the runner reads it
+#    by name; -a is just the account label):
+security add-generic-password -s cloudflare-api-token -a brian -w "<token>"
+# 3. Confirm it authenticates (setting the env var forces token auth over OAuth):
+CLOUDFLARE_API_TOKEN="$(security find-generic-password -s cloudflare-api-token -w)" \
+  npx wrangler whoami
+```
+
+Do **not** put the token in the launchd plist's `EnvironmentVariables` (plaintext
+on disk and in logs) or commit it in a `.env`. Keychain only — same posture as
+the coordinator token (BC-34).
+
 ## The two configs
 
 `beads-runner/cf/` contains TWO wrangler configs:
