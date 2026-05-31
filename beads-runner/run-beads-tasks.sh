@@ -429,6 +429,14 @@ trap _final_subshell_reap EXIT
 
 USAGE_CACHE_FILE=""
 USAGE_CACHE_TIME=0
+# zfxe: the reason + numbers behind the last `over` verdict, retained across the
+# USAGE_CACHE_SECONDS window so the loop-top sleep message names WHICH gate held
+# (the old "Above ${USAGE_THRESHOLD}% usage" line was a lie — see la_capacity_check).
+# Written whenever a fresh check runs; a cached-hit serves the same TTL window's
+# values (the cache file + these globals are written together in one process).
+USAGE_REASON=ok
+USAGE_PCT_5H=""
+USAGE_PCT_7D=""
 
 # Check Claude usage via API. Returns 0 (ok to proceed) or 1 (over threshold).
 # Caches result to avoid hitting the API every loop iteration.
@@ -460,9 +468,16 @@ check_usage() {
   # the loop-level "may I start a task" gate is the hard 5h/7d ceiling.
   if command -v la_capacity_check >/dev/null 2>&1; then
     if la_capacity_check standard; then
-      echo "ok"   > "$USAGE_CACHE_FILE"; return 0
+      echo "ok"   > "$USAGE_CACHE_FILE"
+      USAGE_REASON=ok; USAGE_PCT_5H="${LA_CAPACITY_PCT_5H:-}"; USAGE_PCT_7D="${LA_CAPACITY_PCT_7D:-}"
+      return 0
     else
-      echo "over" > "$USAGE_CACHE_FILE"; return 1
+      echo "over" > "$USAGE_CACHE_FILE"
+      # zfxe: stash the daemon's reason + numbers so the loop-top sleep line
+      # names the gate that tripped instead of the old USAGE_THRESHOLD lie.
+      USAGE_REASON="${LA_CAPACITY_REASON:-cost_class_not_allowed}"
+      USAGE_PCT_5H="${LA_CAPACITY_PCT_5H:-}"; USAGE_PCT_7D="${LA_CAPACITY_PCT_7D:-}"
+      return 1
     fi
   fi
 
@@ -491,12 +506,16 @@ check_usage() {
   seven_day=$(echo "$usage_json" | jq -r '.seven_day.utilization // 0' 2>/dev/null)
   five_int=${five_hour%.*}
   seven_int=${seven_day%.*}
+  USAGE_PCT_5H="$five_hour"; USAGE_PCT_7D="$seven_day"   # zfxe: numbers the verdict used
   if [[ ${five_int:-0} -ge $USAGE_THRESHOLD ]] || [[ ${seven_int:-0} -ge $USAGE_THRESHOLD ]]; then
     echo "over" > "$USAGE_CACHE_FILE"
+    # zfxe: name WHICH window tripped (the lib path does the same via la_capacity_check).
+    if [[ ${five_int:-0} -ge $USAGE_THRESHOLD ]]; then USAGE_REASON=5h_hard_ceiling; else USAGE_REASON=7d_hard_ceiling; fi
     echo "  Usage: 5h=${five_hour}% 7d=${seven_day}% (threshold: ${USAGE_THRESHOLD}%)"
     return 1
   fi
   echo "ok" > "$USAGE_CACHE_FILE"
+  USAGE_REASON=ok
   echo "  Usage: 5h=${five_hour}% 7d=${seven_day}%"
   return 0
 }
@@ -1331,7 +1350,12 @@ while true; do
 
   # Check usage quota before starting a new task
   while ! check_usage; do
-    echo "  Above ${USAGE_THRESHOLD}% usage — sleeping $((USAGE_SLEEP_SECONDS / 60))min before rechecking..."
+    # zfxe: name the gate that tripped + the numbers it tripped on. The old
+    # "Above ${USAGE_THRESHOLD}% usage" wording was a lie — the daemon-side
+    # cost-class gate can deny while neither 5h nor 7d is above USAGE_THRESHOLD
+    # (e.g. a daemon/runner threshold split), so naming USAGE_THRESHOLD here
+    # pointed at a gate that wasn't the one that held.
+    echo "  Capacity verdict=over reason=${USAGE_REASON:-unknown} (5h=${USAGE_PCT_5H:-?}% 7d=${USAGE_PCT_7D:-?}%) — sleeping $((USAGE_SLEEP_SECONDS / 60))min before rechecking..."
     USAGE_CACHE_TIME=0  # force fresh API call after sleep
     # Sleep in 60s chunks so stop file is detected promptly
     slept=0
@@ -1588,7 +1612,9 @@ while true; do
       echo "  Capacity (daemon unreachable) — falling back to local la_capacity_check for $TASK_COST_CLASS."
       if command -v la_capacity_check >/dev/null 2>&1 \
          && ! la_capacity_check "$TASK_COST_CLASS"; then
-        echo "  Capacity DENIED by local fallback for $TASK_ID (cost=$TASK_COST_CLASS) — releasing lease, sleeping ${CAPACITY_DENY_BACKOFF}s."
+        # zfxe: la_capacity_check sets LA_CAPACITY_REASON/PCT alongside its exit
+        # code — name the gate that held instead of just "DENIED".
+        echo "  Capacity DENIED by local fallback for $TASK_ID (cost=$TASK_COST_CLASS, reason=${LA_CAPACITY_REASON:-unknown}, 5h=${LA_CAPACITY_PCT_5H:-?}% 7d=${LA_CAPACITY_PCT_7D:-?}%) — releasing lease, sleeping ${CAPACITY_DENY_BACKOFF}s."
         lease_release_seam "$TASK_ID"
         sleep "$CAPACITY_DENY_BACKOFF"
         continue

@@ -56,6 +56,9 @@ la_principal() { la__PRINCIPAL_V1; }
 # verdict `ok` — exactly the posture the real lib degrades to on error.
 la_capacity_check() {
   local cost_class="${1:-standard}"
+  # Mirror the real lib's sidecar-reason contract (claude-tools-zfxe): the stub
+  # always returns the fail-OPEN `ok`, so the deny tokens never apply.
+  LA_CAPACITY_REASON=ok; LA_CAPACITY_PCT_5H=""; LA_CAPACITY_PCT_7D=""
   return 0
 }
 

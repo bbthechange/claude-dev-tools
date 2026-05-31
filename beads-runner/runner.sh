@@ -1329,7 +1329,10 @@ st_claim() {
   # Job 2 — ask-capacity (§6.3). Failure posture is fail-OPEN (§6.2): the stub
   # returns ok; a real `over` would hold here. Explicit, not silent.
   if ! job_ask_capacity standard; then
-    echo "runner: capacity verdict=over — releasing lease, holding"
+    # zfxe: name WHICH gate tripped + the numbers it tripped on. job_ask_capacity
+    # (la_capacity_check) sets these sidecars alongside its exit code; before this
+    # the reason was discarded and the deny line couldn't say which gate held.
+    echo "runner: capacity verdict=over reason=${LA_CAPACITY_REASON:-unknown} (5h=${LA_CAPACITY_PCT_5H:-?}% 7d=${LA_CAPACITY_PCT_7D:-?}%) — releasing lease, holding"
     job_release_lease "$CANDIDATE_ID" "$LEASE_GENERATION" >/dev/null
     LEASE_GENERATION=""
     sleep "$RECLAIM_POLL_INTERVAL"

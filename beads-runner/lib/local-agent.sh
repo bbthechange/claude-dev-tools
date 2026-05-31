@@ -225,6 +225,27 @@ la__spare_ramp_pct() {
   printf '%s' "${ramp:-100}"
 }
 
+# la__capacity_deny_reason <cost_class> <pct_5h> <pct_7d> <ramp> <threshold>
+#   The §6.3 deny-reason derivation (claude-tools-zfxe), factored out so the
+#   daemon-cache branch below stays bit-for-bit identical to daemon_ask_capacity
+#   (run-beads-tasks.sh) — one vocabulary, one decision tree. Integer-truncates
+#   the percentages the same way the gate does, then echoes one of:
+#   5h_hard_ceiling | 7d_hard_ceiling | spare_cycles_today_exhausted |
+#   cost_class_not_allowed.
+la__capacity_deny_reason() {
+  local cost_class="$1" five_i seven_i ramp_i threshold="$5"
+  five_i=${2%.*};   five_i=${five_i:-0}
+  seven_i=${3%.*};  seven_i=${seven_i:-0}
+  ramp_i=${4%.*};   ramp_i=${ramp_i:-100}
+  if   [[ "$five_i"  -ge "$threshold" ]]; then printf '5h_hard_ceiling'
+  elif [[ "$seven_i" -ge "$threshold" ]]; then printf '7d_hard_ceiling'
+  elif [[ "$cost_class" == "low_priority" ]] && [[ "$seven_i" -ge "$ramp_i" ]]; then
+    printf 'spare_cycles_today_exhausted'
+  else
+    printf 'cost_class_not_allowed'
+  fi
+}
+
 # la_capacity_check <cost_class>  (cost_class ∈ standard | low_priority)
 #   Returns 0  → verdict ok    (proceed)
 #   Returns 1  → verdict over  (hard ceiling or, for low_priority, the ramp)
@@ -235,9 +256,28 @@ la__spare_ramp_pct() {
 # path is never touched). `standard` is gated ONLY by the hard 5h-or-7d
 # ceiling; `low_priority` is ADDITIONALLY gated by the spare-cycles ramp and
 # never starves the weekly cap. The verdict is reported UP (§1.1).
+#
+# SIDECAR REASON (claude-tools-zfxe): alongside the 0|1 exit code, this sets
+# three globals the CALLER reads to log WHY a verdict is `over` (the exit code
+# alone threw the reason away — the runner's deny line then named a threshold
+# that wasn't the gate that tripped):
+#   LA_CAPACITY_REASON  one of: ok | 5h_hard_ceiling | 7d_hard_ceiling |
+#                       spare_cycles_today_exhausted | cost_class_not_allowed
+#                       (same vocabulary daemon_ask_capacity already prints;
+#                       `spare_only_standard_disallowed` is the daemon gate's
+#                       desired-state token, derived only there)
+#   LA_CAPACITY_PCT_5H  the 5h utilisation the verdict was decided on (or "")
+#   LA_CAPACITY_PCT_7D  the 7d utilisation the verdict was decided on (or "")
+# Reason derivation uses the caller-visible USAGE_THRESHOLD: when it explains
+# the daemon's denial it names the exact ceiling; when it can't (a daemon/runner
+# threshold split — the claude-tools-zfxe symptom), it falls to the honest
+# `cost_class_not_allowed` rather than asserting a ceiling that didn't fire.
 la_capacity_check() {
   local cost_class="${1:-standard}" threshold
   threshold="$(la__USAGE_THRESHOLD)"
+  # Initialise the sidecar reason to the proceed verdict; deny branches below
+  # overwrite it. Always defined after this call so `set -u` callers are safe.
+  LA_CAPACITY_REASON=ok; LA_CAPACITY_PCT_5H=""; LA_CAPACITY_PCT_7D=""
 
   # §6.3: 0 disables — no keychain, no API, no banner, nothing.
   if [[ "$threshold" -eq 0 ]]; then
@@ -253,17 +293,23 @@ la_capacity_check() {
   # reports per cycle, defeating the centralisation).
   local cached
   if cached=$(la__capacity_via_daemon 2>/dev/null); then
-    local pct_5h pct_7d allowed verdict
+    local pct_5h pct_7d ramp allowed verdict
     pct_5h=$(printf '%s' "$cached" | jq -r '.pct_5h // 0' 2>/dev/null) || pct_5h=0
     pct_7d=$(printf '%s' "$cached" | jq -r '.pct_7d // 0' 2>/dev/null) || pct_7d=0
+    ramp=$(printf '%s'  "$cached" | jq -r '.spare_ramp_today // 100' 2>/dev/null) || ramp=100
     allowed=$(printf '%s' "$cached" | jq -r '.allowed_cost_classes[]?' 2>/dev/null)
+    LA_CAPACITY_PCT_5H="$pct_5h"; LA_CAPACITY_PCT_7D="$pct_7d"
     if printf '%s\n' "$allowed" | grep -qx "$cost_class"; then
       verdict=ok
       echo "  Usage (via daemon): 5h=${pct_5h}% 7d=${pct_7d}% — $cost_class allowed"
       return 0
     else
       verdict=over
-      echo "  Usage (via daemon): 5h=${pct_5h}% 7d=${pct_7d}% — $cost_class over"
+      # Derive the §6.3 reason from the same numbers the daemon decided on —
+      # mirrors daemon_ask_capacity (run-beads-tasks.sh) so the deny line names
+      # WHICH gate tripped, not just THAT one did (claude-tools-zfxe).
+      LA_CAPACITY_REASON="$(la__capacity_deny_reason "$cost_class" "$pct_5h" "$pct_7d" "$ramp" "$threshold")"
+      echo "  Usage (via daemon): 5h=${pct_5h}% 7d=${pct_7d}% — $cost_class over (reason=$LA_CAPACITY_REASON)"
       return 1
     fi
   fi
@@ -286,17 +332,21 @@ la_capacity_check() {
   resets=$(printf '%s' "$usage" | jq -r '.seven_day.resets_at // .seven_day.resetsAt // ""' 2>/dev/null) || resets=""
   five_i=${five%.*};   five_i=${five_i:-0}
   seven_i=${seven%.*}; seven_i=${seven_i:-0}
+  LA_CAPACITY_PCT_5H="$five"; LA_CAPACITY_PCT_7D="$seven"   # zfxe: surface the numbers the verdict used
 
   # Hard ceiling (BC-34 verbatim): either window's integer-truncated
   # utilisation ≥ threshold ⇒ over. Applies to BOTH cost classes.
   if [[ "${five_i:-0}" -ge "$threshold" ]] || [[ "${seven_i:-0}" -ge "$threshold" ]]; then
     verdict="over"
+    # zfxe: name WHICH window tripped, not just THAT a ceiling did.
+    if [[ "${five_i:-0}" -ge "$threshold" ]]; then LA_CAPACITY_REASON=5h_hard_ceiling; else LA_CAPACITY_REASON=7d_hard_ceiling; fi
     echo "  Usage: 5h=${five}% 7d=${seven}% (threshold: ${threshold}%)"
   elif [[ "$cost_class" == "low_priority" ]]; then
     # Spare-cycles soft ramp: low_priority backfills unused capacity only.
     local ramp; ramp="$(la__spare_ramp_pct "$resets")"
     if [[ "${seven_i:-0}" -ge "${ramp:-100}" ]]; then
       verdict="over"
+      LA_CAPACITY_REASON=spare_cycles_today_exhausted   # zfxe
       echo "  Usage: 5h=${five}% 7d=${seven}% (low_priority spare-cycles ramp: ${ramp}%)"
     else
       echo "  Usage: 5h=${five}% 7d=${seven}% (low_priority ≤ ramp ${ramp}%)"
