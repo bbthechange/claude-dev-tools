@@ -37,13 +37,17 @@ _need "forbids AskUserQuestion"             contains "$p" "Do NOT use AskUserQue
 _need "says execute directly"               contains "$p" "Just execute the work directly"
 _emit
 
+# §7.2(a) step 3 is the LABEL op `bd label add <id> human`, not `bd human <id>`:
+# `bd human <id>` no-ops in this bd build (human is a command GROUP; the
+# human-needed signal is the `human` LABEL the §7.2 PRIMARY detector keys on).
+# Owner decision — commit 9377103 "I5 rehearsal" D4 (INTERFACE.md §7.2 reconciled).
 _expect "BC-38" "§7.2" "prompt prescribes the instructed STUCK primary path (AD3.1) (runner.sh)"
 _need "ordered: status=blocked first"       contains "$p" "bd update T1 --status=blocked"
 _need "structured ask: TL;DR"               contains "$p" "TL;DR"
 _need "structured ask: options"             contains "$p" "the options"
 _need "structured ask: recommendation+why"  contains "$p" "your recommendation and why"
 _need "structured ask: reversibility"       contains "$p" "how reversible each option is"
-_need "then bd human"                       contains "$p" "bd human T1"
+_need "then bd label add human"             contains "$p" "bd label add T1 human"
 _need "then exit the stuck sentinel"        contains "$p" "Exit with status code 7"
 _emit
 

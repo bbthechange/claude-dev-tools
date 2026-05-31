@@ -50,7 +50,13 @@ mkworkspace() {  # mkworkspace → echoes a tmpdir set up as a fake workspace
 
 run_hook() {  # run_hook <input_json> <env-prefix-line> → stdout + stderr; exit propagated
   local input="$1" envs="$2"
-  bash -c "$envs '$HOOK'" <<<"$input"
+  # Scrub the runner's session/bead env BEFORE applying the per-test prefix so
+  # each test controls BEADS_RUNNER_SESSION / CURRENT_TASK_ID explicitly. Without
+  # this, running the gate from inside a real runner session leaks
+  # BEADS_RUNNER_SESSION=1 + CURRENT_TASK_ID=<live bead> into the hook, so the
+  # "not-a-runner-session" / "no-task-id" gates (T1/T2) resolve the live in-flight
+  # bead and block — a false RED that depends on ambient session state, not code.
+  bash -c "unset BEADS_RUNNER_SESSION CURRENT_TASK_ID; $envs '$HOOK'" <<<"$input"
 }
 
 assert_allow() {  # assert_allow <name> <stdout>

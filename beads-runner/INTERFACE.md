@@ -562,9 +562,13 @@ escalation.
 - **Primary (worker-driven, instructed — AD3.1):** on a fork it must not
   resolve the worker MUST, in order: `bd update <id> --status=blocked` →
   write the structured ask (TL;DR · ask · options · recommendation+why ·
-  reversible) into the bead (`--design` / `--append-notes`) → `bd human <id>`
-  → exit `WORKER_STUCK_EXIT`. The structured ask is the raw material the §5
-  dossier builder consumes.
+  reversible) into the bead (`--design` / `--append-notes`) →
+  `bd label add <id> human` → exit `WORKER_STUCK_EXIT`. The structured ask is
+  the raw material the §5 dossier builder consumes. **The human-needed signal
+  is the `human` LABEL, not `bd human <id>`** — `human` is a command GROUP and
+  `bd human <id>` silently no-ops in this bd build (the §7.2 PRIMARY detector /
+  `bd human list` key on the label). Owner decision, commit 9377103 "I5
+  rehearsal" D4 (a real prompt-vs-CLI divergence the live run surfaced).
 - **Backstop (runner-side, zero model trust — AD3.3):** the runner scans the
   final `result.permission_denials[]` for `AskUserQuestion` / `ExitPlanMode`,
   **and** scans the stream for the `"Entered plan mode."` tool_result (the
@@ -575,11 +579,15 @@ escalation.
 
 **§7.3 Backstop drives the bead (AD3.3).** When a backstop fires (worker
 slipped past the prohibition) it MUST itself drive the bead to
-blocked-for-human (status=blocked + `bd human`); otherwise the fork rots
-(UX principle 7). The **Coordinator owns "blocked-for-human"** and reconciles
-`status=blocked` + `bd human` back into beads (control→work; S-2) — the worker
-does **not** write Dolt as the source of truth, so Dolt lag is invisible to
-the human-latency path (the §1 promise; the Board never lies — S-2).
+blocked-for-human (status=blocked + the `human` label); otherwise the fork
+rots (UX principle 7). The runner sets the label with `bd label add <id>
+human` (the real signal — see §7.2) and also fires the legacy `bd human <id>`
+form belt-and-suspenders (a harmless no-op in this bd build, kept as an
+observable for any older watcher keying on that literal invocation). The
+**Coordinator owns "blocked-for-human"** and reconciles `status=blocked` + the
+`human` label back into beads (control→work; S-2) — the worker does **not**
+write Dolt as the source of truth, so Dolt lag is invisible to the
+human-latency path (the §1 promise; the Board never lies — S-2).
 
 **§7.4 Idempotency — two layers (AD3.4).** AD3.4 mandates dedup at **both**
 granularities; both are normative:
