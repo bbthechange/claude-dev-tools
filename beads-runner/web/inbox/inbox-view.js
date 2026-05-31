@@ -215,6 +215,10 @@
       'work-snapshot schema_version', '§4.5');
     if (err) return { ok: false, error: err };
 
+    // N3 (claude-tools-uxg6) — the clock for the ready-to-pair upcoming→ready
+    // split (DESIGN N §4.4). Same injected-clock discipline timeAgo uses, so
+    // the upcoming/ready derivation stays pure + headless-testable.
+    var nowForPair = (typeof nowMs === 'number' && isFinite(nowMs)) ? nowMs : Date.now();
     var rawWoy = asArray(snap.waiting_on_you);
     var items = rawWoy.map(function (w) {
       var n = typeof w.open_item_count === 'number' ? w.open_item_count : 0;
@@ -239,13 +243,30 @@
           ? dossierId.slice(dash + 1)
           : dossierId.slice(-8);
       }
+      // N3 (claude-tools-uxg6) — READY-TO-PAIR, the Inbox's THIRD mode (after
+      // blocking "open and resolve" and timed-fyi "read-mostly, auto-proceeds").
+      // A `kind:"pair"` lane entry is a SCHEDULED collaborative-stage SESSION,
+      // not a dossier to decide (DESIGN N §4.4): rendered as "ready to pair on
+      // X", NEVER "decide X". Two sub-states off `scheduled_at`:
+      //   • before scheduled_at  ⇒ 'upcoming' (a deferred card — it does NOT
+      //     read as a decision waiting RIGHT NOW; "starts <time>").
+      //   • at/after scheduled_at ⇒ 'ready' (the timer fired → promoted to the
+      //     foreground; the blocking ready_to_pair push went out via N2).
+      // A pair with a missing/unparseable scheduled_at defaults to 'ready' so a
+      // session card is never silently hidden (the renderer-tolerance lens).
+      var kind = typeof w.kind === 'string' ? w.kind : '';
+      var isPair = kind === 'pair';
+      var scheduledAt = nonEmptyStr(w.scheduled_at) ? w.scheduled_at : '';
+      var schedMs = scheduledAt ? Date.parse(scheduledAt) : NaN;
+      var pairReady = isPair && (!scheduledAt || !isFinite(schedMs) || schedMs <= nowForPair);
+      var pairMode = isPair ? (pairReady ? 'ready' : 'upcoming') : null;
       return {
         dossier_ref: w.dossier_ref || dossierId,
         dossier_id: dossierId,
         dossier_short: dossierShort,
         bead_ref: w.bead_ref || '',
         tier: tier,
-        kind: typeof w.kind === 'string' ? w.kind : '',
+        kind: kind,
         tldr: tldr,
         created_at: typeof w.created_at === 'string' ? w.created_at : '',
         time_ago: timeAgo(w.created_at, nowMs),
@@ -256,6 +277,12 @@
         label: label,
         count_badge: itemTotal > 1 ? String(itemTotal) : '',
         auto_proceeds: tier === 'timed-fyi',
+        // N3 — the ready-to-pair render hints (the app paints the third mode +
+        // the "ready to pair" copy off these; the exact wording/time-format is
+        // [free], Contract C tokens — DESIGN N §7).
+        pair: isPair,
+        pair_mode: pairMode,
+        scheduled_at: scheduledAt || null,
         dossier_href: dossierId ? '#/d/' + dossierId : null
       };
     });

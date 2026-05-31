@@ -781,7 +781,14 @@ async function workSnapshot(co, principal, proj, beadsStr) {
       const st = it && it.state != null ? it.state : "open";
       return st !== "applied" && st !== "expired";
     }).length;
-    if (openItems >= 1) {
+    // N3 (claude-tools-uxg6) — a `kind:"pair"` SESSION CARD surfaces in the
+    // lane regardless of item count: a ready-to-pair envelope is "not iterated
+    // as §5 Items" (DESIGN N §4.2) so it legitimately carries 0 items, and the
+    // `openItems >= 1` gate would otherwise HIDE it. A pair dossier is a
+    // scheduled SESSION the Inbox renders as upcoming→ready off `scheduled_at`
+    // (§4.4) — its visibility is driven by kind, not by open-item count.
+    const isPair = d.kind === "pair";
+    if (openItems >= 1 || isPair) {
       // claude-tools-56h — the projection had been bead_ref/tier/open_item_count
       // ONLY, so the Inbox list rendered N indistinguishable rows ("9 things
       // need you · claude-tools-txj" × 9). Skim fields (tldr/created_at/kind)
@@ -797,6 +804,10 @@ async function workSnapshot(co, principal, proj, beadsStr) {
         kind: typeof d.kind === "string" ? d.kind : "",
         tldr,
         created_at: typeof d.created_at === "string" ? d.created_at : null,
+        // N3 — the pair appointment time the Inbox renders upcoming→ready off
+        // (§4.4); null for every non-pair dossier (a pure passthrough, no
+        // schema bump — the §4.1 envelope already carries it for kind:"pair").
+        scheduled_at: typeof d.scheduled_at === "string" ? d.scheduled_at : null,
         item_count: items.length,
         open_item_count: openItems,
       });

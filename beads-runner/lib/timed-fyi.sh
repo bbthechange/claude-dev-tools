@@ -81,6 +81,16 @@ if ! declare -F do_item_apply >/dev/null 2>&1; then
   # shellcheck source=/dev/null
   . "$(tf__lib_dir)/consequence.sh"
 fi
+# N3 (claude-tools-uxg6) — ready-to-pair's SURFACE fire-action fires the
+# blocking `ready_to_pair` notification via the N1 catalog spine `notif_fire`.
+# Source notification.sh as the bash twin of cf/src/timer.js importing
+# notification.js (guarded; function-only, safe under set -euo pipefail). It
+# pulls dossier-gen.sh transitively (its own guard) — unused by pair_surface
+# but harmless; co_request/co_authenticate are already in scope via the chain.
+if ! declare -F notif_fire >/dev/null 2>&1; then
+  # shellcheck source=/dev/null
+  . "$(tf__lib_dir)/notification.sh"
+fi
 
 # ── §0.5 frozen constant — single normative definition is INTERFACE.md ───────
 # §0.5 forbids a competing local restatement; each consuming file provides an
@@ -297,22 +307,105 @@ tf_fire() {
 }
 
 # ════════════════════════════════════════════════════════════════════════════
+# N3 (claude-tools-uxg6) — READY-TO-PAIR: a scheduled collaborative-stage
+# session. DESIGN N §4 (design/notifications.md). The bash twin of the
+# cf/src/timer.js pairArm/pairSurface. Realizes the reserved `kind:"pair"`
+# discriminator (INTERFACE §4.1 open C2 seam) as a SCHEDULED SESSION armed on
+# the SAME §2.2 timer tf_arm uses, but with the OPPOSITE fire-action: SURFACE
+# the session (fire the blocking `ready_to_pair` notification — N2 delivers),
+# NEVER auto-proceed. Nothing is consequence-applied on silence; the point is
+# to get Brian INTO the session (§4.3). Reuses the timer ARM/DUE primitive but
+# NOT tf_fire's §7.4 auto-apply. NOT a §11 amendment (§4.2): no §4 record type,
+# pair rides the dossier type + the §2.2 `timers` namespace.
+# ════════════════════════════════════════════════════════════════════════════
+# pair_arm <bearer> <dossier_id>
+#   Arm the §2.2 one-shot fire(dossier_id) at the `kind:"pair"` envelope's
+#   `scheduled_at` (the appointment), EXACTLY the timer-arm tf_arm makes for
+#   timer_fire_at. COMPUTES nothing and WRITES no envelope field (scheduled_at
+#   is the producer's, set at creation). A non-pair dossier or a
+#   missing/unparseable scheduled_at is REJECTED — fail CLOSED, NO timer (the
+#   tf_arm-on-bad-created_at discipline). Echoes the armed fire_at (scheduled_at).
+pair_arm() {
+  local bearer="${1:-}" did="${2:-}" rec kind at
+  [[ -n "$did" ]] || { echo "ready-to-pair: arm — need <dossier_id>" >&2; return 2; }
+  rec="$(do_dossier_get "$bearer" "$did")" \
+    || { echo "ready-to-pair: arm — dossier '$did' not found OR not authorized (§9.1 chokepoint collapses 401/absent; no second auth path — C4)" >&2; return 1; }
+  kind=$(printf '%s' "$rec" | jq -r '.kind // ""' 2>/dev/null) || kind=""
+  if [[ "$kind" != "pair" ]]; then
+    echo "ready-to-pair: arm REJECTED — dossier '$did' kind='$kind' is not 'pair' (pair_arm schedules a collaborative-stage session — §4.2)" >&2
+    return 2
+  fi
+  at=$(printf '%s' "$rec" | jq -r '.scheduled_at // ""' 2>/dev/null) || at=""
+  if ! tf__rfc_to_epoch "$at" >/dev/null 2>&1; then
+    echo "ready-to-pair: arm REJECTED — dossier '$did' scheduled_at '$at' missing/unparseable (§0.4 RFC-3339 …Z); fail-closed, NO timer" >&2
+    return 3
+  fi
+  co_request "$bearer" timer-arm "$did" "$at" \
+    || { echo "ready-to-pair: arm — §2.2 timer-arm failed for '$did'@$at" >&2; return 4; }
+  printf '%s' "$at"
+}
+
+# pair_surface <bearer> <dossier_id>
+#   The SURFACE fire-action (opposite of tf_fire's auto-proceed). Fire the
+#   blocking `ready_to_pair` notification through the N1 catalog spine
+#   (notif_fire) — that EMITS the §4.3 row (tier mirrored; ready_to_pair binds
+#   `blocking`), which N2 pushes to the phone. NO item is applied; NO §5.3
+#   consequence runs (a pair envelope is not iterated as §5 Items — §4.2). NO
+#   timer-ack: per §4.3 timer-ack is the stop-re-surfacing primitive once Brian
+#   OPENS the session, so a re-surface (S-6 poll) is harmless — notif_fire is
+#   idempotent (one-per-Dossier) and N2's deliver-once ledger guarantees one
+#   push. Echoes the fired notification id; a notif_fire failure is OBSERVABLE
+#   (a mis-tiered pair dossier the §10.2 guard rejects) and never crashes the
+#   poll (returns nonzero, sibling continues — AD7).
+pair_surface() {
+  local bearer="${1:-}" did="${2:-}" rec kind nid
+  [[ -n "$did" ]] || { echo "ready-to-pair: surface — need <dossier_id>" >&2; return 2; }
+  rec="$(do_dossier_get "$bearer" "$did")" \
+    || { echo "ready-to-pair: surface — dossier '$did' not found OR not authorized (§9.1 collapses 401/absent — C4)" >&2; return 1; }
+  kind=$(printf '%s' "$rec" | jq -r '.kind // ""' 2>/dev/null) || kind=""
+  if [[ "$kind" != "pair" ]]; then
+    # Not a pair session — nothing to surface (informational no-op success,
+    # mirroring tf_fire's non-timed-fyi no-op; the §4.1 kind drives this).
+    echo "ready-to-pair: surface — dossier '$did' kind='$kind' not 'pair'; nothing to surface — no-op" >&2
+    return 0
+  fi
+  if nid="$(notif_fire "$bearer" ready_to_pair "$did")"; then
+    printf '%s' "$nid"
+    return 0
+  fi
+  echo "ready-to-pair: surface — WARN notif_fire(ready_to_pair,'$did') did not fire; a pair dossier MUST be tier 'blocking' (§10.2 r10). Observable, not silent; idempotent retry is safe (AD7)." >&2
+  return 5
+}
+
+# ════════════════════════════════════════════════════════════════════════════
 # S-6 poll-fallback DRIVER — a missed alarm degrades to fire-on-next-poll
 # ════════════════════════════════════════════════════════════════════════════
 # tf_poll <bearer> [now_rfc3339]
 #   Ask the T4 §2.2 surface (via the §2.3 front door) for every armed, un-acked
 #   timer whose fire_at ≤ now (`timer-due` IS the S-6 poll-fallback — T4 has no
-#   alarm daemon) and run `tf_fire` for each. This is the "missed fire ⇒
-#   fire-on-next-poll" backstop: whether the alarm fired, was suppressed, or
-#   raced this poll, the §7.4 per-Item latch makes every auto-proceed
-#   exactly-once. Echoes each fired dossier id (observability).
+#   alarm daemon) and run the kind-routed fire-action for each. The §2.2 timer
+#   namespace is SHARED (N3 §4.3): a `kind:"pair"` due timer SURFACES (fire the
+#   blocking ready_to_pair notif — NEVER auto-proceed); every other kind runs
+#   the SHARED auto-proceed handler tf_fire (itself a no-op on a non-timed-fyi
+#   tier). Whether the alarm fired, was suppressed, or raced this poll, the
+#   §7.4 per-Item latch makes every auto-proceed exactly-once. Echoes each
+#   fired dossier id (observability).
 tf_poll() {
-  local bearer="${1:-}" now="${2:-}" due id rc=0
+  local bearer="${1:-}" now="${2:-}" due id kind rc=0
   due="$(co_request "$bearer" timer-due "$now" 2>/dev/null)" \
     || { echo "timed-fyi: poll — T4 §2.2 timer-due query failed" >&2; return 1; }
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
-    if tf_fire "$bearer" "$id"; then
+    # ROUTE BY kind (DESIGN N §4.3) — pair SURFACES, everything else auto-proceeds.
+    kind=$(do_dossier_get "$bearer" "$id" 2>/dev/null | jq -r '.kind // ""' 2>/dev/null) || kind=""
+    if [[ "$kind" == "pair" ]]; then
+      if pair_surface "$bearer" "$id" >/dev/null; then
+        printf '%s\n' "$id"
+      else
+        echo "timed-fyi: poll — pair_surface('$id') reported a WARN (notif-fire failure observable; idempotent)" >&2
+        printf '%s\n' "$id"; rc=5
+      fi
+    elif tf_fire "$bearer" "$id"; then
       printf '%s\n' "$id"
     else
       echo "timed-fyi: poll — tf_fire('$id') reported a per-item WARN (S-6 still exactly-once via the §7.4 latch)" >&2

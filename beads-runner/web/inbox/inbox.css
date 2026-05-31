@@ -36,6 +36,19 @@
   box-shadow:0 16px 38px -24px rgba(255,180,84,.5)}
 .inrow.t-timed-fyi{border-color:rgba(116,168,255,.28)}
 .inrow.t-digest{opacity:.82}
+/* N3 (claude-tools-uxg6) — ready-to-pair: the Inbox THIRD mode. A SCHEDULED
+   collaborative-stage session, distinct from a decision (DESIGN N §4.4). A
+   violet accent (overriding the blocking-tier amber) so a pair session is
+   never mistaken for "decide X". `pair-upcoming` reads as DEFERRED — it is not
+   waiting right now; `pair-ready` is promoted to the foreground the moment the
+   timer fires + the blocking push goes out. */
+.inrow.pair{border-color:rgba(167,139,250,.34);
+  background:linear-gradient(165deg,var(--panel),var(--ink-2));box-shadow:none}
+.inrow.pair .tier .tg{color:#b9a4f7;border-color:rgba(167,139,250,.45)}
+.inrow.pair-upcoming{opacity:.66}
+.inrow.pair-ready{border-color:rgba(167,139,250,.5);
+  background:linear-gradient(155deg,rgba(167,139,250,.13),rgba(167,139,250,.02));
+  box-shadow:0 16px 38px -24px rgba(167,139,250,.5)}
 .inrow .tier{display:flex;align-items:center;gap:9px;margin-bottom:9px;
   font-size:10px;letter-spacing:.12em;text-transform:uppercase}
 .inrow .tier .tg{color:var(--amber-soft);border:1px solid rgba(255,180,84,.4);

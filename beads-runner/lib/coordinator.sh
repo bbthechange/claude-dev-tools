@@ -1431,7 +1431,13 @@ co__work_snapshot() {
     open_items=$(printf '%s' "$dj" | jq -r \
        '[(.items // [])[] | select((.state // "open")
           | (. != "applied" and . != "expired"))] | length' 2>/dev/null) || open_items=0
-    if [[ "${open_items:-0}" =~ ^[0-9]+$ ]] && [[ "${open_items:-0}" -ge 1 ]]; then
+    # N3 (claude-tools-uxg6) — a `kind:"pair"` SESSION CARD surfaces in the lane
+    # regardless of item count (a ready-to-pair envelope is "not iterated as §5
+    # Items" — DESIGN N §4.2 — so it legitimately carries 0 items and the
+    # open-item gate would otherwise HIDE it; its visibility is driven by kind).
+    local kind=""
+    kind=$(printf '%s' "$dj" | jq -r 'if (.kind|type)=="string" then .kind else "" end' 2>/dev/null) || kind=""
+    if { [[ "${open_items:-0}" =~ ^[0-9]+$ ]] && [[ "${open_items:-0}" -ge 1 ]]; } || [[ "$kind" == "pair" ]]; then
       # claude-tools-56h — join skim fields (tldr/created_at/kind/item_count +
       # dossier_id synonym) so the Inbox lane can render a real preview,
       # timestamp, and badge instead of N identical "N things need you" rows.
@@ -1449,6 +1455,8 @@ co__work_snapshot() {
                        then $d.body.tldr else "" end),
                 created_at:(if ($d.created_at|type)=="string"
                              then $d.created_at else null end),
+                scheduled_at:(if ($d.scheduled_at|type)=="string"
+                               then $d.scheduled_at else null end),
                 item_count:$tot,
                 open_item_count:$n}]' 2>/dev/null) || woy='[]'
     fi

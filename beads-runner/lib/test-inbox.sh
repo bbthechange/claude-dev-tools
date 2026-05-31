@@ -362,6 +362,37 @@ ck "forensic proxy exports BOTH GET+POST (no put/sweep)"      eq "$(grep -c 'exp
 ck "forensic proxy has NO forensic-put as a client op"        hasnt "'forensic-put'" "$(cat "$P_FOR")"
 
 echo ""
+echo "── N3 (claude-tools-uxg6) ready-to-pair: the Inbox THIRD mode (upcoming→ready) ──"
+# DESIGN N §4.4 — a `kind:"pair"` SESSION CARD (0 items, surfaced via the §4.5
+# lane's kind-visibility) renders as "ready to pair on X", NOT "decide X". Two
+# sub-states off scheduled_at, derived PURELY from the injected clock: before
+# the appointment ⇒ 'upcoming' (deferred); at/after ⇒ 'ready' (foreground).
+PSCHED="2099-05-16T15:00:00Z"
+co_request "$GOOD" put dossier dPair \
+  "{\"schema_version\":2,\"id\":\"dPair\",\"kind\":\"pair\",\"bead_ref\":\"claude-tools-uxg6\",\"tier\":\"blocking\",\"scheduled_at\":\"$PSCHED\",\"body\":{\"dossier_schema_version\":2,\"tldr\":\"pair on the activity blueprint\",\"diagrams\":[]},\"items\":[]}" >/dev/null 2>&1
+PSNAP="$(SNAPSHOT)"
+NOW_BEFORE="$(node -e 'console.log(Date.parse("2099-05-16T12:00:00Z"))')"
+NOW_AFTER="$(node -e 'console.log(Date.parse("2099-05-17T00:00:00Z"))')"
+LB="$(iv deriveInboxList "$PSNAP" "$NOW_BEFORE")"
+LA="$(iv deriveInboxList "$PSNAP" "$NOW_AFTER")"
+ck "a 0-item kind:'pair' card surfaces in the Inbox lane (visibility by kind)" \
+   eq "$(jqr "$LB" '[.items[]|select(.dossier_id=="dPair")]|length')" "1"
+ck "the pair row is flagged pair:true (the Inbox third mode)" \
+   eq "$(jqr "$LB" '.items[]|select(.dossier_id=="dPair").pair')" "true"
+ck "BEFORE scheduled_at ⇒ pair_mode 'upcoming' (deferred, not waiting-right-now)" \
+   eq "$(jqr "$LB" '.items[]|select(.dossier_id=="dPair").pair_mode')" "upcoming"
+ck "AT/AFTER scheduled_at ⇒ pair_mode 'ready' (promoted to foreground)" \
+   eq "$(jqr "$LA" '.items[]|select(.dossier_id=="dPair").pair_mode')" "ready"
+ck "the pair row carries scheduled_at (the appointment time)" \
+   eq "$(jqr "$LB" '.items[]|select(.dossier_id=="dPair").scheduled_at')" "$PSCHED"
+ck "a pair row never auto_proceeds (blocking-ish session, not timed-fyi)" \
+   eq "$(jqr "$LB" '.items[]|select(.dossier_id=="dPair").auto_proceeds')" "false"
+ck "the pair row title is the session tldr ('pair on …'), not a 'decide' phrase" \
+   has "pair on" "$(jqr "$LB" '.items[]|select(.dossier_id=="dPair").tldr')"
+ck "a non-pair lane row is pair:false / pair_mode:null (the mode is pair-only)" \
+   eq "$(jqr "$LB" '[.items[]|select(.kind!="pair" and ((.pair!=false) or (.pair_mode!=null)))]|length')" "0"
+
+echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-inbox (T6b, claude-tools-xre):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"

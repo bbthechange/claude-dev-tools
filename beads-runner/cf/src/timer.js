@@ -53,6 +53,14 @@
 
 import { PRINCIPAL_V1 } from "./schema.js";
 import { handleDossierOp } from "./dossier.js";
+// N3 (claude-tools-uxg6) — ready-to-pair SURFACE fire-action consumes CF.9's
+// PUBLIC op surface (`notif-fire`) as a black box, exactly as this module
+// consumes CF.6 via handleDossierOp. notification.js imports schema.js +
+// dossier.js only (dossier.js imports schema.js only) — NO cycle back to
+// timer.js. This is the ONLY new edge: the §2.2 timer's pair fire-action is
+// "surface + ping" (DESIGN N §4.3), and the ping IS firing the catalog's
+// `ready_to_pair` notification through the N1 spine.
+import { handleNotificationOp } from "./notification.js";
 
 // ── the CF.7 op surface. Kept OUT of CF.1's CAPABILITIES (anti-drift: the
 //    differential asserts tf_arm/tf_fire/tf_poll are NOT §2 capability lines,
@@ -61,6 +69,12 @@ export const TIMER_OPS = new Set([
   "timed-fyi-arm", // tf_arm  — §2.2 fire(dossier_id) WIRING
   "timed-fyi-fire", // tf_fire — the SHARED alarm/poll auto-proceed handler
   "timed-fyi-poll", // tf_poll — the S-6 poll-fallback DRIVER (timer-due driven)
+  // ── N3 (claude-tools-uxg6) ready-to-pair: the §2.2 timer's SECOND
+  //    fire-action — SURFACE (not auto-proceed). Same timer-arm/-due/-ack
+  //    primitive, a distinct fire handler (DESIGN N §4.3). NOT a §2 capability
+  //    line (the EXIT-5 differential asserts this, exactly as for tf_*).
+  "pair-arm", // pairArm     — arm the §2.2 timer at the envelope's scheduled_at
+  "pair-surface", // pairSurface — fire the blocking ready_to_pair notif (N2 delivers)
 ]);
 
 // ── §0.5 frozen constant — single normative definition is INTERFACE.md ───────
@@ -94,6 +108,12 @@ function epochSecToRfc(ep) {
 }
 function nowRfc() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+// N3 — the non-empty-string predicate (the bash `[[ -n ]]` analogue), local to
+// this module exactly as notification.js carries its own copy (§0.5: a pure
+// shape predicate is not a normative constant — each consumer keeps its own).
+function neStr(v) {
+  return typeof v === "string" && v.length > 0;
 }
 
 // ── consume CF.6 via its PUBLIC handleDossierOp ONLY (never an internal) ─────
@@ -304,11 +324,119 @@ async function fireDueTimers(co, principal, now) {
   const fired = [];
   let warned = false;
   for (const id of due) {
-    const r = await fireDossier(co, principal, id);
+    // ROUTE BY kind — the §2.2 timer namespace is SHARED (timed-fyi auto-proceed
+    // AND ready-to-pair surface both arm fire(dossier_id) on it, DESIGN N §4.3).
+    // A due timer's fire-action depends on the dossier's §4.1 kind: a
+    // `kind:"pair"` dossier SURFACES (fire the blocking ready_to_pair notif —
+    // NEVER auto-proceed); every other kind runs the SHARED auto-proceed handler
+    // (which itself no-ops on a non-`timed-fyi` tier). A missing/unreadable
+    // dossier falls through to fireDossier (its own §9.1/§0.3 rejection path).
+    const rec = await dossierGet(co, principal, id);
+    const r =
+      rec && rec.kind === "pair"
+        ? await pairSurface(co, principal, id)
+        : await fireDossier(co, principal, id);
     fired.push(id);
     if (r && r.warned) warned = true;
   }
   return { ok: true, fired, warned };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// N3 (claude-tools-uxg6) — READY-TO-PAIR: a scheduled collaborative-stage
+// session. DESIGN N §4 (design/notifications.md). Realizes the reserved
+// `kind:"pair"` discriminator (INTERFACE §4.1, open C2 seam) as a SCHEDULED
+// SESSION — armed on the SAME §2.2 timer tf_arm uses, but with the OPPOSITE
+// fire-action: SURFACE the session (fire the blocking `ready_to_pair`
+// notification — N2 delivers the push), NEVER auto-proceed. Nothing is
+// consequence-applied on silence; the whole point is to get Brian INTO the
+// session (§4.3). N3 reuses the timer ARM/DUE primitive but NOT fireDossier's
+// §7.4 auto-apply. Realizing a reserved open-enum discriminator is NOT a §11
+// amendment (§4.2) — no §4 record type, no DDL: pair rides the dossier type +
+// the CF.1 `timers` namespace, untouched in shape.
+// ════════════════════════════════════════════════════════════════════════════
+
+// pairArm(co, principal, did) — arm the §2.2 one-shot fire(dossier_id) at the
+// `kind:"pair"` envelope's `scheduled_at` (the appointment time), EXACTLY the
+// timer-arm call tf_arm makes for timer_fire_at. Unlike tf_arm it COMPUTES
+// nothing and WRITES no envelope field — `scheduled_at` is the producer's, set
+// at creation; pairArm only validates it and arms. A non-pair dossier, or a
+// missing/unparseable scheduled_at, is REJECTED (fail CLOSED, NO timer — the
+// tf_arm-on-bad-created_at discipline). Returns { ok:true, fire_at:<scheduled_at> }.
+async function pairArm(co, principal, did) {
+  if (!neStr(did)) return { ok: false, msg: "ready-to-pair: arm — need <dossier_id>" };
+  const rec = await dossierGet(co, principal, did);
+  if (!rec)
+    return {
+      ok: false,
+      msg: `ready-to-pair: arm — dossier '${did}' not found OR not authorized (§9.1 chokepoint collapses 401/absent; no second auth path — C4)`,
+    };
+  if (rec.kind !== "pair")
+    return {
+      ok: false,
+      msg: `ready-to-pair: arm REJECTED — dossier '${did}' kind='${rec.kind}' is not 'pair' (pair-arm schedules a collaborative-stage session — §4.2)`,
+    };
+  const at = typeof rec.scheduled_at === "string" ? rec.scheduled_at : "";
+  if (rfcToEpochSec(at) === null)
+    return {
+      ok: false,
+      msg: `ready-to-pair: arm REJECTED — dossier '${did}' scheduled_at '${at}' missing/unparseable (§0.4 RFC-3339 …Z); fail-closed, NO timer`,
+    };
+  if (!(await timerArm(co, did, at)))
+    return { ok: false, msg: `ready-to-pair: arm — §2.2 timer-arm failed for '${did}'@${at}` };
+  return { ok: true, fire_at: at };
+}
+
+// pairSurface(co, principal, did) — the SURFACE fire-action (the opposite of
+// tf_fire's auto-proceed). Fire the blocking `ready_to_pair` notification
+// through the N1 catalog spine (notif-fire) — that EMITS the §4.3 row (tier
+// mirrored from the dossier; ready_to_pair binds `blocking`), which N2's
+// notif-deliver pushes to the phone. NO item is applied; NO §5.3 consequence
+// runs (a pair envelope is not iterated as §5 Items — §4.2). NO timer-ack:
+// per §4.3 the §2.2 timer has no disarm and timer-ack is the
+// stop-re-surfacing primitive once Brian OPENS the session — so a re-surface
+// (S-6 poll) is harmless: notif-fire is idempotent (one-per-Dossier; the emit
+// no-ops) and N2's deliver-once ledger guarantees one push. Returns
+// { ok:true, surfaced:did, fired:bool, warned?:bool }.
+async function pairSurface(co, principal, did) {
+  if (!neStr(did)) return { ok: false, msg: "ready-to-pair: surface — need <dossier_id>" };
+  const rec = await dossierGet(co, principal, did);
+  if (!rec)
+    return {
+      ok: false,
+      msg: `ready-to-pair: surface — dossier '${did}' not found OR not authorized (§9.1 collapses 401/absent — C4)`,
+    };
+  if (rec.kind !== "pair")
+    // Not a pair session — nothing to surface (informational no-op success;
+    // the §4.1 kind drives this, mirroring tf_fire's non-timed-fyi no-op).
+    return { ok: true, surfaced: did, fired: false };
+
+  // Fire the blocking ready_to_pair notification via the N1 spine (the C3
+  // emit + §10.2 tier-guard). For a `blocking` trigger notif-fire leaves the
+  // §4.3 row PENDING (no channel) — N2 delivers the immediate push; the latch
+  // is N2's deliver-once concern, not ours.
+  const res = await handleNotificationOp(co, "notif-fire", ["ready_to_pair", did], principal);
+  let body = null;
+  try {
+    body = JSON.parse(await res.text());
+  } catch {
+    body = null;
+  }
+  const fired = !!(body && body.ok === true);
+  // A notif-fire failure (e.g. a pair dossier mis-tiered off `blocking`, which
+  // the §10.2 tier-guard rejects) is OBSERVABLE, never swallowed (the sibling
+  // "observable, not silent" discipline) — and never crashes the poll.
+  if (!fired)
+    return {
+      ok: true,
+      surfaced: did,
+      fired: false,
+      warned: true,
+      msg: `ready-to-pair: surface — WARN notif-fire(ready_to_pair,'${did}') did not fire${
+        body && body.msg ? ` (${body.msg})` : ""
+      }; a pair dossier MUST be tier 'blocking' (§10.2 r10). Observable, not silent; idempotent retry is safe.`,
+    };
+  return { ok: true, surfaced: did, fired: true, notif: body.id };
 }
 
 // ── the §2.2 setAlarm() entrypoint — wired from the Coordinator DO `alarm()` ─
@@ -352,6 +480,15 @@ export async function handleTimerOp(co, op, args, principal) {
     }
     if (op === "timed-fyi-poll") {
       const r = await fireDueTimers(co, principal, a[0]);
+      return jsonRes(r, r.ok ? 200 : 422);
+    }
+    // ── N3 (claude-tools-uxg6) ready-to-pair ───────────────────────────────
+    if (op === "pair-arm") {
+      const r = await pairArm(co, principal, a[0]);
+      return jsonRes(r, r.ok ? 200 : 422);
+    }
+    if (op === "pair-surface") {
+      const r = await pairSurface(co, principal, a[0]);
       return jsonRes(r, r.ok ? 200 : 422);
     }
     return jsonRes({ ok: false, error: `co: unknown timer op '${op}'` }, 400);

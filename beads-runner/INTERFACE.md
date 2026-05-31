@@ -242,12 +242,13 @@ this is the stored envelope.
 | `id` | string | Dossier id. |
 | `schema_version` | int | `2`. (v2: §11 Mermaid amendment; bumped in lockstep with `dossier_schema_version`/`cb_schema_version` — one §4 registry source, §0.5/§0.3.) |
 | `principal` | string | `PRINCIPAL_V1`. |
-| `kind` | enum **(open, C2 seam)** | Interaction mode: `"decide"` implemented v1; `"pair"` **reserved, not implemented**. Open discriminator (not a closed shape). Distinct from per-Item `kind` (§5). |
+| `kind` | enum **(open, C2 seam)** | Interaction mode: `"decide"` implemented v1; `"pair"` **implemented (N3, claude-tools-uxg6)** — a scheduled collaborative-stage *session* (DESIGN N §4 / `design/notifications.md`), armed on the §2.2 timer with a SURFACE fire-action (not auto-proceed). Realizing the reserved open-enum value is **not** a §11 amendment (the C2 seam was left open for exactly this; no `schema_version` bump). Open discriminator (not a closed shape). Distinct from per-Item `kind` (§5). |
 | `trigger` | enum | `human_flag` \| `worker_stuck` \| `stage_gate` \| `proactive_checkpoint` (Flow B/F triggers). |
 | `bead_ref` | string | The anchor bead whose lifecycle this dossier belongs to (the forked bead for `worker_stuck`; the stage/epic bead for a review/overview). |
 | `tier` | enum | `blocking` \| `timed-fyi` \| `digest` (§0.B; Flow F). Drives the **single** Notification (C3) and whether a §2.2 timer is set. |
 | `created_at` | ts | — |
 | `timer_fire_at` | ts \| null | For `timed-fyi`: `created_at + window` (window default `TIMED_FYI_DEFAULT`, per-dossier override ∈ (0, `TIMED_FYI_DEFAULT`]). The §2.2 `fire(dossier_id)` target. `null` when no auto-proceed window. |
+| `scheduled_at` | ts | **`kind:"pair"` only (N3, claude-tools-uxg6).** The appointment time of the ready-to-pair session. The §2.2 `fire(dossier_id)` target `pair-arm` arms (the pair analogue of `timer_fire_at`); the fire-action **SURFACES** the session (fires the blocking `ready_to_pair` notification — N2 delivers) rather than auto-proceeding. A field on the open `kind:"pair"` shape (C2 seam); **absent on `kind:"decide"`** — no `schema_version` bump (DESIGN N §4.2/§4.3). |
 | `body` | object | The §5 progressive-disclosure body (`tldr` · `sections[]` · `diagrams[]` · `full_detail` — **all mandatory**, AD7). |
 | `items[]` | `Item[]` | The §5 Items. **Each carries its own `state`, `response`, and `consequence_applied` latch** — application + idempotency are **per-Item** (AD1/AD3.4 DO-per-Item). |
 | `state` | **derived** | Rollup only, **informational, never a pipeline gate**: `open` while ≥1 item is non-terminal; `resolved` when every item is terminal (`applied`/`expired`). Unanswered items never block siblings or the pipeline (AD7). |

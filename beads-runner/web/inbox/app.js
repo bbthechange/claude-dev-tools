@@ -45,6 +45,19 @@
   }
   function stamp() { Dom.el('foot-updated').textContent = 'updated ' + new Date().toLocaleTimeString(); }
 
+  // N3 (claude-tools-uxg6) — a human "starts <when>" for a ready-to-pair
+  // appointment. Localized here in the DOM layer (inbox-view.js stays a pure,
+  // clock-injected model; the exact time format is [free], DESIGN N §7).
+  // Returns '' for a missing/unparseable scheduled_at so the copy degrades
+  // gracefully (never a fabricated time).
+  function pairWhen(iso) {
+    if (!iso) return '';
+    var t = Date.parse(iso);
+    if (!isFinite(t)) return '';
+    try { return new Date(t).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }); }
+    catch (e) { return ''; }
+  }
+
   // ── network: every call is same-origin + credential-less (§9.1). The
   // getJSON/postJSON impls now live ONCE in /shared/net.js (window.Net) — same
   // honest error discipline; call sites use Net.getJSON / Net.postJSON directly.
@@ -68,14 +81,24 @@
       var rows = Dom.el('rows'); Dom.clear(rows);
       Dom.el('list-empty').hidden = v.items.length !== 0;
       v.items.forEach(function (it) {
-        var a = Dom.mk('a', 'inrow t-' + it.tier);
+        // N3 (claude-tools-uxg6) — READY-TO-PAIR is the Inbox's THIRD mode. A
+        // `kind:"pair"` row is a SCHEDULED collaborative-stage SESSION, not a
+        // dossier to decide (DESIGN N §4.4): it carries a `pair` class +
+        // `pair-upcoming`/`pair-ready` so it renders distinctly, and the copy
+        // says "ready to pair on X", NEVER "decide X".
+        var cls = 'inrow t-' + it.tier;
+        if (it.pair) cls += ' pair pair-' + (it.pair_mode || 'ready');
+        var a = Dom.mk('a', cls);
         a.setAttribute('href', it.dossier_href || '#/');
         // claude-tools-56h — tier strip now carries bead_ref + time-ago + an
         // item-count badge (when > 1). Without these, 9 dossiers on the same
         // bead were visually identical and the user had to tap each one to
         // tell them apart.
         var tier = Dom.mk('div', 'tier');
-        tier.appendChild(Dom.mk('span', 'tg', it.tier));
+        // For a pair row the strip labels the SESSION state, not the tier:
+        // "upcoming" before the appointment, "ready to pair" once it fires.
+        tier.appendChild(Dom.mk('span', 'tg',
+          it.pair ? (it.pair_mode === 'upcoming' ? 'upcoming' : 'ready to pair') : it.tier));
         var refTxt = it.bead_ref || it.dossier_ref || '';
         if (it.time_ago) refTxt = refTxt ? refTxt + ' · ' + it.time_ago : it.time_ago;
         if (it.dossier_short) refTxt = refTxt ? refTxt + ' · #' + it.dossier_short : '#' + it.dossier_short;
@@ -89,9 +112,21 @@
         // back to the legacy "N things need you" phrase for any item the
         // producer couldn't enrich (older snapshot / body-less dossier).
         a.appendChild(Dom.mk('div', 'h', it.tldr || it.label));
-        a.appendChild(Dom.mk('div', 'd', it.auto_proceeds
-          ? 'Read-mostly — auto-proceeds on silence (reversible). Open to skim or object.'
-          : 'Open the dossier — skim it, then resolve in any mix. Your “no” is one tap.'));
+        var desc;
+        if (it.pair) {
+          // The Flow A distinction, made visible: a working SESSION, not a
+          // decision — and (upcoming) nothing happens until its time comes.
+          var when = pairWhen(it.scheduled_at);
+          desc = it.pair_mode === 'upcoming'
+            ? 'Ready to pair' + (when ? ' — starts ' + when : ' — scheduled') +
+              '. A working session, not a decision; nothing happens until then.'
+            : 'Ready to pair now — open the session. A scheduled working session (not a decision to make).';
+        } else {
+          desc = it.auto_proceeds
+            ? 'Read-mostly — auto-proceeds on silence (reversible). Open to skim or object.'
+            : 'Open the dossier — skim it, then resolve in any mix. Your “no” is one tap.';
+        }
+        a.appendChild(Dom.mk('div', 'd', desc));
         rows.appendChild(a);
       });
       var fg = Dom.el('flowg'); var fails = Dom.el('fails'); Dom.clear(fails);
