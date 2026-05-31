@@ -374,6 +374,38 @@ do__item_set_state_locked() {
 }
 
 # ════════════════════════════════════════════════════════════════════════════
+# L1 follow-up (claude-tools-uxl1b) §5.6 — DEFER / ESCALATE attention verbs
+# ════════════════════════════════════════════════════════════════════════════
+# do_dossier_defer    <bearer> <dossier_id>   → tier="digest"   ("push out")
+# do_dossier_escalate <bearer> <dossier_id>   → tier="blocking" ("promote")
+#   Adjust ONLY the §4.1 attention tier — the two remaining Inbox verbs as
+#   DISTINCT ops (no verb defaults to another's payload — the L1 empty-payload
+#   bug class). NO §5.2 response, NO §5.3 ConsequenceBlock, NO per-Item state
+#   move, NO §2.2 timer touch: items[]/response/consequence_applied/
+#   timer_fire_at all round-trip verbatim. The verbs toggle the two
+#   human-managed attention levels — foreground `blocking` ⟷ background
+#   `digest` — and NEVER target the `timed-fyi` auto-proceed lane (pushing a
+#   decision INTO timed-fyi would arm a silent auto-apply — the §5.6/L1
+#   hazard). Total + idempotent: already at the target tier ⇒ success with NO
+#   write. Runs under the per-dossier single-writer lock (a tier move is a
+#   read-decide-write of the shared envelope, exactly like do_item_set_state).
+#   JS twin: cf/src/dossier.js dossierSetAttention (same targets, same idempotency).
+do_dossier_defer()    { do__with_dossier_lock "${2:-}" do__dossier_set_attention_locked "${1:-}" "${2:-}" digest; }
+do_dossier_escalate() { do__with_dossier_lock "${2:-}" do__dossier_set_attention_locked "${1:-}" "${2:-}" blocking; }
+do__dossier_set_attention_locked() {
+  local bearer="${1:-}" did="${2:-}" target="${3:-}" rec from upd
+  rec="$(do_dossier_get "$bearer" "$did")" || { echo "dossier: attention — dossier '$did' not found" >&2; return 1; }
+  from=$(printf '%s' "$rec" | jq -r '.tier // ""' 2>/dev/null) || from=""
+  if [[ "$from" == "$target" ]]; then
+    return 0      # idempotent: already at the target attention tier, NO write
+  fi
+  upd=$(printf '%s' "$rec" | jq -c --arg t "$target" '.tier=$t' 2>/dev/null) \
+    || { echo "dossier: attention — could not set tier for '$did'" >&2; return 3; }
+  do_dossier_put "$bearer" "$upd" >/dev/null || return $?
+  return 0
+}
+
+# ════════════════════════════════════════════════════════════════════════════
 # PRIMITIVE 1 — the per-Item `consequence_applied` LATCH  (§7.4 / §4.1.1)
 # ════════════════════════════════════════════════════════════════════════════
 # do_item_latch <bearer> <dossier_id> <item_id>

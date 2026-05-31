@@ -131,6 +131,13 @@
        set is untouched (§11). -->
   <div class="ddock" id="ddock" hidden>
     <div class="sum" id="dsum"></div>
+    <!-- L1 follow-up (claude-tools-uxl1b) §5.6 — defer/escalate adjust the
+         dossier's ATTENTION TIER without resolving anything (reversible: each
+         undoes the other; no window.confirm). Shown by tier in recount(). -->
+    <button class="btn ghost" id="ddefer" type="button" hidden
+            title="Push out without resolving — drop to the daily-digest roundup (§5.6)">Defer</button>
+    <button class="btn ghost" id="descalate" type="button" hidden
+            title="Promote to the foreground decision lane / push surface (§5.6)">Escalate</button>
     <button class="btn ghost" id="ddismiss" type="button" hidden>Dismiss as stale</button>
     <button class="btn primary" id="dsubmit" type="button">Submit</button>
   </div>

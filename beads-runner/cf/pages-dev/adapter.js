@@ -88,6 +88,12 @@ function argsForPost(op, body) {
   // stateCheck is the only gate. The PROXY (expire.js) hard-codes state to
   // 'expired'; the adapter stays dumb plumbing.
   if (op === "item-set-state") return [b.dossier_id, b.item_id, b.state];
+  // L1 follow-up (claude-tools-uxl1b) — the §5.6 defer / escalate verbs. Each
+  // narrow proxy (inbox/defer.js, inbox/escalate.js) sends {dossier_id} ONLY;
+  // here it unwraps to dossierSetAttention's positional [did]. The engine op
+  // (dossier-defer / dossier-escalate) hard-codes the target tier (digest /
+  // blocking); the adapter stays dumb plumbing and never picks the op or tier.
+  if (op === "dossier-defer" || op === "dossier-escalate") return [b.dossier_id];
   // F1 (claude-tools-49w) — Board-side of UX-DESIGN Flow D. The proxy carries
   // the named-JSON-body shape {project_ref, desired:{state,actor}}; here it
   // unwraps to opSetDesired's positional `[proj, state, actor]` (the same

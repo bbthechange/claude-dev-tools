@@ -263,6 +263,39 @@ ck "the surviving binding is internally consistent (one fork⇒one dossier)" \
    eq "$(do_dedup_get forkRace | sed 's/^doss-.$/OK/')" "OK"
 
 echo ""
+echo "── EXIT-DEFER: §5.6 defer/escalate attention verbs (claude-tools-uxl1b) ──"
+# The two remaining Inbox verbs as DISTINCT ops: adjust ONLY the §4.1 attention
+# tier (defer→digest, escalate→blocking) — no §5.2 resolution, no §7.4 latch, no
+# §2.2 timer touch. Total + idempotent. JS twin: cf/src/dossier.js
+# dossierSetAttention (cf/test/defer-escalate.spec.js).
+TIER() { JFIELD "$1" '.tier'; }
+defer_then_tier()    { do_dossier_defer    "$1" "$2" >/dev/null 2>&1 && [[ "$(TIER "$2")" == "$3" ]]; }
+escalate_then_tier() { do_dossier_escalate "$1" "$2" >/dev/null 2>&1 && [[ "$(TIER "$2")" == "$3" ]]; }
+# seed a BLOCKING decision dossier; answer one item (recommendation recorded).
+do_dossier_put "$GOOD" "$(mk deA 2 "[$(item da1 open),$(item da2 open)]")" >/dev/null
+do_item_set_state "$GOOD" deA da2 answered '{"decision":"approve"}' >/dev/null 2>&1
+ck "defer: blocking→digest (push out without resolution)"      defer_then_tier "$GOOD" deA digest
+ck "  open item left untouched (no resolution)"                eq "$(ISTATE deA da1)" "open"
+ck "  answered item left untouched (recommendation NOT consumed)"  eq "$(ISTATE deA da2)" "answered"
+ck "  recorded .response preserved verbatim" \
+   eq "$(JFIELD deA '.items[]|select(.id=="da2").response.decision')" "approve"
+ck "  every consequence_applied latch still false"             eq "$(JFIELD deA '[.items[]|select(.consequence_applied==false)]|length')" "2"
+ck "  timer_fire_at untouched (null)"                          eq "$(JFIELD deA '.timer_fire_at')" "null"
+ck "defer idempotent at the digest floor (success, no move)"   defer_then_tier "$GOOD" deA digest
+ck "escalate: digest→blocking (the reverse)"                   escalate_then_tier "$GOOD" deA blocking
+ck "escalate idempotent at the blocking ceiling"               escalate_then_tier "$GOOD" deA blocking
+ck "round-trip preserved the item set (2 items, da1 open, da2 answered)" \
+   eq "$(JFIELD deA '[.items[]]|length')" "2"
+# timed-fyi is the auto-proceed lane — the verbs move OUT of it, NEVER into it.
+do_dossier_put "$GOOD" "$(jq -c '.tier="timed-fyi"|.timer_fire_at="2026-06-01T00:00:00Z"' <<<"$(mk deF 2 "[$(item df1 open)]")")" >/dev/null
+ck "escalate(timed-fyi)→blocking (out of the auto-proceed lane)"  escalate_then_tier "$GOOD" deF blocking
+do_dossier_put "$GOOD" "$(jq -c '.tier="timed-fyi"|.timer_fire_at="2026-06-01T00:00:00Z"' <<<"$(mk deG 2 "[$(item dg1 open)]")")" >/dev/null
+ck "defer(timed-fyi)→digest (out of the auto-proceed lane, never stays timed-fyi)"  defer_then_tier "$GOOD" deG digest
+# rejection arms — a missing/empty dossier is rejected (no write).
+ckn "defer on a missing dossier ⇒ reject"     do_dossier_defer "$GOOD" deNope
+ckn "escalate on a missing dossier ⇒ reject"  do_dossier_escalate "$GOOD" deNope
+
+echo ""
 echo "── ANTI-DRIFT (structural — sibling surfaces untouched) ──"
 ck "T4 §4 registry dossier⇒2 (v2 §11 Mermaid amend; substrate added no record type)"  eq "$(co__schema_version dossier)" "2"
 ck "substrate added NO §4 record type — 'dossier_dedup' unregistered" \

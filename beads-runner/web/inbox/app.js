@@ -417,6 +417,18 @@
     Dom.el('ddismiss').hidden = dismissable === 0;
     Dom.el('ddismiss').textContent = dismissable > 1
       ? 'Dismiss ' + dismissable + ' as stale' : 'Dismiss as stale';
+    // claude-tools-uxl1b §5.6 — defer/escalate toggle the dossier's ATTENTION
+    // TIER. Offer each only when it would actually move (defer hidden once
+    // already at digest; escalate hidden once at blocking) and only while the
+    // dossier is still pending (≥1 non-terminal item — the same "on the Inbox"
+    // condition waiting_on_you uses). Reset disabled/label on every render so a
+    // re-render after a move always gives a clean slate.
+    var pending = alreadyTerminal < total;
+    var defBtn = Dom.el('ddefer'), escBtn = Dom.el('descalate');
+    defBtn.hidden = !(pending && curView.tier !== 'digest');
+    escBtn.hidden = !(pending && curView.tier !== 'blocking');
+    if (!defBtn.hidden) { defBtn.disabled = false; defBtn.textContent = 'Defer'; }
+    if (!escBtn.hidden) { escBtn.disabled = false; escBtn.textContent = 'Escalate'; }
   }
 
   // claude-tools-23r — ids of items where state==='open' (NOT 'answered').
@@ -513,6 +525,38 @@
       refetchAck(errs);
     });
   }
+
+  // ── DEFER / ESCALATE (claude-tools-uxl1b §5.6) ─────────────────────────────
+  // Attention-tier moves on the WHOLE dossier — distinct verbs, each its own
+  // engine op (defer→tier:digest, escalate→tier:blocking); neither resolves an
+  // item or consumes the recommendation. They are REVERSIBLE (each undoes the
+  // other), so — unlike dismiss-as-stale — there is no window.confirm. One POST;
+  // the honest source of truth is the RE-FETCHED §4 record: we re-render the
+  // dossier so the new tier + the re-toggled buttons reflect the engine, never
+  // an optimistic local patch (S-2 discipline). The dossier stays open — this
+  // is NOT a resolution, so it goes back to the dossier view, not the ack.
+  function attentionMove(verb, path, btnId, busyLabel) {
+    if (!curView) return;
+    var id = curView.id;
+    var btn = Dom.el(btnId);
+    Dom.el('ddefer').disabled = true;
+    Dom.el('descalate').disabled = true;
+    btn.textContent = busyLabel;
+    Net.postJSON(path, { dossier_id: id }).then(function () {
+      toast(verb === 'defer'
+        ? 'Deferred — moved to the daily-digest roundup. Escalate to pull it back.'
+        : 'Escalated — back in the foreground decision lane.');
+      loadDossier(id); // re-fetch → honest new tier + recount() re-toggles/cleans the buttons
+    }).catch(function (e) {
+      // Nothing changed server-side; recount() does not run, so reset here.
+      Dom.el('ddefer').disabled = false;
+      Dom.el('descalate').disabled = false;
+      btn.textContent = verb === 'defer' ? 'Defer' : 'Escalate';
+      toast(e.message); // honest: unreachable / rejected, never masked
+    });
+  }
+  function deferDossier() { attentionMove('defer', '/api/inbox/defer', 'ddefer', 'Deferring…'); }
+  function escalateDossier() { attentionMove('escalate', '/api/inbox/escalate', 'descalate', 'Escalating…'); }
 
   // EXIT crit 1 / S-2: the ack is the RE-FETCHED §4 Dossier's latch-true
   // state (control-plane truth the Coordinator reconciles into beads) — NOT a
@@ -691,6 +735,8 @@
   Dom.el('cf-back').addEventListener('click', function () { location.hash = '#/'; });
   Dom.el('dsubmit').addEventListener('click', submitDossier);
   Dom.el('ddismiss').addEventListener('click', dismissDossier);
+  Dom.el('ddefer').addEventListener('click', deferDossier);
+  Dom.el('descalate').addEventListener('click', escalateDossier);
   Dom.el('den-skim').addEventListener('click', function () { density = 'skim'; applyDensity(); });
   Dom.el('den-full').addEventListener('click', function () { density = 'full'; applyDensity(); });
   window.addEventListener('hashchange', route);

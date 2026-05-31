@@ -85,6 +85,11 @@ export const DOSSIER_OPS = new Set([
   // daemon publishes this over the zdxd D2 channel and the engine expires /
   // applies-preserving the still-open items for that bead_ref.
   "bead-status-changed",
+  // L1 follow-up (claude-tools-uxl1b) §5.6 — the two remaining Inbox verbs, as
+  // DISTINCT engine ops (no verb defaults to another's payload). They adjust
+  // the §4.1 attention TIER without resolving any item; see dossierSetAttention.
+  "dossier-defer",   // §5.6 defer    — tier→digest   ("push out without resolution")
+  "dossier-escalate", // §5.6 escalate — tier→blocking ("promote to higher-attention surface")
 ]);
 
 // ── primitive shape predicates (mirror the jq type/length tests verbatim) ───
@@ -857,6 +862,64 @@ async function itemSetState(co, principal, did, iid, to, respArg) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// L1 follow-up (claude-tools-uxl1b) §5.6 — DEFER / ESCALATE: the two remaining
+// Inbox verbs, realized as DISTINCT engine ops (no verb defaults to another
+// verb's payload — the L1 empty-payload bug class). They adjust the dossier's
+// §4.1 ATTENTION TIER and NOTHING else: no §5.2 response, no §5.3
+// ConsequenceBlock, no per-Item state move, and no §2.2 timer touch.
+//
+//   • defer    (dossier-defer)    → tier = "digest"   — "push out without
+//       resolution" (inbox-lifecycle §5.6): drop the card from the foreground
+//       decision lane into the daily-digest roundup. It STAYS on the Inbox
+//       (waiting_on_you counts non-terminal items, tier-agnostic) — it is just
+//       no longer an individual interrupt.
+//   • escalate (dossier-escalate) → tier = "blocking" — "promote to higher-
+//       attention surface" (§5.6): pull the card back into the foreground
+//       decision lane (the tier N2 delivery keys off for an immediate push).
+//
+// WHY `tier`, and why these verbs NEVER target `timed-fyi`: §4.1 binds `tier`
+// as the attention level ("Drives the single Notification (C3)"). The verbs
+// toggle the two HUMAN-MANAGED attention levels — foreground `blocking` ⟷
+// background `digest`. `timed-fyi` is the DISTINCT auto-proceed lane (Flow F
+// overviews ride a §2.2 timer; timer.js fireDossier auto-applies fyi-objectable
+// items on silence). Pushing a decision dossier INTO timed-fyi would arm a
+// silent auto-apply (the §5.6 / L1 hazard) AND make the renderer's
+// `auto_proceeds` (tier==="timed-fyi") falsely promise auto-proceed for
+// pick-option items. So defer/escalate move OUT of timed-fyi in either
+// direction (escalate→blocking, defer→digest) — turning auto-proceed OFF, the
+// safe direction — and never into it. (fireDossier no-ops on a non-timed-fyi
+// tier, so neither op can ever trigger an auto-apply.)
+//
+// TOTAL + IDEMPOTENT: defined for every tier; re-running at the target tier is
+// { ok:true, idempotent:true } with NO write. items[] / response /
+// consequence_applied / timer_fire_at / the §4.3 Notification record are ALL
+// left exactly as they were. The §7.4 latch is never touched, so a real later
+// decision on any item still applies. Bash twin: lib/dossier.sh
+// do_dossier_defer / do_dossier_escalate (same tier targets, same idempotency).
+const ATTENTION_BY_VERB = { defer: "digest", escalate: "blocking" };
+
+async function dossierSetAttention(co, principal, did, verb) {
+  const target = ATTENTION_BY_VERB[verb];
+  if (!target) return rej(`dossier: ${verb} — unknown attention verb (defer|escalate)`);
+  if (!neStr(did)) return rej(`dossier: ${verb} — need <dossier_id> (§4.1)`);
+  const g = await getDossier(co, did);
+  if (!g.ok)
+    return rej(
+      `dossier: ${verb} — dossier '${did}' not found OR not authorized (the §9.1 chokepoint collapses 401 and absent; no second auth path — C4)`
+    );
+  const rec = g.rec;
+  const from = typeof rec.tier === "string" ? rec.tier : "";
+  // Idempotent at the target attention tier — NO write (so a no-op defer/
+  // escalate never churns the record or re-stamps applied_at on anything).
+  if (from === target) return { ok: true, idempotent: true, tier: target };
+  // Move ONLY `.tier`. putDossier re-validates the §4.1 envelope + the §5.1
+  // write gate and re-derives the rollup; everything else round-trips verbatim.
+  const w = await putDossier(co, principal, { ...rec, tier: target });
+  if (!w.ok) return w;
+  return { ok: true, from, tier: target };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // L2 (claude-tools-uxvl2) — WORK→CONTROL auto-close. inbox-lifecycle §7 (Opt 2).
 //
 // When a bead resolves OUTSIDE the dossier tap (bd close / blocked→open /
@@ -1153,6 +1216,14 @@ export async function handleDossierOp(co, op, args, principal) {
       }
       if (op === "item-apply") {
         const r = await itemApply(co, principal, a[0], a[1], a[2]);
+        return jsonRes(r, r.ok ? 200 : 422);
+      }
+      if (op === "dossier-defer" || op === "dossier-escalate") {
+        // L1 follow-up (claude-tools-uxl1b) §5.6 — DISTINCT attention verbs.
+        // Serialized like every store-touching op so a tier move never
+        // interleaves with a racing tap on the same dossier (AD1).
+        const verb = op === "dossier-defer" ? "defer" : "escalate";
+        const r = await dossierSetAttention(co, principal, a[0], verb);
         return jsonRes(r, r.ok ? 200 : 422);
       }
       if (op === "bead-status-changed") {
