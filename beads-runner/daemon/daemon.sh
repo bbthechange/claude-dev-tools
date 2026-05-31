@@ -71,6 +71,14 @@ WORK_CONTROL_POLL_INTERVAL="${BEADS_DAEMON_WORK_CONTROL_POLL_INTERVAL:-60}"
 # la__capacity_via_daemon (lib/local-agent.sh) instead of hitting the
 # Keychain+API themselves.
 USAGE_POLL_INTERVAL="${BEADS_DAEMON_USAGE_POLL_INTERVAL:-${USAGE_CACHE_SECONDS:-300}}"
+# N2 (claude-tools-uxg1): notification DELIVERY cadences (DESIGN N §2.3). The
+# blocking sweep is frequent (~30s) so a real decision pings the phone near-
+# immediately (latency ≤ this interval). The digest sweep is ~daily (ARCH §9
+# "assumed daily"; the cadence is [free]) — it folds the K3 timed-fyi/digest
+# rollup into ONE push per channel group (must-protect #5). The actual push +
+# the deliver-once ledger live in the engine (notif-deliver); these only ring it.
+NOTIF_DELIVERY_POLL_INTERVAL="${BEADS_DAEMON_NOTIF_DELIVERY_POLL_INTERVAL:-30}"
+NOTIF_DIGEST_SWEEP_INTERVAL="${BEADS_DAEMON_NOTIF_DIGEST_SWEEP_INTERVAL:-86400}"
 
 # ─── source the per-machine library (DESIGN §3.2 retraction-of-topology
 # is about TIER, not about the library — the daemon still source's it) ────
@@ -120,6 +128,14 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # daemon_usage_drain.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/usage-poll.sh"
+# N2 (claude-tools-uxg1): the notification DELIVERY clock — on cadence, ring the
+# engine's notif-deliver op (blocking sweep frequently, digest sweep ~daily) so
+# a dispatched §4.3 Notification becomes a real Web Push on Brian's installed
+# Inbox PWA. Defines daemon_notif_delivery_poll_once + daemon_notif_digest_sweep_once.
+# Strict no-op until the main loop calls into it (and when no workspace is
+# registered / no subscription exists).
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/notif-delivery-poll.sh"
 
 log() {
   # one-line log helper; stdout is redirected to daemon-logs/stdout.log by
@@ -245,7 +261,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s NOTIF_DELIVERY_POLL_INTERVAL=${NOTIF_DELIVERY_POLL_INTERVAL}s NOTIF_DIGEST_SWEEP_INTERVAL=${NOTIF_DIGEST_SWEEP_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -268,6 +284,8 @@ main() {
   local _last_flow_f_poll=0
   local _last_wc_poll=0
   local _last_usage_poll=0
+  local _last_notif_delivery_poll=0
+  local _last_notif_digest_sweep=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
     # M4 (claude-tools-8jb): on cadence, poll every registered workspace for
@@ -336,6 +354,32 @@ main() {
     if [ "$((_now - _last_usage_poll))" -ge "$USAGE_POLL_INTERVAL" ] || [ "$_last_usage_poll" -eq 0 ]; then
       _last_usage_poll="$_now"
       daemon_usage_poll_once || true
+    fi
+    # N2 (claude-tools-uxg1): the BLOCKING delivery sweep — on cadence (~30s, and
+    # at boot so a decision that fired while the daemon was down pings promptly),
+    # ring notif-deliver blocking so each pending blocking §4.3 Notification
+    # becomes ONE immediate Web Push on the installed Inbox PWA. Strict no-op
+    # when there are no pending blocking notifs / no subscriptions; the engine
+    # ledger makes a repeated sweep idempotent.
+    if [ "$((_now - _last_notif_delivery_poll))" -ge "$NOTIF_DELIVERY_POLL_INTERVAL" ] || [ "$_last_notif_delivery_poll" -eq 0 ]; then
+      _last_notif_delivery_poll="$_now"
+      if declare -F daemon_notif_delivery_poll_once >/dev/null 2>&1; then
+        daemon_notif_delivery_poll_once || true
+      fi
+    fi
+    # N2 (claude-tools-uxg1): the DIGEST sweep — on the ~daily cadence (NOT at
+    # boot, to avoid dumping an accumulated backlog), ring notif-deliver digest
+    # so the K3 timed-fyi/digest rollup delivers as ONE push per channel group
+    # (N pending → 1, never N — must-protect #5).
+    if [ "$_last_notif_digest_sweep" -eq 0 ]; then
+      # Seed on the first iteration so the first digest fires ONE interval after
+      # boot — never at boot (a boot fire would dump the accumulated backlog).
+      _last_notif_digest_sweep="$_now"
+    elif [ "$((_now - _last_notif_digest_sweep))" -ge "$NOTIF_DIGEST_SWEEP_INTERVAL" ]; then
+      _last_notif_digest_sweep="$_now"
+      if declare -F daemon_notif_digest_sweep_once >/dev/null 2>&1; then
+        daemon_notif_digest_sweep_once || true
+      fi
     fi
     # claude-tools-1p0u: drain the daemon's OWN §1.1 outbox to the deployed
     # Coordinator. The usage-poll above appends capacity + machine_state lines

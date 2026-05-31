@@ -35,6 +35,18 @@ import { DOSSIER_OPS, handleDossierOp, dossierWriteBodyOk } from "./dossier.js";
 // NO new DDL (it reuses the `records` table). Its ops are dispatched in a
 // dedicated guard so this substrate stays untouched.
 import { NOTIFICATION_OPS, handleNotificationOp } from "./notification.js";
+// N2 (claude-tools-uxg1) — phone DELIVERY transport (DESIGN N §2), layered ON
+// this substrate (a SEPARATE module). It is NOT a §4 record: the push-
+// subscription store + the deliver-once ledger are the module's OWN transient
+// `push_subscriptions`/`push_deliveries` namespaces (lazy + idempotent DDL
+// there), the forensic.js / capacity.js / machine-state.js "NOT a §4 record"
+// precedent — so `push_subscription` stays ABSENT from the schema.js §4
+// registry. It REUSES the K3 rollup engine (notification.js groupDigests/
+// digestCopy) verbatim for the digest cadence and makes NO INTERFACE §4.3
+// change. Its ops are dispatched in a dedicated guard so this substrate stays
+// untouched. The §9.1 chokepoint (the Worker) has ALREADY authenticated +
+// threaded `principal` — no second auth path (C4).
+import { PUSH_OPS, handlePushOp } from "./push.js";
 // CF.5 (claude-tools-7g0.5) — the §10.3 forensic transient store, layered ON
 // this substrate (a SEPARATE module). CRITICAL: it is NOT a §4 record — it is
 // deliberately NOT routed through `_writeRecord` / the `records` table /
@@ -246,6 +258,20 @@ export class Coordinator {
     // auth path (C4); the module composes every write through `_writeRecord`.
     if (NOTIFICATION_OPS.has(op)) {
       return await handleNotificationOp(this, op, args, principal);
+    }
+
+    // ── N2 (claude-tools-uxg1) push DELIVERY op guard ────────────────────────
+    // Web Push subscription store + the delivery sweep (notif-deliver),
+    // dispatched by its dedicated module so the CF.1 substrate switch below
+    // stays byte-identical. NOT a §4 record / NO §4 DDL: subscriptions + the
+    // deliver-once ledger live in the module's OWN transient namespaces (lazy +
+    // idempotent DDL there), so `push_subscription` stays ABSENT from the §4
+    // registry/projection (the §10.3 "not a §4 record" precedent). The §9.1
+    // chokepoint (the Worker) has ALREADY authenticated + threaded `principal`
+    // — no second auth path (C4); a no/invalid-token push-* op is rejected 401
+    // at the Worker BEFORE this guard, so it writes NOTHING and sends NOTHING.
+    if (PUSH_OPS.has(op)) {
+      return await handlePushOp(this, op, args, principal);
     }
 
     // ── CF.5 (claude-tools-7g0.5) §10.3 forensic transient-store op guard ────

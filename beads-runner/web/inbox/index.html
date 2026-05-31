@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>Beads Runner — Inbox</title>
+<!-- N2 (claude-tools-uxg1) — PWA enable: installable + Web-Push surface (DESIGN
+     N §2.2). The manifest makes the Inbox installable; on the installed PWA
+     (iOS 16.4+ / Android) the service worker (push.js → sw.js) can receive a
+     real Web Push. The apple-* metas are iOS's installability hooks. -->
+<link rel="manifest" href="/inbox/manifest.webmanifest">
+<meta name="theme-color" content="#0e0e10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Beads Inbox">
+<link rel="apple-touch-icon" href="/inbox/icon.svg">
 <!--
   T6b (claude-tools-xre) — the Inbox + Flow-G: the DECISION surface
   (UX Flow B/G). Cloudflare Pages app shell, reusing the T6a visual language
@@ -33,6 +43,10 @@
         ‹ Inbox
       </button>
       <div class="t"><span class="dot" id="dot"></span><span id="title">Inbox</span></div>
+      <!-- N2 (claude-tools-uxg1) — one-time Web-Push opt-in / toggle. Hidden by
+           default; push.js unhides it when push is supported and sets its label
+           from the subscription state. -->
+      <button class="notifbtn" id="notif-toggle" type="button" hidden>🔔 Enable notifications</button>
       <div class="who" id="who" title="§9.1 constant principal (AD6; C7 later)">—</div>
     </header>
 
@@ -166,5 +180,9 @@
   <script src="/shared/shell.js"></script>
   <script src="/inbox/inbox-view.js"></script>
   <script src="/inbox/app.js"></script>
+  <!-- N2 (claude-tools-uxg1) — PWA service-worker registration + Web-Push
+       subscribe glue. Standalone (additive over the frozen shell); uses
+       window.Net for the credential-less /api/push/* proxies. -->
+  <script src="/inbox/push.js"></script>
 </body>
 </html>
