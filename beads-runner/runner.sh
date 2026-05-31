@@ -1258,9 +1258,12 @@ st_reconcile() {
   # v1 fix is run-beads-tasks.sh:708-709; this is its belt-and-suspenders shape:
   #   • `--exclude-type=epic` — now honored by bd (it was empirically a NO-OP at
   #     dzc's 2026-05-24; current bd filters epics correctly), AND
-  #   • the jq selection below independently drops epics — so the runner is
-  #     robust to bd-flag drift in EITHER direction and to the field-name
-  #     difference (`bd ready` → `issue_type`, `bd list` → `type`).
+  #   • the jq selection below independently drops epics. The belt backstops the
+  #     flag silently REGRESSING to a no-op (the dzc-2026-05-24 failure mode) and
+  #     covers the field-name difference (`bd ready` → `issue_type`, `bd list` →
+  #     `type`). It does NOT cover a bd that HARD-REJECTS the flag (nonzero exit):
+  #     the safe_capture below degrades that to a retry-spin (NOT a drain) before
+  #     the belt runs — acceptable (no false drain, no epic claim), just noisier.
   local ready_json
   ready_json="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd ready --exclude-type=epic --json)"
   if [[ "$ready_json" == "__DEGRADED__" ]]; then
