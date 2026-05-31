@@ -65,6 +65,16 @@ RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 # Env-overridable so the test harness can point at a fake on PATH.
 GATE_POLICY_SH="${GATE_POLICY_SH:-$RUNNER_DIR/gate-policy.sh}"
 
+# ── Pickup label gate (BC-08b human-* fixtures + uxvj4 gate:* Gates) ──────────
+# claude-tools-v2c3: port-forward of the v1 RUNNER_NO_CLAIM_LABELS hard gate
+# (run-beads-tasks.sh:86) that the v2 rewrite was missing — the v2c3 coverage
+# audit's worst cutover-blocker. The exact-match list names the human-driven
+# fixtures the autonomous runner must NEVER claim (the claude-tools-noj / tkf /
+# 240 SCAR: re-claiming a phone-gated fixture burned Brian's per-dossier spend
+# 4× in one night). The gate:<id> Gate refusal (uxvj4 / gates.md §5) is
+# ALWAYS-ON and independent of this list — see _candidate_label_gated.
+RUNNER_NO_CLAIM_LABELS="${RUNNER_NO_CLAIM_LABELS:-human-live-session,human-triage,human-action}"
+
 # ── §0.5 frozen constants (env-overridable; literal default == §0.5 table) ────
 CONTROL_POLL_INTERVAL="${CONTROL_POLL_INTERVAL:-60}"   # §0.5 (60 s) desired-state poll DURING a task; stop honored ≤ this
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"         # §0.5 (60 s) actual-state+liveness heartbeat; lease renew
@@ -1210,6 +1220,48 @@ Surfaced at: $ts (runner gate-policy / L2 claude-tools-1tu)" ;;
   echo "runner: gate-policy verdict=$verdict for $bead — surfaced to human (status=blocked + label:human), continuing"
 }
 
+# ── Pickup label gate (claude-tools-v2c3) ────────────────────────────────────
+# Returns 0 (GATED — skip-not-fail) when the candidate carries a label the
+# autonomous runner must not claim; 1 (clean) otherwise. ONE `bd label list`
+# fetch serves BOTH gates (the gates.md §5.2 hoist):
+#   • gate:<id> Gate label — our native hold (uxvj4 / gates.md §5). ALWAYS-ON,
+#     independent of RUNNER_NO_CLAIM_LABELS; prefix match because gate ids are
+#     dynamic and cannot live in an exact-match list. The ^gate:<id-shape>$
+#     anchor guards against gateway/gate-foo false positives (gates.md §5.3).
+#   • RUNNER_NO_CLAIM_LABELS — exact-match human-* fixtures (BC-08b, ported
+#     from run-beads-tasks.sh:716-744). Skip-not-fail, sticky across bd reloads
+#     (the runner cannot lift the label itself).
+# Skip-not-fail posture (no incident, no FAILED++, no lease) matches v1: the
+# bead stays open-and-ready for the human to claim/lift; st_reconcile advances
+# to the next candidate (no starvation). Fail-OPEN on a bd label-list error
+# (empty labels ⇒ not gated ⇒ claimed), matching v1's `|| echo ""`.
+_candidate_label_gated() {
+  local id="$1" labels hit=""
+  labels="$(safe_capture BD_UNAVAILABLE "" -- bd label list "$id" --json | jq -r '.[]?' 2>/dev/null || echo "")"
+
+  # Gate (gate:<id>) — always-on, prefix match.
+  if printf '%s\n' "$labels" | grep -qE '^gate:[a-z0-9][a-z0-9-]*$' 2>/dev/null; then
+    local g; g="$(printf '%s\n' "$labels" | grep -m1 -E '^gate:[a-z0-9][a-z0-9-]*$')"
+    echo "  Skipping: gate label '$g' present (runner respects Gates — lift it from the Gates facet)"
+    return 0
+  fi
+
+  # RUNNER_NO_CLAIM_LABELS — exact-match human-* fixtures.
+  if [[ -n "${RUNNER_NO_CLAIM_LABELS:-}" ]]; then
+    local gate_label IFS=','
+    for gate_label in $RUNNER_NO_CLAIM_LABELS; do
+      gate_label="${gate_label## }"; gate_label="${gate_label%% }"
+      [[ -z "$gate_label" ]] && continue
+      if printf '%s\n' "$labels" | grep -qxF "$gate_label" 2>/dev/null; then hit="$gate_label"; break; fi
+    done
+    if [[ -n "$hit" ]]; then
+      echo "  Skipping: label '$hit' present (RUNNER_NO_CLAIM_LABELS — human-driven fixture, not for autonomous claim)"
+      return 0
+    fi
+  fi
+  return 1
+}
+
 # THE single reconcile point between tasks.
 st_reconcile() {
   CANDIDATE_ID=""; CANDIDATE_TITLE=""; CANDIDATE_DESC=""
@@ -1272,17 +1324,30 @@ st_reconcile() {
     transition RECONCILE; return
   fi
 
-  # Select the FIRST NON-EPIC candidate at the ONE reconcile point (no scattered
-  # downstream epic skip — keeps the v2 state-machine shape; claude-tools-dzc).
-  # If EVERY ready item is an epic the candidate is empty and we DRAIN/idle
-  # (§1.2), exactly as v1's empty-after-filter result did: nothing workable ⇒
-  # honest idle, never a claimed epic and never the v1 skip-spin.
-  local candidate_obj
-  candidate_obj="$(printf '%s' "$ready_json" | jq -c 'map(select((.issue_type // .type // "") != "epic")) | .[0] // empty' 2>/dev/null)"
-  CANDIDATE_ID="$(printf '%s' "$candidate_obj"   | jq -r '.id // empty'    2>/dev/null)"
+  # Select the FIRST workable NON-EPIC candidate at the ONE reconcile point (no
+  # scattered downstream skip — keeps the v2 state-machine shape; claude-tools-dzc).
+  # Epics are dropped by the jq select (containers, not workable); each surviving
+  # candidate is then walked through the pickup label gate (claude-tools-v2c3),
+  # which skips-not-fails past any human-* fixture (BC-08b) or gate:<id> Gate
+  # (uxvj4) — printing a named skip line and advancing to the next candidate (the
+  # v1 select_workable_task no-starvation posture for THIS skip class). If EVERY
+  # ready item is an epic OR gated, the candidate is empty and we DRAIN/idle
+  # (§1.2): nothing autonomously-claimable ⇒ honest idle, never a claimed
+  # epic/gated bead and never the v1 skip-spin.
+  local cand_ids
+  cand_ids="$(printf '%s' "$ready_json" | jq -r 'map(select((.issue_type // .type // "") != "epic")) | .[].id // empty' 2>/dev/null)"
+  CANDIDATE_ID=""
+  local _cid
+  while IFS= read -r _cid; do
+    [[ -z "$_cid" ]] && continue
+    if _candidate_label_gated "$_cid"; then continue; fi
+    CANDIDATE_ID="$_cid"; break
+  done <<< "$cand_ids"
   if [[ -z "$CANDIDATE_ID" ]]; then
-    transition DRAINED; return                 # §1.2 genuine empty (or all-epic) queue
+    transition DRAINED; return                 # §1.2 empty / all-epic / all-gated queue
   fi
+  local candidate_obj
+  candidate_obj="$(printf '%s' "$ready_json" | jq -c --arg id "$CANDIDATE_ID" 'map(select(.id == $id)) | .[0] // empty' 2>/dev/null)"
   CANDIDATE_TITLE="$(printf '%s' "$candidate_obj" | jq -r '.title // ""'       2>/dev/null)"
   CANDIDATE_DESC="$(printf '%s' "$candidate_obj"  | jq -r '.description // ""' 2>/dev/null)"
 
