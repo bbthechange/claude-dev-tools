@@ -152,6 +152,17 @@
         // (S-1: a stale runner's last task isn't "currently working").
         if (card.runner) bf.appendChild(mk('span', 'rn', '⚙ ' + card.runner));
         b.appendChild(bf);
+        // GAP G2 (claude-tools-uxg2): the done·code vs done·verified sub-state
+        // (§3 / principle 11). Rendered ONLY for cards in the `done` lane
+        // (done_substate is null elsewhere). done·code reads in amber (a
+        // standing caution — committed but NOT yet probe-verified, the
+        // 'wired-but-not-live' risk Brian must SEE); done·verified reads in
+        // mint (the production/contract probe passed). The glyph is scannable
+        // presentation; the canonical §5.2 substate string is kept verbatim.
+        if (card.done_substate) {
+          b.appendChild(mk('div', 'sub ' + (card.verified ? 'verified' : 'code'),
+            (card.verified ? '✓ ' : '○ ') + card.done_substate));
+        }
         if (card.failure) {
           var href = card.failure.failure_href;
           var badge = mk(href ? 'a' : 'div', 'warn', card.failure.badge);

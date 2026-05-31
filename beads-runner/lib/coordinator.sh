@@ -1468,7 +1468,13 @@ co__work_snapshot() {
       | (map(select(.created_at != null)) + map(select(.created_at == null)))' \
      2>/dev/null) || woy='[]'
   # The join + the lifecycle columns. Each card: title·stage·priority·runner
-  # state·age·the one thing it waits on (INTERFACE §4.5). Failure metadata is
+  # state·age·the one thing it waits on (INTERFACE §4.5), plus the per-card
+  # `verified` boolean — GAP G2 (claude-tools-uxg2), the done·code vs
+  # done·verified sub-state (§3 / principle 11). `verified:(.verified == true)`
+  # is the STRICT passthrough of the work-truth probe fact: only literal true
+  # is verified (absent/false ⇒ done·code — un-probed is NOT "shipped &
+  # verified"). The cf/src/reconcile.js twin carries the authoritative
+  # rationale; this stays byte-parallel (same key order). Failure metadata is
   # carried from the work-truth read (Flow G tiers 1–2): class + retry-state +
   # Runner: note timeline + last_runner_note_at + silent-vs-loud flag (the G1
   # board-badge contract — UX principle 7: silent failures surface louder
@@ -1521,12 +1527,14 @@ co__work_snapshot() {
              | select((.stage // "") == $s)
              | {bead_ref, title, stage:(.stage // ""), priority,
                 age, waiting_on:(.waiting_on // null),
+                verified:(.verified == true),
                 failure: ('"$normalize_failure"')} ]})
            + { "": [ $beads[]
              | select(((.stage // "") as $st
                  | ($stages|index($st)) == null))
              | {bead_ref, title, stage:(.stage // ""), priority,
                 age, waiting_on:(.waiting_on // null),
+                verified:(.verified == true),
                 failure: ('"$normalize_failure"')} ] } ),
        waiting_on_you:$waiting_on_you}' 2>/dev/null \
     || printf '{"schema_version":1,"principal":"%s","read_only":true,"projects":[],"lifecycle_columns":{},"waiting_on_you":[]}' "$principal"

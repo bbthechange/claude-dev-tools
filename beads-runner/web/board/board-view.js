@@ -474,6 +474,22 @@
             // we never invent a runner; a stale runner's last task does NOT
             // count (S-1 — stale is not "currently working").
             runner: runnerLabel(beadRef),
+            // GAP G2 (claude-tools-uxg2) — done·code vs done·verified
+            // (UX-DESIGN-V2.md §3 / principle 11: the headline defence against
+            // 'wired-but-not-live'). The projection carries a per-card
+            // `verified` boolean; ONLY the `done` lane splits on it. The
+            // sub-state label is the FROZEN §5.2 / enums.js DONE_SUBSTATE
+            // vocabulary ('done·code' | 'done·verified') — carried verbatim
+            // here the way STAGE_ORDER mirrors the spine (a Contract-D closed
+            // set; never widen). Consumed verbatim, never invented: an absent
+            // or non-true flag reads as done·code — un-probed is NOT verified,
+            // so the un-verified state is what stays VISIBLE (the thirsty
+            // lesson: "done" that closed on code-lands-without-integration is
+            // the dominant leak). `done_substate` is null off the done lane.
+            verified: c.verified === true,
+            done_substate: (stage === 'done')
+              ? (c.verified === true ? 'done·verified' : 'done·code')
+              : null,
             // Flow G tiers 1–2 metadata ONLY — class + retry-state + silent
             // flag + Runner: note count/last-at. The §10 forensic stream is
             // structurally absent from the projection and its on-demand fetch

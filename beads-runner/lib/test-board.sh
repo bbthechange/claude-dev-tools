@@ -87,7 +87,10 @@ co_request "$GOOD" heartbeat "$(hb_line hostA projA running ct-1 "$(ago 20)")" >
 # a minimal conformant body round-trips and the §4.5 lane still reads items[].
 co_request "$GOOD" put dossier dOpen \
   '{"schema_version":2,"id":"dOpen","bead_ref":"claude-tools-99","tier":"blocking","body":{"dossier_schema_version":2,"diagrams":[]},"items":[{"id":"i1","state":"open"},{"id":"i2","state":"applied"}]}' >/dev/null 2>&1
-BEADS='[{"bead_ref":"claude-tools-99","title":"Impl X","stage":"impl","priority":1,"age":"2h","waiting_on":"review"},{"bead_ref":"claude-tools-12","title":"Idea Y","stage":"idea","priority":2,"age":"1d"},{"bead_ref":"claude-tools-77","title":"Loose","stage":"weird","priority":3,"age":"5m"}]'
+# GAP G2 (claude-tools-uxg2) — the two trailing `done` beads exercise the
+# rendered done·verified vs done·code split (§3 / principle 11): d1's probe
+# passed (verified:true); d2 has no probe fact (→ done·code).
+BEADS='[{"bead_ref":"claude-tools-99","title":"Impl X","stage":"impl","priority":1,"age":"2h","waiting_on":"review"},{"bead_ref":"claude-tools-12","title":"Idea Y","stage":"idea","priority":2,"age":"1d"},{"bead_ref":"claude-tools-77","title":"Loose","stage":"weird","priority":3,"age":"5m"},{"bead_ref":"claude-tools-d1","title":"Shipped","stage":"done","priority":1,"age":"3h","verified":true},{"bead_ref":"claude-tools-d2","title":"Landed","stage":"done","priority":2,"age":"4h"}]'
 SNAP="$(co_request "$GOOD" work-snapshot projA "$BEADS" 2>/dev/null)"
 V="$(render "$SNAP")"
 ck "renderer accepts the real §4.5 projection (ok:true)"        eq "$(jq -r '.ok' <<<"$V")" "true"
@@ -102,6 +105,14 @@ ck "lane does NOT carry dossier body/items (T6b owns content)"   eq "$(jq -r '.w
 ck "lifecycle spine present, FROZEN idea→done (+\"\" honest)"     eq "$(jq -r '[.lifecycle[].stage]|join(",")' <<<"$V")" "idea,ux,design,impl,docs,tests,done,"
 ck "impl column carries the bead, with its 'waiting_on'"         eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].waiting_on' <<<"$V")" "review"
 ck "unknown stage 'weird' bucketed honestly under \"\" (not impl)" eq "$(jq -r '.lifecycle[]|select(.stage=="").cards[0].bead_ref' <<<"$V")" "claude-tools-77"
+# GAP G2 (claude-tools-uxg2): the renderer splits `done` into done·verified vs
+# done·code off the per-card `verified` flag (§3 / principle 11). The sub-state
+# label is the FROZEN §5.2 DONE_SUBSTATE vocabulary; only the done lane carries
+# it (null elsewhere — so the split never leaks onto idea/impl/etc.).
+ck "G2 — done card whose probe passed renders done·verified" eq "$(jq -r '.lifecycle[]|select(.stage=="done").cards[0].done_substate' <<<"$V")" "done·verified"
+ck "G2 — done card with no probe renders done·code"          eq "$(jq -r '.lifecycle[]|select(.stage=="done").cards[1].done_substate' <<<"$V")" "done·code"
+ck "G2 — done·verified card carries verified:true"           eq "$(jq -r '.lifecycle[]|select(.stage=="done").cards[0].verified' <<<"$V")" "true"
+ck "G2 — the split is done-lane ONLY (impl card has no sub-state)" eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].done_substate' <<<"$V")" "null"
 # L3 (claude-tools-2bf): the legacy/un-staged bucket is rendered as a VISIBLE
 # eighth lane labeled "unstaged" (was "untracked") so legacy beads with no
 # stage label never disappear from the Board.

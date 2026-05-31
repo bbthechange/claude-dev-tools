@@ -224,6 +224,11 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     },
     { bead_ref: "claude-tools-12", title: "Idea Y", stage: "idea", priority: 2, age: "1d" },
     { bead_ref: "claude-tools-77", title: "Loose", stage: "weird", priority: 3, age: "5m" },
+    // GAP G2 (claude-tools-uxg2) — two `done` beads exercise the done·verified
+    // vs done·code split: d1's probe passed (verified:true → done·verified);
+    // d2 has no probe fact (absent → done·code, un-probed is NOT verified).
+    { bead_ref: "claude-tools-d1", title: "Shipped", stage: "done", priority: 1, age: "3h", verified: true },
+    { bead_ref: "claude-tools-d2", title: "Landed", stage: "done", priority: 2, age: "4h" },
   ]);
   await call(GOOD, "put", [
     "dossier",
@@ -286,6 +291,21 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
   ck(
     "card carries the one thing it waits on (§4.5)",
     SNAP.lifecycle_columns.impl[0].waiting_on === "review"
+  );
+  // GAP G2 (claude-tools-uxg2) — the per-card `verified` flag (§3 / principle
+  // 11). STRICT boolean on EVERY card: literal true ⇒ done·verified, anything
+  // else ⇒ done·code (un-probed is NOT "shipped & verified").
+  ck(
+    "GAP G2 — a done card whose probe passed carries verified:true (done·verified)",
+    SNAP.lifecycle_columns.done[0].verified === true
+  );
+  ck(
+    "GAP G2 — a done card with no probe fact carries verified:false (done·code)",
+    SNAP.lifecycle_columns.done[1].verified === false
+  );
+  ck(
+    "GAP G2 — verified is a per-card boolean on EVERY card (impl defaults false)",
+    SNAP.lifecycle_columns.impl[0].verified === false
   );
   // WAITING-ON-YOU = Dossiers (this principal) with ≥1 still-open item —
   // COUNTS only; a fully-resolved (all applied/expired) dossier drops off.

@@ -160,7 +160,11 @@ ck "unreadable clock ⇒ liveness honestly 'stale' (no false live)" clock_dead_i
 ck "explicit now_epoch arg still honored when clock is dead"      bash -c 'source "$1"; out=$(co__derive_liveness "1970-01-01T00:00:30Z" 100); [[ "$out" == live ]]' _ "$LIB"
 
 echo "── EXIT-3: §4.5 read-only projection reflects desired+actual+liveness ──"
-BEADS='[{"bead_ref":"claude-tools-99","title":"Impl X","stage":"impl","priority":1,"age":"2h","waiting_on":"review","failure":{"class":"UNKNOWN_FAILURE","retry_state":"1/3","runner_notes":["Runner: retrying"]}},{"bead_ref":"claude-tools-12","title":"Idea Y","stage":"idea","priority":2,"age":"1d"},{"bead_ref":"claude-tools-77","title":"Loose","stage":"weird","priority":3,"age":"5m"}]'
+# GAP G2 (claude-tools-uxg2) — the two trailing `done` beads exercise the
+# done·verified vs done·code split: d1's probe passed (verified:true); d2 has
+# no probe fact (absent → done·code, the strict default — un-probed is NOT
+# verified). Twin of cf/test/reconcile.spec.js's BEADS fixture.
+BEADS='[{"bead_ref":"claude-tools-99","title":"Impl X","stage":"impl","priority":1,"age":"2h","waiting_on":"review","failure":{"class":"UNKNOWN_FAILURE","retry_state":"1/3","runner_notes":["Runner: retrying"]}},{"bead_ref":"claude-tools-12","title":"Idea Y","stage":"idea","priority":2,"age":"1d"},{"bead_ref":"claude-tools-77","title":"Loose","stage":"weird","priority":3,"age":"5m"},{"bead_ref":"claude-tools-d1","title":"Shipped","stage":"done","priority":1,"age":"3h","verified":true},{"bead_ref":"claude-tools-d2","title":"Landed","stage":"done","priority":2,"age":"4h"}]'
 # claude-tools-4xe — type=dossier writes now run the §5.1-core WRITE GATE
 # (co__store_put): a minimal conformant body (bound dossier_schema_version +
 # []-diagrams) is required; the §4.5 projection still reads only items[] (body
@@ -183,6 +187,12 @@ ck "an unknown stage buckets under \"\" (honest, not silently impl)" \
    eq "$(jq -r '.lifecycle_columns[""][0].bead_ref' <<<"$SNAP")" "claude-tools-77"
 ck "per-bead failure metadata carried (Flow G tiers 1–2)"     eq "$(jq -r '.lifecycle_columns.impl[0].failure.class' <<<"$SNAP")" "UNKNOWN_FAILURE"
 ck "card carries the one thing it waits on (§4.5)"            eq "$(jq -r '.lifecycle_columns.impl[0].waiting_on' <<<"$SNAP")" "review"
+# GAP G2 (claude-tools-uxg2) — the per-card `verified` flag (§3 / principle 11),
+# byte-parallel with the cf/src/reconcile.js twin. Strict boolean: only literal
+# true ⇒ done·verified; absent/false ⇒ done·code.
+ck "G2 — done card whose probe passed carries verified:true"  eq "$(jq -r '.lifecycle_columns.done[0].verified' <<<"$SNAP")" "true"
+ck "G2 — done card with no probe fact carries verified:false" eq "$(jq -r '.lifecycle_columns.done[1].verified' <<<"$SNAP")" "false"
+ck "G2 — verified is a per-card boolean on EVERY card (impl=false)" eq "$(jq -r '.lifecycle_columns.impl[0].verified' <<<"$SNAP")" "false"
 # WAITING-ON-YOU = Dossiers (this principal) with ≥1 still-open item — COUNTS
 # only; a fully-resolved (all applied/expired) dossier drops off (T5 content).
 woyN="$(jq -r '[.waiting_on_you[].dossier_ref]|length' <<<"$SNAP")"

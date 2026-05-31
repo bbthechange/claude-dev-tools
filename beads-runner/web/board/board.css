@@ -107,6 +107,15 @@ a.warn{color:var(--coral);cursor:pointer;padding:4px 0;min-height:24px}
 a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-radius:4px}
 .bead.failbead.silent .warn{color:#ff8a8a;font-weight:500}
 .col-empty{color:var(--faint);font-size:10px;padding:4px 3px}
+/* GAP G2 (claude-tools-uxg2) — the done·code vs done·verified sub-state badge
+ * (§3 / principle 11). Only `done`-lane cards carry it. done·code is amber: a
+ * standing caution that "committed + local-green" is NOT "shipped & verified"
+ * (the 'wired-but-not-live' family this overhaul exists to catch — it must read
+ * as unfinished-business at a glance). done·verified is mint: the production /
+ * contract probe passed — this one is REAL done. */
+.bead .sub{font-size:9px;letter-spacing:.06em;margin-top:6px;display:block}
+.bead .sub.code{color:var(--amber-soft)}
+.bead .sub.verified{color:var(--mint)}
 
 /* per-project runners — honest state + S-1 liveness */
 .runners{display:flex;flex-wrap:wrap;gap:10px;padding:0 14px}

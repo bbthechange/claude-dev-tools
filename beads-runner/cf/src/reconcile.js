@@ -872,6 +872,17 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     priority: b.priority ?? null,
     age: b.age ?? null,
     waiting_on: b.waiting_on ?? null,
+    // GAP G2 (claude-tools-uxg2) — the done·code vs done·verified sub-state
+    // (UX-DESIGN-V2.md §3 / principle 11: the headline defence against
+    // 'wired-but-not-live'). A per-card boolean passthrough of the work-truth
+    // `verified` fact: the production/contract probe passed (web track: deploy
+    // + verify-pages-deploy.sh mismatches=0; contract track: a live
+    // integration probe). Only the Board's `done` column splits on it, but —
+    // like `failure` — it is carried on EVERY card so the §4.5 contract is
+    // uniform. STRICT boolean: anything other than literal `true` reads as
+    // `false` (honest default — un-probed is NOT verified; "code landed +
+    // local tests pass" is NOT "shipped and verified").
+    verified: b.verified === true,
     failure: normalizeFailure(b.failure),
   });
   const lifecycle_columns = {};
