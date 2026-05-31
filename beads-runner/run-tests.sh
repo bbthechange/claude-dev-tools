@@ -16,9 +16,11 @@
 #   top         beads-runner/test-*.sh           — top-level runner/gate/intake tests
 #   conformance conformance/run-conformance.sh   — T6 runner BC conformance
 #   contract    cf/test/conformance-*.sh         — machine-state (D2) + UX-v2 A–D guardian (T7)
+#   jsdom       (cd jsdom && npm test)           — T4 shell/router/deep-link (jsdom; §7.4)
 #
 # DISCOVERY IS BY GLOB, NEVER A HARDCODED LIST (§7.1): a new test-*.sh under any
-# enrolled directory, or a new cf/test/conformance-*.sh, auto-joins the gate.
+# enrolled directory, a new cf/test/conformance-*.sh, or a new jsdom/test/*.test.js
+# auto-joins the gate.
 #
 # WHAT IT DOES NOT RUN — T8 (the ONE networked tier), which stays manual at close:
 #   verify-pages-deploy.sh, cf/pages-dev/verify.sh, and any live-Worker probe.
@@ -78,7 +80,7 @@ BR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 C_G=$'\033[32m'; C_R=$'\033[31m'; C_Y=$'\033[33m'; C_C=$'\033[36m'; C_0=$'\033[0m'
 
 # ── canonical tier order (full run executes in this order) ──
-ALL_TIERS=(lib daemon hooks agents top conformance contract cf)
+ALL_TIERS=(lib daemon hooks agents top conformance contract cf jsdom)
 
 usage() {
   sed -n '2,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -161,7 +163,10 @@ map_path() {
     cf/src/*|cf/pages-dev/*|cf/migrations/*|cf/vitest.config.js|cf/wrangler*|cf/package.json)
                                                                        sel cf; sel contract ;;
     cf/*)                                                              sel cf ;;
-    web/*)                                                             sel lib; sel contract ;;
+    # The jsdom tier (T4, §7.4) tests the web app SHELL (shell.js router/nav, the
+    # /ws/* facet glue, _redirects, the deep-links), so a web/ change re-runs it too.
+    jsdom/*)                                                           sel jsdom ;;
+    web/*)                                                             sel lib; sel contract; sel jsdom ;;
     test-fixtures/*)                                                   sel contract ;;
     # lib/ holds the bash-oracle engine (coordinator.sh, …); its JS twin is in
     # cf/, so a lib engine edit must re-run cf too or an oracle⇄twin divergence
@@ -428,6 +433,15 @@ run_cf_tier() {
     bash -c 'cd "$1" && npm test --silent' _ "$BR_DIR/cf"
 }
 
+# T4 jsdom tier (§7.4): node:test + jsdom, its own process group; cwd is jsdom/.
+# Same one-unit semantics as cf — node --test fans out internally and exits
+# non-zero (its full output dumped by run_cmd_tier) on any failing case.
+run_jsdom_tier() {
+  local n; n=$(ls -1 "$BR_DIR"/jsdom/test/*.test.js 2>/dev/null | wc -l | tr -d ' ')
+  run_cmd_tier "jsdom" "node:test: $n test files" \
+    bash -c 'cd "$1" && npm test --silent' _ "$BR_DIR/jsdom"
+}
+
 # ════════════════════════════════════════════════════════════════════════════
 # header
 # ════════════════════════════════════════════════════════════════════════════
@@ -475,6 +489,7 @@ run_tier() {
     contract)    run_bash_tier "contract"    "$BR_DIR/cf/test/conformance-*.sh" ;;
     conformance) run_cmd_tier  "conformance" "runner BC harness" bash "$BR_DIR/conformance/run-conformance.sh" ;;
     cf)          run_cf_tier ;;
+    jsdom)       run_jsdom_tier ;;
   esac
 }
 

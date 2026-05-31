@@ -1,0 +1,12 @@
+{
+  "name": "beads-runner-shell-jsdom-tests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TEST-INFRA (claude-tools-rznj.3) — the T4 jsdom tier (TESTING-STRATEGY.md §7.4). DETERMINISTIC shell/router/deep-link tests for the C-shell (claude-tools-uxvsh): Contract C.2 route shape, the persistent nav (deriveNav/mount), the /ws/<ref>/<facet> catch-all dispatch, and the cross-route deep-links. jsdom NOT a real browser (§8: no Playwright — the full-browser tier is the flaky/fragile category for a single-dev mobile web app). Runner: ../run-tests.sh `jsdom` tier (cd jsdom && npm test).",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

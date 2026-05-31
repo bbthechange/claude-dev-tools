@@ -1,0 +1,5 @@
+# T4 jsdom tier (claude-tools-rznj.3) — same install model as cf/: node_modules
+# is NOT committed (run `npm ci` to reproduce from the committed package-lock.json),
+# package-lock.json IS committed for reproducible installs.
+node_modules/
+*.log
