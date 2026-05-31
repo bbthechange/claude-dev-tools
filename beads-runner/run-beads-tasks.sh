@@ -728,6 +728,51 @@ validate_task() {
   return 0
 }
 
+# Pick the FIRST workable bead from the ready snapshot (claude-tools-uxqj).
+#
+# next_task() returns the WHOLE `bd ready` array — priority-ascending and
+# deterministic (test-bd-ready-ordering.sh) — but the old loop only ever read
+# .[0] and, on an unworkable head, fell through to a skip-and-retry that
+# re-selected the SAME head every loop. A single unworkable bead at ready[0]
+# (a RUNNER_NO_CLAIM_LABELS task, a parent with open children, a late-blocked
+# dep, or a stray epic that slipped the query filter) therefore STARVED every
+# workable bead below it — 39 skip-loops / 0 builds, observed live 2026-05-30.
+# That is the claude-tools-dzc starvation class, for labels not just epics: the
+# fix is the same shape — iterate the candidates and skip-CONTINUE past the
+# unworkable ones instead of abandoning the whole set on the first reject.
+#
+# This walks the snapshot in `bd ready` order and stops at the first candidate
+# validate_task() accepts, then narrows TASK_JSON to that ONE element so every
+# downstream `.[0]` read (title/desc/priority + the defensive re-validate
+# below) is unchanged. validate_task()'s skip / auto-close lines still reach the
+# runner's stdout because this runs in the loop body, NOT a command-sub.
+#
+# Sets TASK_JSON (narrowed to the chosen 1-elem array) + TASK_ID on success.
+# Returns: 0 a workable bead was selected
+#          1 the ready set is genuinely EMPTY (a real drain)
+#          2 the ready set is NON-empty but every candidate is unworkable
+select_workable_task() {
+  TASK_JSON=$(next_task)
+  local n i cand_id
+  n=$(echo "$TASK_JSON" | jq 'length' 2>/dev/null || echo 0)
+  [[ "${n:-0}" -gt 0 ]] || { TASK_ID=""; return 1; }
+  for (( i=0; i<n; i++ )); do
+    cand_id=$(echo "$TASK_JSON" | jq -r ".[$i].id // empty" 2>/dev/null || echo "")
+    [[ -n "$cand_id" ]] || continue
+    if validate_task "$cand_id"; then
+      TASK_JSON=$(echo "$TASK_JSON" | jq -c ".[$i] | [.]" 2>/dev/null || echo "$TASK_JSON")
+      TASK_ID="$cand_id"
+      return 0
+    fi
+    # Unworkable candidate — keep actual-state warm while we scan past it so a
+    # long all-unworkable head doesn't age out the GUI (the claude-tools-g20
+    # hot-spin guard), the same `hb idle` the old single-candidate skip emitted.
+    hb idle
+  done
+  TASK_ID=""
+  return 2
+}
+
 # ── Failure classification ───────────────────────────────────────────────────
 
 # Read signal file and classify the failure.
@@ -1333,27 +1378,45 @@ while true; do
     fi
   fi
 
-  TASK_JSON=$(next_task)
-  TASK_ID=$(echo "$TASK_JSON" | jq -r '.[0].id // empty')
+  # claude-tools-uxqj: select the first WORKABLE bead, skip-CONTINUE past
+  # unworkable ones (no-claim label / parent w/ open children / late-blocked /
+  # stray epic) — never abandon the ready set on an unworkable head and re-pick
+  # it forever. SEL_RC distinguishes the two empty-selection states below.
+  # (`f || rc=$?` is the set -e-safe rc capture: a bare non-zero call aborts.)
+  SEL_RC=0; select_workable_task || SEL_RC=$?
 
   if [[ -z "$TASK_ID" ]]; then
     # UX 0.A (claude-tools-giu): runner stays alive when the queue drains —
     # honestly idle to the engine, polling for new ready work, and picks up
     # any task added afterward WITHOUT requiring an external respawn. The
     # daemon's M3 desired-state poll is still authoritative: a desired=stopped
-    # OR a .stop-beads here ends the runner cleanly within IDLE_POLL_INTERVAL.
+    # OR a .stop-beads here ends the runner cleanly within the poll interval.
     # RUNNER_EXIT_ON_DRAIN=1 opts into the legacy BC-05 SCAR (drain ⇒ exit 0)
     # so conformance tests can still verify the historical exit-code contract.
-    if [[ -n "${RUNNER_EXIT_ON_DRAIN:-}" ]]; then
+    #
+    # claude-tools-uxqj: exit-on-drain fires ONLY on a GENUINE drain (SEL_RC=1,
+    # bd ready empty). SEL_RC=2 means the queue is NON-empty but every candidate
+    # is unworkable — that is NOT a drain: exiting there would strand the
+    # workable beads that arrive later, so we back off (SKIP_BACKOFF, the g20
+    # hot-spin guard) and re-select. The per-candidate skip line already printed
+    # during selection, so we do NOT mislabel this "No more ready tasks".
+    if [[ "${SEL_RC:-1}" -eq 1 && -n "${RUNNER_EXIT_ON_DRAIN:-}" ]]; then
       echo ""
       echo "No more ready tasks."
       echo "  (RUNNER_EXIT_ON_DRAIN=1 — BC-05 legacy exit-on-drain contract)"
       hb idle
       break
     fi
+    if [[ "${SEL_RC:-1}" -eq 2 ]]; then
+      IDLE_POLL_SECS="${SKIP_BACKOFF:-30}"
+      IDLE_MSG="Ready set is all-unworkable — idling (re-check every ${IDLE_POLL_SECS}s)."
+    else
+      IDLE_POLL_SECS="${IDLE_POLL_INTERVAL:-60}"
+      IDLE_MSG="No more ready tasks — idling (poll every ${IDLE_POLL_SECS}s for new work)."
+    fi
     if [[ "${IDLE_NOTIFIED:-0}" != "1" ]]; then
       echo ""
-      echo "No more ready tasks — idling (poll every ${IDLE_POLL_INTERVAL:-60}s for new work)."
+      echo "$IDLE_MSG"
       IDLE_NOTIFIED=1
     fi
     hb idle   # §4.2: actual=idle (the engine sees an idle, alive runner)
@@ -1364,16 +1427,23 @@ while true; do
         break 2
       fi
       # Honor desired=stopped from the Coordinator (e.g. phone toggle) within
-      # IDLE_POLL_INTERVAL — same posture as runner.sh's idle reconcile.
+      # the poll interval — same posture as runner.sh's idle reconcile.
       IDLE_DESIRED=$(workspace_desired_state)
       if [[ "$IDLE_DESIRED" == "stopped" ]]; then
         echo "Coordinator desired=stopped observed while idle — stopping gracefully."
         break 2
       fi
-      sleep "${IDLE_POLL_INTERVAL:-60}"
-      TASK_JSON=$(next_task)
-      TASK_ID=$(echo "$TASK_JSON" | jq -r '.[0].id // empty')
+      sleep "$IDLE_POLL_SECS"
+      # Re-select (NOT a raw .[0] pick) so a workable bead arriving below an
+      # unworkable head is picked up, and so an all-unworkable→workable flip
+      # (e.g. a child closing) is honored.
+      SEL_RC=0; select_workable_task || SEL_RC=$?
       [[ -n "$TASK_ID" ]] && break
+      # A GENUINE drain reached while idling (e.g. the lone unworkable head got
+      # closed) must still honor the legacy exit-on-drain contract — break back
+      # to the top-of-loop gate, which exits. Guarded by the env flag so the
+      # production (unset) idle-on-drain path keeps polling forever as before.
+      [[ "${SEL_RC:-1}" -eq 1 && -n "${RUNNER_EXIT_ON_DRAIN:-}" ]] && break
     done
     IDLE_NOTIFIED=0
     continue
@@ -1408,15 +1478,14 @@ while true; do
   echo "  $TASK_TITLE ($TASK_ID) [$TASK_MODEL]"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  # Pre-flight: skip tasks that aren't actually workable (no failure counted).
-  # claude-tools-g20: heartbeat-idle + backoff so a workspace whose ready set
-  # is ONLY un-workable beads (epics, parents w/ open children) doesn't hot-
-  # spin — the loop would otherwise burn ~30 iter/min on bd show + bd show
-  # --children with no `hb` refresh between cycles, ageing out actual-state in
-  # the GUI even though the process is alive. Also honor desired=stopped here
-  # so a phone toggle ends the runner within SKIP_BACKOFF (the idle-branch
-  # reconcile at the bd-ready-empty path is unreachable while an epic sits
-  # atop bd ready).
+  # Defensive RE-validate (no failure counted). The PRIMARY workability gate is
+  # now select_workable_task above (claude-tools-uxqj) — TASK_ID was already
+  # accepted by validate_task during selection — but a task can go unworkable in
+  # the window between selection and here (another agent claims it, a dep is
+  # added). Re-checking catches that race; a skip falls through to the same
+  # claude-tools-g20 heartbeat-idle + SKIP_BACKOFF the all-unworkable idle branch
+  # uses (so a transient skip never hot-spins and still honors desired=stopped
+  # for a phone toggle), then re-selects on the next loop.
   if ! validate_task "$TASK_ID"; then
     echo ""
     hb idle

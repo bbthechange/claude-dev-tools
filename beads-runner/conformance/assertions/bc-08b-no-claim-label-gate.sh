@@ -82,6 +82,32 @@ unset RUNNER_NO_CLAIM_LABELS
 _emit
 H_cleanup
 
+# ── STARVATION (claude-tools-uxqj): an unworkable HEAD must not block work ────
+# The live failure 2026-05-30 (~16:00-16:25, 39 skip-loops / 0 builds): a
+# no-claim-label TASK sat at ready[0]; the old loop only ever looked at
+# ready[0], skipped it, and re-selected the SAME head every cycle — starving
+# every workable bead BELOW it (the claude-tools-dzc starvation class, for
+# labels not just epics). The fix walks the ready snapshot and picks the first
+# WORKABLE candidate. Seed an unworkable head (human-action) ABOVE a normal
+# task — the fake `bd ready` sorts attempts-asc then id-asc, so T1 precedes T2 —
+# and assert the runner walks PAST T1 and actually runs+closes T2.
+H_init_test bc08b-starvation-skip-continue
+bd_seed T1 "human-action head" "blocks the queue if we starve" open "human-action"
+bd_seed T2 "workable below the head" "must still get picked up" open ""
+claude_plan success
+export SKIP_BACKOFF=1          # don't sit 30s idling on T1 after T2 drains
+unset RUNNER_EXIT_ON_DRAIN     # T1 is permanently ready ⇒ never a clean drain
+RUN_TIMEOUT=12 run_runner
+_expect "BC-08b" "claude-tools-uxqj" "unworkable ready[0] does NOT starve a workable bead below it"
+_need "workable T2 reached closed (not starved)"   test "$(bd_status T2)" = closed
+_need "unworkable T1 stayed open (skipped)"         test "$(bd_status T1)" = open
+_need "T2 was claimed (in_progress in audit)"       grep -qE "^T2 in_progress" "$BD_AUDIT"
+_need "T1 never claimed (no in_progress)"           bash -c '! grep -qE "^T1 in_progress" "'"$BD_AUDIT"'"'
+_need "skip message names 'human-action'"          contains "$(out)" "label 'human-action' present"
+unset SKIP_BACKOFF
+_emit
+H_cleanup
+
 # ── happy path: an unlabelled task is still claimed normally ─────────────────
 # Anti-regression: the gate must not affect tasks that lack the gating labels.
 # A task with NO labels (or with a non-gating label) goes through validate_task

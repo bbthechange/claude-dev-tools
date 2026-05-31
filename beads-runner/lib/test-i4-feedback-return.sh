@@ -95,13 +95,20 @@ fi
 if [[ -f "$RUNNER" ]]; then
   ok "run-beads-tasks.sh present"
   # The PARKED runner observes while busy: poll + reconcile at the loop top,
-  # BEFORE next_task, so a just-answered fork re-enters the very next pick.
+  # BEFORE the task pick, so a just-answered fork re-enters the very next pick.
+  # claude-tools-uxqj moved the `bd ready` pick into select_workable_task()
+  # (it wraps next_task and skip-continues an unworkable ready[0] instead of
+  # starving the work below it). The literal `TASK_JSON=$(next_task)` now lives
+  # INSIDE that helper, defined ABOVE the loop — so we anchor on the loop-top
+  # CALL SITE (`select_workable_task || SEL_RC=`, which only appears at the two
+  # call sites, never the definition), not on next_task. The ordering contract
+  # is unchanged: poll+reconcile must precede the selection call.
   pl="$(grep -n 'sr_poll_hosted_resolution' "$RUNNER" | head -1 | cut -d: -f1)"
   rc="$(grep -n 'sr_reconcile_blocked_for_human' "$RUNNER" | head -1 | cut -d: -f1)"
-  nt="$(grep -n 'TASK_JSON=\$(next_task)' "$RUNNER" | head -1 | cut -d: -f1)"
+  nt="$(grep -n 'select_workable_task || SEL_RC=' "$RUNNER" | head -1 | cut -d: -f1)"
   { [[ -n "$pl" && -n "$rc" && -n "$nt" && "$pl" -lt "$nt" && "$rc" -lt "$nt" ]]; } \
-    && ok "runner polls hosted resolution + reconciles BEFORE next_task (the parked runner observes while busy on other beads)" \
-    || bad "poll+reconcile must run before next_task (got poll@$pl reconcile@$rc next_task@$nt)"
+    && ok "runner polls hosted resolution + reconciles BEFORE task selection (the parked runner observes while busy on other beads)" \
+    || bad "poll+reconcile must run before task selection (got poll@$pl reconcile@$rc select@$nt)"
   grep -q 'command -v sr_poll_hosted_resolution >/dev/null 2>&1' "$RUNNER" \
     && ok "the poll/reconcile block is guarded-optional (absent lib ⇒ runner unchanged — the §8.2 la_* discipline)" \
     || bad "poll/reconcile guarded by command -v"
