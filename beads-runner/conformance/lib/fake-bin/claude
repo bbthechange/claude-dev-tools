@@ -241,6 +241,33 @@ case "$behavior" in
     emit '{"type":"result","result":"plan ready for approval","is_error":false,"stop_reason":"end_turn"}'
     exit 0 ;;
 
+  rate_limit_event_allowed)
+    # BC-61: a SUBSCRIPTION-window snapshot with status=allowed — collapses to ONE
+    # terse `[rate_limit] … ok` line, emits NO classification marker, and the bead
+    # closes (⇒ SUCCESS, classification unaffected). NOT a 429 (that is `ratelimit`).
+    emit '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour","resetsAt":1900000000}}'
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"done","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  rate_limit_event_warning)
+    # BC-61: status=allowed_warning ⇒ a LOUD one-line `[rate_limit:WARN]` with
+    # utilization/threshold; still no classification marker, bead closes (SUCCESS).
+    emit '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day","utilization":0.92,"surpassedThreshold":0.8,"resetsAt":1900000000}}'
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"done","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
+  rate_limit_event_quota)
+    # BC-61 forward-compat: status=rejected ⇒ a `[rate_limit:QUOTA]` line PLUS a
+    # RATE_LIMIT_QUOTA=<type> signal marker (not a classifier input — classification
+    # is still driven by the result/exit, so the bead closes SUCCESS). Never observed
+    # today; this exercises the reserved branch.
+    emit '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day","resetsAt":1900000000}}'
+    [[ -n "$bead_id" ]] && bd close "$bead_id" >/dev/null 2>&1
+    emit '{"type":"result","result":"done","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
   *)
     emit '{"type":"result","result":"unrecognized plan behavior","is_error":true,"stop_reason":"end_turn"}'
     exit 1 ;;

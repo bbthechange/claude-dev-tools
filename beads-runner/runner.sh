@@ -187,6 +187,7 @@ RETRY_BACKOFF_MAX="${RETRY_BACKOFF_MAX:-60}"           # hard cap on the exponen
 # stream preservation this child's classification drives.
 LOG_DIR="${LOG_DIR:-.beads/runner-logs}"
 INCIDENTS_LOG="$LOG_DIR/incidents.log"
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-14}"   # BC-30: prune runner-logs older than this, ONCE at startup (st_starting)
 
 # BC-35/BC-36 (T2.4, claude-tools-7hx): the project cleanup hook the teardown
 # invokes. Defined as a no-op BEFORE the project config source so a
@@ -223,24 +224,62 @@ if [[ "${1:-}" == "--yolo" ]]; then
   YOLO=1
 fi
 
-# claude-tools-qcoe: per-task permission mode. Opus supports `--permission-mode auto`
-# (LLM-classified auto-approval, still honors permissions.deny). Sonnet silently
-# downgrades auto→default in headless = block on first prompt = watchdog kill, so
-# non-Opus stays on the workspace PERMISSION_FLAGS (acceptEdits + allowlist).
-# Resolved against DEFAULT_MODEL post-source so a `.beads/runner.sh` DEFAULT_MODEL
-# override routes correctly. The bare-"opus"→"opus[1m]" upgrade lives in
-# run-beads-tasks.sh's per-task path; runner.sh's DEFAULT_MODEL skeleton default
-# is already "opus[1m]" so `opus*)` matches both forms.
+# claude-tools-qcoe / BC-58: per-task permission mode. Opus supports
+# `--permission-mode auto` (LLM-classified auto-approval, still honors
+# permissions.deny). Sonnet silently downgrades auto→default in headless = block
+# on first prompt = watchdog kill, so non-Opus stays on the workspace
+# PERMISSION_FLAGS (acceptEdits + allowlist).
+# This module-scope resolution is now only the STARTUP DEFAULT (against
+# DEFAULT_MODEL). The AUTHORITATIVE per-task resolution is _resolve_task_model
+# (BC-32, claude-tools-v2cut.4), called once per task at the top of st_run_task —
+# it re-reads the task's `model:` label, upgrades bare opus→opus[1m], and
+# re-derives TASK_PERMISSION_FLAGS from THAT model before every spawn. Keeping
+# this default keeps the array defined (unset-safe) and mirrors the common
+# no-label case.
 # FORWARD COMPAT: when Sonnet gains auto support, change `opus*)` to `opus*|sonnet*)`.
 # --yolo WINS (claude-tools-92l3): YOLO=1 skips this override entirely so
 # --dangerously-skip-permissions (set above) flows through to the worker argv
 # instead of being replaced by --permission-mode auto (mirrors v1 ~1611).
+TASK_MODEL="$DEFAULT_MODEL"
 TASK_PERMISSION_FLAGS=("${PERMISSION_FLAGS[@]}")
 if [[ "$YOLO" != 1 ]]; then
   case "$DEFAULT_MODEL" in
     opus*) TASK_PERMISSION_FLAGS=(--permission-mode auto) ;;
   esac
 fi
+
+# ── BC-32 — per-task label-driven model selection (claude-tools-v2cut.4) ──────
+# v1 read a `model:<X>` label off EACH task (run-beads-tasks.sh ~1597-1602); v2
+# had only the single per-runner DEFAULT_MODEL above. This restores the per-task
+# split: _resolve_task_model runs once per task at the top of st_run_task and
+# (re)sets both TASK_MODEL and TASK_PERMISSION_FLAGS for THAT task.
+#   • TASK_MODEL = the task's `model:` label value, else DEFAULT_MODEL.
+#   • bare `opus` (the 200K alias) is upgraded to `opus[1m]` (the 1M variant);
+#     `sonnet`/`sonnet[1m]` are left EXACTLY as-is — sonnet[1m] needs "extra
+#     usage" this org has disabled, so a model:sonnet task deliberately runs on
+#     the 200K window (this is WHY the BC-19 overflow salvage text tells the next
+#     agent to relabel model:opus before retry).
+#   • TASK_PERMISSION_FLAGS is then re-derived from the RESOLVED model (BC-58
+#     coupling) — the same opus*⇒auto / else-acceptEdits / yolo-wins rule as the
+#     startup default above, but keyed on the per-task TASK_MODEL.
+# Faithful-port note (BC-32 "Finding (edge)"): v1 has NO first-`model:`-match
+# guard — multiple `model:` labels make TASK_MODEL a newline-joined string passed
+# verbatim to `claude --model` (undefined). BEHAVIORAL-CONTRACT characterizes that
+# edge AS-IS ("not proposed for fix"), so this port reproduces v1's jq verbatim
+# rather than silently fixing it (a unilateral fix would be undocumented drift).
+_resolve_task_model() {
+  local id="$1"
+  TASK_MODEL="$(bd label list "$id" --json 2>/dev/null \
+    | jq -r '.[] | select(startswith("model:")) | sub("model:"; "")' 2>/dev/null)"
+  TASK_MODEL="${TASK_MODEL:-$DEFAULT_MODEL}"
+  [[ "$TASK_MODEL" == "opus" ]] && TASK_MODEL="opus[1m]"
+  TASK_PERMISSION_FLAGS=("${PERMISSION_FLAGS[@]}")
+  if [[ "$YOLO" != 1 ]]; then
+    case "$TASK_MODEL" in
+      opus*) TASK_PERMISSION_FLAGS=(--permission-mode auto) ;;
+    esac
+  fi
+}
 
 # ── The callee surface: a SELECTABLE six-job backend (BC §3 callees; T-final
 #    wiring, claude-tools-v2c2). The runner is the CALLER of the six §3 jobs; the
@@ -643,6 +682,7 @@ _drive_blocked_for_human() {
 # `2>/dev/null` swallow of a real signal.
 parse_stream_signals() {
   local stream="$1" sig="$2" line typ err est sr ie res aes
+  local rl_status rl_type rl_resets rl_util rl_thr rl_ts
   [[ -n "$stream" && -f "$stream" ]] || return 0
   if [[ ! -r "$stream" ]]; then
     degrade STREAM_UNREADABLE "$stream unreadable — classification proceeds on exit-code + watchdog markers only"
@@ -733,6 +773,41 @@ parse_stream_signals() {
              >/dev/null 2>&1; then
           echo "STUCK_NEEDS_HUMAN=entered_plan_mode" >> "$sig"
         fi
+        ;;
+      rate_limit_event)
+        # BC-61 (claude-tools-t5k; v2 port claude-tools-v2cut.4): rate_limit_event
+        # entries are Claude-Code SUBSCRIPTION-window quota snapshots (5h / 7d),
+        # NOT a 429 throttle — the real 429 is system.api_retry.error=rate_limit
+        # above (⇒ RATE_LIMIT). Collapse `allowed` to ONE terse line (anti-spam),
+        # surface `allowed_warning` LOUDLY so a 7-day-quota approach is visible,
+        # and reserve a RATE_LIMIT_QUOTA marker for rejected/exceeded (never
+        # observed today — forward-compat). NO classification marker is emitted
+        # for allowed/allowed_warning, so classify_failure is unaffected; the
+        # forward-compat RATE_LIMIT_QUOTA marker is likewise not a classifier
+        # input (classify_failure reads RATE_LIMIT, not RATE_LIMIT_QUOTA). v1 ran
+        # this in the live tail-parser; v2 runs it post-hoc here (same observable
+        # log line — the BC-39/40 re-implementation difference, already accepted).
+        # rl_ts is v2 house-style UTC `+%H:%M:%SZ` (matches record_incident /
+        # append_runner_note; v1 used local-time `+%H:%M:%S` here) and is
+        # parse-time, consistent with the post-hoc parse above — intentional, not
+        # an accidental copy of the surrounding UTC iter_ts idiom.
+        rl_status="$(printf '%s' "$line" | jq -r '.rate_limit_info.status // empty' 2>/dev/null)"
+        rl_type="$(printf '%s' "$line"   | jq -r '.rate_limit_info.rateLimitType // empty' 2>/dev/null)"
+        rl_resets="$(printf '%s' "$line" | jq -r 'try (.rate_limit_info.resetsAt | todateiso8601) catch ""' 2>/dev/null)"
+        rl_ts="$(date -u +%H:%M:%SZ)"
+        case "$rl_status" in
+          allowed_warning)
+            rl_util="$(printf '%s' "$line" | jq -r '.rate_limit_info.utilization // empty' 2>/dev/null)"
+            rl_thr="$(printf '%s' "$line"  | jq -r '.rate_limit_info.surpassedThreshold // empty' 2>/dev/null)"
+            echo "  [$rl_ts] [rate_limit:WARN] $rl_type utilization=$rl_util (>=$rl_thr) resetsAt=$rl_resets" ;;
+          allowed)
+            echo "  [$rl_ts] [rate_limit] $rl_type ok resetsAt=$rl_resets" ;;
+          rejected|exceeded)
+            echo "  [$rl_ts] [rate_limit:QUOTA] $rl_type status=$rl_status resetsAt=$rl_resets"
+            echo "RATE_LIMIT_QUOTA=$rl_type" >> "$sig" ;;
+          *)
+            echo "  [$rl_ts] [rate_limit_event] status=$rl_status $rl_type resetsAt=$rl_resets" ;;
+        esac
         ;;
     esac
   done < "$stream"
@@ -907,6 +982,74 @@ print_incidents_summary() {
   echo "Full log: $INCIDENTS_LOG"
 }
 
+# ── BC-26 — desktop notification (claude-tools-v2cut.4 port) ──────────────────
+# macOS desktop notification + terminal bell. Best-effort, NEVER fails the run;
+# a silent no-op when osascript is absent (Linux / CI / the conformance harness).
+# Double-quotes are escaped for the AppleScript string literal. SCAFFOLDING
+# (platform mechanism); the SCAR is the SELECTIVE-silence call policy at the
+# sites below — routine/expected classes (SUCCESS, RATE_LIMIT, first
+# TASK_NOT_CLOSED, the deliberate-stuck path) are deliberately NOT notified
+# (alert fatigue). No remote/push transport here — that is the la_report_* seam
+# (BC-63). Args: $1 = title, $2 = body.
+notify_user() {
+  local title="$1" body="$2"
+  printf '\a' 2>/dev/null || true
+  if command -v osascript >/dev/null 2>&1; then
+    local safe_title="${title//\"/\\\"}"
+    local safe_body="${body//\"/\\\"}"
+    osascript -e "display notification \"$safe_body\" with title \"$safe_title\"" 2>/dev/null || true
+  fi
+}
+
+# ── BC-25 — scan_tool_errors (claude-tools-v2cut.4 port) ──────────────────────
+# Side-effect-only scan of the merged stream for tool_result entries with
+# is_error:true. Called UNCONDITIONALLY after the classification dispatch (incl.
+# SUCCESS / STUCK) in st_post_task: it NEVER changes the classification or the
+# exit code — it only appends an incident row + a greppable beads note (+ a
+# notify_user for the subagent case). A cheap `grep -qF` pre-filter skips the jq
+# pass entirely when no error markers exist. Only THREE pattern-matched
+# signatures are surfaced — subagent-not-found, permission, MCP-down — because
+# raw is_error COUNTS would be dominated by routine probes (Read-on-missing-file,
+# grep-no-match). SCAR (intent): an inline-recovered tool failure still means the
+# agent didn't do what we asked — surface it without failing the run.
+# SCAFFOLDING (mechanism): the regex strings are CLI-format-coupled and brittle
+# by the code's own admission. Args: $1 = stream file, $2 = task_id.
+scan_tool_errors() {
+  local stream="$1" task_id="$2"
+  [[ -n "$stream" && -f "$stream" ]] || return 0
+  # Cheap pre-filter: skip the jq pass entirely if no error markers exist.
+  grep -qF '"is_error":true' "$stream" 2>/dev/null || return 0
+  # .content can be a string OR an array of {type,text} parts — handle both.
+  local all_errors
+  all_errors="$(jq -r '
+    .. | objects? | select(.type? == "tool_result" and .is_error? == true) |
+    (.content | if type == "string" then .
+                elif type == "array" then (map(select(.type? == "text") | .text) | join(" "))
+                else "" end)
+  ' "$stream" 2>/dev/null || true)"
+  [[ -z "$all_errors" ]] && return 0
+  local subagent_hits perm_hits mcp_hits
+  subagent_hits="$(echo "$all_errors" | grep -cE "Agent type '[^']+' not found" 2>/dev/null || true)"
+  perm_hits="$(echo "$all_errors" | grep -cE "Permission denied|is not allowed" 2>/dev/null || true)"
+  mcp_hits="$(echo "$all_errors" | grep -cE "MCP server.*(unavailable|failed|not connected)" 2>/dev/null || true)"
+  if [[ "${subagent_hits:-0}" -gt 0 ]]; then
+    local subagent_names
+    subagent_names="$(echo "$all_errors" | grep -oE "Agent type '[^']+'" | sort -u | sed -E "s/Agent type '([^']+)'/\1/" | paste -sd, - 2>/dev/null || echo "?")"
+    local msg="subagent-unavailable: $subagent_names (×$subagent_hits)"
+    bd update "$task_id" --append-notes="Runner: tool-error $msg" 2>/dev/null || true
+    record_incident "$task_id" "TOOL_ERROR:$msg" "-"
+    notify_user "beads-runner: subagent unavailable" "$task_id — $subagent_names"
+  fi
+  if [[ "${perm_hits:-0}" -gt 0 ]]; then
+    bd update "$task_id" --append-notes="Runner: tool-error permission-denied (×$perm_hits)" 2>/dev/null || true
+    record_incident "$task_id" "TOOL_ERROR:permission-denied (×$perm_hits)" "-"
+  fi
+  if [[ "${mcp_hits:-0}" -gt 0 ]]; then
+    bd update "$task_id" --append-notes="Runner: tool-error mcp-unavailable (×$mcp_hits)" 2>/dev/null || true
+    record_incident "$task_id" "TOOL_ERROR:mcp-unavailable (×$mcp_hits)" "-"
+  fi
+}
+
 # BC-56 (claude-tools-apen → v2 port claude-tools-v2cut.3): post-close discipline
 # audit. Catches the AGENT-BYPASS-VIA-CAP class — a worker that burns the 8-block
 # close-checklist Stop-hook cap (claude-tools-td0y / BC-65, ported in 2fkp) and
@@ -1053,11 +1196,10 @@ Cross-ref: claude-tools-apen (this audit), claude-tools-td0y (the hook)."
   fi
   bd update "$task_id" --append-notes="$note" 2>/dev/null || true
 
-  # 4. Best-effort desktop notification. BC-26 `notify_user` is a SEPARATELY-filed
-  #    v2 side-effect port (COVERAGE-AUDIT — non-blocking, distinct from this BC-56
-  #    cutover blocker) and is not yet defined in runner.sh, so guard the call:
-  #    it is a silent no-op today and auto-wires the moment notify_user lands,
-  #    without re-introducing a function the audit tracks under its own bead.
+  # 4. Best-effort desktop notification. BC-26 `notify_user` now lands in v2 (ported
+  #    in claude-tools-v2cut.4); the `command -v` guard is kept as defensive
+  #    optional-seam posture (BC-43) — it is a silent no-op if the function is ever
+  #    absent, and discipline-bypass IS one of BC-26's "noisy" notify classes.
   if command -v notify_user >/dev/null 2>&1; then
     local notify_body="$task_id closed without $failed_csv"
     [[ -n "$regression_id" ]] && notify_body="$notify_body — $regression_id filed"
@@ -1493,6 +1635,51 @@ st_starting() {
   # id here would make the close-discipline hook enforce against the WRONG bead
   # on the first tool call of the next task before the new id is written.
   rm -f "$LOG_DIR/current-task" 2>/dev/null || true
+
+  # ── BC-30 — age-based artifact rotation, EXACTLY ONCE at startup ────────────
+  # (claude-tools-v2cut.4 port.) Prune artifacts older than LOG_RETENTION_DAYS
+  # here in st_starting — which is reached EXACTLY ONCE (STARTING→RECONCILE never
+  # returns) — and NEVER per-iteration, so it cannot race the artifacts a running
+  # task (this invocation or a concurrent one) is actively producing. .gitignore
+  # and incidents.log are name-excluded (incidents.log is the append-only
+  # forensic ledger — BC-24's rotation exemption). Runs BEFORE the orphan
+  # snapshot below: a >14-day-old claim file is itself stale (its owner is long
+  # dead) and a missing claim resolves to "skip" (safe).
+  if [[ -d "$LOG_DIR" ]]; then
+    find "$LOG_DIR" -type f ! -name '.gitignore' ! -name 'incidents.log' \
+      -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null || true
+  fi
+
+  # ── BC-31 — pre-flight asset snapshot (DIAGNOSTIC-ONLY, non-aborting) ────────
+  # (claude-tools-v2cut.4 port.) Project agents/skills resolve relative to cwd; a
+  # runner launched from the wrong directory (or an empty .claude/agents) makes
+  # agents that worked interactively silently fail inside `claude`. Snapshot the
+  # environment once so a missing-asset condition is obvious from line 1. A count
+  # of 0 does NOT abort — the non-aborting nature is itself characterized behavior
+  # (a rewrite that hard-gates here is a behavior change). preflight.log is
+  # OVERWRITTEN each run (vs incidents.log which appends).
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  local preflight_log="$LOG_DIR/preflight.log"
+  {
+    echo "=== preflight $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+    echo "pwd: $(pwd)"
+    echo ""
+    echo "=== .claude/agents ==="
+    if [[ -d .claude/agents ]]; then ls -1 .claude/agents; else echo "(no .claude/agents directory)"; fi
+    echo ""
+    echo "=== .claude/skills ==="
+    if [[ -d .claude/skills ]]; then ls -1 .claude/skills; else echo "(no .claude/skills directory)"; fi
+    echo ""
+    echo "=== claude version ==="
+    claude --version 2>&1 || echo "(claude --version failed)"
+    echo ""
+    echo "=== bd version ==="
+    bd version 2>&1 || echo "(bd version failed)"
+  } > "$preflight_log" 2>&1 || true
+  local preflight_agents=0 preflight_skills=0
+  [[ -d .claude/agents ]] && preflight_agents="$(find .claude/agents -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+  [[ -d .claude/skills ]] && preflight_skills="$(find .claude/skills -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
+  echo "Pre-flight: ${preflight_agents} project agent(s), ${preflight_skills} project skill(s) — $preflight_log"
 
   # ── BC-02/BC-03 — startup in_progress snapshot = crash orphans ──────────────
   # claude-tools-v2cut.2 (v2c3 coverage-audit gap). A prior runner that died
@@ -1988,6 +2175,7 @@ st_claim() {
       append_runner_note "$CANDIDATE_ID" "exceeded_max_retries" "-"
       record_incident    "$CANDIDATE_ID" "exceeded_max_retries" "-"
       create_analysis_task "$CANDIDATE_ID" "$CANDIDATE_TITLE" "exceeded_max_retries"
+      notify_user "beads-runner: max retries" "$CANDIDATE_ID — analysis task created"   # BC-26
       LAST_FAILED_ID=""; FAIL_COUNT=0
       transition RECONCILE; return
     fi
@@ -2085,8 +2273,11 @@ st_claim() {
 }
 
 st_run_task() {
+  # BC-32 (claude-tools-v2cut.4): resolve THIS task's model + permission flags
+  # from its `model:` label (default DEFAULT_MODEL) BEFORE the banner + spawn.
+  _resolve_task_model "$CURRENT_TASK_ID"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "  $CANDIDATE_TITLE ($CURRENT_TASK_ID)"
+  echo "  $CANDIDATE_TITLE ($CURRENT_TASK_ID) [$TASK_MODEL]"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
   # BC-01: a brand-new `claude -p` process + fresh context per task. NO
@@ -2186,7 +2377,7 @@ st_run_task() {
   claude -p "$prompt" \
     --output-format stream-json \
     --verbose \
-    --model "$DEFAULT_MODEL" \
+    --model "$TASK_MODEL" \
     "${GUARDRAIL_FLAGS[@]+"${GUARDRAIL_FLAGS[@]}"}" \
     "${EXTRA_CLAUDE_FLAGS[@]+"${EXTRA_CLAUDE_FLAGS[@]}"}" \
     "${TASK_PERMISSION_FLAGS[@]+"${TASK_PERMISSION_FLAGS[@]}"}" \
@@ -2381,6 +2572,7 @@ st_post_task() {
       echo "  FATAL: Authentication failed — stopping runner (BC-21 exit 3)."
       append_runner_note "$CURRENT_TASK_ID" "AUTH_FAILURE" "-"
       record_incident    "$CURRENT_TASK_ID" "AUTH_FAILURE" "-"
+      notify_user "beads-runner: auth failure" "$CURRENT_TASK_ID — runner stopped"   # BC-26
       _terminal_fatal AUTH_FAILURE 3; return
       ;;
 
@@ -2388,6 +2580,7 @@ st_post_task() {
       echo "  FATAL: Billing error — stopping runner (BC-21 exit 4)."
       append_runner_note "$CURRENT_TASK_ID" "BILLING_ERROR" "-"
       record_incident    "$CURRENT_TASK_ID" "BILLING_ERROR" "-"
+      notify_user "beads-runner: billing error" "$CURRENT_TASK_ID — runner stopped"   # BC-26
       _terminal_fatal BILLING_ERROR 4; return
       ;;
 
@@ -2433,8 +2626,14 @@ st_post_task() {
       safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
       append_runner_note "$CURRENT_TASK_ID" "CONTEXT_OVERFLOW" "${PRESERVED_LOG:--}"
       record_incident    "$CURRENT_TASK_ID" "CONTEXT_OVERFLOW" "${PRESERVED_LOG:--}"
+      notify_user "beads-runner: context overflow" "$CURRENT_TASK_ID — see $LOG_DIR"   # BC-26
+      # BC-19 (claude-tools-v2cut.4): the reason string carries class-specific
+      # salvage guidance. The final "relabel model:opus" sentence — DROPPED in the
+      # pre-BC-32 v2 skeleton because per-task model: labels did nothing then — is
+      # RESTORED here: BC-32 (same bead) makes the relabel meaningful (a model:opus
+      # task now actually runs on the 1M-context Opus variant, vs sonnet's 200K).
       create_analysis_task "$CURRENT_TASK_ID" "$CANDIDATE_TITLE" \
-        "context_overflow — ran out of context mid-session. The previous agent likely completed early phases before overflowing: inspect git log / git diff for committed or staged work and re-scope this task to ONLY the remaining steps (do not redo completed work). If the task is inherently too large for one window, split it into smaller dependent tasks."
+        "context_overflow — ran out of context mid-session. The previous agent likely completed early phases before overflowing: inspect git log / git diff for committed or staged work and re-scope this task to ONLY the remaining steps (do not redo completed work). If the task is inherently too large for one window, split it into smaller dependent tasks. Overflow-prone tasks are usually labeled model:sonnet (200K window); relabel the re-scoped task model:opus (the runner auto-selects the 1M-context Opus variant) before it is retried."
       LAST_FAILED_ID=""; FAIL_COUNT=0
       ;;
 
@@ -2443,6 +2642,7 @@ st_post_task() {
       safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
       append_runner_note "$CURRENT_TASK_ID" "MAX_OUTPUT_TOKENS" "${PRESERVED_LOG:--}"
       record_incident    "$CURRENT_TASK_ID" "MAX_OUTPUT_TOKENS" "${PRESERVED_LOG:--}"
+      notify_user "beads-runner: max output tokens" "$CURRENT_TASK_ID — context exhausted"   # BC-26
       create_analysis_task "$CURRENT_TASK_ID" "$CANDIDATE_TITLE" "max_output_tokens"
       LAST_FAILED_ID=""; FAIL_COUNT=0
       ;;
@@ -2478,12 +2678,22 @@ st_post_task() {
       safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
       append_runner_note "$CURRENT_TASK_ID" "$CLASSIFICATION" "${PRESERVED_LOG:--}"
       record_incident    "$CURRENT_TASK_ID" "$CLASSIFICATION" "${PRESERVED_LOG:--}"
+      notify_user "beads-runner: $CLASSIFICATION" "$CURRENT_TASK_ID — see $LOG_DIR"   # BC-26
       if [[ "$CURRENT_TASK_ID" != "$LAST_FAILED_ID" ]]; then
         CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
       fi
       LAST_FAILED_ID="$CURRENT_TASK_ID"
       ;;
   esac
+
+  # BC-25 (claude-tools-v2cut.4): scan the merged stream for high-signal
+  # tool-level errors REGARDLESS of classification (incl. SUCCESS/STUCK). Many
+  # silent failures (subagent missing, permission denied, MCP down) leave the
+  # exit code clean because the agent recovered inline — surface them as a
+  # side-effect (incident + note + subagent notify) WITHOUT changing the
+  # classification or exit code. Called here, after the dispatch case, mirroring
+  # v1's unconditional post-dispatch call site.
+  scan_tool_errors "$STREAM_FILE" "$CURRENT_TASK_ID"
 
   # Drop the proc snapshot unless WATCHDOG_KILL won classification (only the
   # watchdog writes it, and only that class keeps it — the BC-28 edge where a
@@ -2501,6 +2711,7 @@ st_post_task() {
     echo ""
     echo "  $MAX_CONSECUTIVE_FAILURES consecutive failures — likely systemic error."
     echo "  Stopping to avoid closing healthy tasks as skipped (BC-21 exit 2)."
+    notify_user "beads-runner: stopped" "$MAX_CONSECUTIVE_FAILURES consecutive failures"   # BC-26
     _terminal_fatal CIRCUIT_BREAKER 2; return
   fi
 

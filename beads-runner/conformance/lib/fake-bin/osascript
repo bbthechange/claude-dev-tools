@@ -1,5 +1,11 @@
 #!/bin/bash
-# Conformance harness — no-op osascript so notify_user never fires a real
-# macOS notification during a test run (BC-26 mechanism is T1b's; here we
-# only need it silenced).
+# Conformance harness — osascript stub. No real macOS notification ever fires.
+# BC-26 (claude-tools-v2cut.4): RECORD each invocation (the full argv, which
+# carries the AppleScript `display notification "<body>" with title "<title>"`
+# string) to $HARNESS_OUT/notify.log so the BC-26 -tree rig can assert the
+# SELECTIVE-silence notify policy — which classes notify vs stay silent. A
+# harmless no-op for every other rig (stdout unchanged, still exit 0).
+if [[ -n "${HARNESS_OUT:-}" ]]; then
+  printf '%s\n' "$*" >> "$HARNESS_OUT/notify.log" 2>/dev/null || true
+fi
 exit 0

@@ -162,6 +162,15 @@ Runbooks: `runner-status-check.md`, `cleanup-orphan-runners.md`, `reset-stuck-be
 - **v2's file header lies.** `runner.sh` lines 14–18 still call the T2.x seams
   "unimplemented" — they are FILLED (the in-body banner @847 says "RE-IMPLEMENTED").
   Trust `v2-gap.md`, not the stale header.
+- **v2's observability + per-task model selection now match v1** (claude-tools-v2cut.4):
+  `scan_tool_errors` (BC-25), `notify_user` + selective silence (BC-26), startup
+  `LOG_RETENTION_DAYS` rotation in `st_starting` (BC-30), the preflight snapshot
+  (BC-31), per-task `model:` label selection via `_resolve_task_model` (BC-32 — the
+  spawn now uses `--model "$TASK_MODEL"`, not the single per-runner `DEFAULT_MODEL`),
+  and the `rate_limit_event` subscription-window parse (BC-61) are all ported with
+  `-tree` assertions. BC-33's chunked-usage-sleep is **moot** in v2 (the capacity
+  gate is a short `RECLAIM_POLL_INTERVAL` backoff + `STOP_FILE` polled every
+  reconcile). Don't re-file these as gaps — see `conformance/COVERAGE-AUDIT.md`.
 - **Two `runner.sh` names.** The v2 *script* `beads-runner/runner.sh` vs the
   per-workspace *config* `<ws>/.beads/runner.sh` (sourced by both runners) — same
   filename, different role. The collision cleanup is `v2c5`.

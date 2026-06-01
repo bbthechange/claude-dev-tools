@@ -56,14 +56,22 @@ assertion when it lands.
 | **BC-08d** | Cross-workspace scope check (`RUNNER_SIBLING_PREFIXES` / `RUNNER_TRACKING_ONLY_LABELS`) — only doc-comment mentions in runner.sh; `bc-xws-scope-check.sh` is v1-only. | `st_reconcile` (alongside the label gate) + a `-tree` mirror. |
 | **BC-56** | `post_close_audit` — a SUCCESS that didn't ship is **not** surfaced as a discipline-bypass regression bead. (`bc-2fkp-close-discipline-tree.sh` tests the close-hook wiring (BC-65), not the audit.) | `st_post_task` SUCCESS branch + a `-tree` assertion. |
 
-## Observability / side-effect ports — FILED (lower severity, also pre-cutover)
+## Observability / side-effect ports — LANDED (claude-tools-v2cut.4)
 
-`BC-25` `scan_tool_errors` (side-effect tool-error scan; **should-have** — only
-absent should-have), `BC-26` `notify_user` desktop notifications, `BC-30`
-`LOG_RETENTION_DAYS` rotation-once, `BC-31` preflight non-aborting agent-count,
-`BC-32` per-task `model:` label selection (v2 has a single per-runner
-`DEFAULT_MODEL`), `BC-61` `rate_limit_event` subscription-window parse. None are
-exit/classification blockers.
+All six were ported into `runner.sh` with `-tree` assertions (none are
+exit/classification blockers):
+
+| BC | runner.sh change | Assertion |
+|---|---|---|
+| **BC-25** `scan_tool_errors` (side-effect tool-error scan; the only absent **should-have**) | `scan_tool_errors` defined in the §8.2 observability block; called UNCONDITIONALLY after the st_post_task dispatch case (never mutates class/exit) | `bc-25-scan-tool-errors-tree.sh` (2) |
+| **BC-26** `notify_user` desktop notifications + selective silence | `notify_user` defined (bell + osascript); noisy classes (AUTH/BILLING/MAXTOK/OVERFLOW/generic/max-retries/subagent/discipline/breaker) notify, routine (SUCCESS/RATE_LIMIT/first-not-closed/stuck) stay silent | `bc-26-notify-policy-tree.sh` (4) |
+| **BC-30** `LOG_RETENTION_DAYS` rotation-once | prune in `st_starting` (reached exactly once), excludes `.gitignore`+`incidents.log` | `bc-30-rotation-once-tree.sh` (1) |
+| **BC-31** preflight non-aborting agent-count | `preflight.log` + one-line count in `st_starting`; 0 does NOT abort | `bc-31-preflight-nonaborting-tree.sh` (2) |
+| **BC-32** per-task `model:` label selection | `_resolve_task_model` (per-task) re-resolves TASK_MODEL + TASK_PERMISSION_FLAGS at the top of st_run_task; spawn uses `--model "$TASK_MODEL"` (was DEFAULT_MODEL); BC-58 coupling preserved | `bc-32-model-selection-tree.sh` (5) |
+| **BC-61** `rate_limit_event` subscription-window parse | `rate_limit_event` case in `parse_stream_signals` (allowed/allowed_warning/rejected\|exceeded); no classifier marker | `bc-61-rate-limit-event-tree.sh` (3) |
+
+The fake `claude` gained `rate_limit_event_{allowed,warning,quota}` behaviors and
+the fake `osascript` now records notifications to `notify_log` (harness observer).
 
 ## Coverage-hardening — present-in-v2 but only v1-tested — FILED
 
@@ -84,11 +92,19 @@ load-bearing present behaviours **BC-37/42/43/44/47/63/64/BC-NEW-SPAWN**.
   scaffolding; v2 reimplements via `parse_stream_signals`. BC-41 dead-data must
   **not** be preserved.
 - **BC-18** `bd create` sed-scrape — unasserted scaffolding in both; do not test.
-- **BC-33** chunked graceful-stop during a usage sleep — likely **moot**: v2 has
-  no long usage sleep (capacity is a `job_ask_capacity` call-and-backoff). Confirm
-  in the capacity-port bead.
-- **BC-19** CONTEXT_OVERFLOW salvage-reason text drifted (v2 truncated vs v1) —
-  needs a keep/restore decision in the classification-port bead.
+- **BC-33** chunked graceful-stop during a usage sleep — **CONFIRMED moot**
+  (claude-tools-v2cut.4): v2 has NO long usage sleep. The capacity gate (st_claim
+  `job_ask_capacity`) releases the lease and sleeps a short `RECLAIM_POLL_INTERVAL`
+  (60 s) then re-reconciles; `STOP_FILE` is polled at the top of every
+  `st_reconcile` and observed mid-task by the watchdog (→ STOP_REQUESTED, honored
+  after the task). So a stop is honored ≤ `RECLAIM_POLL_INTERVAL` STRUCTURALLY —
+  v1's 60 s-chunked-sleep + `break 3` scaffolding is correctly NOT ported.
+- **BC-19** CONTEXT_OVERFLOW salvage-reason drift — **RESOLVED: RESTORE**
+  (claude-tools-v2cut.4). The truncated final "relabel model:opus" sentence is
+  restored in v2's st_post_task CONTEXT_OVERFLOW arm. It was dropped in the
+  pre-BC-32 skeleton because per-task `model:` labels did nothing then; BC-32
+  (same bead) makes the relabel meaningful again (a model:opus task now actually
+  runs on the 1M-context Opus variant). `bc-19-overflow-salvage-tree.sh` (1).
 - **BC-45** heartbeat is intentionally unconditional in v2 (lease-ride; v2c1
   documented) — a departure, not a regression; assert the new intent.
 - **BC-55** async-human `ASKBRIAN_BLOCK` / I4 seam — explicitly out of cutover

@@ -202,6 +202,10 @@ incidents_log()  { cat "$WORKDIR/.beads/runner-logs/incidents.log" 2>/dev/null |
 logdir_files()   { ls -1 "$WORKDIR/.beads/runner-logs" 2>/dev/null || true; }
 analysis_ids()   { ls -1 "$BD_STORE" 2>/dev/null | grep '^htest-' || true; }
 prompt_text()    { cat "$HARNESS_OUT/last-prompt.txt" 2>/dev/null || true; }
+# notify_log — BC-26: the AppleScript strings of every desktop notification the
+# run fired (one per line; recorded by the fake osascript). Empty ⇒ no notify
+# was sent (the deliberate-silence classes). Used to assert the selective policy.
+notify_log()     { cat "$HARNESS_OUT/notify.log" 2>/dev/null || true; }
 
 # audit_seq <id> — the ordered status transitions for one issue, space-joined.
 audit_seq() { awk -v id="$1" '$1==id{printf "%s ",$2}' "$BD_AUDIT" 2>/dev/null; }
