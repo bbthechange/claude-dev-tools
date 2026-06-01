@@ -109,6 +109,46 @@
 .ws-stage-name{letter-spacing:.04em;text-transform:uppercase}
 .ws-stage-n{color:var(--text);font-weight:500}
 
+/* INTAKE LEAK ALERT (L3 claude-tools-uxvl3) — the global "phone intakes are
+ * failing / gave up" banner. Coral, loud: this number going silently >0 was
+ * the 19-retry night. Sits between the decisions hero and the workspace list. */
+.intake-alert{margin:0 14px 18px;display:flex;align-items:center;gap:13px;
+  border:1px solid rgba(255,107,107,.4);border-radius:14px;
+  background:linear-gradient(160deg,rgba(255,107,107,.1),var(--ink-2));
+  padding:14px 16px}
+.intake-alert-num{font-family:var(--font-display);font-size:30px;line-height:1;
+  color:var(--coral);min-width:1ch}
+.intake-alert-lbl{font-size:12px;color:var(--amber-soft);letter-spacing:.02em;
+  line-height:1.5}
+
+/* Per-workspace intake-state thread — received → enriching → created /
+ * failing(n) / gave-up. Mirrors the lifecycle strip's framing. */
+.ws-intake{margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+.ws-intake-lbl{font-size:9px;letter-spacing:.18em;color:var(--slate);
+  text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.ws-intake-leak{font-size:9px;letter-spacing:.06em;padding:2px 7px;border-radius:6px;
+  color:var(--coral);border:1px solid rgba(255,107,107,.45);
+  background:rgba(255,107,107,.1);text-transform:none}
+.ws-intake-row{display:flex;flex-wrap:wrap;align-items:center;gap:7px;
+  margin-bottom:6px;font-size:10px}
+.ws-intake-row:last-child{margin-bottom:0}
+.ws-intake-chip{font-size:9px;letter-spacing:.04em;text-transform:uppercase;
+  padding:3px 8px;border-radius:7px;border:1px solid var(--line);
+  color:var(--dim);flex:none}
+.ws-intake-row.state-enriching .ws-intake-chip{color:var(--sky);
+  border-color:rgba(120,180,255,.4)}
+.ws-intake-row.state-received .ws-intake-chip{color:var(--slate)}
+.ws-intake-row.state-created .ws-intake-chip{color:var(--mint);
+  border-color:rgba(120,220,170,.4)}
+.ws-intake-row.attn .ws-intake-chip{color:var(--coral);
+  border-color:rgba(255,107,107,.5);background:rgba(255,107,107,.08);
+  font-weight:600}
+.ws-intake-idea{color:var(--faint);letter-spacing:.01em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 auto}
+.ws-intake-meta{font-family:var(--mono);color:var(--dim);flex:none}
+.ws-intake-row.attn .ws-intake-meta{color:var(--amber-soft)}
+.ws-intake-ago{color:var(--slate);letter-spacing:.04em;flex:none}
+
 .ws-go{margin-top:12px;font-size:11px;letter-spacing:.16em;color:var(--sky)}
 
 .errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);

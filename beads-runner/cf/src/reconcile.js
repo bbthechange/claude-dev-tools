@@ -1010,6 +1010,15 @@ async function workSnapshot(co, principal, proj, beadsStr) {
   // PRIMARY KEY) for deterministic UI stability across two-machine futures.
   const machines = await readMachines(co, Date.now());
 
+  // ── Top-level `intake[]` — the L3 (claude-tools-uxvl3) intake-state lane ─────
+  // Peer to machines[]/waiting_on_you[] (NOT nested per-project — the hub slices
+  // it by project_ref the same way it slices the global Inbox lane). ADDITIVE at
+  // schema_version 1 (the machines[] precedent): a new top-level key old v1
+  // views harmlessly ignore. Surfaces the received→enriching→created /
+  // failing(n) / gave-up thread so the 19-silent-retry leak can never be
+  // invisible again (inbox-lifecycle §9.5 #4). Honest [] when no intakes stored.
+  const intake = await readIntake(co, principal);
+
   return jsonRes({
     schema_version: 1,
     principal,
@@ -1018,6 +1027,7 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     projects,
     lifecycle_columns,
     waiting_on_you,
+    intake,
   });
 }
 
@@ -1056,6 +1066,92 @@ async function readMachines(co, nowMs) {
     const fresh = ageSec !== null && ageSec <= 2 * ttl;
     out.push({ ...rec, fresh, age_seconds: ageSec });
   }
+  return out;
+}
+
+// ── deriveIntakeState — the L3 (claude-tools-uxvl3) phone-visible state thread ─
+// inbox-lifecycle §9.5 #4. Maps an intake-request record onto ONE state of the
+// frozen thread: received → enriching → created  /  failing → gave-up. Prefers
+// the daemon's explicit `dispatch_state` marker (intake-dispatch-poll.sh writes
+// "enriching" before each spawn and "created"/"failing"/"gave_up" at the
+// outcome); falls back to deriving from {gave_up, processed, dispatch_attempts}
+// for legacy records written before L3. Terminal states win: a gave-up record
+// is gave-up even if a stale `dispatch_state` lingers; a created record is
+// created. The 19-silent-retry leak is exactly `failing`/`gave-up` going
+// unsurfaced — so those must never collapse into "received".
+function deriveIntakeState(rec) {
+  const ds = typeof rec.dispatch_state === "string" ? rec.dispatch_state : "";
+  if (rec.gave_up === true || ds === "gave_up") return "gave-up";
+  if (rec.processed === true || ds === "created") return "created";
+  if (ds === "enriching") return "enriching";
+  if (ds === "failing") return "failing";
+  const attempts = Number.isInteger(rec.dispatch_attempts) ? rec.dispatch_attempts : 0;
+  if (attempts >= 1) return "failing"; // attempted-but-not-yet-terminal ⇒ failing
+  return "received";
+}
+
+// ── readIntake — the §4.5 intake-state lane (L3 claude-tools-uxvl3) ───────────
+// Pure read of the stored `intake-request` records (the Flow A queue markers I2
+// writes + I3's daemon annotates). PEER to machines[]/waiting_on_you[] — a
+// CF-side production projection with NO bash-oracle twin (like machines[]); the
+// snapshot SHAPE stays at schema_version 1 because this is an ADDITIVE top-level
+// key (old v1-bound views ignore it; the Workspaces hub reads it). Honest empty
+// on a missing table / read failure (§3.C) — never fabricated. Scoped to the
+// requesting principal (the §9.1 chokepoint stamps it on every put); a record
+// with NO principal is tolerated (legacy / pre-stamp). COUNTS + state ONLY: the
+// idea_excerpt is a short single-lined slice of the submitter's OWN idea_text so
+// Brian can tell which tap a card is (the full text is never the point here).
+async function readIntake(co, principal) {
+  let rows = [];
+  try {
+    const r = await co.db
+      .prepare("SELECT json FROM records WHERE type = ? ORDER BY id")
+      .bind("intake-request")
+      .all();
+    rows = (r && r.results) || [];
+  } catch {
+    return []; // table not yet created / read failure ⇒ honest empty (§3.C)
+  }
+  const out = [];
+  for (const row of rows) {
+    let rec;
+    try {
+      rec = JSON.parse(row.json);
+    } catch {
+      continue;
+    }
+    if (!rec || typeof rec !== "object" || Array.isArray(rec)) continue;
+    // Principal scoping — strict when present, tolerant when absent (legacy).
+    if (typeof rec.principal === "string" && rec.principal !== principal) continue;
+    const ideaText = typeof rec.idea_text === "string" ? rec.idea_text : "";
+    const excerpt = ideaText.replace(/\s+/g, " ").trim().slice(0, 80);
+    const attempts = Number.isInteger(rec.dispatch_attempts) ? rec.dispatch_attempts : 0;
+    out.push({
+      intake_id: typeof rec.id === "string" ? rec.id : "",
+      project_ref: typeof rec.project_ref === "string" ? rec.project_ref : "",
+      preset: typeof rec.preset === "string" ? rec.preset : "",
+      state: deriveIntakeState(rec),
+      attempts,
+      idea_excerpt: excerpt,
+      bd_ref: typeof rec.enricher_bd_id === "string" ? rec.enricher_bd_id : null,
+      outcome: typeof rec.enricher_outcome === "string" ? rec.enricher_outcome : null,
+      last_error: typeof rec.last_error === "string" ? rec.last_error : null,
+      submitted_at: typeof rec.submitted_at === "string" ? rec.submitted_at : null,
+      last_attempt_at: typeof rec.last_attempt_at === "string" ? rec.last_attempt_at : null,
+      processed_at: typeof rec.processed_at === "string" ? rec.processed_at : null,
+      gave_up_at: typeof rec.gave_up_at === "string" ? rec.gave_up_at : null,
+    });
+  }
+  // Newest-first by submitted_at (ISO-8601 lexical ≡ chronological); undated
+  // sinks to the bottom (mirrors the waiting_on_you sort).
+  out.sort((a, b) => {
+    const ax = a.submitted_at || "";
+    const bx = b.submitted_at || "";
+    if (ax === bx) return 0;
+    if (!ax) return 1;
+    if (!bx) return -1;
+    return bx < ax ? -1 : 1;
+  });
   return out;
 }
 

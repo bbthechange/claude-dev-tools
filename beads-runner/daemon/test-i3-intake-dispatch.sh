@@ -389,6 +389,109 @@ eq "$(printf '%s' "$rec_f" | jq -r '.processed')" "true"      "F3: canary marks 
 unset DAEMON_INTAKE_DISABLED
 
 # ════════════════════════════════════════════════════════════════════════════
+# PART H — L3 (claude-tools-uxvl3): the intake state thread the phone surfaces
+#   received → enriching → created  /  failing(n) → gave-up
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART H — L3 intake state thread (failing(n) / gave-up / created / enriching) ──"
+
+# Force the hermetic LOCAL store: if this box's env has COORDINATOR_URL/_TOKEN
+# set (e.g. a live beads-runner workspace), co_request would route the puts to
+# the REMOTE engine instead of the test's file-backed .co-store, and every
+# assertion below would read a stale local record. Unset them so the per-
+# workspace `.co-store` symlink is authoritative (this is why PARTs D/E/F can be
+# red on a configured box — they don't unset and inherit the live binding).
+unset COORDINATOR_URL COORDINATOR_TOKEN CO_STORE
+
+WH="$(mktemp -d)"
+WS_ALPHA_H="$WH/alpha-ws"
+H_STORE="$WH/shared-store"
+mkdir -p "$WS_ALPHA_H/.beads/runner-logs" "$H_STORE/records"
+ln -snf "$H_STORE" "$WS_ALPHA_H/.beads/runner-logs/.co-store"
+
+REGISTRY_PROJECT_REFS=("alpha")
+REGISTRY_DIRS=("$WS_ALPHA_H")
+REGISTRY_COORDINATOR_URLS=("")
+REGISTRY_TOKEN_KEYCHAIN_ITEMS=("")
+REGISTRY_LOADED=1
+
+# NB: this PART drives `daemon_intake_dispatch_one` DIRECTLY with a literal
+# record rather than through `daemon_intake_poll_once`. The discovery step
+# (`daemon_intake_fetch_pending` → `co_request intake-pending`) is a known
+# hermetic-transport artifact on some dev boxes (PARTs D/E/F exercise it and can
+# be red there independent of this change — see the test-i3 token-artifact
+# memory). dispatch_one's WRITE path (`co_request put`) works locally, so
+# calling it directly + re-reading the record between cadences is the robust way
+# to pin the L3 state machine. "Next cadence" = re-cat the record off disk and
+# feed it back in (exactly what poll_once would hand it).
+H_REC="$H_STORE/records/intake-request.intake-l3-fail.json"
+jq -cn '{schema_version:1,id:"intake-l3-fail",idea_text:"a flaky idea",project_ref:"alpha",preset:"autonomous-until-stuck",processed:false,submitted_at:"2026-05-31T08:00:00Z"}' > "$H_REC"
+
+# A stub that ALWAYS fails (specialist non-zero exit) — drives failing→gave-up.
+STUB_H_FAIL="$WH/stub-h-fail.sh"
+cat > "$STUB_H_FAIL" <<'EOF'
+#!/bin/bash
+echo "enricher: created should-not-count (intake x)"
+exit 9
+EOF
+chmod +x "$STUB_H_FAIL"
+export DAEMON_INTAKE_SPECIALIST_OVERRIDE="$STUB_H_FAIL"
+# Cap at 2 so two failed dispatches reach gave-up (keeps the test fast).
+export INTAKE_MAX_ATTEMPTS=2
+
+# Attempt 1 — should land in failing(1), NOT gave-up.
+: > "$I3_LOGS"; daemon_intake_dispatch_one "$(cat "$H_REC")"
+rec_h="$(cat "$H_REC")"
+eq "$(printf '%s' "$rec_h" | jq -r '.dispatch_attempts')" "1"        "H1: first failed dispatch ⇒ dispatch_attempts=1"
+eq "$(printf '%s' "$rec_h" | jq -r '.dispatch_state')"    "failing"  "H2: first failed dispatch ⇒ dispatch_state=failing"
+eq "$(printf '%s' "$rec_h" | jq -r '.processed')"         "false"    "H3: failing record stays processed=false (still retried)"
+eq "$(printf '%s' "$rec_h" | jq -r '.gave_up // false')"  "false"    "H4: not gave_up before the cap"
+has "$(printf '%s' "$rec_h" | jq -r '.last_error')" "specialist exit=9" "H5: last_error captures the failure reason"
+
+# Attempt 2 — reaches the cap (2) ⇒ gave-up (terminal).
+: > "$I3_LOGS"; daemon_intake_dispatch_one "$(cat "$H_REC")"
+rec_h="$(cat "$H_REC")"
+eq "$(printf '%s' "$rec_h" | jq -r '.dispatch_attempts')" "2"        "H6: second failed dispatch ⇒ dispatch_attempts=2"
+eq "$(printf '%s' "$rec_h" | jq -r '.dispatch_state')"    "gave_up"  "H7: reaching INTAKE_MAX_ATTEMPTS ⇒ dispatch_state=gave_up"
+eq "$(printf '%s' "$rec_h" | jq -r '.gave_up')"           "true"     "H8: gave_up flag set at the cap"
+[[ "$(printf '%s' "$rec_h" | jq -r '.gave_up_at')" != "null" && -n "$(printf '%s' "$rec_h" | jq -r '.gave_up_at')" ]] \
+  && ok "H9: gave_up_at timestamp present" || bad "H9: gave_up_at timestamp missing"
+
+# Attempt 3 — gave-up records are SKIPPED: no new attempt, counter frozen, no work logged.
+: > "$I3_LOGS"; daemon_intake_dispatch_one "$(cat "$H_REC")"
+rec_h="$(cat "$H_REC")"
+eq "$(printf '%s' "$rec_h" | jq -r '.dispatch_attempts')" "2"        "H10: gave-up record is skipped (dispatch_attempts frozen at 2)"
+eq "$(printf '%s' "$rec_h" | jq -r '.dispatch_state')"    "gave_up"  "H11: gave-up record stays terminal across cadences"
+nothas "$(cat "$I3_LOGS")" "I3 dispatch: workspace=" "H12: gave-up record produces no fresh dispatch log line"
+
+unset DAEMON_INTAKE_SPECIALIST_OVERRIDE INTAKE_MAX_ATTEMPTS
+
+# H13/H14/H15 — the success path carries the terminal `created` state + the
+# in-flight `enriching` marker is visible to the running enricher (proving the
+# received→enriching→created thread, not just the failure half).
+H_REC2="$H_STORE/records/intake-request.intake-l3-ok.json"
+jq -cn '{schema_version:1,id:"intake-l3-ok",idea_text:"a good idea",project_ref:"alpha",preset:"autonomous-until-stuck",processed:false,submitted_at:"2026-05-31T08:10:00Z"}' > "$H_REC2"
+STUB_H_OK="$WH/stub-h-ok.sh"
+# The stub reads the live record WHILE running — at that moment the daemon has
+# already written the `enriching` marker, so the stub records what the phone
+# would show mid-flight.
+cat > "$STUB_H_OK" <<EOF
+#!/bin/bash
+seen="\$(jq -r '.dispatch_state // "none"' "$H_REC2" 2>/dev/null)"
+echo "MIDFLIGHT_STATE=\$seen" >> "$WH/midflight.log"
+echo "enricher: created alpha-l3ok (intake intake-l3-ok, preset=autonomous-until-stuck, stage=stage:impl, prio=P2)"
+EOF
+chmod +x "$STUB_H_OK"
+export DAEMON_INTAKE_SPECIALIST_OVERRIDE="$STUB_H_OK"
+: > "$I3_LOGS"; daemon_intake_dispatch_one "$(cat "$H_REC2")"
+rec_h2="$(cat "$H_REC2")"
+eq "$(printf '%s' "$rec_h2" | jq -r '.dispatch_state')"  "created" "H13: successful dispatch ⇒ dispatch_state=created"
+eq "$(printf '%s' "$rec_h2" | jq -r '.processed')"       "true"    "H14: created record is processed=true"
+has "$(cat "$WH/midflight.log" 2>/dev/null)" "MIDFLIGHT_STATE=enriching" "H15: enricher saw the in-flight 'enriching' marker (received→enriching→created)"
+unset DAEMON_INTAKE_SPECIALIST_OVERRIDE
+rm -rf "$WH" 2>/dev/null || true
+
+# ════════════════════════════════════════════════════════════════════════════
 # PART G — daemon.sh wires intake-dispatch-poll.sh into the main loop
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

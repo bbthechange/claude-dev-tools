@@ -196,9 +196,36 @@ may not change meaning without an explicit amend.
       }
     }
   ],
-  "cards": [ /* Board cards, carried; each gains: "waiting_on": {hold-ref or null} (§7.5) */ ]
+  "cards": [ /* Board cards, carried; each gains: "waiting_on": {hold-ref or null} (§7.5) */ ],
+  "intake": [                       // NEW (L3 claude-tools-uxvl3; inbox-lifecycle §9.5 #4)
+    // The phone-intake state lane — a top-level array PEER to machines[]/
+    // waiting_on_you[] (NOT nested per-project; the Workspaces hub slices it by
+    // project_ref). ADDITIVE at the CURRENT schema_version 1 (the machines[]
+    // precedent — a new top-level key old v1 views harmlessly ignore; NO version
+    // bump). One entry per stored intake-request, carrying the frozen state
+    // thread so the 19-silent-retry leak can never be invisible again:
+    { "intake_id": "intake-…", "project_ref": "rhythmGame", "preset": "autonomous-until-stuck",
+      "state": "received|enriching|created|failing|gave-up",   // the FROZEN thread
+      "attempts": 0,                // dispatch_attempts — the (n) in failing(n)
+      "idea_excerpt": "…",          // short slice of the submitter's OWN idea_text
+      "bd_ref": "rhythmGame-93o|null",   // the bead a `created` intake became
+      "outcome": "created|augmented|refused|null",
+      "last_error": "…|null",       // the failure reason on failing/gave-up
+      "submitted_at": "…", "last_attempt_at": "…|null",
+      "processed_at": "…|null", "gave_up_at": "…|null" }
+  ]
 }
 ```
+
+> **Amendment (L3 claude-tools-uxvl3, 2026-06-01):** `intake[]` added to the
+> work-snapshot top-level shape. It is produced CF-side (`workSnapshot()` →
+> `readIntake`/`deriveIntakeState` in `cf/src/reconcile.js`) with NO bash-oracle
+> twin — exactly the `machines[]` posture (the differential asserts targeted
+> fields, not a deep-equal, so a CF-only top-level key is in-contract). The state
+> thread is written by the per-machine daemon (`daemon/intake-dispatch-poll.sh`):
+> it counts each enricher dispatch (`failing(n)`), caps retries at
+> `INTAKE_MAX_ATTEMPTS` (`gave-up`), and writes an in-flight `enriching` marker.
+> Surface: the Workspaces hub (`web/workspaces/`). schema_version stays 1.
 
 ### B.2 `blueprint-get(project_ref)` → the `blueprint` §4 record body
 

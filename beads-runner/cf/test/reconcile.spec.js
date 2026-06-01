@@ -337,6 +337,50 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
   const partly = SNAPp.waiting_on_you.find((w) => w.dossier_ref === "dPartly");
   ck("AD7 — a partly-answered dossier STILL shows in WAITING-ON-YOU", !!partly);
   ck("AD7 — its answered-not-applied item counts as still-open (1)", partly && partly.open_item_count === 1);
+
+  // ── L3 (claude-tools-uxvl3) — the intake-state lane (inbox-lifecycle §9.5 #4) ─
+  // Seed one intake-request per thread state so the projection's received→
+  // enriching→created / failing(n) / gave-up mapping is pinned. The daemon
+  // (intake-dispatch-poll.sh) writes the dispatch_state markers in production;
+  // here we put the records directly to assert the read-side derivation.
+  await call(GOOD, "put", ["intake-request", "intake-recv", JSON.stringify({
+    schema_version: 1, id: "intake-recv", idea_text: "  brand new   idea\n", project_ref: "projA",
+    preset: "autonomous-until-stuck", processed: false, submitted_at: "2026-05-31T07:00:00Z",
+  })]);
+  await call(GOOD, "put", ["intake-request", "intake-enr", JSON.stringify({
+    schema_version: 1, id: "intake-enr", idea_text: "being worked", project_ref: "projA",
+    preset: "autonomous-until-stuck", processed: false, dispatch_attempts: 1,
+    dispatch_state: "enriching", last_attempt_at: "2026-05-31T07:05:00Z", submitted_at: "2026-05-31T07:01:00Z",
+  })]);
+  await call(GOOD, "put", ["intake-request", "intake-ok", JSON.stringify({
+    schema_version: 1, id: "intake-ok", idea_text: "done", project_ref: "projA",
+    preset: "autonomous-until-stuck", processed: true, dispatch_attempts: 1, dispatch_state: "created",
+    enricher_bd_id: "projA-77", enricher_outcome: "created", submitted_at: "2026-05-31T07:02:00Z",
+  })]);
+  await call(GOOD, "put", ["intake-request", "intake-fail", JSON.stringify({
+    schema_version: 1, id: "intake-fail", idea_text: "flaky", project_ref: "projA",
+    preset: "autonomous-until-stuck", processed: false, dispatch_attempts: 2, dispatch_state: "failing",
+    last_error: "specialist exit=7", submitted_at: "2026-05-31T07:03:00Z",
+  })]);
+  await call(GOOD, "put", ["intake-request", "intake-dead", JSON.stringify({
+    schema_version: 1, id: "intake-dead", idea_text: "abandoned", project_ref: "projB",
+    preset: "autonomous-until-stuck", processed: false, dispatch_attempts: 3, dispatch_state: "gave_up",
+    gave_up: true, gave_up_at: "2026-05-31T07:10:00Z", last_error: "specialist exit=7",
+    submitted_at: "2026-05-31T07:04:00Z",
+  })]);
+  const SNAPi = await callJson("work-snapshot", ["", BEADS]);
+  ck("L3 — intake[] is a top-level array (peer to machines[]/waiting_on_you[])", Array.isArray(SNAPi.intake));
+  ck("L3 — every seeded intake-request is surfaced", SNAPi.intake.length === 5);
+  const byId = Object.fromEntries(SNAPi.intake.map((x) => [x.intake_id, x]));
+  ck("L3 — `received` state (no attempt yet)", byId["intake-recv"].state === "received");
+  ck("L3 — `enriching` in-flight marker surfaces", byId["intake-enr"].state === "enriching");
+  ck("L3 — `created` terminal-success surfaces with bd_ref", byId["intake-ok"].state === "created" && byId["intake-ok"].bd_ref === "projA-77");
+  ck("L3 — `failing` with the retry count (the 19-silent-retry leak)", byId["intake-fail"].state === "failing" && byId["intake-fail"].attempts === 2);
+  ck("L3 — `failing` carries last_error", byId["intake-fail"].last_error === "specialist exit=7");
+  ck("L3 — `gave-up` terminal-failure surfaces (gave_up flag wins)", byId["intake-dead"].state === "gave-up");
+  ck("L3 — gave-up carries attempts + gave_up_at", byId["intake-dead"].attempts === 3 && byId["intake-dead"].gave_up_at === "2026-05-31T07:10:00Z");
+  ck("L3 — idea_excerpt is whitespace-collapsed (submitter's own text)", byId["intake-recv"].idea_excerpt === "brand new idea");
+  ck("L3 — intake card carries project_ref for the hub's per-workspace slice", byId["intake-dead"].project_ref === "projB");
   // Per-project `capacity_strip` is DROPPED by C3 per MACHINE-STATE.md §3.B.
   // §4.5's strip-fields wording is now satisfied by the top-level `machines[]`
   // carrying them (asserted in the dedicated §3.A block below). A future

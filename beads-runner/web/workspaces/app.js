@@ -33,6 +33,9 @@
     decTotal: Dom.el('dec-total'),
     decLabel: Dom.el('dec-label'),
     decLink: Dom.el('dec-link'),
+    intakeAlert: Dom.el('intake-alert'),
+    intakeAlertNum: Dom.el('intake-alert-num'),
+    intakeAlertLbl: Dom.el('intake-alert-lbl'),
     cards: Dom.el('cards'),
     cardsEmpty: Dom.el('cards-empty'),
     footUpdated: Dom.el('foot-updated')
@@ -68,6 +71,54 @@
       row.appendChild(chip);
     });
     wrap.appendChild(row);
+    return wrap;
+  }
+
+  // L3 (claude-tools-uxvl3) — the per-workspace intake-state strip: the phone-
+  // visible thread received → enriching → created / failing(n) / gave-up. We
+  // render the renderable `items` the view-model selected (every in-flight /
+  // attention intake + a recently-created confirmation), each as a state chip
+  // with its detail. A failing(n) / gave-up chip is loud (it's the leak). When
+  // there is nothing to show the whole strip is omitted (no empty box).
+  function intakeChipLabel(it) {
+    if (it.state === 'failing') return 'failing' + (it.attempts ? ' (' + it.attempts + ')' : '');
+    if (it.state === 'gave-up') return 'gave up' + (it.attempts ? ' after ' + it.attempts : '');
+    if (it.state === 'created') return 'created';
+    return it.state; // received | enriching
+  }
+  function renderIntakeStrip(card) {
+    var intake = card.intake;
+    if (!intake || !intake.items || intake.items.length === 0) return null;
+    var wrap = Dom.mk('div', 'ws-intake');
+    var lbl = Dom.mk('div', 'ws-intake-lbl', 'phone intake');
+    if (intake.attention_count > 0) {
+      lbl.appendChild(Dom.mk('span', 'ws-intake-leak',
+        intake.attention_count + (intake.attention_count === 1 ? ' needs you' : ' need you')));
+    }
+    wrap.appendChild(lbl);
+    intake.items.forEach(function (it) {
+      var row = Dom.mk('div', 'ws-intake-row state-' + it.state + (it.attention ? ' attn' : ''));
+      var chip = Dom.mk('span', 'ws-intake-chip', intakeChipLabel(it));
+      row.appendChild(chip);
+      // The submitter's own idea excerpt so Brian knows which tap this is.
+      if (it.idea_excerpt) {
+        var ex = it.idea_excerpt;
+        if (ex.length > 48) ex = ex.slice(0, 48) + '…';
+        row.appendChild(Dom.mk('span', 'ws-intake-idea', ex));
+      }
+      // The terminal-success bead, or the failure reason, plus the age.
+      if (it.state === 'created' && it.bd_ref) {
+        row.appendChild(Dom.mk('span', 'ws-intake-meta', '→ ' + it.bd_ref));
+      } else if (it.last_error) {
+        var er = it.last_error;
+        if (er.length > 40) er = er.slice(0, 40) + '…';
+        row.appendChild(Dom.mk('span', 'ws-intake-meta', er));
+      }
+      if (it.ago && it.ago !== 'unknown') {
+        row.appendChild(Dom.mk('span', 'ws-intake-ago', it.ago));
+      }
+      wrap.appendChild(row);
+    });
     return wrap;
   }
 
@@ -113,6 +164,8 @@
     }
 
     a.appendChild(renderStageStrip(card));
+    var intakeStrip = renderIntakeStrip(card);
+    if (intakeStrip) a.appendChild(intakeStrip);
     a.appendChild(Dom.mk('div', 'ws-go', 'OPEN BOARD →'));
     return a;
   }
@@ -131,6 +184,18 @@
       ? 'Nothing waiting on you across all workspaces.'
       : (total === 1 ? 'decision waiting on you' : 'decisions waiting on you');
     el.decLink.hidden = total === 0;
+
+    // L3 — the global intake-leak alert: failing + gave-up phone intakes across
+    // all workspaces. Hidden at zero; loud above it (this number going silently
+    // >0 was the 19-retry night).
+    var leak = view.intake_attention_total || 0;
+    el.intakeAlert.hidden = leak === 0;
+    if (leak > 0) {
+      el.intakeAlertNum.textContent = String(leak);
+      el.intakeAlertLbl.textContent = (leak === 1 ? 'phone intake is failing or gave up' : 'phone intakes are failing or gave up')
+        + ' — see the workspace cards below';
+    }
+
     el.headDot.classList.toggle('bad',
       view.cards.some(function (c) { return c.health !== 'ok'; }));
 

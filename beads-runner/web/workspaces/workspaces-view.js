@@ -51,6 +51,18 @@
   // spare-only, unknown) is honestly NOT active even when live.
   var ACTUAL_HEALTHY_ACTIVE = { running: 1, idle: 1, starting: 1 };
 
+  // L3 (claude-tools-uxvl3; inbox-lifecycle §9.5 #4) — the intake state thread
+  // the §4.5 producer surfaces in the top-level `intake[]` lane. FROZEN order:
+  // received → enriching → created  /  failing → gave-up. `failing`/`gave-up`
+  // are the ATTENTION states (the 19-silent-retry leak); `received`/`enriching`
+  // are in-flight; `created` is terminal-success.
+  var INTAKE_STATE_ORDER = ['gave-up', 'failing', 'enriching', 'received', 'created'];
+  var INTAKE_ATTENTION = { 'gave-up': 1, failing: 1 };
+  // A terminal-success (`created`) intake's bead is already on the Board — we
+  // show it only briefly as a thread-completion confirmation, then let it age
+  // off the hub (the record persists in the engine; the hub is not its grave).
+  var INTAKE_CREATED_RECENT_MS = 6 * 60 * 60 * 1000; // 6h
+
   /* formatAgo(fromIso, nowMs?) → "Ns" | "Nm" | "Nh" | "Nd" | "unknown" — a
    * PRESENTATION formatting of the §4.2 `last_heartbeat_at` datum (NOT a
    * liveness decision — that is the Coordinator's, consumed verbatim). Honest
@@ -84,6 +96,62 @@
     return beadRef.indexOf(projectRef + '-') === 0;
   }
 
+  /* deriveIntakeForWorkspace(rawIntake, ref, now) → the per-workspace slice of
+   * the global §4.5 `intake[]` lane (L3). intake-request records carry
+   * `project_ref` DIRECTLY (the Flow A submitter chose the workspace), so this
+   * is an EXACT match — not the ref-prefix inference stage_counts/decisions use.
+   * Returns { counts, items, attention_count, total }:
+   *   • counts — a tally per thread state (received/enriching/created/failing/gave-up).
+   *   • items  — the ones worth rendering on the hub: every in-flight/attention
+   *     intake (received/enriching/failing/gave-up) ALWAYS, plus a `created` one
+   *     only while it is recent (a brief "→ became <bead>" confirmation that ages
+   *     out). Sorted by INTAKE_STATE_ORDER (gave-up first — surface the leak).
+   *   • attention_count — failing + gave-up (drives card health + the global total).
+   * Honest: an unknown/missing state buckets as `received` (never silently a
+   * success); a record with no project_ref is dropped from every workspace. */
+  function deriveIntakeForWorkspace(rawIntake, ref, now) {
+    var counts = { received: 0, enriching: 0, created: 0, failing: 0, 'gave-up': 0 };
+    var items = [];
+    rawIntake.forEach(function (i) {
+      if (!i || typeof i !== 'object') return;
+      if (typeof i.project_ref !== 'string' || i.project_ref !== ref) return;
+      var st = (typeof i.state === 'string' && counts[i.state] !== undefined) ? i.state : 'received';
+      counts[st] += 1;
+      // Which timestamp is the relevant "age" for this state.
+      var ts = st === 'created' ? i.processed_at
+             : (st === 'gave-up' ? i.gave_up_at : i.last_attempt_at) || i.submitted_at;
+      var show = st !== 'created';
+      if (st === 'created') {
+        var pat = Date.parse(i.processed_at || '');
+        show = !isNaN(pat) && (now - pat) <= INTAKE_CREATED_RECENT_MS;
+      }
+      if (!show) return;
+      items.push({
+        intake_id: typeof i.intake_id === 'string' ? i.intake_id : '',
+        state: st,
+        attempts: (typeof i.attempts === 'number' && i.attempts > 0) ? i.attempts : 0,
+        idea_excerpt: typeof i.idea_excerpt === 'string' ? i.idea_excerpt : '',
+        preset: typeof i.preset === 'string' ? i.preset : '',
+        last_error: typeof i.last_error === 'string' ? i.last_error : '',
+        bd_ref: typeof i.bd_ref === 'string' ? i.bd_ref : '',
+        ago: formatAgo(ts, now),
+        attention: !!INTAKE_ATTENTION[st]
+      });
+    });
+    items.sort(function (a, b) {
+      var wa = INTAKE_STATE_ORDER.indexOf(a.state);
+      var wb = INTAKE_STATE_ORDER.indexOf(b.state);
+      if (wa !== wb) return wa - wb;
+      return a.intake_id < b.intake_id ? -1 : (a.intake_id > b.intake_id ? 1 : 0);
+    });
+    return {
+      counts: counts,
+      items: items,
+      attention_count: counts.failing + counts['gave-up'],
+      total: counts.received + counts.enriching + counts.created + counts.failing + counts['gave-up']
+    };
+  }
+
   /* deriveWorkspacesView(snapshot, nowMs?) → the whole hub view model.
    * On an unknown HIGHER (or missing/non-integer) schema_version it returns an
    * ERROR view (§0.3 — refuse, never best-effort-render). Otherwise:
@@ -113,6 +181,9 @@
     var now = typeof nowMs === 'number' ? nowMs : Date.now();
     var projects = Array.isArray(snap.projects) ? snap.projects : [];
     var rawWoy = Array.isArray(snap.waiting_on_you) ? snap.waiting_on_you : [];
+    // L3 — the top-level intake-state lane (additive at v1; absent on an old
+    // producer ⇒ honest empty, no intake strip rendered).
+    var rawIntake = Array.isArray(snap.intake) ? snap.intake : [];
 
     // decisions_total — total OPEN items across the GLOBAL decision queue. Each
     // waiting_on_you entry carries open_item_count (the §4.5 producer emits
@@ -190,9 +261,16 @@
         stageTotal += n;
       });
 
+      // L3 — the per-workspace intake-state slice (exact project_ref match on
+      // the global intake[] lane). A failing/gave-up intake is the 19-silent-
+      // retry leak surfacing — it bumps health to 'attention' so the card sorts
+      // up next to runner trouble.
+      var intake = deriveIntakeForWorkspace(rawIntake, ref, now);
+
       // health — 'stale' when liveness stale; 'attention' when a live mismatch
-      // OR a failing lifecycle card attributable to this workspace by prefix;
-      // otherwise 'ok'. Every input is a projection fact — nothing fabricated.
+      // OR a failing lifecycle card attributable to this workspace by prefix OR
+      // a failing/gave-up intake; otherwise 'ok'. Every input is a projection
+      // fact — nothing fabricated.
       var hasFailure = false;
       STAGE_ORDER.forEach(function (stage) {
         var list = Array.isArray(cols[stage]) ? cols[stage] : [];
@@ -202,7 +280,7 @@
       });
       var health;
       if (isStale) health = 'stale';
-      else if (mismatch || hasFailure) health = 'attention';
+      else if (mismatch || hasFailure || intake.attention_count > 0) health = 'attention';
       else health = 'ok';
 
       return {
@@ -218,6 +296,9 @@
         current_task_title: currentTaskTitle,
         health: health,
         decisions: decisions,
+        // L3 — the intake-state thread for this workspace (counts + the
+        // renderable items + the attention tally).
+        intake: intake,
         // DERIVED — labeled. The UI MUST surface this as "derived from board".
         stage_counts: stageCounts,
         stage_total: stageTotal,
@@ -241,20 +322,30 @@
       return a.project_ref < b.project_ref ? -1 : (a.project_ref > b.project_ref ? 1 : 0);
     });
 
+    // L3 — the global intake-attention total: failing + gave-up across every
+    // workspace. This is the leak counter — the number that, if it were ever
+    // silently >0, meant Brian's ideas were dying unseen (the 19-retry night).
+    var intakeAttentionTotal = cards.reduce(function (a, c) {
+      return a + (c.intake ? c.intake.attention_count : 0);
+    }, 0);
+
     return {
       ok: true,
       principal: snap.principal || '(unresolved)',
       schema_version: sv,
       cards: cards,
-      decisions_total: decisionsTotal
+      decisions_total: decisionsTotal,
+      intake_attention_total: intakeAttentionTotal
     };
   }
 
   return {
     deriveWorkspacesView: deriveWorkspacesView,
+    deriveIntakeForWorkspace: deriveIntakeForWorkspace,
     formatAgo: formatAgo,
     prefixMatch: prefixMatch,
     STAGE_ORDER: STAGE_ORDER,
+    INTAKE_STATE_ORDER: INTAKE_STATE_ORDER,
     SUPPORTED_SNAPSHOT_SCHEMA: SUPPORTED_SNAPSHOT_SCHEMA
   };
 });

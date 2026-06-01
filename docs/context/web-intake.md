@@ -136,13 +136,31 @@ proxies), submit, and confirm the bead appears on the Board within seconds. A
 green local test + committed code is **not** acceptance — `mismatches=0` against
 the live host plus the bead landing is. See `web-shell.md` for the deploy detail.
 
+## Intake state is now phone-visible (L3 claude-tools-uxvl3)
+
+The "I submitted but nothing happened" black hole is closed. The daemon
+(`daemon/intake-dispatch-poll.sh`) writes a **state thread** onto each
+intake-request as it processes it — `dispatch_state` ∈ `received → enriching →
+created` / `failing` / `gave_up`, plus `dispatch_attempts` (the `(n)` in
+`failing(n)`), `last_error`, `last_attempt_at`, `gave_up_at`. It caps retries at
+`INTAKE_MAX_ATTEMPTS` (default 3) — the fix for the 19-silent-retry/~$19 night —
+and a `gave_up:true` record is terminal (the dispatch loop SKIPS it; it stays
+`processed:false`, so `intake-pending` still returns it — excluding gave-up from
+`intake-pending` to cut queue bloat is a deferred follow-up). `workSnapshot()`
+projects all this into a top-level **`intake[]`** lane (`cf/src/reconcile.js`
+`readIntake`/`deriveIntakeState`; Contract B.1 amend), and the **Workspaces hub**
+(`web/workspaces/`, see `web-facets.md`) renders the per-workspace thread + a
+global failing/gave-up leak counter. NOT surfaced on the Inbox — a gave-up intake
+should escalate via the L4 overview-dossier path, not be faked as a dossier.
+
 ## Gotchas / scars
 
 - **"Wired but not shipped."** The whole `intake-request` → enricher chain is
   three tiers (web / engine / daemon). A submission can succeed and still never
   become a bead if the daemon poll isn't running or the `project_ref` has no
   registry entry. When debugging "I submitted but nothing happened," check the
-  daemon's `intake-dispatch-poll` (`daemon.md`) before suspecting this page.
+  daemon's `intake-dispatch-poll` (`daemon.md`) before suspecting this page — and
+  now also the phone: the Workspaces hub shows the intake's state thread (L3).
 - **Workspace list is intentionally `no-store`.** A cached list can offer a
   deleted/renamed `project_ref` that then 422s at submit. Don't add caching.
 - **Empty / unreachable degrades honestly, not silently.** `loadWorkspaces()`

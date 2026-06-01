@@ -74,6 +74,19 @@ DAEMON_INTAKE_DISABLED="${DAEMON_INTAKE_DISABLED:-0}"
 # the dispatch path, exercised end-to-end.
 DAEMON_INTAKE_SPECIALIST_OVERRIDE="${DAEMON_INTAKE_SPECIALIST_OVERRIDE:-}"
 
+# Max enricher-dispatch attempts before the daemon GIVES UP on an intake-request
+# (inbox-lifecycle §9.5 #1/#4; L3 claude-tools-uxvl3). The overnight e5aq
+# incident retried one intake 19+ times at ~$1/retry, all invisible to Brian —
+# this cap turns that silent money-burn into a terminal `gave_up` state the
+# phone surfaces. Each FAILED dispatch (specialist non-zero exit OR unparseable
+# enricher summary) increments `dispatch_attempts`; once it reaches the cap the
+# record is marked `gave_up:true` (still processed=false, but the dispatch loop
+# skips it from then on). Pre-dispatch SKIPS (unknown project_ref — another
+# machine's workspace; malformed record) do NOT count: this daemon never owns
+# that record's retry budget. Set to 0 to disable the cap (retry forever — the
+# pre-L3 behaviour; not recommended).
+INTAKE_MAX_ATTEMPTS="${INTAKE_MAX_ATTEMPTS:-3}"
+
 # daemon_intake_idea_hash <idea_text> → short hex hash (privacy-preserving)
 #   sha256 first 12 hex chars. The full text is NEVER logged. The hash gives
 #   a stable handle for grepping a specific tap across logs (Brian: "did
@@ -167,14 +180,16 @@ _daemon_intake_fetch_pending_one() {
   )
 }
 
-# daemon_intake_mark_processed <ws> <pref> <curl> <tk_item> <intake_id> \
-#                              <updated_record_json>
-#   Re-PUT the intake-request record with `processed:true` and dispatch
-#   annotations. Returns 0 on success, 1 on any failure (caller logs but
-#   does NOT abort the rest of the dispatch loop — a single mark-processed
-#   failure stranding one record is preferable to walling the whole queue).
-daemon_intake_mark_processed() {
-  local ws="$1" pref="$2" curl="$3" tk_item="$4" intake_id="$5" updated="$6"
+# _daemon_intake_put_record <ws> <pref> <curl> <tk_item> <intake_id> <record_json>
+#   The shared subshell that re-PUTs ONE intake-request record through the
+#   per-workspace coordinator binding (piggy-backing on workspace 0's engine as
+#   everywhere in this file). Returns 0 on success, 1 on any failure. Both the
+#   terminal mark-processed put AND the L3 intermediate state-writes (enriching
+#   marker, failing/gave_up annotations) go through this one path so they share
+#   identical transport/auth wiring. The engine re-stamps `principal` on the put
+#   (§9.1); every other field round-trips verbatim.
+_daemon_intake_put_record() {
+  local ws="$1" pref="$2" curl="$3" tk_item="$4" intake_id="$5" record="$6"
   (
     set +e
     cd "$ws" 2>/dev/null || exit 1
@@ -195,8 +210,58 @@ daemon_intake_mark_processed() {
     command -v co_request >/dev/null 2>&1 || exit 1
     local bearer
     bearer="${COORDINATOR_TOKEN:-bearer-daemon-i3}"
-    co_request "$bearer" put intake-request "$intake_id" "$updated" >/dev/null 2>&1
+    co_request "$bearer" put intake-request "$intake_id" "$record" >/dev/null 2>&1
   )
+}
+
+# daemon_intake_mark_processed <ws> <pref> <curl> <tk_item> <intake_id> \
+#                              <updated_record_json>
+#   Re-PUT the intake-request record with `processed:true` and dispatch
+#   annotations. Returns 0 on success, 1 on any failure (caller logs but
+#   does NOT abort the rest of the dispatch loop — a single mark-processed
+#   failure stranding one record is preferable to walling the whole queue).
+daemon_intake_mark_processed() {
+  _daemon_intake_put_record "$1" "$2" "$3" "$4" "$5" "$6"
+}
+
+# daemon_intake_mark_failed <ws> <pref> <curl> <tk_item> <rec_json> \
+#                           <intake_id> <attempt_n> <reason>
+#   L3 (claude-tools-uxvl3) — record a FAILED enricher dispatch on the
+#   intake-request so the phone surfaces `failing(n)` and eventually `gave-up`.
+#   The record stays processed=false (so the happy-path retry on the next
+#   cadence still works) UNLESS the attempt count has reached
+#   INTAKE_MAX_ATTEMPTS, in which case it flips to the terminal `gave_up:true`
+#   (the dispatch loop skips it from then on — closing the silent-retry leak).
+#   Best-effort: returns the put's status but the caller does not abort the loop
+#   on a telemetry-write failure (the record simply retries with a stale count).
+daemon_intake_mark_failed() {
+  local ws="$1" pref="$2" curl="$3" tk_item="$4" rec="$5" intake_id="$6"
+  local n="$7" reason="$8" now_iso gave updated
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+  # gave-up when a positive cap is set and this attempt reached it.
+  if [[ "${INTAKE_MAX_ATTEMPTS:-3}" =~ ^[0-9]+$ ]] \
+     && [[ "${INTAKE_MAX_ATTEMPTS:-3}" -gt 0 ]] \
+     && [[ "$n" -ge "${INTAKE_MAX_ATTEMPTS:-3}" ]]; then
+    gave="true"
+  else
+    gave="false"
+  fi
+  updated="$(printf '%s' "$rec" \
+              | jq -c \
+                  --argjson na "$n" \
+                  --arg la "$now_iso" \
+                  --arg er "$reason" \
+                  --argjson gu "$gave" \
+                  'if $gu then
+                     . + {processed:false, dispatch_attempts:$na, last_attempt_at:$la,
+                          last_error:$er, dispatch_state:"gave_up", gave_up:true, gave_up_at:$la}
+                   else
+                     . + {processed:false, dispatch_attempts:$na, last_attempt_at:$la,
+                          last_error:$er, dispatch_state:"failing"}
+                   end' \
+              2>/dev/null)"
+  [[ -n "$updated" ]] || return 1
+  _daemon_intake_put_record "$ws" "$pref" "$curl" "$tk_item" "$intake_id" "$updated"
 }
 
 # daemon_intake_parse_bd_id <stdout> → echo the bd id from the one-line summary
@@ -244,8 +309,9 @@ daemon_intake_outcome() {
 #   Process one intake-request record. ALWAYS returns 0 (a per-record failure
 #   must not abort the loop). Logs the dispatch attempt + outcome.
 daemon_intake_dispatch_one() {
-  local rec="${1:-}" intake_id idea_text pref preset submitted_at
+  local rec="${1:-}" intake_id idea_text pref preset submitted_at gave_up attempts
   local ws curl tk_item idx i hash outcome bd_id stdout rc ctx_file updated
+  local n now_iso marker reason
 
   [[ -n "$rec" ]] || return 0
 
@@ -254,10 +320,22 @@ daemon_intake_dispatch_one() {
   pref="$(printf '%s' "$rec"          | jq -r 'if type=="object" then (.project_ref // "") else "" end' 2>/dev/null)"
   preset="$(printf '%s' "$rec"        | jq -r 'if type=="object" then (.preset // "") else "" end' 2>/dev/null)"
   submitted_at="$(printf '%s' "$rec"  | jq -r 'if type=="object" then (.submitted_at // "") else "" end' 2>/dev/null)"
+  gave_up="$(printf '%s' "$rec"       | jq -r 'if type=="object" then (.gave_up // false) else false end' 2>/dev/null)"
+  attempts="$(printf '%s' "$rec"      | jq -r 'if type=="object" and (.dispatch_attempts|type)=="number" then .dispatch_attempts else 0 end' 2>/dev/null)"
+  [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
 
   if [[ -z "$intake_id" || -z "$idea_text" || -z "$pref" ]]; then
     declare -F log >/dev/null 2>&1 && \
       log "I3 dispatch: refuse — record missing id/idea_text/project_ref (intake_id='${intake_id:-?}' project_ref='${pref:-?}')"
+    return 0
+  fi
+
+  # L3 (claude-tools-uxvl3) — a record that has already GIVEN UP is terminal:
+  # `intake-pending` still returns it (processed stays false) but the dispatch
+  # loop must NOT re-spawn the enricher (that is the silent-retry leak this
+  # whole change closes). Skip silently — the `gave_up` state is already on the
+  # phone; re-logging it every ~30s cadence would just spam the daemon log.
+  if [[ "$gave_up" == "true" ]]; then
     return 0
   fi
 
@@ -302,6 +380,24 @@ daemon_intake_dispatch_one() {
 
   declare -F log >/dev/null 2>&1 && \
     log "I3 dispatch: workspace=$ws intake_id=$intake_id idea_hash=$hash preset=${preset:-<none>} project_ref=$pref"
+
+  # L3 — count this attempt + write the in-flight `enriching` marker BEFORE we
+  # spawn. The enricher (claude -p) runs synchronously here, so for its whole
+  # duration the record honestly reads `dispatch_state:"enriching"` on the
+  # phone. `dispatch_attempts` is incremented at the START (an attempt that the
+  # daemon then crashes through still counted — it consumed a dispatch). The
+  # marker write is best-effort: a telemetry-put failure must not block the
+  # actual enricher work, so we log nothing and press on.
+  n=$((attempts + 1))
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+  marker="$(printf '%s' "$rec" \
+              | jq -c \
+                  --argjson na "$n" \
+                  --arg la "$now_iso" \
+                  '. + {processed:false, dispatch_attempts:$na, last_attempt_at:$la, dispatch_state:"enriching"} | del(.last_error)' \
+              2>/dev/null)"
+  [[ -n "$marker" ]] && \
+    _daemon_intake_put_record "$ws" "$pref" "$curl" "$tk_item" "$intake_id" "$marker" >/dev/null 2>&1
 
   # Spawn the enricher hat. The override path wins; then the canary; then real.
   # Use `${var:-}` everywhere — a caller running under `set -u` may have
@@ -351,26 +447,38 @@ daemon_intake_dispatch_one() {
   outcome="$(daemon_intake_outcome "$stdout")"
   bd_id="$(daemon_intake_parse_bd_id "$stdout")"
 
-  if [[ "$rc" -ne 0 ]]; then
-    declare -F log >/dev/null 2>&1 && \
-      log "I3 dispatch: FAIL — specialist exit=$rc workspace=$ws intake_id=$intake_id idea_hash=$hash (record left unprocessed; next cadence retries)"
-    return 0
-  fi
-  if [[ -z "$bd_id" ]]; then
-    declare -F log >/dev/null 2>&1 && \
-      log "I3 dispatch: FAIL — could not parse bd id from enricher summary workspace=$ws intake_id=$intake_id idea_hash=$hash outcome=$outcome (record left unprocessed; next cadence retries)"
+  if [[ "$rc" -ne 0 ]] || [[ -z "$bd_id" ]]; then
+    # L3 — record the failure on the intake so the phone shows failing(n) /
+    # gave-up. `n` is the attempt count written by the enriching marker above.
+    if [[ "$rc" -ne 0 ]]; then
+      reason="specialist exit=$rc"
+    else
+      reason="unparseable enricher summary (outcome=$outcome)"
+    fi
+    daemon_intake_mark_failed "$ws" "$pref" "$curl" "$tk_item" "$rec" "$intake_id" "$n" "$reason" \
+      >/dev/null 2>&1 || true
+    if [[ "$rc" -ne 0 ]]; then
+      declare -F log >/dev/null 2>&1 && \
+        log "I3 dispatch: FAIL — specialist exit=$rc workspace=$ws intake_id=$intake_id idea_hash=$hash attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (record left unprocessed; next cadence retries unless gave_up)"
+    else
+      declare -F log >/dev/null 2>&1 && \
+        log "I3 dispatch: FAIL — could not parse bd id from enricher summary workspace=$ws intake_id=$intake_id idea_hash=$hash outcome=$outcome attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (record left unprocessed; next cadence retries unless gave_up)"
+    fi
     return 0
   fi
 
   # Build the updated record: original fields + processed:true + dispatch
   # annotations. The engine re-stamps `principal` on the put (§9.1); every
-  # other field round-trips verbatim.
+  # other field round-trips verbatim. `dispatch_state:"created"` is the terminal
+  # success state the L3 phone thread renders (received→enriching→created).
   updated="$(printf '%s' "$rec" \
               | jq -c \
                   --arg bd "$bd_id" \
                   --arg oc "$outcome" \
+                  --argjson na "$n" \
                   --arg pa "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")" \
-                  '. + {processed:true, enricher_bd_id:$bd, enricher_outcome:$oc, processed_at:$pa}' \
+                  '. + {processed:true, enricher_bd_id:$bd, enricher_outcome:$oc, processed_at:$pa,
+                        dispatch_attempts:$na, dispatch_state:"created"} | del(.last_error)' \
               2>/dev/null)"
   if [[ -z "$updated" ]]; then
     declare -F log >/dev/null 2>&1 && \

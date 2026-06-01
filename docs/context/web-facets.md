@@ -69,7 +69,7 @@ calls `Shell.parseWorkspacePath(location.pathname)` to learn `{ref, facet}`.
 
 | File | Role |
 |---|---|
-| `workspaces/workspaces-view.js` | `deriveWorkspacesView(snapshot, nowMs)` → one card per `projects[]`: honest `state_label`, `current_task`, per-workspace `decisions` (sliced from global `waiting_on_you` by ref-prefix), DERIVED `stage_counts`, `health`. Sorts attention/stale first. |
+| `workspaces/workspaces-view.js` | `deriveWorkspacesView(snapshot, nowMs)` → one card per `projects[]`: honest `state_label`, `current_task`, per-workspace `decisions` (sliced from global `waiting_on_you` by ref-prefix), DERIVED `stage_counts`, per-workspace `intake` thread (L3 — sliced from the top-level `intake[]` by EXACT `project_ref`), `health`. Sorts attention/stale first. Also returns global `decisions_total` + `intake_attention_total`. |
 | `workspaces/app.js` | Shell glue: read `/api/board`, paint cards (each an `<a>` into `/ws/<ref>/board`), surface `decisions_total` prominently. Read-only. |
 | `capacity/capacity-view.js` | `deriveCapacityView(snapshot, nowMs)` → `machines[]` (detailed per-machine bands + allowed line, **logically identical** to `board-view.js deriveMachine`) + `modes[]` (one honest actual mode per project). |
 | `capacity/app.js` | Shell glue: paint the detailed machine cards + mode rows; `machines_empty` → "no telemetry yet" banner (§3.C). |
@@ -146,6 +146,11 @@ A web task is done when the deployed bytes match committed bytes, not at commit.
   `decisions`/`stage_counts`/`health` are all inferences over `waiting_on_you` +
   `lifecycle_columns` by ref-prefix. `prefixMatch` requires the `-` separator so
   `claude-tools-web` does not greedily swallow `claude-tools-web-extra`'s beads.
+  **The L3 `intake` slice is the exception:** intake-request records carry
+  `project_ref` DIRECTLY (the Flow-A submitter chose the workspace), so the hub
+  matches it EXACTLY, not by prefix. A terminal-success (`created`) intake ages
+  off the hub after 6h (`INTAKE_CREATED_RECENT_MS`) — the bead is the artifact,
+  the hub is not its grave; `failing`/`gave-up` never age out (they're the leak).
 - **Don't make Cross-WS pretend.** It deliberately makes no `/api` call and invents
   no exchanges — it states what track K will answer. Keep that honesty until the
   K2/K5 projections actually exist; do not add a phantom data read.

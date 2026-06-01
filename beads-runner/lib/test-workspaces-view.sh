@@ -46,7 +46,7 @@ eq()    { [[ "$1" == "$2" ]]; }
 nz()    { [[ -n "$1" ]]; }
 
 # Pipe a §4.5 projection JSON through the PURE view-model at a FIXED now-ms so
-# the formatAgo bucketing is deterministic. nowMs = 2026-05-29T00:00:00Z epoch*1000.
+# the formatAgo bucketing is deterministic. nowMs = 2026-05-19T00:00:00Z epoch*1000.
 NOW_MS=1779148800000
 render() { printf '%s' "$1" | node -e '
   let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
@@ -99,7 +99,26 @@ FIX="$(jq -cn --arg shb "$STALE_HB" '{
     "done":   [ { bead_ref:"alpha-9", title:"Done A", stage:"done" } ],
     "":       []
   },
-  machines: []
+  machines: [],
+  intake: [
+    { intake_id:"intake-a-enr", project_ref:"alpha", preset:"autonomous-until-stuck",
+      state:"enriching", attempts:1, idea_excerpt:"add a dark mode toggle",
+      last_attempt_at:"2026-05-18T23:55:00Z", submitted_at:"2026-05-18T23:50:00Z" },
+    { intake_id:"intake-a-ok", project_ref:"alpha", preset:"autonomous-until-stuck",
+      state:"created", attempts:1, idea_excerpt:"fix the login bug", bd_ref:"alpha-50",
+      outcome:"created", processed_at:"2026-05-18T22:00:00Z", submitted_at:"2026-05-18T21:50:00Z" },
+    { intake_id:"intake-a-old", project_ref:"alpha", preset:"autonomous-until-stuck",
+      state:"created", attempts:1, idea_excerpt:"an old idea long done", bd_ref:"alpha-10",
+      outcome:"created", processed_at:"2026-05-10T00:00:00Z", submitted_at:"2026-05-10T00:00:00Z" },
+    { intake_id:"intake-c-fail", project_ref:"charlie", preset:"collaborative-stage",
+      state:"failing", attempts:2, idea_excerpt:"a flaky charlie idea",
+      last_error:"specialist exit=7", last_attempt_at:"2026-05-18T23:00:00Z",
+      submitted_at:"2026-05-18T22:00:00Z" },
+    { intake_id:"intake-b-dead", project_ref:"bravo", preset:"autonomous-until-stuck",
+      state:"gave-up", attempts:3, idea_excerpt:"a bravo idea that died",
+      last_error:"specialist exit=7", gave_up_at:"2026-05-18T20:00:00Z",
+      submitted_at:"2026-05-18T10:00:00Z" }
+  ]
 }')"
 
 V="$(render "$FIX")"
@@ -164,6 +183,42 @@ ck "every card flags stage_counts as derived (honesty label)" eq "$(jq -r '[.car
 echo "── F: sort — attention/stale first, then live, then by project_ref ──"
 ck "card order is bravo(stale), charlie(attention), alpha(ok-live)" \
    eq "$(jq -r '[.cards[].project_ref]|join(",")' <<<"$V")" "bravo,charlie,alpha"
+
+echo "── I: L3 intake state thread (received/enriching/created/failing(n)/gave-up) ──"
+# alpha — non-attention thread: enriching + a recent created (shows) + an OLD
+# created (ages off the hub). alpha health must STAY ok (intake didn't bump it).
+CAI="$(jq -c '.cards[]|select(.project_ref=="alpha").intake' <<<"$V")"
+ck "alpha intake counts enriching=1"                          eq "$(jq -r '.counts.enriching' <<<"$CAI")" "1"
+ck "alpha intake counts created=2 (recent + old both tallied)" eq "$(jq -r '.counts.created' <<<"$CAI")" "2"
+ck "alpha intake has 0 attention (no failing/gave-up)"        eq "$(jq -r '.attention_count' <<<"$CAI")" "0"
+ck "alpha renders only 2 items (old created aged off the hub)" eq "$(jq -r '.items|length' <<<"$CAI")" "2"
+ck "alpha's aged-off created (alpha-10) is NOT rendered"      hasnt "intake-a-old" "$(jq -c '.items' <<<"$CAI")"
+ck "alpha's recent created (alpha-50) IS rendered"           has "intake-a-ok" "$(jq -c '.items' <<<"$CAI")"
+ck "alpha card health stays 'ok' (non-attention intake)"     eq "$(jq -r '.cards[]|select(.project_ref=="alpha").health' <<<"$V")" "ok"
+# charlie — a failing(2) intake. charlie was already attention (mismatch) so the
+# sort is unchanged; the retry count must surface (the 19-silent-retry leak).
+CCI="$(jq -c '.cards[]|select(.project_ref=="charlie").intake' <<<"$V")"
+ck "charlie intake failing count=1"                          eq "$(jq -r '.counts.failing' <<<"$CCI")" "1"
+ck "charlie intake attention_count=1"                        eq "$(jq -r '.attention_count' <<<"$CCI")" "1"
+ck "charlie failing item carries the retry count (attempts=2)" eq "$(jq -r '[.items[]|select(.state=="failing")][0].attempts' <<<"$CCI")" "2"
+ck "charlie failing item marked attention:true"              eq "$(jq -r '[.items[]|select(.state=="failing")][0].attention' <<<"$CCI")" "true"
+# bravo — a gave-up intake. bravo is stale so health stays stale; the gave-up
+# state MUST still surface (it is the terminal leak).
+CBI="$(jq -c '.cards[]|select(.project_ref=="bravo").intake' <<<"$V")"
+ck "bravo intake gave-up count=1"                            eq "$(jq -r '.counts["gave-up"]' <<<"$CBI")" "1"
+ck "bravo gave-up item carries attempts=3"                   eq "$(jq -r '[.items[]|select(.state=="gave-up")][0].attempts' <<<"$CBI")" "3"
+ck "bravo gave-up item marked attention:true"                eq "$(jq -r '[.items[]|select(.state=="gave-up")][0].attention' <<<"$CBI")" "true"
+ck "bravo health stays 'stale' (S-1 wins over intake attention)" eq "$(jq -r '.cards[]|select(.project_ref=="bravo").health' <<<"$V")" "stale"
+# The global leak counter — failing + gave-up across all workspaces.
+ck "intake_attention_total = 2 (charlie failing + bravo gave-up)" eq "$(jq -r '.intake_attention_total' <<<"$V")" "2"
+# Sort is UNCHANGED by intake (bravo stale, charlie attention, alpha ok).
+ck "intake does not perturb the card sort order"             eq "$(jq -r '[.cards[].project_ref]|join(",")' <<<"$V")" "bravo,charlie,alpha"
+# A snapshot with NO intake key degrades honestly (old producer / additive key).
+NOINTK="$(jq -c 'del(.intake)' <<<"$FIX")"
+VNI="$(render "$NOINTK")"
+ck "missing intake[] ⇒ still ok:true (additive key, no refusal)" eq "$(jq -r '.ok' <<<"$VNI")" "true"
+ck "missing intake[] ⇒ intake_attention_total=0"             eq "$(jq -r '.intake_attention_total' <<<"$VNI")" "0"
+ck "missing intake[] ⇒ each card has an empty intake.items"  eq "$(jq -r '[.cards[]|select((.intake.items|length)==0)]|length' <<<"$VNI")" "3"
 
 echo "── G: pure module + page wiring (anti-drift / structure) ──"
 ck "workspaces-view.js makes NO network call (no fetch)"      hasnt "fetch(" "$(cat "$VIEW")"

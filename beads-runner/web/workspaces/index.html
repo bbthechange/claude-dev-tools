@@ -45,6 +45,14 @@
           <a class="dec-link" id="dec-link" href="/inbox" hidden>Open Inbox →</a>
         </div>
 
+        <!-- INTAKE LEAK ALERT (L3 claude-tools-uxvl3) — failing/gave-up phone
+             intakes across all workspaces. Hidden when zero. The 19-silent-
+             retry night is exactly this number being >0 and invisible. -->
+        <div class="intake-alert" id="intake-alert" hidden>
+          <span class="intake-alert-num" id="intake-alert-num">0</span>
+          <span class="intake-alert-lbl" id="intake-alert-lbl">—</span>
+        </div>
+
         <!-- WORKSPACE CARDS — attention/stale first, then live, then by ref -->
         <div class="section-lbl">Workspaces · healthy · busy · stuck · need me</div>
         <div class="cards" id="cards"></div>
