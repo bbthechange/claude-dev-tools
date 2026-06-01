@@ -64,6 +64,18 @@
 **Source:** 651–657 (startup snapshot), 660–682 (`next_task` drains orphans before `bd ready`).
 **Classification:** **SCAR.** Crash recovery — without it, a crashed run permanently strands its in-flight task as `in_progress` (invisible to `bd ready`, never retried).
 
+#### BC-02a — Adoption is PID-claim-validated (claude-tools-uxc1, Mechanism A, inbox-lifecycle §8.3.3)
+**Amendment to BC-02.** "in_progress at startup ⇒ crash orphan" is too coarse: a task is also `in_progress` when a LIVE external Claude session, another LIVE runner in the same workspace, or a manual `bd update` set it. Adopting those is the duplicate-work / commit-fight hazard (the residual BC-04 flagged, amplified by parallel runners). The runner therefore stamps a per-task **PID claim file** under `LOG_DIR/claims/<id>.json` (`{runner_id, pid:$$, host, started_at, workspace}`) at the `in_progress` write, and removes it on close / failure-reset / teardown (the same three sites as the lease release + the `current-task` pointer). The startup snapshot adopts an in_progress bead into `ORPHANED_IDS` **only** when its claim proves it is THIS workspace's runner's crash orphan:
+- **no claim file** → set by a non-runner (interactive / manual) → **SKIP**;
+- **our `runner_id` + LIVE pid** (`kill -0`) → a live sibling runner owns it → **SKIP**;
+- **a FOREIGN `runner_id`/`workspace`** → another runner → **SKIP** (default-closed; the cross-workspace coordinator-liveness refinement is a §8.3.3 follow-up);
+- **our `runner_id` + DEAD pid** → our previous self crashed here → **ADOPT** (instant, no age heuristic).
+
+**Read-only walk:** the snapshot never deletes a claim (deleting would strand the one-per-loop-drained orphans 2..K, BC-04, with no claim if a second crash hit before re-claim). A resumed orphan's stale dead-pid claim is retired when it is actually re-claimed (`write_task_claim` overwrites it with the live pid) or by `LOG_RETENTION_DAYS` rotation. **Write ordering:** the claim is stamped BEFORE the `in_progress` write (it is pid-keyed, not status-keyed), so a crash in that window leaves the bead `open` (recoverable via `bd ready`), never `in_progress`-with-no-claim (which the walk would skip → strand). **PID reuse:** an alive-but-recycled pid resolves to SKIP (safe direction); the `started_at`/`ps -o lstart` disambiguation is the §8.3.3 stretch goal — recorded in the claim, not yet consulted. **Residuals:** (a) a claim for a bead a human closed out-of-band then re-`in_progress`ed interactively can false-adopt — that interactive case is Mechanism B's (`human-live-session` label gate) job (A+B+C are layered by design); (b) the DEGRADED class keeps the bead `in_progress` and its claim so a future runner re-adopts it once this runner's pid dies.
+**Source:** runner.sh `_adopt_orphan_by_claim` / `write_task_claim` / `remove_task_claim`; st_starting snapshot walk; st_claim write; st_post_task / `_terminal_fatal` / `runner_teardown` removal.
+**Conformance:** `conformance/assertions/bc-uxc1-claim-validated-adoption-tree.sh` (the no-claim/live/foreign/dead matrix + claim lifecycle); `bc-orphan-recovery-tree.sh` now plants the leftover dead-pid claim each crash orphan would have.
+**Classification:** **SCAR.** Without it the runner adopts externally-owned in-flight work.
+
 ### BC-03 — Empty-orphan-list guard
 **Assertion:** When there are no `in_progress` tasks at startup, the runner does **not** attempt `bd show ""`. It proceeds straight to `bd ready`.
 **Repro:** Start the runner with zero `in_progress` tasks; no spurious `bd show` with an empty ID occurs.

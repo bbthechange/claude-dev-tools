@@ -20,6 +20,13 @@
 # never returns an `in_progress` bead — so a PASS proves the RUNNER's startup
 # snapshot re-presented the orphan, not `bd ready`. The fake `bd list
 # --status=in_progress` + `bd show` drive the snapshot and the re-check.
+#
+# claude-tools-uxc1 (Mechanism A, inbox-lifecycle §8.3.3): adoption is now
+# PID-VALIDATED — only an in_progress bead carrying a claim file with THIS runner's
+# id + a DEAD owning pid is a crash orphan. So each in_progress orphan here plants
+# the leftover claim a crashed run would have left (plant_claim … dead_pid). The
+# no-claim / live-pid / foreign cases are covered by bc-uxc1-claim-validated-
+# adoption-tree.sh. (Without a claim these seeds would correctly be SKIPPED.)
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 trap H_cleanup EXIT
 
@@ -35,9 +42,11 @@ export RUNNER_EXIT_ON_DRAIN=1        # bounded rig: exit 0 once the queue drains
 export RECLAIM_POLL_INTERVAL=2
 export CONTROL_POLL_INTERVAL=999
 export HEARTBEAT_INTERVAL=999
+export RUNNER_ID=test-runner PROJECT_REF=test-ws   # claude-tools-uxc1: stable identity for the planted claim
 claude_plan success                  # each worker closes its own bead ⇒ drains
 
 bd_seed orphan-crash "stranded crash orphan" "." in_progress
+plant_claim orphan-crash "$(dead_pid)"   # claude-tools-uxc1: the crashed run's leftover claim (dead pid ⇒ adoptable)
 bd_seed z-ready-task "fresh ready task"      "." open
 
 run_runner
@@ -64,10 +73,13 @@ export RUNNER_EXIT_ON_DRAIN=1
 export RECLAIM_POLL_INTERVAL=2
 export CONTROL_POLL_INTERVAL=999
 export HEARTBEAT_INTERVAL=999
+export RUNNER_ID=test-runner PROJECT_REF=test-ws   # claude-tools-uxc1
 claude_plan success
 
 bd_seed orphan-a "first crash orphan"  "." in_progress
+plant_claim orphan-a "$(dead_pid)"
 bd_seed orphan-b "second crash orphan" "." in_progress
+plant_claim orphan-b "$(dead_pid)"
 
 run_runner
 
@@ -118,9 +130,11 @@ export RECLAIM_POLL_INTERVAL=2
 export CONTROL_POLL_INTERVAL=999
 export HEARTBEAT_INTERVAL=999
 export HARNESS_BD_SHOW_STATUS_EMPTY=orphan-flaky   # bd show orphan-flaky ⇒ []
+export RUNNER_ID=test-runner PROJECT_REF=test-ws   # claude-tools-uxc1
 claude_plan success
 
 bd_seed orphan-flaky "orphan with a flaky bd show" "." in_progress
+plant_claim orphan-flaky "$(dead_pid)"   # claude-tools-uxc1: adoptable claim ⇒ the flaky-show KEEP path is actually exercised
 
 run_runner
 

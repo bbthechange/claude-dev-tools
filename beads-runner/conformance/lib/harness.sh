@@ -263,3 +263,29 @@ contains()    { grep -qF -- "$2" <<< "$1"; }
 notcontains() { ! grep -qF -- "$2" <<< "$1"; }
 matches()     { grep -qE -- "$2" <<< "$1"; }
 file_glob()   { local g; for g in $1; do [[ -e "$g" ]] && return 0; done; return 1; }
+
+# ── Mechanism A PID claim files (claude-tools-uxc1) ───────────────────────────
+# dead_pid — a reliably-DEAD pid: spawn a trivial child, reap it, echo its (now
+# unused) pid. The runner's `kill -0` on it returns "dead" ⇒ adopt-eligible.
+dead_pid() { local p; ( exit 0 ) & p=$!; wait "$p" 2>/dev/null; printf '%s' "$p"; }
+
+# plant_claim <id> <pid> [runner_id] [workspace] — write a claim file the way the
+# runner does (write_task_claim), so a rig can model a crash-orphan's leftover
+# claim. Dead <pid> ⇒ adoptable; a live <pid> (e.g. $$) ⇒ a live sibling (skip); a
+# mismatched runner_id/workspace ⇒ foreign (skip). Defaults track what the runner
+# computes: runner_id=$RUNNER_ID (else hostname), workspace=$PROJECT_REF (else the
+# WORKDIR basename the runner derives via `basename "$(pwd)"`). Call AFTER
+# H_init_test (needs $WORKDIR) and after exporting RUNNER_ID/PROJECT_REF.
+plant_claim() {
+  local id="$1" pid="$2"
+  local rid="${3:-${RUNNER_ID:-$(hostname 2>/dev/null || echo localhost)}}"
+  local ws="${4:-${PROJECT_REF:-$(basename "$WORKDIR")}}"
+  local cdir="$WORKDIR/.beads/runner-logs/claims"
+  mkdir -p "$cdir"
+  printf '{"runner_id":"%s","pid":%s,"host":"%s","started_at":"%s","workspace":"%s"}\n' \
+    "$rid" "$pid" "$(hostname 2>/dev/null || echo localhost)" "2026-01-01T00:00:00Z" "$ws" \
+    > "$cdir/$id.json"
+}
+# claim_exists <id> — true iff the runner's claim file for <id> is present under
+# the test WORKDIR (used to assert removal on close / non-adoption-overwrite).
+claim_exists() { [[ -f "$WORKDIR/.beads/runner-logs/claims/$1.json" ]]; }

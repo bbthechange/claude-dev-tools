@@ -367,6 +367,99 @@ job_reconcile_desired()   { co_deliver_desired_state "$PROJECT_REF"; }          
 job_publish_snapshot()    { la_publish_work_snapshot "$PROJECT_REF"; }           # §3 j5 / §4.5 — read-only projection
 job_report_terminal()     { la_report_terminal_reason "$1" "${2:-}" "${3:-}" "$PROJECT_REF"; } # §3 j6 / §8.2
 
+# ── Mechanism A (claude-tools-uxc1) — per-task PID claim files ─────────────────
+# inbox-lifecycle §8.3.3. The startup orphan snapshot (st_starting, BC-02) used to
+# treat EVERY `in_progress` bead as this runner's crash orphan and adopt it. That
+# is the dup-work hazard: a task `in_progress` because a LIVE external Claude
+# session (or another live runner in this same workspace, or a manual `bd update`)
+# set it gets ADOPTED → two workers, commit fights — amplified by the weekend's
+# parallel runners. Claim files make adoption PID-VALIDATED: the runner stamps a
+# claim when it drives a bead to `in_progress` and removes it on close /
+# failure-reset / teardown. A claim left behind with a DEAD owning pid is the
+# unforgeable "my previous self crashed here" signal; no claim, a LIVE pid, or a
+# FOREIGN runner_id all mean "not my dead orphan — skip". Claims live under LOG_DIR
+# (so they inherit its BC-27 self-gitignore + the LOG_RETENTION_DAYS rotation) and
+# key on $$ — the RUNNER pid, the process we ask "are you still alive?" — never the
+# child `claude -p` pid.
+CLAIMS_DIR="${CLAIMS_DIR:-$LOG_DIR/claims}"
+_claim_path() { printf '%s/%s.json' "$CLAIMS_DIR" "$1"; }
+
+# write_task_claim <id> — stamp THIS runner ($$) as the in_progress owner of <id>.
+# Called right after the `bd update --status=in_progress` write (st_claim). On a
+# resumed crash-orphan this OVERWRITES the dead-pid claim with our live pid, which
+# is also how the stale claim is retired (the startup walk is deliberately
+# read-only — see _adopt_orphan_by_claim). Best-effort (BC-42): a claim we cannot
+# write only weakens crash-recovery, it never aborts the loop.
+write_task_claim() {
+  local id="$1" cf
+  [[ -n "$id" ]] || return 0
+  mkdir -p "$CLAIMS_DIR" 2>/dev/null || return 0
+  # Ensure the BC-27 self-gitignore exists even on the FIRST task — st_claim runs
+  # before st_run_task, which is where the LOG_DIR .gitignore is otherwise born.
+  [[ -f "$LOG_DIR/.gitignore" ]] || printf '*\n!.gitignore\n' > "$LOG_DIR/.gitignore" 2>/dev/null || true
+  cf="$(_claim_path "$id")"
+  jq -cn \
+     --arg     rid     "$RUNNER_ID" \
+     --argjson pid     "$$" \
+     --arg     host    "$(hostname 2>/dev/null || echo unknown)" \
+     --arg     started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     --arg     ws      "$PROJECT_REF" \
+     '{runner_id:$rid, pid:$pid, host:$host, started_at:$started, workspace:$ws}' \
+     > "$cf" 2>/dev/null || true
+}
+
+# remove_task_claim <id> — drop <id>'s claim. Idempotent (rm -f). Paired with the
+# in_progress→{closed,open,blocked} exits exactly like the lease release / the
+# current-task pointer: st_post_task (every non-fatal class), _terminal_fatal (the
+# §8.1 fatal classes), and runner_teardown's in-flight net (signal/abort/EXIT).
+remove_task_claim() {
+  [[ -n "${1:-}" ]] || return 0
+  rm -f "$(_claim_path "$1")" 2>/dev/null || true
+}
+
+# _adopt_orphan_by_claim <id> — Mechanism A adoption gate for ONE startup-snapshot
+# in_progress bead. Returns 0 (ADOPT) iff a claim file proves <id> is THIS
+# workspace's runner's crash orphan: our runner_id (+ workspace backstop) AND a
+# DEAD owning pid. Returns 1 (SKIP) for every other case — no claim (interactive /
+# manual in_progress), a LIVE pid (a live sibling runner owns it), or a FOREIGN
+# runner_id/workspace (default-CLOSED: never adopt what we cannot prove is our own
+# dead orphan; the cross-workspace coordinator-liveness refinement of §8.3.3 is a
+# documented follow-up — offline the safe answer is skip either way). READ-ONLY: it
+# never deletes a claim. Deleting here would strand orphans 2..K — the snapshot
+# validates all eligible at once but the drain resumes one-per-loop (BC-04), so a
+# second crash before they are re-claimed would lose every still-unclaimed orphan
+# whose claim we had already removed. The stale dead-pid claim is instead retired
+# when the orphan is actually re-claimed (write_task_claim overwrites it) or by
+# LOG_RETENTION rotation. PID-reuse: `kill -0` can hit a recycled pid; an
+# alive-but-recycled pid resolves to SKIP (the safe direction). The
+# `started_at`/`ps -o lstart` disambiguation is the §8.3.3 stretch goal — recorded
+# in the claim, not yet consulted. Emits one typed reason line per bead.
+_adopt_orphan_by_claim() {
+  local id="$1" cf rid pid ws
+  cf="$(_claim_path "$id")"
+  if [[ ! -f "$cf" ]]; then
+    echo "  orphan-skip $id — no claim file (in_progress set by a non-runner: live interactive session / manual bd update — not this runner's crash orphan)"
+    return 1
+  fi
+  rid="$(jq -r '.runner_id // empty' "$cf" 2>/dev/null || true)"
+  pid="$(jq -r '.pid // empty'       "$cf" 2>/dev/null || true)"
+  ws="$( jq -r '.workspace // empty' "$cf" 2>/dev/null || true)"
+  if [[ -n "$rid" && "$rid" != "$RUNNER_ID" ]] || [[ -n "$ws" && "$ws" != "$PROJECT_REF" ]]; then
+    echo "  orphan-skip $id — claim is a FOREIGN runner/workspace (runner_id='${rid:-?}' workspace='${ws:-?}'); default-closed, not adopting"
+    return 1
+  fi
+  if [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ ]]; then
+    echo "  orphan-skip $id — claim has no usable pid ('${pid:-}'); default-closed, not adopting"
+    return 1
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "  orphan-skip $id — claim pid $pid is ALIVE (a live sibling runner in this workspace owns it); not adopting"
+    return 1
+  fi
+  echo "  orphan-adopt $id — our crashed claim (pid $pid is dead); eligible for resume"
+  return 0
+}
+
 # ── BC-38 / §7.2(a) — the worker prompt (T2.5, claude-tools-kqn) ──────────────
 # Re-implements v1's prompt INTENT idiomatically (scaffolding not transcribed):
 #   • states the run is NON-INTERACTIVE and explicitly forbids EnterPlanMode /
@@ -1081,6 +1174,7 @@ runner_teardown() {
     echo "Interrupted — resetting $CURRENT_TASK_ID to open"
     safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
     job_release_lease "$CURRENT_TASK_ID" "${LEASE_GENERATION:-}" >/dev/null 2>&1   # §6.1 pairing
+    remove_task_claim "$CURRENT_TASK_ID"   # claude-tools-uxc1: clean exit reset it to open — drop our claim (a SIGKILL leaves it as the crash-orphan signal)
     CURRENT_TASK_ID=""
   fi
 
@@ -1376,23 +1470,35 @@ st_starting() {
   # the orphan as a CANDIDATE so st_claim's lease re-acquire can compose with the
   # strong-plane recovery.
   #
-  # We snapshot ONCE, at startup: every `in_progress` bead now is a crash orphan
-  # eligible for one-per-loop resumption (BC-04). A bead going in_progress LATER
-  # is a live sibling's and is never adopted (it is simply not in this set).
+  # We snapshot ONCE, at startup. A bead going in_progress LATER is a live
+  # sibling's and is never adopted (it is simply not in this set). claude-tools-uxc1
+  # (inbox-lifecycle §8.3.3) narrows the snapshot further: an in_progress bead is
+  # adopted ONLY if a PID claim file proves it is THIS workspace's runner's crash
+  # orphan — our runner_id + a DEAD owning pid (_adopt_orphan_by_claim is the gate).
+  # No claim (a live interactive session / manual `bd update` set it), a LIVE pid (a
+  # live sibling runner), or a FOREIGN runner_id are all SKIPPED — closing the
+  # dup-work hazard where the runner adopted an externally-owned in_progress task.
   # BC-03: the empty case yields an EMPTY array — built element-by-element from a
   # while-read that skips blank lines, so there is NO `bd show ""`. The v1
   # `read -ra` empty-field quirk + its one-empty-element guard is SCAFFOLDING
   # (BEHAVIORAL-CONTRACT BC-03) and is deliberately NOT transcribed — this list
   # construction simply cannot produce a phantom empty element.
   ORPHANED_IDS=()
-  local _orphans_raw _oid
+  local _orphans_raw _oid _seen=0
   _orphans_raw="$(safe_capture BD_UNAVAILABLE "" -- bd list --status=in_progress --json | jq -r '.[].id // empty' 2>/dev/null || true)"
   while IFS= read -r _oid; do
     [[ -z "$_oid" ]] && continue
-    ORPHANED_IDS+=("$_oid")
+    _seen=$((_seen + 1))
+    # claude-tools-uxc1: PID-validate before adopting — not every in_progress bead
+    # is OUR crash orphan (the dup-work hazard §8.3.3 closes).
+    if _adopt_orphan_by_claim "$_oid"; then
+      ORPHANED_IDS+=("$_oid")
+    fi
   done <<< "$_orphans_raw"
   if [[ ${#ORPHANED_IDS[@]} -gt 0 ]]; then
-    echo "runner: startup in_progress snapshot — ${#ORPHANED_IDS[@]} crash-orphan(s) eligible for resume: ${ORPHANED_IDS[*]}"
+    echo "runner: startup in_progress snapshot — ${#ORPHANED_IDS[@]} PID-validated crash-orphan(s) eligible for resume (of $_seen in_progress bead(s) seen): ${ORPHANED_IDS[*]}"
+  elif [[ $_seen -gt 0 ]]; then
+    echo "runner: startup in_progress snapshot — $_seen in_progress bead(s) seen, none are this runner's crash orphans (no-claim / live-pid / foreign all skipped, claude-tools-uxc1) — adopting 0"
   fi
 
   job_heartbeat starting "" "" >/dev/null
@@ -1900,6 +2006,16 @@ st_claim() {
   export CURRENT_TASK_ID
   mkdir -p "$LOG_DIR" 2>/dev/null || true
   printf '%s' "$CURRENT_TASK_ID" > "$LOG_DIR/current-task" 2>/dev/null || true
+  # claude-tools-uxc1 (Mechanism A): stamp our PID claim BEFORE the in_progress
+  # write. The claim is keyed on the runner pid, not the bead status, so writing it
+  # first means a crash in the (claim-write → in_progress-write) window leaves the
+  # bead at `open` — normally recoverable via `bd ready` — instead of
+  # `in_progress`-with-no-claim, which the claim-validated startup walk would now
+  # SKIP (→ strand). A claim for a not-yet-in_progress bead is harmless: the walk
+  # only inspects in_progress beads, and a re-claim overwrites it. On a RESUMED
+  # orphan this overwrites the prior (dead-pid) claim with our live pid — the
+  # read-only startup walk leaves it in place for exactly this re-stamp.
+  write_task_claim "$CURRENT_TASK_ID"
   safe_capture BD_UNAVAILABLE "" -- bd update "$CANDIDATE_ID" --status=in_progress >/dev/null
   IDLE_ANNOUNCED=""   # claude-tools-giu: leaving idle — next drain re-announces
   transition RUN_TASK
@@ -2145,6 +2261,7 @@ _terminal_fatal() {
   local cls="$1" code="$2"
   safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
   job_release_lease "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null
+  remove_task_claim "$CURRENT_TASK_ID"   # claude-tools-uxc1: bead reset to open — drop our claim
   CURRENT_TASK_ID=""; LEASE_GENERATION=""
   TERMINAL_CLASS="$cls"; EXIT_CODE="$code"
   transition TERMINAL
@@ -2338,6 +2455,15 @@ st_post_task() {
   # EXIT funnel re-clears them on every abnormal exit (circuit-breaker/fatal).
   rm -f "${POST_TERMINAL_FILE:-}" "${HOOK_SETTINGS_FILE:-}" "$LOG_DIR/current-task" 2>/dev/null || true
   POST_TERMINAL_FILE=""; HOOK_SETTINGS_FILE=""
+  # claude-tools-uxc1: the bead is now at its correct non-in_progress status
+  # (closed for SUCCESS, open for the retried/failed classes, blocked for STUCK) —
+  # drop our PID claim so the next startup walk never re-adopts a task we finished.
+  # EXCEPTION — DEGRADED: that class deliberately did NOT mutate work state (BC-42:
+  # a degraded `bd` read is not a verdict), so the bead is STILL in_progress and
+  # must stay recoverable. KEEP its claim so that once THIS runner dies its now-dead
+  # pid lets a future startup snapshot re-adopt the bead (the pre-uxc1 "any
+  # in_progress is recovered" guarantee; removing the claim would strand it).
+  [[ "$CLASSIFICATION" == "DEGRADED" ]] || remove_task_claim "$CURRENT_TASK_ID"
 
   CURRENT_TASK_ID=""; LEASE_GENERATION=""
   echo ""
