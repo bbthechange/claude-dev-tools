@@ -2,29 +2,48 @@
 
 ## When
 
-You've edited any file under `beads-runner/web/{board,inbox,intake}/` (HTML,
-app.js, board-view.js, inbox-view.js, CSS), under
-`beads-runner/web/functions/api/{board,inbox,intake}/...`, or the
+You've edited any file under one of the unified app's route dirs in
+`beads-runner/web/` — the original `{board,inbox,intake}/` **or** the UX-v2
+C-shell routes `{workspaces,capacity,cross-ws,workspace}/` and the shared
+modules `shared/` (net/dom/shell/tokens/enums) — under any Pages Function in
+`beads-runner/web/functions/api/{board,inbox,intake,push}/...`, or the
 `beads-runner/web/_redirects` routing config. The committed code change does
 NOT automatically reach the deployed Pages site — you must explicitly
-redeploy.
+redeploy. **All of these ship in ONE `wrangler pages deploy` of the unified
+project** (see Shape) — there is no separate per-route deploy.
 
 This is the most common source of "wired but not actually live" bugs in this
 project. See HANDOFF.md "loose threads" for the pattern.
 
 ## Shape
 
-Board, Inbox, and Intake are routes inside ONE responsive web app (UX-DESIGN
-§2; consolidation in claude-tools-b59):
+Every page is a route inside ONE responsive web app (UX-DESIGN §2; consolidation
+in claude-tools-b59; the UX-v2 C-shell route shape is Contract C.2 /
+UX-DESIGN-V2 §2, source of truth `beads-runner/web/_redirects`):
 
+Static route dirs (`web/<name>/`):
 - `claude-wrangler.pages.dev/`        → rewrite to `/board/` (200, no redirect;
                                          see `beads-runner/web/_redirects`, q6z7)
 - `claude-wrangler.pages.dev/board`   → `web/board/`
 - `claude-wrangler.pages.dev/inbox`   → `web/inbox/`
 - `claude-wrangler.pages.dev/intake`  → `web/intake/`
+
+UX-v2 C-shell routes (added after this runbook was first written):
+- `claude-wrangler.pages.dev/workspaces`   → `web/workspaces/`  (global hub)
+- `claude-wrangler.pages.dev/capacity`     → `web/capacity/`    (global capacity view)
+- `claude-wrangler.pages.dev/cross-ws`     → `web/cross-ws/`    (cross-workspace surface)
+- `claude-wrangler.pages.dev/ws/<ref>/<facet>` → `web/workspace/` (ONE shell page
+                                         serves every workspace facet —
+                                         board/blueprint/activity/gates — by
+                                         parsing the path; any `/ws/*` matches)
+- `web/shared/` (net/dom/shell/tokens/enums) — NOT a nav route, but every page
+  hard-depends on `/shared/*`, so a stale shared deploy breaks all routes.
+
+Pages Functions (API proxies, `web/functions/api/<area>/...`):
 - `claude-wrangler.pages.dev/api/board/*`  → `web/functions/api/board/...`
-- `claude-wrangler.pages.dev/api/inbox/*`  → `web/functions/api/inbox/...`
+- `claude-wrangler.pages.dev/api/inbox/*`  → `web/functions/api/inbox/...`  (incl. defer/escalate/expire/forensic/respond/dossier)
 - `claude-wrangler.pages.dev/api/intake/*` → `web/functions/api/intake/...`
+- `claude-wrangler.pages.dev/api/push/*`   → `web/functions/api/push/...`   (subscribe/unsubscribe — N2 push delivery)
 
 The apex `/` rewrite means `board/index.html` is served at two URLs. For that
 to keep working, its asset refs MUST stay absolute (`/board/board.css`,
@@ -59,12 +78,17 @@ but never confirmed the live URL actually serves the new code. Use the
 one-script verifier:
 
 ```bash
-bash beads-runner/verify-pages-deploy.sh           # verifies all three routes
-bash beads-runner/verify-pages-deploy.sh board     # or just one
+bash beads-runner/verify-pages-deploy.sh           # verifies ALL routes (board inbox
+                                                   #   intake workspaces capacity
+                                                   #   cross-ws workspace shared) +
+                                                   #   apex & clean-URL rewrites
+bash beads-runner/verify-pages-deploy.sh board     # or just one route prefix
 ```
 
-A passing run prints `mismatches=0`. Any `DRIFT` or `MISS` line means the
-deploy did not land — re-deploy and re-verify before closing.
+A passing run prints `mismatches=0` (currently 39 checks). Any `DRIFT` or `MISS`
+line means the deploy did not land — re-deploy and re-verify before closing. The
+verifier auto-covers every route prefix, so a missed C-shell route (e.g. the
+inbox PWA/push assets) shows up here, not just board/inbox/intake.
 
 ## When the deploy succeeds but the feature still doesn't work
 
