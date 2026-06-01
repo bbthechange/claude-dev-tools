@@ -11,6 +11,8 @@ End-of-task checklist for this Claude tools / plugins repo. Run every step in or
 
 Run the `code-reviewer` skill (which spawns the `code-reviewer` agent). Provide a one-sentence summary of what was implemented.
 
+The reviewer reads the diff; **you** run the gate (Step 2). Keep the summary about *what changed* — do not ask the reviewer to run `run-tests.sh`, the conformance suite, or to check "whether this breaks sibling tests." Those are your Step-2 job; asking the reviewer to do them just makes it re-run the full suite and blocks you for 5–15 min.
+
 When the reviewer returns feedback:
 
 1. **Evaluate each item critically** — not all feedback is valid.
@@ -23,6 +25,7 @@ If the reviewer reports "No issues found", continue.
 
 This repo is a collection of Claude Code tools, plugins, skills, agents, and shell scripts — there is usually no test suite. Do whatever applies:
 
+- **`beads-runner/**` changed**: this *does* have a gate — run `bash beads-runner/run-tests.sh --changed` (or the full gate). This is the worker's job, run here once, not the reviewer's. Run it in the foreground in this same turn (never background it and end the turn).
 - **Shell scripts changed**: run `bash -n <file>` (syntax check) and `shellcheck <file>` if available.
 - **Plugin / skill / agent frontmatter changed**: verify YAML parses, required fields (`name`, `description`) are present, and the file is loadable. If `plugin-dev:plugin-validator` is appropriate, use it.
 - **JSON files changed** (`marketplace.json`, `settings.json`, `plugin.json`): validate with `python -m json.tool <file>` or `jq . <file>`.
