@@ -245,8 +245,16 @@ sr_scan_backstop() {
 sr_worker_ask() {
   local tref="${1:-}" rtext="${2:-}"
   local cb tldr
-  tldr="A backstop fired on $tref: the worker reached an interactive fork it must not resolve and slipped past the §7.6 guardrail."
-  [[ -n "$rtext" ]] && tldr="$tldr Worker said: $rtext"
+  # claude-tools-uxvl5 / inbox-lifecycle §4.4: this raw material becomes the
+  # dossier Brian reads cold on his phone whenever the dossier-builder agent is
+  # unreachable and the deterministic fallback wins. EVERY human-facing string
+  # below is held to the §4.4 readability gate — plain English, no contract
+  # jargon, no section symbols / internal IDs / state-machine tokens — and is
+  # asserted against dg__readability_lint in test-stuck-routing.sh. (The OLD
+  # text — "slipped past the §7.6 guardrail", "blocked-for-human", "(§5.3 =
+  # T5.3)" — is exactly the jargon Brian flagged on claude-tools-7xl.)
+  tldr="A worker on $tref stopped at a decision only you can make, and needs your call before it can keep going."
+  [[ -n "$rtext" ]] && tldr="$tldr What the worker reported: $rtext"
   # One contract-valid pick-option so T5.2 can author a worker_stuck dossier
   # (§5.2 pick-option needs ≥1 option with a machine-applyable §5.3 block +
   # recommendation{value,why}). The choice itself is the human's; the runner
@@ -258,18 +266,18 @@ sr_worker_ask() {
   cb='{"creates":[],"unblocks":[],"labels":[],"status_changes":[]}'
   jq -cn --arg tref "$tref" --arg tldr "$tldr" --argjson cb "$cb" '
     { tldr:$tldr,
-      ask:("How should the runner proceed on " + $tref + " (a human-decision fork)?"),
+      ask:("What should the runner do with " + $tref + " now that a worker stopped and handed the decision to you?"),
       options:[
         { option_id:"resume", label:"I have unblocked it — resume the task",
-          blast_radius:"Re-queues the task as-is once a human resolves the fork.",
+          blast_radius:"Puts the task back in the queue as-is, to be picked up again once you have cleared what was blocking it.",
           consequence_block:$cb },
         { option_id:"abandon", label:"Abandon / re-scope this task",
-          blast_radius:"Leaves the bead blocked-for-human pending a human re-scope.",
+          blast_radius:"Leaves the task parked and waiting on you, so nothing runs on it until you re-scope or close it.",
           consequence_block:$cb }
       ],
       recommendation:{ value:"resume",
-        why:"The fork is a human decision, not a task failure; resume once decided (§7.5 retry-exempt)." },
-      reversible:"Fully reversible — no consequence is applied until a human picks an option (§5.3 = T5.3)." }'
+        why:"This is a decision for you to make, not a task that failed, so the worker is not penalized and the task simply resumes once you have decided." },
+      reversible:"Fully reversible — nothing is changed or applied until you pick an option here." }'
 }
 
 # ════════════════════════════════════════════════════════════════════════════

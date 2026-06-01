@@ -534,6 +534,39 @@ unset -f record_incident
 # Clean up so later test runs / metric scripts don't see this run's noise.
 unset DG_AUTHOR_CMD DG_AUDIT_LOG
 
+# ── claude-tools-uxvl5 (inbox-lifecycle §4.4): the READABILITY LINT, and the
+#    deterministic fallback template held to it (the residual no_DG_AUTHOR_CMD
+#    jargon bug). dg__readability_lint flags untranslated internal jargon in the
+#    HUMAN-FACING prose only; it is ADVISORY — never wired into do_dossier_put /
+#    dg_generate (4xe write-gate/render-tolerance: the write path rejects on
+#    SCHEMA, never on prose style; the renderer stays tolerant).
+echo ""
+echo "── claude-tools-uxvl5 — readability lint (§4.4) ──"
+ckn "lint flags a section symbol (§)" \
+    dg__readability_lint '{"body":{"tldr":"slipped past the §7.6 guardrail"}}'
+ckn "lint flags contract IDs (AD7 / BC-34 / T5.3 / S-2)" \
+    dg__readability_lint '{"tldr":"per AD7 and BC-34 and T5.3 and S-2"}'
+ckn "lint flags raw state/enum tokens (blocked-for-human / worker_stuck)" \
+    dg__readability_lint '{"body":{"full_detail":"the bead is blocked-for-human after a worker_stuck fire"}}'
+ck  "lint PASSES clean plain-English prose" \
+    dg__readability_lint '{"body":{"tldr":"A worker stopped at a decision only you can make.","full_detail":"It needs your call before it can continue."}}'
+ck  "lint does NOT false-positive on an ISO timestamp / bead ref" \
+    dg__readability_lint '{"tldr":"Worker on claude-tools-7xl stopped at 2026-05-26T17:45:52Z."}'
+ck  "lint is clean when there is no reader-facing prose (only enum fields)" \
+    dg__readability_lint '{"trigger":"worker_stuck","kind":"decide"}'
+ck  "lint ignores the by-design machine field .trigger (worker_stuck there is not prose)" \
+    dg__readability_lint '{"trigger":"worker_stuck","body":{"tldr":"A worker stopped at a decision only you can make."}}'
+# The deterministic jq fallback body (DG_AUTHOR_CMD unset) is held to the lint:
+# build a worker_stuck dossier from CLEAN raw material and assert it passes.
+unset DG_AUTHOR_CMD
+CLEAN_ASK='{"tldr":"A worker stopped at a decision only you can make.","ask":"What should happen next?","options":[{"option_id":"resume","label":"Resume the task","blast_radius":"Puts the task back in the queue once you have cleared the blocker.","consequence_block":{"creates":[],"unblocks":[],"labels":[],"status_changes":[]}},{"option_id":"stop","label":"Stop and re-scope","blast_radius":"Leaves the task parked until you re-scope it.","consequence_block":{"creates":[],"unblocks":[],"labels":[],"status_changes":[]}}],"recommendation":{"value":"resume","why":"Resume once you have decided; nothing failed."},"reversible":"Fully reversible until you pick an option."}'
+dg_from_worker_ask "$GOOD" b3lint readability-bead "$CLEAN_ASK" >/dev/null 2>&1
+ck  "the deterministic fallback dossier passes the readability lint (the fallback template is clean)" \
+    dg__readability_lint "$(GET b3lint)"
+ckn "the lint WOULD trip if jargon re-entered that real dossier body (guard works on the live shape)" \
+    dg__readability_lint "$(GET b3lint | jq -c '.body.tldr="slipped past the §7.6 guardrail (blocked-for-human)"')"
+unset DG_AUTHOR_CMD
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-dossier-gen (T5.2, claude-tools-9gt):  PASS=$PASS  FAIL=$FAIL"

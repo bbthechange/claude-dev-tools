@@ -413,6 +413,70 @@ dg__validate_dossier() {
 }
 
 # ════════════════════════════════════════════════════════════════════════════
+# READABILITY LINT (claude-tools-uxvl5; inbox-lifecycle §4.4) — ADVISORY, NOT a
+# write gate
+# ════════════════════════════════════════════════════════════════════════════
+# dg__readability_lint <dossier_envelope | body | §7.2_worker_ask JSON>
+#   The §4.4 cold-reader gate as a deterministic check: a non-author reading
+#   this dossier on a phone must learn what blew up / what they're deciding /
+#   what each option does in <30s WITHOUT contract jargon. It flags untranslated
+#   internal-jargon TOKENS in the HUMAN-FACING prose only — never the by-design
+#   machine fields (`trigger`/`kind`/`option_id`/`recommendation.value`/
+#   `authored_by_reason`), which are closed enums the Inbox renderer translates
+#   to plain English itself (web/inbox/inbox-view.js). It accepts any of three
+#   shapes: a full §4.1 envelope, a bare §5.1 body, or the raw §7.2 worker-ask
+#   sr_worker_ask emits — pulling whichever reader-facing fields are present.
+#
+#   DELIBERATELY ADVISORY. Per the write-gate/render-tolerance discipline
+#   (memory 4xe-write-gate-render-tolerance) the write path rejects on SCHEMA,
+#   the renderer stays tolerant, and NEITHER refuses a dossier on prose style.
+#   This lint is the §4.4 writer-side rule made checkable: it is asserted in
+#   tests (the deterministic fallback template MUST pass it) and is available to
+#   an author as a self-check. dg_generate / do_dossier_put NEVER call it — a
+#   jargon-y dossier still ships (honest-thin beats refused), it just fails CI.
+#
+#   Flagged token classes (unambiguous internal jargon with no place in
+#   human-facing prose, per the dossier-builder rule "don't write AD7/BC-34/§5.2"):
+#     • the section symbol  §
+#     • contract IDs:  AD<n>[.<n>]  ·  BC[-]<n>  ·  S-2  ·  T<n>[.<n>|<letter>]
+#       (the T-form is single-digit-after-T so ISO timestamps like `…T17:45`,
+#        which have two digits, are NOT matched)
+#     • internal enum/state/reason tokens:  worker_stuck · human_flag ·
+#       proactive_checkpoint · stage_gate · STUCK_NEEDS_HUMAN ·
+#       WORKER_STUCK_EXIT · TASK_NOT_CLOSED · DOSSIER_FALLBACK ·
+#       no_DG_AUTHOR_CMD · DG_AUTHOR_CMD · blocked-for-human
+#   0 = clean; 1 = jargon found (offending tokens listed on stderr);
+#   2 = unparseable input.
+dg__readability_lint() {
+  local j="${1:-}" prose hits
+  printf '%s' "$j" | jq -e 'type=="object"' >/dev/null 2>&1 || {
+    echo "dossier-gen: readability-lint — input not a JSON object (§4.4)" >&2; return 2; }
+  # Gather ONLY reader-facing strings, tolerant of all three shapes (envelope /
+  # bare body / raw §7.2 ask). `?` guards every optional path so a missing field
+  # is silently skipped, never an error. By-design enum fields are NOT gathered.
+  prose=$(printf '%s' "$j" | jq -r '
+    [ .body?.tldr, .tldr?,
+      (.body?.sections[]? | .heading, .prose),
+      .body?.full_detail?,
+      (.body?.diagrams[]?.caption),
+      (.items[]? | .framing?.ask, .framing?.why,
+                   .context_anchor?.where, .context_anchor?.expansion,
+                   .reversible?, .recommendation?.why,
+                   (.options[]? | .label, .blast_radius)),
+      .ask?, .reversible?, .recommendation?.why?,
+      (.options[]? | .label, .blast_radius)
+    ] | map(select(type=="string")) | .[]' 2>/dev/null) || prose=""
+  [[ -n "$prose" ]] || return 0   # nothing reader-facing to lint
+  local pat='§|\b(AD[0-9]+(\.[0-9]+)*|BC-?[0-9]+|S-2|T[0-9](\.[0-9]+|[a-z])?)\b|\b(worker_stuck|human_flag|proactive_checkpoint|stage_gate|STUCK_NEEDS_HUMAN|WORKER_STUCK_EXIT|TASK_NOT_CLOSED|DOSSIER_FALLBACK|no_DG_AUTHOR_CMD|DG_AUTHOR_CMD|blocked-for-human)\b'
+  hits=$(printf '%s\n' "$prose" | grep -oE "$pat" 2>/dev/null | sort -u | tr '\n' ' ')
+  if [[ -n "${hits// /}" ]]; then
+    echo "dossier-gen: readability-lint — untranslated internal jargon in human-facing prose (§4.4): ${hits% }" >&2
+    return 1
+  fi
+  return 0
+}
+
+# ════════════════════════════════════════════════════════════════════════════
 # The single AUTHORING seam — ONE pass, swappable (§0.2 / §0.C)
 # ════════════════════════════════════════════════════════════════════════════
 # dg__author <generation_input_json>  →  { body, items[] }  (§5 CONTENT only)
@@ -738,7 +802,7 @@ dg_from_worker_ask() {
                   end ),
                 "  " + $on + " --> " + $bn + "[\"" + (($o.blast_radius // "Blast radius unspecified") | mm) + "\"]"
               ] | flatten )
-        | [ { caption: "Decision fork — pick one option (§7.2 worker-stuck)",
+        | [ { caption: "What you are deciding and where each option leads",
               content: join("\n") } ]
       end' 2>/dev/null) || diagrams_json="[]"
   # Harden: only feed VALID JSON to the --argjson below. Any jq hiccup ⇒ the
@@ -750,21 +814,21 @@ dg_from_worker_ask() {
         --arg did "$did" --arg bref "$bref" --argjson diagrams "$diagrams_json" '
         { id:$did, kind:"decide", trigger:"worker_stuck",
           bead_ref:$bref, tier:"blocking", timer_fire_at:null,
-          source:{ tldr:(.tldr // .ask // "Worker reached a fork it must not resolve."),
+          source:{ tldr:(.tldr // .ask // "A worker stopped at a decision only you can make."),
                    ask:(.ask // .tldr // "Pick how to proceed."),
                    options:(.options // []),
                    diagrams:$diagrams,
                    recommendation:(.recommendation // null),
-                   reversible:(.reversible // "Unspecified by the worker ask (§7.2).") },
+                   reversible:(.reversible // "The worker did not say what is reversible here.") },
           items:[ { id:($did + "-d1"),
                     kind:"pick-option",
                     framing:{ ask:(.ask // .tldr // "Pick how the worker should proceed."),
-                              why:(.recommendation.why // "The worker reached a decision it must not make unilaterally (§7.2).") },
-                    context_anchor:{ where:("Worker fork on " + $bref + " — a blocked decision the runner cannot resolve (§7.2 worker-driven STUCK)."),
-                                     expansion:(.tldr // .ask // "The worker emitted a structured ask and exited; this is the pick-one decision it could not make.") },
+                              why:(.recommendation.why // "The worker hit a decision it is not allowed to make on its own, so it stopped and handed it to you.") },
+                    context_anchor:{ where:("A worker on " + $bref + " stopped at a decision the runner cannot make on its own and parked the task for you."),
+                                     expansion:(.tldr // .ask // "The worker wrote down the choice it was facing and stopped; this is the decision it could not make on its own.") },
                     options:(.options // []),
                     recommendation:(.recommendation // null),
-                    reversible:(.reversible // "Unspecified by the worker ask (§7.2).") } ] }' 2>/dev/null) || gi=""
+                    reversible:(.reversible // "The worker did not say what is reversible here.") } ] }' 2>/dev/null) || gi=""
   [[ -n "$gi" ]] || { echo "dossier-gen: reject — could not build generation input from the §7.2 ask" >&2; return 3; }
   dg_generate "$bearer" "$gi"
 }

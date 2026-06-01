@@ -108,6 +108,20 @@ Three facts explain almost everything here:
   ⇒ the MCP server falls back to the deterministic jq path and ships a
   "FALLBACK AUTHOR" badge. Emitting `{"body":{},"items":[]}` to satisfy the JSON
   contract is the WRONG response; refuse honestly instead.
+- **Readability gate (claude-tools-uxvl5; inbox-lifecycle §4.4).** The builder
+  prompt rule #4 is now the explicit cold-reader gate: a non-author must learn
+  what blew up / what to decide / what each option does in <30s with no jargon —
+  *never name an internal section/ID/state without translating it in the same
+  sentence.* It is **checkable**: `dg__readability_lint` (in `lib/dossier-gen.sh`)
+  flags untranslated jargon (`§`, contract IDs, raw enum/state tokens) in the
+  reader-facing prose, and the deterministic fallback template
+  (`sr_worker_ask` + `dg_from_worker_ask`) is held to it in tests. **Advisory,
+  not a write gate** (4xe write-gate/render-tolerance: write rejects on schema,
+  not prose style). The `no_DG_AUTHOR_CMD` fallback **still fires** for any
+  `dg__author` caller without `DG_AUTHOR_CMD` wired (it's per-call-site, not
+  global) and v2's `_drive_blocked_for_human` ships a body-less stub — both are a
+  filed follow-up; uxvl5 only fixed the *readability* of the fallback, not how
+  often it fires.
 
 ## Common changes (recipes)
 

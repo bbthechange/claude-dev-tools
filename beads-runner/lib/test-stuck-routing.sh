@@ -260,6 +260,32 @@ eq   "fork STAYS parked (bfh resolved:false — no false resume / no re-dispatch
 ckn  "NO resume-answer captured (a dismiss carries no decision to resume WITH)" \
        sr_resume_answer "$DSM"
 
+# ── claude-tools-uxvl5 (inbox-lifecycle §4.4) — READABILITY GATE on the
+#    deterministic fallback template + the residual no_DG_AUTHOR_CMD jargon bug.
+#    When the dossier-builder agent is unreachable, sr_worker_ask's raw material
+#    IS the dossier Brian reads cold on his phone (the jq fallback lifts its
+#    tldr/ask/options straight into the §5 body). The OLD text shipped contract
+#    jargon — "slipped past the §7.6 guardrail", "blocked-for-human", "(§5.3 =
+#    T5.3)" — exactly the claude-tools-7xl defect. This is the failing-THEN-
+#    fixed assertion: dg__readability_lint FLAGS the old text and PASSES both
+#    the current sr_worker_ask AND the full dossier it generates.
+echo ""
+echo "── claude-tools-uxvl5 — readability gate on the fallback template ──────────"
+# (a) FAILING half — the pre-fix sr_worker_ask jargon, captured verbatim, MUST trip the lint.
+OLD_FALLBACK='{"tldr":"A backstop fired on claude-tools-7xl: the worker reached an interactive fork it must not resolve and slipped past the §7.6 guardrail.","ask":"How should the runner proceed on claude-tools-7xl (a human-decision fork)?","options":[{"option_id":"resume","label":"resume","blast_radius":"Re-queues the task as-is once a human resolves the fork."},{"option_id":"abandon","label":"abandon","blast_radius":"Leaves the bead blocked-for-human pending a human re-scope."}],"recommendation":{"value":"resume","why":"resume once decided (§7.5 retry-exempt)."},"reversible":"Fully reversible — no consequence is applied until a human picks an option (§5.3 = T5.3)."}'
+ckn  "readability lint FLAGS the OLD fallback jargon (§ / contract-IDs / state tokens)" \
+       dg__readability_lint "$OLD_FALLBACK"
+# (b) FIXED half — the current sr_worker_ask raw material passes the same lint.
+ck   "readability lint PASSES the current sr_worker_ask raw material" \
+       dg__readability_lint "$(sr_worker_ask "$T")"
+# (c) and the FULL worker_stuck dossier it generates (tldr + sections + diagram
+#     caption + full_detail + every item field) passes too — the deterministic
+#     fallback (DG_AUTHOR_CMD unset in this harness) is what authored it here.
+RD_DID="$(sr_dossier_id_for readability-fork)"
+dg_from_worker_ask "$GOOD" "$RD_DID" readability-fork "$(sr_worker_ask readability-fork)" >/dev/null 2>&1
+ck   "readability lint PASSES the full generated worker_stuck dossier" \
+       dg__readability_lint "$(GET "$RD_DID")"
+
 echo ""
 echo "── stuck-routing: $PASS passed, $FAIL failed ────────────────────────────"
 [[ $FAIL -eq 0 ]] && { echo "ALL GREEN"; exit 0; } || { echo "RED"; exit 1; }
