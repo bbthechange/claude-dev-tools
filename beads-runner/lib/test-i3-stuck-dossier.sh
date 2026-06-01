@@ -53,6 +53,11 @@
 # other lib/test-*.sh. Run:  bash beads-runner/lib/test-i3-stuck-dossier.sh
 set -u
 
+# claude-tools-69u8: isolate the dossier-author audit log so a STANDALONE run
+# doesn't pollute the real $HOME/.cache production telemetry (the gate sets it
+# itself; honor that). See run-tests.sh / conformance/lib/harness.sh.
+export DG_AUDIT_LOG="${DG_AUDIT_LOG:-${TMPDIR:-/tmp}/dg-audit-test-i3.$$.jsonl}"
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CF_DIR="$(cd "$HERE/../cf" && pwd)"
 RUNNER="$HERE/../run-beads-tasks.sh"

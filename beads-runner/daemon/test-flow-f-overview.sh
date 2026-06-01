@@ -160,6 +160,12 @@ eq "$(printf '%s' "$gi" | jq -r '.source.full_detail')" "…stand-alone prose…
 eq "$(printf '%s' "$gi" | jq -r '.source.sections|length')" "1"             "C10: source.sections preserved"
 eq "$(printf '%s' "$gi" | jq -r '.items|length')"  "1"                      "C11: items[] preserved"
 eq "$(printf '%s' "$gi" | jq -r '.items[0].kind')" "fyi-objectable"         "C12: item kind preserved as fyi-objectable"
+# claude-tools-69u8: the body was ALREADY authored by the dossier-builder
+# spawned upstream, so the gi carries the §xdo pre-author hint — dg__author
+# badges it authored_by="agent" and SKIPS the misleading no_DG_AUTHOR_CMD
+# fallback incident (the loudest false-positive in the audit log).
+eq "$(printf '%s' "$gi" | jq -r '.source.authored_by')" "agent"            "C12b: source.authored_by='agent' (§xdo pre-author hint set)"
+eq "$(printf '%s' "$gi" | jq -r '.source.authored_by_reason')" "flow_f_overview_builder" "C12c: source.authored_by_reason names the builder"
 
 # Stage-label override is preserved as a daemon-side observation knob (e.g.,
 # extending to stage:impl), but the §4.1 trigger field is the FROZEN enum

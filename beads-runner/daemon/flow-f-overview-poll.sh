@@ -261,7 +261,17 @@ daemon_flow_f__build_generation_input() {
           tldr:        ($body.tldr // ""),
           sections:    ($body.sections // []),
           diagrams:    ($body.diagrams // []),
-          full_detail: ($body.full_detail // "")
+          full_detail: ($body.full_detail // ""),
+          # claude-tools-69u8: this body was ALREADY authored by the dossier-
+          # builder agent spawned above (daemon_flow_f_dispatch_one). Stamp the
+          # §xdo pre-author hint so dg__author treats its jq pass as shape-
+          # coercion (NOT a degraded fallback): it badges authored_by="agent"
+          # and SKIPS the misleading DOSSIER_FALLBACK:no_DG_AUTHOR_CMD incident.
+          # Without this, every Flow F overview was logged as a degraded no-
+          # author fallback even though the builder authored it (the loudest
+          # real no_DG_AUTHOR_CMD producer in the audit log).
+          authored_by:        "agent",
+          authored_by_reason: "flow_f_overview_builder"
         },
         items: $items }
   ' 2>/dev/null

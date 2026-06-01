@@ -47,6 +47,20 @@ set -u
 
 BR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── claude-tools-69u8: isolate the dossier-author audit log for the WHOLE gate.
+# Every tier that exercises dg__author (the lib/dossier-gen tests, the stuck/
+# flow-g/notification libs, the conformance harness running run-beads-tasks.sh)
+# would otherwise append to the REAL $HOME/.cache/claude-tools/dossier-author-
+# audit.jsonl. That polluted the production telemetry so badly that the
+# lifetime "no_DG_AUTHOR_CMD / agent_unavailable" counts were ~95% test fixtures
+# (analysis-T1, swap, stuck-stuck-*, …) — the audit log is supposed to be the
+# B3/claude-tools-95m signal for a silently-broken author, and test noise blinds
+# it. Redirect to a gate-scoped, double-gitignored runner-logs path so child
+# test processes inherit it; the real telemetry stays clean. (harness.sh also
+# isolates it per-WORKDIR for standalone conformance runs.)
+export DG_AUDIT_LOG="${DG_AUDIT_LOG:-$BR_DIR/../.beads/runner-logs/.test-dossier-author-audit.jsonl}"
+mkdir -p "$(dirname "$DG_AUDIT_LOG")" 2>/dev/null || true
+
 # ── gate-invocation log (claude-tools-d315) ──────────────────────────────────
 # Append ONE record per gate ENTRY — before arg-parsing and the singleton lock —
 # so EVERY invocation self-identifies its caller: a full run, a --tier/--changed

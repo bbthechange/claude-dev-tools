@@ -48,6 +48,13 @@ H_init_test() {
   # fallback runs deterministically. XDG_CACHE_HOME isolated defensively too.
   export BEADS_DAEMON_CACHE_DIR="$WORKDIR/.daemon-cache"
   export XDG_CACHE_HOME="$WORKDIR/.cache"
+  # claude-tools-69u8: isolate the dossier-author audit log per WORKDIR. The
+  # runner's §7.3 stuck path + §G analysis path call dg__author, whose audit
+  # default is $HOME/.cache/claude-tools/dossier-author-audit.jsonl — keyed on
+  # $HOME, NOT XDG_CACHE_HOME, so the line above did NOT redirect it and every
+  # conformance run polluted the REAL production telemetry (analysis-T1, stuck-
+  # stuck-*, …). Pin it into WORKDIR so the B3 audit signal stays trustworthy.
+  export DG_AUDIT_LOG="$WORKDIR/.dossier-author-audit.jsonl"
   mkdir -p "$BD_STORE" "$HARNESS_OUT" "$BEADS_DAEMON_CACHE_DIR" "$XDG_CACHE_HOME"
   : > "$BD_AUDIT"; : > "$HARNESS_CLAUDE_COUNT"
   mkdir -p "$WORKDIR/.beads"

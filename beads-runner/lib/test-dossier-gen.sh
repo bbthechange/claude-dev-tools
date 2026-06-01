@@ -48,6 +48,12 @@ ne()  { [[ "$1" != "$2" ]]; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export CO_STORE="$WORK/store"
+# claude-tools-69u8: isolate the dossier-author audit log from the TOP — the §5
+# schema tests below (the `swap`/`swapbad` DG_AUTHOR_CMD fixtures) call
+# dg_generate BEFORE the B3 section's own export, so without this they leaked
+# fixture rows into the user's REAL $HOME/.cache audit log. The B3 section
+# re-`rm`s this same path to assert on fresh lines.
+export DG_AUDIT_LOG="$WORK/dossier-author-audit.jsonl"
 unset CO_EXPECTED_TOKEN PRINCIPAL_V1 DG_AUTHOR_CMD 2>/dev/null || true
 
 # shellcheck source=/dev/null
@@ -396,9 +402,8 @@ ck "emitted Items: response=null, applied_at=null (substrate owns lifecycle)" \
 
 echo ""
 echo "── B3 (claude-tools-95m) — jq fallback is explicit, observable, badged ──"
-# Isolate the audit log per-test so we don't pollute the user's real cache and
-# can assert on specific lines deterministically.
-export DG_AUDIT_LOG="$WORK/dossier-author-audit.jsonl"
+# DG_AUDIT_LOG is isolated to $WORK from the top (claude-tools-69u8). Clear it
+# here so the B3 assertions below see ONLY their own fresh fixture rows.
 rm -f "$DG_AUDIT_LOG"
 unset DG_AUTHOR_CMD 2>/dev/null || true
 
@@ -530,6 +535,62 @@ ck "pre-authored gi ⇒ body.authored_by_reason reflects the hint" \
 ckn "pre-authored gi ⇒ NO no_DG_AUTHOR_CMD incident fired (jq is shape-coercer here)" \
     grep -q '^b3xdo|DOSSIER_FALLBACK' "$INCIDENT_MARKER2"
 unset -f record_incident
+
+# (9) claude-tools-69u8: the CHOKEPOINT auto-wire (DG_AUTHOR_AUTOWIRE). A runner
+#     sets it ONCE at startup so every dg__author caller reaches the real-agent
+#     bridge instead of per-call-site wiring — but it stays HERMETIC (off unless
+#     opted in), claude-gated, and skip-when-pre-authored. ALL fakes here:
+#     DG_AUTHOR_BRIDGE_PATH points at a stub "bridge" that emits {body,items}
+#     WITHOUT spawning claude, and CLAUDE_BIN points at a present/absent stub —
+#     so no real claude is ever invoked and the suite stays offline.
+FAKE_CLAUDE="$WORK/fake-claude"
+printf '#!/bin/bash\nexit 0\n' > "$FAKE_CLAUDE"; chmod +x "$FAKE_CLAUDE"
+unset DG_AUTHOR_CMD DG_AUTHOR_AUTOWIRE CLAUDE_BIN DG_AUTHOR_BRIDGE_PATH
+
+# (9a) default OFF: AUTOWIRE unset ⇒ pure jq path EVEN with a bridge present and
+#      claude reachable (the hermetic-unit guarantee — test (1) generalized).
+CLAUDE_BIN="$FAKE_CLAUDE" DG_AUTHOR_BRIDGE_PATH="$GOOD_AUTHOR" \
+  dg_generate "$GOOD" "$(gi b3aw0 worker_stuck blocking "$SRC_STRUCT" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "autowire OFF by default ⇒ jq fallback (authored_by='fallback')" \
+   eq "$(JF b3aw0 '.body.authored_by')" "fallback"
+ck "autowire OFF by default ⇒ reason='no_DG_AUTHOR_CMD'" \
+   eq "$(JF b3aw0 '.body.authored_by_reason')" "no_DG_AUTHOR_CMD"
+
+# (9b) AUTOWIRE=1 + bridge executable + claude reachable ⇒ the chokepoint wires
+#      the bridge ⇒ agent path (authored_by='agent', agent_ok) with NO per-call-
+#      site DG_AUTHOR_CMD export anywhere.
+DG_AUTHOR_AUTOWIRE=1 CLAUDE_BIN="$FAKE_CLAUDE" DG_AUTHOR_BRIDGE_PATH="$GOOD_AUTHOR" \
+  dg_generate "$GOOD" "$(gi b3aw1 worker_stuck blocking "$SRC_STRUCT" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "autowire ON + bridge + claude ⇒ agent path (authored_by='agent')" \
+   eq "$(JF b3aw1 '.body.authored_by')" "agent"
+ck "autowire ON ⇒ audit logs agent_ok for b3aw1" \
+   grep -q '"dossier_id":"b3aw1".*"reason":"agent_ok"' "$DG_AUDIT_LOG"
+
+# (9c) AUTOWIRE=1 + bridge present but claude UNREACHABLE ⇒ auto-wire SKIPS (no
+#      pointless spawn, no false 'agent' badge) ⇒ jq path / no_DG_AUTHOR_CMD.
+DG_AUTHOR_AUTOWIRE=1 CLAUDE_BIN="$WORK/no-such-claude" DG_AUTHOR_BRIDGE_PATH="$GOOD_AUTHOR" \
+  dg_generate "$GOOD" "$(gi b3aw2 worker_stuck blocking "$SRC_STRUCT" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "autowire ON but claude unreachable ⇒ jq fallback (authored_by='fallback')" \
+   eq "$(JF b3aw2 '.body.authored_by')" "fallback"
+ck "autowire ON but claude unreachable ⇒ reason='no_DG_AUTHOR_CMD'" \
+   eq "$(JF b3aw2 '.body.authored_by_reason')" "no_DG_AUTHOR_CMD"
+
+# (9d) AUTOWIRE=1 + bridge + claude reachable but gi is PRE-AUTHORED ⇒ skip the
+#      auto-wire (don't re-spawn a builder over an already-authored body) ⇒ the
+#      §xdo hint wins, no agent re-author (the Flow F overview shape).
+DG_AUTHOR_AUTOWIRE=1 CLAUDE_BIN="$FAKE_CLAUDE" DG_AUTHOR_BRIDGE_PATH="$GOOD_AUTHOR" \
+  dg_generate "$GOOD" "$(gi b3aw3 stage_gate blocking "$SRC_PREAUTH" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "autowire ON but pre-authored ⇒ no double-spawn (authored_by_reason = the hint)" \
+   eq "$(JF b3aw3 '.body.authored_by_reason')" "mcp_polished_builder"
+
+# (9e) an explicit DG_AUTHOR_CMD WINS over autowire (the MCP / per-call override
+#      seam). Bridge path is bogus; the explicit author is what runs.
+DG_AUTHOR_AUTOWIRE=1 CLAUDE_BIN="$FAKE_CLAUDE" DG_AUTHOR_BRIDGE_PATH="$WORK/no-such-bridge" \
+  DG_AUTHOR_CMD="$GOOD_AUTHOR" dg_generate "$GOOD" \
+  "$(gi b3aw4 worker_stuck blocking "$SRC_STRUCT" "[$(item_po d1)]")" >/dev/null 2>&1
+ck "explicit DG_AUTHOR_CMD overrides autowire (uses the explicit author body)" \
+   eq "$(JF b3aw4 '.body.tldr')" "agent-authored tldr"
+unset DG_AUTHOR_CMD DG_AUTHOR_AUTOWIRE CLAUDE_BIN DG_AUTHOR_BRIDGE_PATH
 
 # Clean up so later test runs / metric scripts don't see this run's noise.
 unset DG_AUTHOR_CMD DG_AUDIT_LOG

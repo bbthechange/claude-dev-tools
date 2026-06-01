@@ -514,6 +514,9 @@ dg__author() {
   local gi="${1:-}" sv; sv="$(dg__sv)"
   local did reason out rc t0 elapsed_ms timeout_sec
   local pre_author_by pre_author_reason
+  # claude-tools-69u8: localize the authoring-seam env so the chokepoint
+  # auto-wire below is PER-CALL — it never leaks to the caller or a later call.
+  local DG_AUTHOR_CMD="${DG_AUTHOR_CMD:-}" DG_AUTHOR_TIMEOUT_SEC="${DG_AUTHOR_TIMEOUT_SEC:-}"
   did="$(printf '%s' "$gi" | jq -r '.id // ""' 2>/dev/null)" || did=""
   # claude-tools-xdo: optional caller-supplied AUTHORING HINT on .source. When
   # the gi was assembled from a pre-authored body (the MCP write_polished path
@@ -524,6 +527,28 @@ dg__author() {
   # builder, not DG_AUTHOR_CMD).
   pre_author_by="$(printf '%s' "$gi" | jq -r '.source.authored_by // ""' 2>/dev/null)" || pre_author_by=""
   pre_author_reason="$(printf '%s' "$gi" | jq -r '.source.authored_by_reason // ""' 2>/dev/null)" || pre_author_reason=""
+  # ── claude-tools-69u8: GLOBAL wiring at the ONE chokepoint ──────────────────
+  # Historically DG_AUTHOR_CMD was exported PER-CALL-SITE (run-beads-tasks.sh
+  # :1125/:2375), so every OTHER dg__author caller (the Flow F overview, the v2
+  # STUCK path, any future site) silently fell to the jq path and fired
+  # DOSSIER_FALLBACK:no_DG_AUTHOR_CMD. Default it HERE instead — once — to the
+  # colocated real-agent bridge, GATED so it stays HERMETIC and cheap:
+  #   • opt-in  DG_AUTHOR_AUTOWIRE=1  — the offline unit tests never set it, so
+  #     they keep the pure jq path + the no_DG_AUTHOR_CMD assertion (test (1)).
+  #     A runner/daemon turns it ON once at startup (kill-switch: set it to 0).
+  #   • claude reachable — else the bridge would just fail to agent_unavailable;
+  #     skipping keeps the jq path (no pointless spawn, no false "agent" badge).
+  #   • NOT pre-authored — a gi whose .source already carries a builder body
+  #     (the Flow F / MCP §xdo path) must NOT re-spawn a second builder.
+  #   • bridge executable — overridable via DG_AUTHOR_BRIDGE_PATH (prod swap +
+  #     hermetic test seam); defaults to the sibling lib/dg-author-bridge.sh.
+  if [[ -z "$DG_AUTHOR_CMD" && "${DG_AUTHOR_AUTOWIRE:-0}" == "1" && -z "$pre_author_by" ]]; then
+    local _dg_bridge="${DG_AUTHOR_BRIDGE_PATH:-$(dg__lib_dir)/dg-author-bridge.sh}"
+    if [[ -x "$_dg_bridge" ]] && command -v "${CLAUDE_BIN:-claude}" >/dev/null 2>&1; then
+      DG_AUTHOR_CMD="$_dg_bridge"
+      DG_AUTHOR_TIMEOUT_SEC="${DG_AUTHOR_TIMEOUT_SEC:-300}"
+    fi
+  fi
   if [[ -n "${DG_AUTHOR_CMD:-}" ]]; then
     # Provider-agnostic swap (§0.2): a real model emits the same §5 CONTENT.
     # Still ONE call; output goes through the SAME frozen §5 gate downstream.

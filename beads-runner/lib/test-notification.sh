@@ -45,6 +45,10 @@ eq()  { [[ "$1" == "$2" ]]; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export CO_STORE="$WORK/store"
+# claude-tools-69u8: isolate the dossier-author audit log so a STANDALONE run
+# doesn't pollute the real $HOME/.cache production telemetry (the gate sets it
+# itself; honor that). See run-tests.sh / conformance/lib/harness.sh.
+export DG_AUDIT_LOG="${DG_AUDIT_LOG:-$WORK/.dossier-author-audit.jsonl}"
 unset CO_EXPECTED_TOKEN PRINCIPAL_V1 2>/dev/null || true
 
 # shellcheck source=/dev/null

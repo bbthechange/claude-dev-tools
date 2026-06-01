@@ -126,6 +126,18 @@ its `test-<x>.sh`, mirror in the matching `cf/src` module (`dossier.js`,
 that reads generation_input JSON on stdin and emits `{body,items}` (see
 `dg-author-bridge.sh`). Leave it unset for the deterministic jq path.
 
+**Wire the real author for a whole process (claude-tools-69u8).** Don't export
+`DG_AUTHOR_CMD` per-call-site — the bridge is now defaulted at the ONE
+`dg__author` chokepoint. A runner/daemon opts the whole process in with
+`export DG_AUTHOR_AUTOWIRE=1` at startup (both runners do; kill-switch: `=0`);
+`dg__author` then auto-resolves the colocated `dg-author-bridge.sh` **iff**
+claude is reachable AND `.source` isn't already pre-authored (the §xdo Flow F /
+MCP case must not double-spawn a builder). Opt-in is OFF by default so the
+offline unit tests keep the pure jq path. Override the bridge with
+`DG_AUTHOR_BRIDGE_PATH` (prod swap + hermetic test seam). The v2 `runner.sh`
+`_drive_blocked_for_human` authors its STUCK dossier through this seam in a
+sourced subshell (it used to ship a body-less `co_store_put` stub).
+
 **Always run the offline gate before `bd close`:**
 ```bash
 bash beads-runner/run-tests.sh --changed   # fast pre-close; tiers touched by the diff
@@ -147,6 +159,15 @@ the oracle/conformance runs deterministic and offline. The live-Worker probe
   byte drop-in; go through the adapter.
 - **test-i3 PART C `nr=1 bead=null` is a known keychain-token harness artifact**,
   not a regression (`bd memories`).
+- **The dg__author AUDIT LOG must be isolated in tests (claude-tools-69u8).** Its
+  default is `$HOME/.cache/claude-tools/dossier-author-audit.jsonl` — keyed on
+  `$HOME`, NOT `XDG_CACHE_HOME` — so tests that exercise `dg__author` (the lib
+  tests, the conformance harness running run-beads-tasks.sh) silently polluted
+  the REAL production telemetry until ~95% of the lifetime fire counts were test
+  fixtures (`analysis-T1`, `swap`, `stuck-stuck-*`). `run-tests.sh` + the
+  conformance `harness.sh` + `test-dossier-gen.sh` now pin `DG_AUDIT_LOG` to a
+  scratch path. Any NEW test that drives `dg__author` must set `DG_AUDIT_LOG`
+  (run-tests.sh covers it when run via the gate).
 - **Loop-hygiene libs guard recurring footguns:** the runner never branches, so
   `git-pin-main.sh` re-pins HEAD to trunk each iteration; a daemon-stripped PATH
   resolves `claude` to Node v25 which crashes it (`node25-prime.sh`); SIGKILL'd

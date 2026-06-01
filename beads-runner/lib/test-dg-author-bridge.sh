@@ -13,9 +13,10 @@
 #      "agent" (not "fallback"), failure path falls through to the jq path
 #      with body.authored_by="fallback" + the right reason.
 #
-# Also grep-asserts the runner's call site exports DG_AUTHOR_CMD in the
-# sr_route_stuck subshell so drift between the bridge and the wiring is
-# caught loudly.
+# Also grep-asserts the claude-tools-69u8 chokepoint wiring: the lib resolves
+# the colocated bridge, both runners opt in via DG_AUTHOR_AUTOWIRE at startup,
+# and NO per-call-site `export DG_AUTHOR_CMD=` has crept back — so drift between
+# the bridge and the (now centralized) wiring is caught loudly.
 #
 # Run:  bash beads-runner/lib/test-dg-author-bridge.sh
 set -uo pipefail
@@ -23,6 +24,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE="$HERE/dg-author-bridge.sh"
 RUNNER="$HERE/../run-beads-tasks.sh"
+V2RUNNER="$HERE/../runner.sh"
 DG_LIB="$HERE/dossier-gen.sh"
 BUILDER_PROMPT="$HERE/../agents/dossier-builder.system.md"
 
@@ -34,6 +36,10 @@ bad() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL+1)); }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/.beads/runner-logs"
+# claude-tools-69u8: isolate the dossier-author audit log so a STANDALONE run
+# doesn't pollute the real $HOME/.cache production telemetry (the gate sets it
+# itself; honor that). See run-tests.sh / conformance/lib/harness.sh.
+export DG_AUDIT_LOG="${DG_AUDIT_LOG:-$TMP/.dossier-author-audit.jsonl}"
 
 GI='{"id":"stuck-claude-tools-test","kind":"decide","trigger":"worker_stuck","bead_ref":"claude-tools-test","tier":"blocking","source":{"tldr":"raw","ask":"how should we proceed?","options":[],"recommendation":null,"reversible":""},"items":[]}'
 
@@ -172,40 +178,43 @@ echo "── PART B — end-to-end via dg__author ──────────
   || bad "dg__author + bridge refusal did NOT fall through correctly"
 
 echo ""
-echo "── PART C — runner wiring (drift catch) ──────────────────────────────"
+echo "── PART C — runner/chokepoint wiring (drift catch) ───────────────────"
 
-# The runner must export DG_AUTHOR_CMD inside the sr_route_stuck command
-# substitution subshell. Grep the load-bearing markers.
-grep -q 'dg-author-bridge.sh' "$RUNNER" \
-  && ok "runner resolves the bridge path" \
-  || bad "runner does NOT reference dg-author-bridge.sh"
+# claude-tools-69u8: the bridge is wired ONCE at the dg__author CHOKEPOINT now,
+# not per-call-site. The contract these grep-asserts pin:
+#   (1) the lib (dossier-gen.sh dg__author) resolves the colocated bridge,
+#   (2) BOTH runners opt the whole process in via DG_AUTHOR_AUTOWIRE at startup,
+#   (3) the runners still bump the timeout + set the bridge workspace,
+#   (4) NO runner re-introduces a per-call-site `export DG_AUTHOR_CMD=` (that
+#       was the pre-69u8 pattern this bead removed — its return would mean the
+#       centralization regressed).
 
-# Loosened — semantic is "DG_AUTHOR_CMD is exported", not "via a specific
-# helper-var name". The structural scoping check below carries the
-# load-bearing assertion.
-grep -qE '^[[:space:]]*export DG_AUTHOR_CMD=' "$RUNNER" \
-  && ok "runner exports DG_AUTHOR_CMD" \
-  || bad "runner does NOT export DG_AUTHOR_CMD"
+grep -q 'dg-author-bridge.sh' "$DG_LIB" \
+  && ok "the chokepoint lib (dossier-gen.sh) resolves the bridge path" \
+  || bad "dossier-gen.sh dg__author does NOT reference dg-author-bridge.sh"
+
+grep -qE '^[[:space:]]*export DG_AUTHOR_AUTOWIRE=' "$RUNNER" \
+  && ok "v1 runner opts the process into the chokepoint auto-wire (DG_AUTHOR_AUTOWIRE)" \
+  || bad "v1 runner does NOT export DG_AUTHOR_AUTOWIRE"
+
+grep -qE '^[[:space:]]*export DG_AUTHOR_AUTOWIRE=' "$V2RUNNER" \
+  && ok "v2 runner opts the process into the chokepoint auto-wire (DG_AUTHOR_AUTOWIRE)" \
+  || bad "v2 runner does NOT export DG_AUTHOR_AUTOWIRE"
 
 grep -q 'export DG_AUTHOR_TIMEOUT_SEC' "$RUNNER" \
-  && ok "runner bumps DG_AUTHOR_TIMEOUT_SEC (90s default is below builder's typical runtime)" \
-  || bad "runner does NOT bump DG_AUTHOR_TIMEOUT_SEC"
+  && ok "v1 runner bumps DG_AUTHOR_TIMEOUT_SEC (90s default is below builder's typical runtime)" \
+  || bad "v1 runner does NOT bump DG_AUTHOR_TIMEOUT_SEC"
 
 grep -q 'export DG_AUTHOR_BRIDGE_WORKSPACE' "$RUNNER" \
-  && ok "runner exports DG_AUTHOR_BRIDGE_WORKSPACE" \
-  || bad "runner does NOT export DG_AUTHOR_BRIDGE_WORKSPACE"
+  && ok "v1 runner exports DG_AUTHOR_BRIDGE_WORKSPACE" \
+  || bad "v1 runner does NOT export DG_AUTHOR_BRIDGE_WORKSPACE"
 
-# The exports must be inside the sr_route_stuck command substitution subshell
-# (so they don't leak). Approximate: the exports appear between SR_DID="$( and
-# the matching sr_route_stuck call.
-awk '
-  /SR_DID="\$\(/ { in_block=1 }
-  in_block && /sr_route_stuck/ { in_block=0; found_call=1 }
-  in_block && /export DG_AUTHOR_CMD=/ { found_export=1 }
-  END { exit !(found_export && found_call) }
-' "$RUNNER" \
-  && ok "DG_AUTHOR_CMD export is inside the sr_route_stuck subshell (scoped, not leaked)" \
-  || bad "DG_AUTHOR_CMD export is NOT correctly scoped to sr_route_stuck subshell"
+# Drift-catch the OTHER way: the per-call-site export must NOT have crept back.
+if grep -qE '^[[:space:]]*export DG_AUTHOR_CMD=' "$RUNNER" "$V2RUNNER"; then
+  bad "a per-call-site 'export DG_AUTHOR_CMD=' reappeared in a runner (69u8 centralized this to the chokepoint)"
+else
+  ok "no per-call-site 'export DG_AUTHOR_CMD=' in either runner (wiring stays at the chokepoint)"
+fi
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"

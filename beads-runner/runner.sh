@@ -411,6 +411,17 @@ RUNNER_ID="$(la_runner_id)"
 PRINCIPAL="$(co_authenticate "${COORDINATOR_TOKEN:-stub-bearer-token}")" \
   || { PRINCIPAL="$(co__PRINCIPAL_V1)"; degrade AUTH_DEGRADED "co_authenticate rejected token; using §9.1 constant principal"; }
 
+# ── claude-tools-69u8: wire the dossier-builder bridge ONCE at the dg__author
+#    chokepoint for the whole v2 runner process (same opt-in sentinel + kill-
+#    switch as v1 run-beads-tasks.sh). _drive_blocked_for_human authors the
+#    §7.3 STUCK dossier in a sourced subshell (below); these exports give that
+#    subshell's dg__author the real-agent bridge when claude is reachable, the
+#    labeled-degraded jq author otherwise. Set DG_AUTHOR_AUTOWIRE=0 to force the
+#    pure jq path everywhere.
+export DG_AUTHOR_AUTOWIRE="${DG_AUTHOR_AUTOWIRE:-1}"
+export DG_AUTHOR_TIMEOUT_SEC="${DG_AUTHOR_TIMEOUT_SEC:-300}"
+export DG_AUTHOR_BRIDGE_WORKSPACE="${DG_AUTHOR_BRIDGE_WORKSPACE:-$PWD}"
+
 # ── Mutable machine state (the ONLY state; no scattered flags) ────────────────
 STATE=""                 # current state (enumerated below)
 CANDIDATE_ID=""          # task chosen this cycle
@@ -642,7 +653,7 @@ $PROMPT_EXTRA"
 # claude-tools-40c; the §2 stub here is a no-op) — this child makes only the
 # KEYED CALL and never reimplements that dedup in the runner.
 _drive_blocked_for_human() {
-  local tref="$1" rec
+  local tref="$1" rec authored=0
   # Work-plane projection — best-effort + idempotent (bd is fail-open here).
   safe_capture BD_UNAVAILABLE "" -- bd update "$tref" --status=blocked >/dev/null
   # `bd human <id>` no-ops in this bd build (human = command group; the
@@ -657,16 +668,59 @@ _drive_blocked_for_human() {
   # PRIMARY path's compliant worker raises it; the backstop slipped past the
   # guardrail and never did, so the runner-side drive is load-bearing here).
   bd human "$tref" >/dev/null 2>&1 || true
-  # Control-plane: a contract-shaped (§4.1) worker_stuck Dossier record keyed
-  # on task_ref (§0.4 dossier-level double-trigger dedup key). The Coordinator
-  # owns the create-once dedup + the control→work reconcile (S-2) — stubbed
-  # no-op here; the keyed call is what this child owns.
-  rec="$(jq -cn --arg tr "$tref" --arg p "$PRINCIPAL" \
-    '{schema_version:1,trigger:"worker_stuck",bead_ref:$tr,task_ref:$tr,principal:$p}' \
-    2>/dev/null)" || rec=""
-  if [[ -n "$rec" ]]; then
-    co_store_put dossier "$rec" >/dev/null 2>&1 \
-      || degrade DOSSIER_STORE "co_store_put dossier failed for $tref — §7.3 bead drive already done (fork will not rot); the Coordinator reconcile (S-2) is the truth"
+  # Control-plane: AUTHOR a contract-shaped (§4.1) worker_stuck Dossier — a real
+  # §5 body+items, NOT a body-less stub. claude-tools-69u8: the v2 path used to
+  # write ONLY {schema_version,trigger,bead_ref,task_ref,principal} via
+  # co_store_put and never called dg__author, so a v2 STUCK fork shipped neither
+  # an agent body NOR a jq-fallback body. Author it the way v1 does — in a
+  # sourced subshell (runner.sh does not source the dossier stack), via
+  # dg_from_worker_ask → dg__author (real agent when claude is reachable per
+  # DG_AUTHOR_AUTOWIRE set at startup, labeled-degraded jq author otherwise).
+  # §7.4 dedup id = stuck-<task_ref> collapses re-triggers to ONE dossier; the
+  # bead drive above is the guaranteed §7.3 work-plane projection. Mirrors the
+  # daemon Flow F engine-write subshell (daemon/flow-f-overview-poll.sh).
+  if [[ -f "$RUNNER_DIR/lib/stuck-routing.sh" ]]; then
+    if (
+      set +e
+      : "${CO_STORE:=$PWD/.beads/runner-logs/.co-store}"; export CO_STORE
+      export PRINCIPAL
+      [[ -n "${COORDINATOR_URL:-}"   ]] && export COORDINATOR_URL
+      [[ -n "${COORDINATOR_TOKEN:-}" ]] && export COORDINATOR_TOKEN
+      # shellcheck source=/dev/null
+      . "$RUNNER_DIR/lib/stuck-routing.sh" 2>/dev/null || exit 1   # → dossier-gen → dossier → coordinator
+      # shellcheck source=/dev/null
+      [[ -f "$RUNNER_DIR/lib/notification.sh" ]] && . "$RUNNER_DIR/lib/notification.sh" 2>/dev/null
+      # shellcheck source=/dev/null
+      [[ -n "${COORDINATOR_URL:-}" && -f "$RUNNER_DIR/lib/co-http-transport.sh" ]] \
+        && . "$RUNNER_DIR/lib/co-http-transport.sh" 2>/dev/null
+      command -v dg_from_worker_ask >/dev/null 2>&1 || exit 1
+      command -v sr_dossier_id_for  >/dev/null 2>&1 || exit 1
+      local bearer did ask
+      bearer="${COORDINATOR_TOKEN:-bearer-runner-stuck}"
+      did="$(sr_dossier_id_for "$tref" 2>/dev/null)" || exit 2
+      [[ -n "$did" ]] || exit 2
+      ask="$(sr_worker_ask "$tref" 2>/dev/null || true)"
+      dg_from_worker_ask "$bearer" "$did" "$tref" "$ask" >/dev/null 2>&1 || exit 3
+      # §4.3/C3 — the SINGLE Notification at creation (idempotent; best-effort).
+      command -v no_emit >/dev/null 2>&1 && no_emit "$bearer" "$did" >/dev/null 2>&1 || true
+      exit 0
+    ); then
+      authored=1
+    fi
+  fi
+  if [[ "$authored" -ne 1 ]]; then
+    # Authoring unavailable (libs unsourceable / generation failed) — fall back
+    # to the keyed body-less control-plane record so the §7.4 dedup + S-2
+    # reconcile still have the worker_stuck signal. The Coordinator owns the
+    # create-once dedup + the control→work reconcile (S-2); the keyed call is
+    # the floor this child owns when authoring can't run.
+    rec="$(jq -cn --arg tr "$tref" --arg p "$PRINCIPAL" \
+      '{schema_version:1,trigger:"worker_stuck",bead_ref:$tr,task_ref:$tr,principal:$p}' \
+      2>/dev/null)" || rec=""
+    if [[ -n "$rec" ]]; then
+      co_store_put dossier "$rec" >/dev/null 2>&1 \
+        || degrade DOSSIER_STORE "co_store_put dossier failed for $tref — §7.3 bead drive already done (fork will not rot); the Coordinator reconcile (S-2) is the truth"
+    fi
   fi
 }
 
@@ -2834,6 +2888,11 @@ st_terminal() {
 }
 
 # ── Dispatch (the entire control flow is this table — nothing scattered) ──────
+# claude-tools-69u8: run the loop only when EXECUTED, not when SOURCED, so a
+# focused test can exercise an individual helper (e.g. _drive_blocked_for_human)
+# without entering the state machine. EXEC-TRANSPARENT: `bash runner.sh` (and the
+# conformance harness's `exec bash "$RUNNER"`) keep $0==BASH_SOURCE ⇒ loop runs.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 STATE="STARTING"
 while true; do
   case "$STATE" in
@@ -2850,3 +2909,4 @@ while true; do
       TERMINAL_CLASS="CLEAN"; EXIT_CODE=0; STATE="TERMINAL" ;;
   esac
 done
+fi

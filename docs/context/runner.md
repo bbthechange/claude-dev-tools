@@ -193,6 +193,17 @@ was lost).
   `-tree` assertions. BC-33's chunked-usage-sleep is **moot** in v2 (the capacity
   gate is a short `RECLAIM_POLL_INTERVAL` backoff + `STOP_FILE` polled every
   reconcile). Don't re-file these as gaps — see `conformance/COVERAGE-AUDIT.md`.
+- **v2 STUCK now AUTHORS a real dossier (claude-tools-69u8).** `_drive_blocked_for_human`
+  used to write a body-less `co_store_put` stub ({schema_version,trigger,bead_ref,
+  task_ref,principal}) and never call `dg__author` — so a v2 STUCK fork shipped
+  neither an agent body nor a jq-fallback body. It now authors through
+  `dg_from_worker_ask` in a sourced subshell (runner.sh doesn't source the dossier
+  stack), keyed on `stuck-<task_ref>` (§7.4 dedup), with the keyed stub kept only as
+  a graceful fallback if the libs can't be sourced. Both runners
+  `export DG_AUTHOR_AUTOWIRE=1` at startup so the author picks the real builder when
+  claude is reachable (kill-switch `=0`). The dispatch loop now has a source-guard
+  (`[[ ${BASH_SOURCE[0]} == ${0} ]]`) so focused tests can source the script without
+  entering the state machine — exec-transparent, so conformance is unaffected.
 - **Two `runner.sh` names.** The v2 *script* `beads-runner/runner.sh` vs the
   per-workspace *config* `<ws>/.beads/runner.sh` (sourced by both runners) — same
   filename, different role. The collision cleanup is `v2c5`.
