@@ -755,6 +755,164 @@ print_incidents_summary() {
   echo "Full log: $INCIDENTS_LOG"
 }
 
+# BC-56 (claude-tools-apen → v2 port claude-tools-v2cut.3): post-close discipline
+# audit. Catches the AGENT-BYPASS-VIA-CAP class — a worker that burns the 8-block
+# close-checklist Stop-hook cap (claude-tools-td0y / BC-65, ported in 2fkp) and
+# closes the bead ANYWAY. Mirrors the close-checklist.sh checks at the runner
+# level after the session ends, so a bypass leaves a regression bead + incident,
+# not a silent disappear. Only meaningful on a real close (the SUCCESS path), so
+# st_post_task calls it from there.
+#
+# Args: $1 = task_id, $2 = session anchor (forensic backtrack handle — the merged
+# stream-capture path STREAM_FILE in v2; v1 passed LOG_BASE).
+# Side effects only: records incident, files regression bead, appends note. Never
+# reopens the original bead — that decision belongs to the human triaging the
+# regression bead (reopening here could let the same broken worker loop on it).
+post_close_audit() {
+  local task_id="$1" session_anchor="${2:-}"
+  local project_dir="$PWD"
+
+  # claude-tools-d3w9 test-isolation seam: the conformance harness fakes the
+  # worker (claude/bd stubbed, commit-less throwaway workdir), so this discipline
+  # audit can only ever fire spurious close_without_commit / dirty_tree /
+  # missing_debrief findings and their side-effects (Runner: note, incident row,
+  # regression bead) — none of which the harness's INTERFACE §3/§7/§8 assertions
+  # model, and the audit is self-perpetuating under the faked worker (each
+  # commit-less close spawns a bead that is itself closed commit-less). The
+  # audited behaviour is out of that harness's scope and has its own BC-56 -tree
+  # rig, so the harness opts out via this seam (mirrors RUNNER_EXIT_ON_DRAIN).
+  # Defaults OFF — production ALWAYS runs the audit; the BC-56 rig opts back IN.
+  [[ -n "${RUNNER_SKIP_POST_CLOSE_AUDIT:-}" ]] && return 0
+
+  # Re-verify the bead is actually closed. SUCCESS classification is fail-open on
+  # bd-show errors (classify_failure) — don't audit if we can't read the status,
+  # since we can't tell whether the close even happened.
+  if ! command -v bd >/dev/null 2>&1; then return 0; fi
+  local status
+  status="$(bd show "$task_id" --json 2>/dev/null | jq -r '.[0].status // empty' 2>/dev/null)"
+  [[ "$status" == "closed" ]] || return 0
+
+  local failures=()
+
+  # Check 1: close-without-commit — the primary signal for the bypass case.
+  # Mirrors close-checklist.sh check 3 (--since='1 hour ago'). NOTE: uses
+  # `--format=%h` + emptiness check rather than `wc -l`, because git's `format:`
+  # (and the default `format=`) emit no trailing newline — `wc -l` on a single
+  # matching hash returns 0, indistinguishable from no-match. Emptiness is the
+  # honest signal. (`|| true` keeps a commit-less repo from tripping pipefail.)
+  if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
+    local grep_out
+    grep_out="$(git -C "$project_dir" log --grep="$task_id" -1 --since='1 hour ago' --format=%h 2>/dev/null || true)"
+    if [[ -z "$grep_out" ]]; then
+      failures+=("close_without_commit")
+    fi
+  fi
+
+  # Check 2: dirty tree (excluding .beads/issues.jsonl, debrief, runner-log
+  # scratch, .stop-beads). Mirrors close-checklist.sh check 2 — a closed bead
+  # with a dirty tree means the worker's diff is about to be smuggled into the
+  # next bead's commit. issues.jsonl is excluded because bd close itself writes
+  # to it as a side-effect of flipping status; authoritative state is in Dolt
+  # (claude-tools-u4ms).
+  if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
+    local dirty
+    dirty="$(git -C "$project_dir" status --porcelain --untracked-files=all 2>/dev/null \
+      | grep -vE '^.{3}(\.beads/issues\.jsonl$|\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
+      || true)"
+    if [[ -n "$dirty" ]]; then
+      failures+=("dirty_tree")
+    fi
+  fi
+
+  # Check 3: wrapup marker (only if the workspace has a /wrapup skill).
+  if [[ -f "$project_dir/.claude/skills/wrapup/SKILL.md" ]]; then
+    local notes
+    notes="$(bd show "$task_id" --long --json 2>/dev/null | jq -r '.[0].notes // ""' 2>/dev/null)"
+    if ! printf '%s' "$notes" | grep -q 'wrapup-reviewed:'; then
+      failures+=("wrapup_not_invoked")
+    fi
+  fi
+
+  # Check 4: debrief presence. Mirrors close-checklist.sh check 5 (>=40 chars).
+  local notes2
+  notes2="$(bd show "$task_id" --long --json 2>/dev/null | jq -r '.[0].notes // ""' 2>/dev/null)"
+  if [[ -z "$notes2" || ${#notes2} -lt 40 ]]; then
+    failures+=("missing_debrief")
+  fi
+
+  if (( ${#failures[@]} == 0 )); then
+    return 0
+  fi
+
+  local failed_csv
+  failed_csv="$(printf '%s,' "${failures[@]}" | sed 's/,$//')"
+
+  # 1. File the regression bead FIRST so the note we append below can carry its
+  #    id — otherwise a `bd create` failure would leave the original bead
+  #    claiming a regression was filed when it wasn't. P1 because a silently-
+  #    closed bead is the exact failure mode this is designed to surface; sitting
+  #    in the backlog defeats the purpose. Labeled discipline-bypass so it's
+  #    filterable; NOT human-triage-labeled by default (feedback_beads_human_triage_label).
+  local desc
+  desc="Auto-filed by runner.sh post-close audit (claude-tools-apen; v2 BC-56).
+
+Bead $task_id was closed despite failing the close-discipline checks. This
+typically means the close-checklist.sh Stop hook was bypassed — the 8-block
+cap was burned by repeated retries, or the runner-session gating failed open.
+
+Failed checks: $failed_csv
+Session anchor: ${session_anchor:-unknown}
+Runner log dir: $LOG_DIR
+
+Human triage:
+- Pull the stream-json and runner log for the session anchor (forensic).
+- Inspect git log / git diff — was real work done, just not committed?
+- If the close was premature, 'bd reopen $task_id' and finish properly.
+- If the hook itself let it slip, investigate beads-runner/hooks/close-checklist.sh.
+
+Cross-ref: claude-tools-apen (this audit), claude-tools-td0y (the hook)."
+  local create_output regression_id=""
+  create_output="$(bd create \
+    --title "discipline-bypass: $task_id closed without $failed_csv" \
+    -d "$desc" \
+    --type=bug \
+    -p 1 \
+    --labels "discipline-bypass" 2>&1)" || true
+  # `bd create` (text mode) emits "✓ Created issue: <prefix-id> — title".
+  # Mirrors create_analysis_task's parse (same source format). Empty on parse
+  # failure ⇒ the note below honestly says "regression bead may have failed".
+  regression_id="$(printf '%s' "$create_output" | sed -n 's/.*issue: \([^ ]*\).*/\1/p' | head -1)"
+
+  # 2. Incident log entry — forensic anchor (carries the session/log handle so
+  #    the stream-json post-mortem is one ls away). The classification follows
+  #    the existing INCIDENTS schema (TAB-separated, "CLASS:detail" tag form).
+  local incident_tag="DISCIPLINE_BYPASS:$failed_csv"
+  [[ -n "$regression_id" ]] && incident_tag="$incident_tag (regression=$regression_id)"
+  record_incident "$task_id" "$incident_tag" "${session_anchor:--}"
+
+  # 3. Append a marker note on the original bead so `bd show` reveals the bypass
+  #    at a glance. Cross-reference the regression bead id if we got one back —
+  #    otherwise be honest that the file step may have failed.
+  local note="Runner: DISCIPLINE_BYPASS $failed_csv (session=${session_anchor:-unknown})"
+  if [[ -n "$regression_id" ]]; then
+    note="$note — regression bead $regression_id filed (claude-tools-apen)"
+  else
+    note="$note — regression-bead create FAILED, see incidents.log (claude-tools-apen)"
+  fi
+  bd update "$task_id" --append-notes="$note" 2>/dev/null || true
+
+  # 4. Best-effort desktop notification. BC-26 `notify_user` is a SEPARATELY-filed
+  #    v2 side-effect port (COVERAGE-AUDIT — non-blocking, distinct from this BC-56
+  #    cutover blocker) and is not yet defined in runner.sh, so guard the call:
+  #    it is a silent no-op today and auto-wires the moment notify_user lands,
+  #    without re-introducing a function the audit tracks under its own bead.
+  if command -v notify_user >/dev/null 2>&1; then
+    local notify_body="$task_id closed without $failed_csv"
+    [[ -n "$regression_id" ]] && notify_body="$notify_body — $regression_id filed"
+    notify_user "beads-runner: discipline bypass" "$notify_body"
+  fi
+}
+
 # ── T2.4 (claude-tools-7hx): FULL process-tree teardown on EVERY exit path +
 #    BC-35 interrupt reset-to-open + BC-36 cleanup-asymmetry RESOLUTION +
 #    BC-39/BC-40 reaping guarantee. (BC-29 timestamped basenames live at the
@@ -1753,6 +1911,13 @@ st_post_task() {
       COMPLETED=$((COMPLETED + 1))
       CONSECUTIVE_FAILURES=0          # BC-14: breaker resets ONLY on success
       LAST_FAILED_ID=""; FAIL_COUNT=0
+      # BC-56 (claude-tools-apen): post-close discipline audit. A SUCCESS that
+      # closed the bead WITHOUT shipping a commit (Stop-hook bypassed via the
+      # 8-block cap) is surfaced as a P1 discipline-bypass regression bead +
+      # incident + note here, so the silent-disappear never happens. Opt-out via
+      # RUNNER_SKIP_POST_CLOSE_AUDIT (the conformance harness sets it; production
+      # never does). STREAM_FILE is the v2 forensic session anchor.
+      post_close_audit "$CURRENT_TASK_ID" "${STREAM_FILE:-}"
       ;;
 
     AUTH_FAILURE)                     # §8.1 row 3 — fleet-fatal, terminal
