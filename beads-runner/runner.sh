@@ -314,6 +314,7 @@ CANDIDATE_TITLE=""
 CANDIDATE_DESC=""
 CURRENT_TASK_ID=""       # task whose lease+in_progress we hold (in flight)
 LEASE_GENERATION=""      # §4.4 fencing token for the held lease
+ORPHANED_IDS=()          # BC-02: beads `in_progress` at STARTUP = crash orphans from a prior run (drained ONE-per-reconcile, BC-04). A bead that becomes in_progress LATER is a live sibling agent's — never adopted (absent from this startup set). claude-tools-v2cut.2.
 CLAUDE_PID=""            # in-flight worker process (BC-01: one fresh proc/task)
 CLAUDE_EXIT=0            # T2.2: the worker's exit code (NOT trusted as a verdict — BC-09 — but the §7.1 STUCK slot keys on WORKER_STUCK_EXIT and the marker scan is exit-code-guarded as in v1)
 WATCHDOG_PID=""          # T2.3 BC-22 watchdog subshell (one per task; in-band-reaped)
@@ -936,15 +937,23 @@ Cross-ref: claude-tools-apen (this audit), claude-tools-td0y (the hook)."
 # `set -e`-abort sub-hazard is additionally eliminated at the ROOT by this
 # file's BC-42 posture (NO `set -e`); the EXIT trap covers every remaining
 # non-SIGKILL path. RESIDUALS — consciously characterized, NOT silently
-# inherited (the BC-36 mandate), each recovered by §6.1 lease expiry / orphan
-# recovery (the backstop v1's PID-1 reaper *cron* was a stopgap for):
+# inherited (the BC-36 mandate). Each strands the in-flight bead `in_progress`;
+# the recovery is TWO-PLANE and needs BOTH halves: the NEXT runner's startup
+# orphan snapshot (st_starting → ORPHANED_IDS, BC-02/03/04, claude-tools-v2cut.2)
+# re-presents the bead on the WORK plane (it is invisible to `bd ready`), and the
+# §6.1 lease expiry recovers the STRONG plane so that runner's re-claim re-acquires
+# the crashed owner's expired lease. Lease-expiry ALONE does NOT recover the bead —
+# nothing would re-attempt the task_ref without the snapshot. (Backstop the v1
+# PID-1 reaper *cron* was a stopgap for.):
 #  R1 SIGKILL of the runner ITSELF runs no trap (irreducible — no process can
-#     clean up after its own SIGKILL).
+#     clean up after its own SIGKILL). The strand is recovered at the next
+#     runner's startup orphan snapshot (claude-tools-v2cut.2), not in-process.
 #  R2 The reset-to-open issues an UNbounded `bd update` AFTER signals are
 #     masked; if `bd`/Dolt is itself wedged (the BD_UNAVAILABLE scenario) the
 #     strand window is wider than just R1 — the operator's recourse is SIGKILL
 #     (→ R1). A bounded `bd` is intentionally NOT added: `timeout` is
-#     non-portable here and lease-expiry already recovers the bead.
+#     non-portable here and the next-startup orphan snapshot recovers the bead
+#     (lease-expiry recovers its strong-plane lease so that re-claim succeeds).
 #  R3 `_sweep_self`'s broad `$$`-subtree TERM/KILL is PID-based: between the
 #     `ps` snapshot and the signal a recycled PID could be hit. Inherent to any
 #     PID teardown; the window is sub-millisecond and bounded to the dying
@@ -1330,6 +1339,43 @@ st_starting() {
   # id here would make the close-discipline hook enforce against the WRONG bead
   # on the first tool call of the next task before the new id is written.
   rm -f "$LOG_DIR/current-task" 2>/dev/null || true
+
+  # ── BC-02/BC-03 — startup in_progress snapshot = crash orphans ──────────────
+  # claude-tools-v2cut.2 (v2c3 coverage-audit gap). A prior runner that died
+  # SIGKILLed runs NO EXIT trap (the irreducible BC-36 R1 residual) — and even a
+  # graceful exit against a wedged bd (R2) — strands its in-flight bead
+  # `in_progress`. That bead is INVISIBLE to `bd ready` (which returns only
+  # `open`), so st_reconcile's new-work poll never re-presents it. The §6.1 lease
+  # orphan-recovery (test-coordinator-lease.sh EXIT-3) recovers only the STRONG
+  # plane — a NEW owner can re-acquire the crashed owner's EXPIRED lease — but it
+  # is reached ONLY when some runner re-attempts that task_ref, and nothing in v2
+  # ever does, because the work-plane bead status is never reset. The Coordinator
+  # reconcile (job 4) carries desired-state (running/paused/stopped), not a
+  # per-bead reopen. So lease-expiry alone does NOT recover the bead — the line-947
+  # "lease-expiry already recovers the bead" claim holds only for the lease, not
+  # the bead status. THIS snapshot is the missing work-plane half: it re-presents
+  # the orphan as a CANDIDATE so st_claim's lease re-acquire can compose with the
+  # strong-plane recovery.
+  #
+  # We snapshot ONCE, at startup: every `in_progress` bead now is a crash orphan
+  # eligible for one-per-loop resumption (BC-04). A bead going in_progress LATER
+  # is a live sibling's and is never adopted (it is simply not in this set).
+  # BC-03: the empty case yields an EMPTY array — built element-by-element from a
+  # while-read that skips blank lines, so there is NO `bd show ""`. The v1
+  # `read -ra` empty-field quirk + its one-empty-element guard is SCAFFOLDING
+  # (BEHAVIORAL-CONTRACT BC-03) and is deliberately NOT transcribed — this list
+  # construction simply cannot produce a phantom empty element.
+  ORPHANED_IDS=()
+  local _orphans_raw _oid
+  _orphans_raw="$(safe_capture BD_UNAVAILABLE "" -- bd list --status=in_progress --json | jq -r '.[].id // empty' 2>/dev/null || true)"
+  while IFS= read -r _oid; do
+    [[ -z "$_oid" ]] && continue
+    ORPHANED_IDS+=("$_oid")
+  done <<< "$_orphans_raw"
+  if [[ ${#ORPHANED_IDS[@]} -gt 0 ]]; then
+    echo "runner: startup in_progress snapshot — ${#ORPHANED_IDS[@]} crash-orphan(s) eligible for resume: ${ORPHANED_IDS[*]}"
+  fi
+
   job_heartbeat starting "" "" >/dev/null
   transition RECONCILE
 }
@@ -1420,6 +1466,60 @@ _candidate_label_gated() {
   return 1
 }
 
+# ── BC-04 — resume ONE crash-orphan per reconcile, status re-checked at resume ─
+# Drains the startup orphan snapshot (BC-02) one bead per loop. The snapshot may
+# be stale by the time a loop reaches it (RECLAIM_POLL_INTERVAL — or, capacity-
+# gated, an eternity — may have passed; a sibling or human may have closed or
+# advanced the bead), so before resuming ANY orphan we RE-QUERY its CURRENT
+# status via `bd show` (the BC-04 TOCTOU re-check):
+#   • still `in_progress`        → resume it (set CANDIDATE_*), keep the orphans
+#                                  AFTER it for later loops, return 0.
+#   • changed (non-empty, ≠ ip)  → DROP it (a sibling/human moved it on), skip.
+#   • bd show unparseable/empty  → KEEP it for a later retry (a flaky bd show
+#                                  must NEVER lose an orphan), skip.
+# Returns 0 with CANDIDATE_* set (→ resume) | 1 with ORPHANED_IDS narrowed to the
+# survivors (→ fall through to the bd ready poll). Mirrors v1 next_task()'s
+# orphan pass (run-beads-tasks.sh:675-697) — the SCAR (crash recovery) kept, the
+# `read -ra`/array-quirk SCAFFOLDING dropped. The residual two-runners-one-orphan
+# race (both observe in_progress) is closed by st_claim's §6.1 lease acquire
+# (BC-48): only one runner re-acquires the expired lease; the other backs off.
+_drain_one_orphan() {
+  [[ ${#ORPHANED_IDS[@]} -gt 0 ]] || return 1
+  local kept=() pos=0 oid show_json status
+  for oid in "${ORPHANED_IDS[@]}"; do
+    pos=$((pos + 1))
+    # v1 (run-beads-tasks.sh:681) split the re-check into TWO keep-triggers: a
+    # NONZERO `bd show` exit (degraded bd) kept immediately via `|| { remaining+=… }`,
+    # and a zero-exit-but-unparseable body kept via the status branch. Here both
+    # COLLAPSE into one: the EMPTY-string fallback below maps a degraded `bd show`
+    # to show_json="" ⇒ status="" ⇒ the final `else` (keep). The empty fallback is
+    # load-bearing for that equivalence — a degraded re-check must KEEP (never DROP)
+    # the orphan. Do NOT change it to a non-empty sentinel (e.g. "__DEGRADED__")
+    # without re-checking that `jq … // empty` still yields empty so the keep holds.
+    show_json="$(safe_capture BD_UNAVAILABLE "" -- bd show "$oid" --json)"
+    status="$(printf '%s' "$show_json" | jq -r '.[0].status // empty' 2>/dev/null || true)"
+    if [[ "$status" == "in_progress" ]]; then
+      # Resume THIS orphan; preserve the untouched orphans (after pos) for later
+      # loops — `kept` already holds any flaky-show keepers seen before it.
+      kept+=("${ORPHANED_IDS[@]:$pos}")
+      ORPHANED_IDS=("${kept[@]+"${kept[@]}"}")
+      CANDIDATE_ID="$oid"
+      CANDIDATE_TITLE="$(printf '%s' "$show_json" | jq -r '.[0].title // ""'       2>/dev/null || true)"
+      CANDIDATE_DESC="$(printf '%s' "$show_json"  | jq -r '.[0].description // ""' 2>/dev/null || true)"
+      echo "runner: resuming crash-orphan $CANDIDATE_ID (still in_progress at reconcile; ${#ORPHANED_IDS[@]} orphan(s) remain)"
+      return 0
+    elif [[ -n "$status" ]]; then
+      echo "runner: dropping orphan $oid — status is now '$status' (a sibling/human advanced it since startup)"
+      :   # DROP — do not carry it forward
+    else
+      kept+=("$oid")   # bd show unparseable/degraded — keep for a later retry
+    fi
+  done
+  # No resumable orphan this loop — narrow the list to the kept-for-retry set.
+  ORPHANED_IDS=("${kept[@]+"${kept[@]}"}")
+  return 1
+}
+
 # THE single reconcile point between tasks.
 st_reconcile() {
   CANDIDATE_ID=""; CANDIDATE_TITLE=""; CANDIDATE_DESC=""
@@ -1457,6 +1557,27 @@ st_reconcile() {
       degrade COORD_UNREACHABLE "unrecognized desired='$desired' — fail-OPEN to running (§6.2 capacity-side posture)"
       ;;
   esac
+
+  # ── BC-04 crash-orphan drain — BEFORE the bd ready poll ────────────────────
+  # An `in_progress` orphan is invisible to `bd ready`, so this drain is the ONLY
+  # path that re-presents it. Placed AFTER the desired-state check (a stop/pause
+  # correctly preempts resuming stranded work) and BEFORE the new-work poll
+  # (orphans-first, matching v1's next_task ordering). A resumed orphan goes
+  # STRAIGHT to CLAIM, bypassing the bd-ready epic/label/gate-policy selection:
+  # it already passed those gates when first claimed, and re-gating an
+  # already-in_progress bead risks stranding it permanently (a gate-skip would
+  # drop it from ORPHANED_IDS AND it is absent from bd ready — the exact failure
+  # this bead closes). st_claim's lease acquire is where the §6.1 strong-plane
+  # orphan-recovery composes (re-acquire the crashed owner's expired lease); the
+  # `bd update --status=in_progress` re-write there is idempotent. ACCEPTED
+  # v1 carry-over: like v1's next_task, this does NOT re-validate deps — if a
+  # sibling reopened the orphan's dependency post-crash, the now-effectively-
+  # blocked orphan is resumed anyway (the worker re-discovers the block). Folding
+  # the BC-06/07/08/51 workability gate over BOTH orphans and ready candidates is
+  # the separately-filed claude-tools-v2cut.1 bead's surface.
+  if _drain_one_orphan; then
+    transition CLAIM; return
+  fi
 
   # New-work poll (§2.5 between-tasks). BC-42: a DEGRADED bd is NOT a drain —
   # only a genuine empty queue drains (§1.2). Typed, explicit, not `|| []`.
