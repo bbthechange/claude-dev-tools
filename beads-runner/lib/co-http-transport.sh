@@ -154,6 +154,16 @@ co_http__rc_from_422() {
 co_request() {
   local passed="${1:-}" op="${2:-}"; shift 2 2>/dev/null || true
 
+  # §6.2/AD2.2 sidecar (claude-tools-ylu2): a PRECISE Coordinator-unreachable
+  # signal for the runner's bounded-local-lease fallback. The rc alone is too
+  # coarse — `return 4` below also covers a REACHABLE 5xx/4xx-other (the engine
+  # answered, with an error) and local jq/mktemp faults, neither of which is
+  # unreachability. The §6.2 LEASE plane must fail CLOSED on those (refuse), and
+  # open the bounded fallback ONLY when the Coordinator genuinely cannot be
+  # reached. Reset to 0 here; set to 1 ONLY on the curl-failed / no-HTTP-code
+  # path below. (A contended-lease 409 is rc 1, never 4 — already excluded.)
+  CO_HTTP_UNREACHABLE=0
+
   local bearer; bearer="$(co_http__token)"
   [[ -n "$bearer" ]] || bearer="$passed"
 
@@ -195,6 +205,7 @@ co_request() {
   # diagnostic to stderr. NEVER curl's rc 0 masquerading as success (D1).
   if [[ "$rc" -ne 0 || -z "$http" ]]; then
     rm -f "$tmp" 2>/dev/null
+    CO_HTTP_UNREACHABLE=1   # §6.2/AD2.2 — GENUINE unreachable (curl failed / no HTTP code); the ONLY rc-4 path the runner's bounded local fallback may act on
     echo "co: transport — unreachable (curl rc=$rc http=${http:-none}) op='$op'" >&2
     return 4
   fi

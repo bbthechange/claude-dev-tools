@@ -367,6 +367,19 @@ job_reconcile_desired()   { co_deliver_desired_state "$PROJECT_REF"; }          
 job_publish_snapshot()    { la_publish_work_snapshot "$PROJECT_REF"; }           # §3 j5 / §4.5 — read-only projection
 job_report_terminal()     { la_report_terminal_reason "$1" "${2:-}" "${3:-}" "$PROJECT_REF"; } # §3 j6 / §8.2
 
+# ── §6.2 / AD2.2 — bounded LOCAL lease fallback (the machine-local half, la_*) ──
+# These are NOT one of the six §3 jobs (the LA does NOT arbitrate leases — T4
+# does); they are the runner-side wiring of the §6.2 degraded-CLOSED posture. The
+# LA records which leases THIS runner holds locally and decides whether to keep
+# going when the Coordinator is unreachable: continue ONLY a task whose still-
+# valid lease we ALREADY hold; a missing/expired local lease ⇒ refuse (no NEW
+# unsynchronised claim, so a Coordinator blip cannot reintroduce the BC-04 two-
+# runners-one-orphan race). Same backend swap as the §3 jobs (stub: no-op holds
+# nothing ⇒ unreachable always refuses; real: file-backed $LOG_DIR/lease-cache).
+job_lease_note_held()      { la_lease_note_held "$1" "${2:-}"; }                       # record/refresh a locally-held lease (bounded-fallback INPUT)
+job_lease_release_local()  { la_lease_release_local "$1"; }                            # forget the local hold (pairs note_held at every release site)
+job_lease_fallback_allows(){ la_lease_fallback_allows "$1" "${2:-reachable}"; }        # 0 may | 1 must-not — the degraded-CLOSED verdict (consulted ONLY when unreachable)
+
 # ── Mechanism A (claude-tools-uxc1) — per-task PID claim files ─────────────────
 # inbox-lifecycle §8.3.3. The startup orphan snapshot (st_starting, BC-02) used to
 # treat EVERY `in_progress` bead as this runner's crash orphan and adopt it. That
@@ -1174,6 +1187,7 @@ runner_teardown() {
     echo "Interrupted — resetting $CURRENT_TASK_ID to open"
     safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
     job_release_lease "$CURRENT_TASK_ID" "${LEASE_GENERATION:-}" >/dev/null 2>&1   # §6.1 pairing
+    job_lease_release_local "$CURRENT_TASK_ID" >/dev/null 2>&1 || true   # §6.2/AD2.2 — graceful interrupt relinquishes the local hold too (a SIGKILL skips this ⇒ cache persists as the orphan-resume signal)
     remove_task_claim "$CURRENT_TASK_ID"   # claude-tools-uxc1: clean exit reset it to open — drop our claim (a SIGKILL leaves it as the crash-orphan signal)
     CURRENT_TASK_ID=""
   fi
@@ -1969,11 +1983,33 @@ st_claim() {
   local gen rc
   gen="$(job_claim_lease "$CANDIDATE_ID" 2>/dev/null)"; rc=$?   # capture rc explicitly (robust at the real-T4 swap)
   if [[ $rc -ne 0 || -z "$gen" ]]; then
-    echo "runner: lease unavailable for $CANDIDATE_ID — not claiming (no lease ⇒ no run)"
-    sleep "${LEASE_DENY_BACKOFF:-3}"
-    transition RECONCILE; return
+    # The Coordinator did not grant. §6.2/AD2.2 bounded LOCAL fallback: act ONLY
+    # when the Coordinator is GENUINELY unreachable, signalled by the transport's
+    # CO_HTTP_UNREACHABLE sidecar (set ONLY on the curl-failed / no-HTTP-code path
+    # — NOT on a reachable 5xx, a contended-lease 409, or a local fault, all of
+    # which must fail CLOSED here). Even then, continue ONLY a task whose still-
+    # valid lease we ALREADY hold locally (la_lease_fallback_allows enforces that
+    # from the §6.2 lease cache; its TTL bound ⊆ the Coordinator's, so a still-
+    # valid local hold proves the Coordinator lease is still ours). A reachable
+    # deny, OR unreachable with no/expired cached lease, still refuses: no NEW
+    # unsynchronised claim ⇒ no BC-04 two-runners-one-orphan regression.
+    if [[ "${CO_HTTP_UNREACHABLE:-0}" == "1" ]] && job_lease_fallback_allows "$CANDIDATE_ID" unreachable; then
+      echo "runner: Coordinator unreachable — bounded local fallback CONTINUES $CANDIDATE_ID (still-valid local lease held; §6.2/AD2.2)"
+      LEASE_GENERATION=""   # no fresh Coordinator generation; the locally-cached hold is the authority while unreachable
+    else
+      echo "runner: lease unavailable for $CANDIDATE_ID — not claiming (no lease ⇒ no run)"
+      sleep "${LEASE_DENY_BACKOFF:-3}"
+      transition RECONCILE; return
+    fi
+  else
+    LEASE_GENERATION="$gen"
+    # §6.2/AD2.2: record the locally-held lease the instant the Coordinator grants
+    # it, so a LATER Coordinator blip can consult the bounded fallback and continue
+    # THIS task (and only this task). Paired by job_lease_release_local at every
+    # release site; a SIGKILL (no teardown) deliberately leaves the cache entry as
+    # the crash-orphan resume signal. Best-effort (BC-43): never aborts the claim.
+    job_lease_note_held "$CANDIDATE_ID" >/dev/null 2>&1 || true
   fi
-  LEASE_GENERATION="$gen"
 
   # Job 2 — ask-capacity (§6.3). Failure posture is fail-OPEN (§6.2): the stub
   # returns ok; a real `over` would hold here. Explicit, not silent.
@@ -1982,7 +2018,7 @@ st_claim() {
     # (la_capacity_check) sets these sidecars alongside its exit code; before this
     # the reason was discarded and the deny line couldn't say which gate held.
     echo "runner: capacity verdict=over reason=${LA_CAPACITY_REASON:-unknown} (5h=${LA_CAPACITY_PCT_5H:-?}% 7d=${LA_CAPACITY_PCT_7D:-?}%) — releasing lease, holding"
-    job_release_lease "$CANDIDATE_ID" "$LEASE_GENERATION" >/dev/null
+    job_release_lease "$CANDIDATE_ID" "$LEASE_GENERATION" >/dev/null; job_lease_release_local "$CANDIDATE_ID" >/dev/null 2>&1 || true   # §6.1 release + §6.2/AD2.2 drop the local hold we just noted (kept on ONE line so the deny-branch §6.2 SCAR window — BC-34/BC-49 grep -A8 — is undisturbed)
     LEASE_GENERATION=""
     sleep "$RECLAIM_POLL_INTERVAL"
     transition RECONCILE; return
@@ -2261,6 +2297,7 @@ _terminal_fatal() {
   local cls="$1" code="$2"
   safe_capture BD_UNAVAILABLE "" -- bd update "$CURRENT_TASK_ID" --status=open >/dev/null
   job_release_lease "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null
+  job_lease_release_local "$CURRENT_TASK_ID" >/dev/null 2>&1 || true   # §6.2/AD2.2 — fatal reset relinquishes the local hold (pairs the §6.1 release)
   remove_task_claim "$CURRENT_TASK_ID"   # claude-tools-uxc1: bead reset to open — drop our claim
   CURRENT_TASK_ID=""; LEASE_GENERATION=""
   TERMINAL_CLASS="$cls"; EXIT_CODE="$code"
@@ -2445,6 +2482,7 @@ st_post_task() {
   # the retried/failed classes; blocked-for-human for STUCK; closed for
   # SUCCESS) — release pairs the acquire so the lease never outlives the work.
   job_release_lease "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null
+  job_lease_release_local "$CURRENT_TASK_ID" >/dev/null 2>&1 || true   # §6.2/AD2.2 — task-end relinquishes the local hold (pairs the §6.1 release; a retry re-acquires)
   # Job 5 — publish the §4.5 read-only projection (Dolt stays work-truth).
   job_publish_snapshot >/dev/null
 

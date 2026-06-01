@@ -14,10 +14,18 @@
 # halves are SOURCE-STRUCTURAL (the stub lease ops are no-op-observable, so the
 # acquire-before-in_progress order and the three release sites are asserted
 # against runner.sh's text — explicitly legitimate here, see assignment notes).
-# AD2.2's degraded-CLOSED bounded-fallback (la_lease_fallback_allows) is NOT
-# wired into runner.sh yet (the stub always grants ⇒ the deny branch is never
-# exercised black-box), so that check stays a _gate: GATE-MET for what the stub
-# proves, GATE-PENDING for the runner-side consultation that is still forward.
+# AD2.2's degraded-CLOSED bounded-fallback (la_lease_fallback_allows) IS now
+# wired into runner.sh (claude-tools-ylu2): st_claim consults job_lease_fallback_
+# allows ONLY when the transport's CO_HTTP_UNREACHABLE sidecar is 1 — set by
+# co-http-transport.sh ONLY on the genuine curl-failed / no-HTTP-code path (NOT a
+# reachable 5xx, a contended-lease 409, or a local jq/mktemp fault, all of which
+# fail CLOSED) — and continues ONLY a still-valid locally-held lease; the grant/
+# release sites maintain that local hold via job_lease_note_held /
+# job_lease_release_local. The stub always grants ⇒ the deny branch is not
+# exercised BLACK-BOX here, so AD2.2 stays a _gate, but its FORWARD criterion is
+# now SATISFIED ⇒ it emits GATE-MET (the source-structural needs below lock the
+# wiring in). A real-backend behavioral exercise of the ALLOW path (unreachable +
+# seeded valid lease cache) is future coverage, not this gate's job.
 #
 # Binds: BEHAVIORAL-CONTRACT.md BC-48 (§6.1 acquire-before-in_progress;
 # release⇒open); the AD2.1 ordering + AD2.2 split-posture invariants.
@@ -129,21 +137,33 @@ _need "the bounded local fallback also exposes note-held / release-local seams" 
 _emit
 H_cleanup
 
-# ── AD2.2 (gate) — the RUNNER consulting the LA fallback on unreachable is FORWARD
+# ── AD2.2 (gate) — the RUNNER consulting the LA fallback on unreachable is WIRED
 # The stub coordinator ALWAYS grants (co_lease_acquire never denies), so the
-# runner's "no lease ⇒ no run" branch and any la_lease_fallback_allows
-# consultation are not exercisable black-box here. runner.sh does NOT yet call
-# la_lease_fallback_allows (the runner-side wiring of the bounded local fallback
-# is forward). Keep this as a _gate: GATE-MET for the deny-posture that DOES
-# exist (the no-lease gate + LEASE_DENY_BACKOFF), GATE-PENDING for the
-# unreachable-consults-LA-fallback wiring that is still forward.
+# runner's "no lease ⇒ no run" branch and the la_lease_fallback_allows
+# consultation are not exercisable BLACK-BOX here. But the runner-side wiring of
+# the bounded local fallback now EXISTS (claude-tools-ylu2) — assert it source-
+# structurally so the gate flips GATE-MET and regression-locks the wiring:
+#   • st_claim consults job_lease_fallback_allows "<task>" unreachable ONLY when
+#     the transport's CO_HTTP_UNREACHABLE sidecar is 1 (genuine curl-failed / no-
+#     HTTP-code) — a reachable 5xx/409 or a local fault leaves it 0 and refuses;
+#   • the grant path records the local hold (job_lease_note_held) and the
+#     release sites drop it (job_lease_release_local) so the cache the fallback
+#     reads is actually maintained — not dead wiring.
 H_init_test ad22tree-runner-consults-fallback-gate
 _gate "AD2.2" "§6.2" "runner consults la_lease_fallback_allows on Coordinator-unreachable (degraded-CLOSED bounded fallback)"
 _need "runner has a no-lease deny gate (acquire fail ⇒ no claim + backoff)" \
       grep -qE 'lease unavailable for .* — not claiming' "$RUNNER"
 _need "the deny path backs off LEASE_DENY_BACKOFF before re-reconciling" \
       grep -qE 'sleep "\$\{LEASE_DENY_BACKOFF:-3\}"' "$RUNNER"
-_need "FORWARD: runner.sh consults la_lease_fallback_allows when unreachable" \
+_need "runner.sh wires the bounded local fallback (la_lease_fallback_allows)" \
       grep -qE 'la_lease_fallback_allows' "$RUNNER"
+_need "st_claim consults the fallback with the 'unreachable' posture, not 'reachable'" \
+      grep -qE 'job_lease_fallback_allows .*unreachable' "$RUNNER"
+_need "the consult is GATED on the PRECISE transport-unreachable sidecar (CO_HTTP_UNREACHABLE==1, not the overloaded rc 4)" \
+      grep -qE 'CO_HTTP_UNREACHABLE:-0.*==.*"1".*job_lease_fallback_allows' "$RUNNER"
+_need "the grant path records the local hold (job_lease_note_held) — fallback INPUT" \
+      grep -qE 'job_lease_note_held' "$RUNNER"
+_need "release sites drop the local hold (job_lease_release_local) — pairs note_held" \
+      grep -qE 'job_lease_release_local' "$RUNNER"
 _emit
 H_cleanup
