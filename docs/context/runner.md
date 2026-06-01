@@ -93,6 +93,13 @@ controlled cutover — do NOT patch live v1. See HANDOFF-UX-V2 §2.
 - **Lease binds to beads-status** (BC-48): acquire the global exclusive lease
   BEFORE the `in_progress` write; release ⇒ bead back to `open`. This is what stops
   two runners fighting over one orphan.
+- **AD2.2 bounded-local-fallback is wired** (claude-tools-ylu2, v2 only): on a
+  FAILED acquire, `st_claim` continues a task ONLY if the Coordinator is GENUINELY
+  unreachable (the `CO_HTTP_UNREACHABLE` transport sidecar) AND
+  `la_lease_fallback_allows` confirms a still-valid locally-held lease
+  (`job_lease_note_held` on grant; `job_lease_release_local` at every release
+  site; a SIGKILL keeps the cache as the orphan-resume signal). A reachable deny
+  fails CLOSED — no new unsynchronised claim, no BC-04 regression.
 - **`LOG_DIR` is a self-gitignoring SECURITY boundary** (BC-27): raw model
   output / stream files must never reach git. The dirty-tree close audit excludes
   `.beads/issues.jsonl` (bd writes it as a side-effect — BC-56/u4ms).
@@ -158,6 +165,12 @@ Runbooks: `runner-status-check.md`, `cleanup-orphan-runners.md`, `reset-stuck-be
 - **Two `runner.sh` names.** The v2 *script* `beads-runner/runner.sh` vs the
   per-workspace *config* `<ws>/.beads/runner.sh` (sourced by both runners) — same
   filename, different role. The collision cleanup is `v2c5`.
+- **Never gate a lease decision on the transport `rc==4`** — it conflates a
+  GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
+  AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409
+  is rc 1 (correctly distinct). For the AD2.2 unreachable-only posture use the
+  `CO_HTTP_UNREACHABLE` sidecar (set 1 only on the curl-failed path), not the rc.
+  (claude-tools-ylu2 — caught in review; a reachable 500 must fail CLOSED.)
 
 ## Go deeper
 
