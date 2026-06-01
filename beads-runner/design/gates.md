@@ -337,6 +337,12 @@ done when the unified `claude-wrangler` Pages deploy serves the new bytes and
 
 ### 5.1 Where it lands: v1, next to `RUNNER_NO_CLAIM_LABELS`
 
+> **RECONCILED 2026-05-31:** the working default has FLIPPED to **v2**. Per Brian's
+> 2026-05-30 retarget (`v2cut` epic + `uxhold` close), J4 (`uxvj4`) lands gate-respect
+> on **`runner.sh` (v2), gated behind `v2c3`**, NOT the live v1 `run-beads-tasks.sh`.
+> The design below is already structured for either placement; treat its "v1" prose
+> as the fallback. Final v1-vs-v2 confirm is tracked in `uxdec` (deferred 2026-06-02).
+
 The spine's recommendation (ARCH §9 decision 1) is to land gate-respect on the
 **v1 production runner** `run-beads-tasks.sh`, where the label-gate already lives,
 rather than on the undeployed v2 `runner.sh`. This design **adopts that

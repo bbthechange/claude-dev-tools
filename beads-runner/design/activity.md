@@ -70,6 +70,13 @@ the `td0y` note at `:1729`). v1 placement is per
 [ARCH §9 decision 1](../UX-V2-ARCHITECTURE.md) (land I1 on `run-beads-tasks.sh`,
 not the undeployed v2 `runner.sh`).
 
+> **RECONCILED 2026-05-31:** the working default has FLIPPED to **v2**. Brian's
+> 2026-05-30 retarget (the `v2cut` epic + the `uxhold` close) lands runner-touching
+> J4/I1/I5 on **`runner.sh` (v2), gated behind `v2c3`** — do **not** patch the live
+> v1 loop. `uxvi1` is gated on the v2 cutover for exactly this reason. Final
+> v1-vs-v2 confirm is tracked in `uxdec` (deferred 2026-06-02); build on v2 unless
+> it resolves otherwise.
+
 The event shapes, gap percentiles, and the recommended regex set are already
 measured and preserved in `tmp/beads-log-visibility-findings.md` (the §9.7
 companion). **Don't re-derive them.** Key facts that shape the design:
@@ -315,10 +322,17 @@ daemon already runs in three places:
 | Intake enricher | `daemon/intake-dispatch-poll.sh:342-346` | synchronous (awaits stdout) | `enricher.system.md` |
 | Flow-F overview | `daemon/flow-f-overview-poll.sh:388-392` | synchronous | `dossier-builder.system.md` |
 
-I5 spawns the Activity-pool aux kinds — **blueprint-update** (Track H5),
-**enricher** (carried), **xws-responder** (Track K, read-only) — using the **M6
+I5 spawns the Activity-pool aux kinds — **blueprint-update** (Track H5) and
+**enricher** (carried) — using the **M6
 detached pattern** (`nohup … & ; disown`) so they run **truly in parallel** with
 the serial writer and with each other, and so they show up live in the aux pool.
+
+> **RECONCILED 2026-05-31:** the **xws-responder** is NO LONGER spawned by I5.
+> The cross-WS responder spawn-owner was resolved to **K1** (`uxvk1`, MCP-spawned on
+> the blocking ask-workspace path); I5 drops it from its spawn list. The
+> `xws-responder` value in the §1.4 enum stays valid (it still appears in the aux
+> pool when K1 spawns it) — Track I just does not dispatch it.
+
 Each aux dispatch:
 
 1. **Read-only by construction** (must-protect #11). The hat permission set in
