@@ -43,5 +43,9 @@
   <!-- REUSE the Board renderer verbatim by absolute path (do NOT modify it). -->
   <script src="/board/board-view.js"></script>
   <script src="/workspace/app.js"></script>
+  <!-- claude-tools-4zrn: shared offline-read service worker (last-known snapshot
+       off-network; UX-DESIGN-V2 §2.4). Covers every /ws/<ref>/<facet>. NOT on
+       the Inbox (S-1). -->
+  <script src="/shared/sw-register.js"></script>
 </body>
 </html>

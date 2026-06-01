@@ -80,3 +80,20 @@ body{
   letter-spacing:-.01em;
 }
 .shell-nav .shell-ws-label .crumb{color:var(--slate);margin-right:8px;font-family:var(--mono);font-size:11px}
+
+/* ── off-network badge (claude-tools-4zrn) — painted by shared/sw-register.js ──
+ * Shown on the NON-Inbox pull surfaces when navigator reports offline, so the
+ * last-known snapshot the shared service worker is serving reads honestly as
+ * stale (UX-DESIGN-V2 §2.4 "local == remote", read-only off-network path).
+ * Presentation only; sw-register.js toggles [hidden]. */
+#offline-badge{
+  position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(12px + env(safe-area-inset-bottom));z-index:60;
+  padding:6px 13px;border-radius:999px;
+  font-family:var(--mono);font-size:12px;letter-spacing:.03em;
+  color:var(--amber-soft);background:rgba(40,28,4,.94);
+  border:1px solid var(--line-2);box-shadow:0 6px 20px rgba(0,0,0,.45);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  pointer-events:none;
+}
+#offline-badge[hidden]{display:none}

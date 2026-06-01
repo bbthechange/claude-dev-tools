@@ -64,5 +64,10 @@
     // /api/board fetch, no relay-log-tail call — there is nothing to read yet.
     if (window.Shell) window.Shell.mount({ active: 'cross-ws' });
   </script>
+  <!-- claude-tools-4zrn: shared offline-read service worker (last-known snapshot
+       off-network; UX-DESIGN-V2 §2.4). Caches only the app shell — Cross-WS has
+       no live read yet (track K), so there is no API to cache. NOT on the
+       Inbox (S-1). -->
+  <script src="/shared/sw-register.js"></script>
 </body>
 </html>

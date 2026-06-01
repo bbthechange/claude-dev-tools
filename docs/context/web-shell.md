@@ -14,7 +14,8 @@ scar). A web task is NOT done at commit.
 **Owns / scope (the files this doc covers):**
 - `beads-runner/web/shared/` — `net.js` (`getJSON`/`postJSON`), `dom.js`
   (`mk`/`clear`/`el`), `shell.js` (`deriveNav`/`mount`/`parseWorkspacePath`),
-  `enums.js` (Contract D closed sets), `tokens.css` (design tokens + nav chrome).
+  `enums.js` (Contract D closed sets), `tokens.css` (design tokens + nav chrome),
+  `sw.js` + `sw-register.js` (the shared off-network read worker; §2.4).
 - `beads-runner/web/functions/api/**` — the Pages-Function proxies (one per op).
 - `beads-runner/web/_headers`, `beads-runner/web/_redirects` — Pages config.
 - `beads-runner/verify-pages-deploy.sh` — the deploy-landed byte-compare gate.
@@ -75,7 +76,9 @@ Four structural facts explain almost everything:
 | `web/shared/dom.js` | `Dom.el`/`clear`/`mk`. `mk` uses `textContent` (never `innerHTML`) — XSS-safe by construction. UMD. |
 | `web/shared/shell.js` | The nav. `deriveNav(opts)` is PURE (Node-testable like a view-model) → `{global[], workspace}`; `mount(opts)` paints it into `#shell-nav`; `parseWorkspacePath(pathname)` reads `/ws/<ref>/<facet>`. `GLOBAL`/`FACETS` orders are FROZEN. UMD. |
 | `web/shared/enums.js` | `Enums.*` — the Contract D closed sets shared verbatim with the engine (activity state, liveness dot+windows, done sub-state, notification tier, hold type, gate scope). `Object.freeze`d. Conformance test asserts byte-equivalence to the engine constant + §5.2. UMD. |
-| `web/shared/tokens.css` | The `:root` design tokens + reset, linked FIRST by every page; also owns the `.shell-nav` chrome painted by `shell.js`. Presentation only. |
+| `web/shared/tokens.css` | The `:root` design tokens + reset, linked FIRST by every page; also owns the `.shell-nav` chrome painted by `shell.js` + the `#offline-badge` chrome painted by `sw-register.js`. Presentation only. |
+| `web/shared/sw.js` | The shared **off-network read** service worker (claude-tools-4zrn, §2.1/§2.4). Scope `/`. Static shell = stale-while-revalidate (boots offline); non-Inbox `/api/…` GET = network-first → last-known cache on failure; writes + cross-origin = passthrough. **HARD-BYPASSES `/inbox`, `/api/inbox`, `/api/push`** (S-1 — the Inbox is the live surface and is never cached/served-stale; its own `/inbox/sw.js` at the more-specific `/inbox/` scope owns those clients) **and `/intake`, `/api/intake`** (the Flow-A write surface — out of the read-only scope, network-only so a stale presets list can't mislead while filing). Read-only last-snapshot, NO offline write. |
+| `web/shared/sw-register.js` | Registers `/shared/sw.js` at scope `/` and toggles the `#offline-badge`. Included by every NON-Inbox page; deliberately NOT by the Inbox (S-1). Standalone IIFE. |
 | `web/functions/api/<area>/index.js` | READ proxy template (see `board/index.js`): `onRequestGet`, op hard-coded, `Bearer` server-side, `cache-control: no-store`. |
 | `web/functions/api/<area>/<name>.js` | WRITE proxy template (see `board/set-desired.js`): `onRequestPost`, op + allowed-values pinned, strips client principal, normalises UI→wire vocab, passes engine response verbatim. |
 | `web/_redirects` | Pages routing. Clean URLs (`/inbox` → `/inbox/`) + apex (`/` → `/board/`) + the `/ws/*` facet catch-all → `/workspace/`. All `200` REWRITES (no redirect roundtrip). |
@@ -149,6 +152,15 @@ match — a false green otherwise).
   passes through un-normalised silently no-ops downstream.
 - **CDN caches static assets.** API responses are `no-store`, but static bytes may
   be CDN-cached; use an incognito tab / cache-bust to see an update on the phone.
+- **The off-network worker is read-only + Inbox-exempt by design (4zrn).** `sw.js`
+  is network-FIRST for `/api/…` (online is always live; cache is the offline
+  fallback only) and hard-bypasses the Inbox surfaces (S-1). This does NOT violate
+  the `no-store` API rule — `no-store` governs the HTTP/CDN cache (a stale heartbeat
+  lying about liveness); the SW only ever substitutes the last-known snapshot when
+  the network is *unreachable*, behind an honest `#offline-badge`, on the pull
+  surfaces (never the Inbox). Two SWs coexist: `/inbox/sw.js` (push, scope
+  `/inbox/`) wins for Inbox clients by longest-scope; `/shared/sw.js` (scope `/`)
+  covers everything else. Behavior is gated by `jsdom/test/sw-offline.test.js`.
 
 ## Go deeper
 

@@ -13,3 +13,13 @@
 
 /inbox/manifest.webmanifest
   Content-Type: application/manifest+json
+
+# claude-tools-4zrn: the SHARED offline-read service worker for the NON-Inbox
+# pull surfaces (UX-DESIGN-V2 §2.4). Served no-cache so a pushed SW update takes
+# effect promptly (same reasoning as the Inbox SW above), and with
+# Service-Worker-Allowed: / so it can register at the root scope `/` from its
+# /shared/ location and cover every non-Inbox route. The Inbox keeps the
+# more-specific /inbox/ scope, so this never controls the live Inbox surface.
+/shared/sw.js
+  Cache-Control: no-cache
+  Service-Worker-Allowed: /
