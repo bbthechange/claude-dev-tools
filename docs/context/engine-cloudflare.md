@@ -73,7 +73,7 @@ Two storage classes (pick correctly — it's hard to move later):
 | `src/dossier.js` | §4.1 Dossier body/items + per-item latch (the human-fork payload). |
 | `src/notification.js` / `src/push.js` | §4.3 Notification creation/dispatch + phone DELIVERY transport (web-push). See `notifications.md`. |
 | `src/stuck.js` | §7.x STUCK_NEEDS_HUMAN cross-tier routing + blocked-for-human control plane. |
-| `src/timer.js` | §2.2 `fire(dossier_id)` timer wiring + the S-6 fire-on-next-poll backstop + timed-fyi auto-proceed. |
+| `src/timer.js` | §2.2 `fire(dossier_id)` timer wiring + the S-6 fire-on-next-poll backstop + timed-fyi auto-proceed; ready-to-pair `pair-arm`/`pair-surface` + the `pair-create` PRODUCER op (build a `kind:"pair"` session card + arm it in one round-trip — N10-10). |
 | `src/lease.js` | §6.1 exclusive TTL'd lease + monotonic `generation` fencing. |
 | `src/capacity.js` / `src/machine-state.js` | Coarse capacity verdict / per-machine telemetry. Both **transient** (smallest module templates to copy). |
 | `src/forensic.js` | §10.3 transient encrypted forensic store. Deliberately NOT a §4 record. |

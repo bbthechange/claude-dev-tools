@@ -51,8 +51,8 @@
 // lib/test-timed-fyi.sh. An INTERFACE gap is a §11 escalation (reopen
 // claude-tools-65z, bump+re-freeze) — never diverge, never edit INTERFACE.md.
 
-import { PRINCIPAL_V1 } from "./schema.js";
-import { handleDossierOp } from "./dossier.js";
+import { PRINCIPAL_V1, safeKey } from "./schema.js";
+import { handleDossierOp, boundSv } from "./dossier.js";
 // N3 (claude-tools-uxg6) — ready-to-pair SURFACE fire-action consumes CF.9's
 // PUBLIC op surface (`notif-fire`) as a black box, exactly as this module
 // consumes CF.6 via handleDossierOp. notification.js imports schema.js +
@@ -75,6 +75,11 @@ export const TIMER_OPS = new Set([
   //    line (the EXIT-5 differential asserts this, exactly as for tf_*).
   "pair-arm", // pairArm     — arm the §2.2 timer at the envelope's scheduled_at
   "pair-surface", // pairSurface — fire the blocking ready_to_pair notif (N2 delivers)
+  // ── N10-10 (claude-tools-l6vx) the PRODUCER: create a kind:"pair" SESSION
+  //    CARD + arm it, in ONE call. The "someone schedules a pair session"
+  //    surface N3 (uxg6) left as a follow-up (it built the ops + rendering but
+  //    nothing PRODUCED a pair dossier). NOT a §2 capability line either.
+  "pair-create", // pairCreate — build the kind:"pair" envelope + arm @ scheduled_at
 ]);
 
 // ── §0.5 frozen constant — single normative definition is INTERFACE.md ───────
@@ -387,6 +392,111 @@ async function pairArm(co, principal, did) {
   return { ok: true, fire_at: at };
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// N10-10 (claude-tools-l6vx) — THE PRODUCER. pairCreate builds a `kind:"pair"`
+// SESSION CARD and arms it on the §2.2 timer at `scheduled_at`, in ONE engine
+// round-trip. N3 (uxg6) realized the reserved `kind:"pair"` discriminator and
+// built the arm/surface fire-action + the Inbox upcoming→ready rendering, but
+// explicitly left "a real PRODUCER that creates kind:'pair' dossiers" a
+// follow-up — there was no CLI/MCP surface that PRODUCED one. This is it.
+//
+// WHY ONE OP (not the client sequencing dossier-put then pair-arm itself): the
+// two steps are NOT one critical section (the dispatcher takes no co._serialize
+// — see handleTimerOp) — they are dossier-put's serialized section followed by
+// pair-arm's. Folding them into one op buys ONE network round-trip instead of
+// two, so a CLIENT crash / dropped connection BETWEEN the calls can't strand a
+// pair dossier WRITTEN BUT UN-ARMED (which would render "upcoming" forever,
+// never promoting / firing the blocking ping — a silent attention-router hole).
+// It is NOT all-or-nothing on the engine: a rare arm failure AFTER the write
+// returns ok:false with the dossier already written — the documented recovery
+// is to re-run the producer (the deterministic id re-puts + re-arms; see below).
+//
+// THE SHAPE (the canonical pair envelope — matches the N3 oracle fixtures
+// test-ready-to-pair.sh `mkpair` / ready-to-pair.spec.js `mkpair`):
+//   kind          = "pair"                 (C2 open discriminator — §4.2)
+//   trigger       = "proactive_checkpoint" (a session Brian/an agent scheduled;
+//                     the §4.1 enum value the N3 fixtures use — nothing
+//                     downstream branches on the dossier `trigger`; the §10.2
+//                     `ready_to_pair` NOTIFICATION trigger is the distinct thing
+//                     pair-surface fires)
+//   tier          = "blocking"             (§10.2 r10 — pair-surface fires the
+//                     blocking ready_to_pair notif, which the §10.2 tier-guard
+//                     requires to be blocking; this is what makes it deliver
+//                     like a blocking ping WHEN its time comes)
+//   scheduled_at  = the appointment (RFC-3339 …Z) — what pair-arm arms on
+//   body          = a conformant §5.1-CORE body {dossier_schema_version, tldr,
+//                     sections:[], diagrams:[], full_detail} — a SESSION CARD,
+//                     deliberately NOT iterated as §5 Items, so it goes through
+//                     the raw dossier-put write gate (dossierWriteBodyOk), NOT
+//                     the §5 SOLE-PRODUCER gate (which requires sections≥1)
+//   items         = [] (a session card, not a form — §4.2)
+//
+// IDEMPOTENCY: the dossier id is deterministic (`pair-<bead_ref>` unless an
+// explicit id is given), so re-running the producer for the same bead RE-PUTS
+// the same record (re-scheduling: a new scheduled_at overwrites, pair-arm
+// re-arms the same timer id at the new time). The §4.5 lane visibility is by
+// kind, so one card per bead is the natural shape.
+//
+// NO NEW §4 record type, NO DDL, NO Pages function / pages-dev adapter — pair
+// rides the dossier type + the §2.2 `timers` namespace (exactly as N3), and the
+// producer is a CLI/MCP/agent surface (Intake files BEADS; nothing in the phone
+// UI schedules a pair session), so there is no phone-facing web proxy to add
+// (Contract A.1 step 3/4 are conditional on "must work in the pages-dev
+// harness" — it must not). Returns { ok:true, id, scheduled_at, fire_at }.
+async function pairCreate(co, principal, beadRef, scheduledAt, tldr, fullDetail, didArg) {
+  if (!neStr(beadRef))
+    return { ok: false, msg: "ready-to-pair: create — need <bead_ref> (the bead the session pairs on — §4.1)" };
+  if (!neStr(scheduledAt) || rfcToEpochSec(scheduledAt) === null)
+    return {
+      ok: false,
+      msg: `ready-to-pair: create REJECTED — scheduled_at '${scheduledAt}' missing/unparseable (§0.4 RFC-3339 …Z); fail-closed, NO dossier (the pair_arm-on-bad-scheduled_at discipline applied BEFORE the write)`,
+    };
+  const id = neStr(didArg) ? didArg : `pair-${beadRef}`;
+  if (!safeKey(id))
+    return {
+      ok: false,
+      msg: `ready-to-pair: create REJECTED — dossier id '${id}' unsafe ([A-Za-z0-9._-], no '..'; §0.4) — pass an explicit safe --dossier-id when the bead_ref is not key-safe`,
+    };
+  const sv = boundSv();
+  if (sv === null || sv === undefined)
+    return { ok: false, msg: "ready-to-pair: create — 'dossier' absent from the §4 registry (store-surface contract gap; §0.5)" };
+  const env = {
+    id,
+    schema_version: sv,
+    kind: "pair",
+    trigger: "proactive_checkpoint",
+    bead_ref: beadRef,
+    tier: "blocking",
+    created_at: nowRfc(),
+    timer_fire_at: null,
+    scheduled_at: scheduledAt,
+    body: {
+      dossier_schema_version: sv,
+      tldr: neStr(tldr) ? tldr : `pair on ${beadRef}`,
+      sections: [],
+      diagrams: [],
+      full_detail: neStr(fullDetail)
+        ? fullDetail
+        : `A scheduled collaborative-stage working session on ${beadRef}.`,
+    },
+    items: [],
+  };
+  // 1) Persist the §4.1 envelope through CF.6's PUBLIC dossier-put (the §4.1 +
+  //    §5.1-CORE write gate; serialized in CF.6's own critical section).
+  if (!(await dossierPut(co, principal, env)))
+    return {
+      ok: false,
+      msg: `ready-to-pair: create — dossier-put rejected the kind:"pair" envelope for '${id}' (§4.1/§5.1 write gate)`,
+    };
+  // 2) Arm the §2.2 timer at scheduled_at — pairArm re-reads the just-written
+  //    record and validates kind:"pair" + scheduled_at (so the two steps cannot
+  //    drift). A rare substrate arm failure is surfaced honestly; the dossier
+  //    is written, so re-running the producer (idempotent re-put) re-arms it.
+  const armed = await pairArm(co, principal, id);
+  if (!armed.ok) return armed;
+  return { ok: true, id, scheduled_at: scheduledAt, fire_at: armed.fire_at };
+}
+
 // pairSurface(co, principal, did) — the SURFACE fire-action (the opposite of
 // tf_fire's auto-proceed). Fire the blocking `ready_to_pair` notification
 // through the N1 catalog spine (notif-fire) — that EMITS the §4.3 row (tier
@@ -489,6 +599,12 @@ export async function handleTimerOp(co, op, args, principal) {
     }
     if (op === "pair-surface") {
       const r = await pairSurface(co, principal, a[0]);
+      return jsonRes(r, r.ok ? 200 : 422);
+    }
+    // ── N10-10 (claude-tools-l6vx) — the PRODUCER ──────────────────────────
+    // args: [bead_ref, scheduled_at, tldr?, full_detail?, dossier_id?]
+    if (op === "pair-create") {
+      const r = await pairCreate(co, principal, a[0], a[1], a[2], a[3], a[4]);
       return jsonRes(r, r.ok ? 200 : 422);
     }
     return jsonRes({ ok: false, error: `co: unknown timer op '${op}'` }, 400);

@@ -288,6 +288,49 @@ it("N3 differential vs timed-fyi.sh pair_* + test-ready-to-pair.sh (DESIGN N §4
   ck("the pair lane entry's open_item_count is 0 (a session card, not a form)", pv && pv.open_item_count === 0);
   ck("a 0-item kind:'decide' dossier is NOT in the lane (the open-item gate holds)", !woy.find((w) => w.dossier_id === "dNV0"));
 
+  // ── EXIT-PROD (N10-10 claude-tools-l6vx): the PRODUCER creates + arms + surfaces ──
+  console.log("── EXIT-PROD: the PRODUCER (pair-create) builds a kind:'pair' card + arms it, end-to-end ──");
+  await resetBd();
+  const pc = await call(GOOD, "pair-create", ["claude-tools-l6vx", SCHED, "pair on the producer"]);
+  ck("pair-create succeeds", good(pc));
+  ck("pair-create echoes the deterministic id 'pair-<bead_ref>'", pc.body && pc.body.id === "pair-claude-tools-l6vx");
+  ck("pair-create echoes the armed fire_at = scheduled_at", pc.body && pc.body.fire_at === SCHED);
+  const PD = "pair-claude-tools-l6vx";
+  const pdRec = await GET(PD);
+  ck("the produced dossier exists with kind:'pair'", pdRec && pdRec.kind === "pair");
+  ck("produced tier is 'blocking' (§10.2 r10)", pdRec && pdRec.tier === "blocking");
+  ck("produced trigger is 'proactive_checkpoint' (N3 fixture shape)", pdRec && pdRec.trigger === "proactive_checkpoint");
+  ck("produced carries the scheduled_at appointment", pdRec && pdRec.scheduled_at === SCHED);
+  ck("produced is a 0-item SESSION CARD (not a form — §4.2)", pdRec && Array.isArray(pdRec.items) && pdRec.items.length === 0);
+  ck("produced body tldr is the session topic", pdRec && pdRec.body && pdRec.body.tldr === "pair on the producer");
+  ck("produced wrote NO timer_fire_at (scheduled_at is the pair's field)", (await TFA(PD)) === null);
+  ck("PRODUCER armed the §2.2 timer — DUE after scheduled_at", await DUE(PD, FAR));
+  ck("NOT due BEFORE scheduled_at (upcoming, not ready)", !(await DUE(PD, NEAR)));
+  ck("BEFORE its appointment: NO §4.3 notification (upcoming — N2 cannot push early)", !(await NHAS(PD)));
+  // the produced card flows through the EXISTING uxg6/N3 surface path UNCHANGED:
+  const surfP = await call(GOOD, "pair-surface", [PD]);
+  ck("produced card SURFACES through the N3 path (pair-surface succeeds)", good(surfP));
+  ck("produced card fired its blocking ready_to_pair notification", await NHAS(PD));
+  const pnrec = await NREC(PD);
+  ck("surfaced producer notif is tier 'blocking'", pnrec && pnrec.tier === "blocking");
+  ck("produced card applied NO §5.3 consequence (a session card, not a decide)", (await BDN("create")) === 0);
+  // visible in the §4.5 lane (visibility by kind)
+  const snapP = await call(GOOD, "work-snapshot", ["projA", "[]"]);
+  const woyP = snapP.body && Array.isArray(snapP.body.waiting_on_you) ? snapP.body.waiting_on_you : [];
+  const pdv = woyP.find((w) => w.dossier_id === PD);
+  ck("produced card APPEARS in waiting_on_you (visibility by kind)", !!pdv);
+  ck("produced lane entry carries kind:'pair' + scheduled_at", pdv && pdv.kind === "pair" && pdv.scheduled_at === SCHED);
+  // producer rejects, fail-closed (NO dossier): missing bead_ref / bad scheduled_at / unsafe id / no bearer
+  ck("pair-create REJECTS a missing bead_ref", !good(await call(GOOD, "pair-create", ["", SCHED])));
+  ck("pair-create REJECTS an unparseable scheduled_at", !good(await call(GOOD, "pair-create", ["claude-tools-l6vx", "not-a-date"])));
+  ck("pair-create REJECTS an unsafe dossier id", !good(await call(GOOD, "pair-create", ["claude-tools-l6vx", SCHED, "t", "fd", "../evil"])));
+  ck("pair-create with NO bearer REJECTED (§9.1)", !good(await call(null, "pair-create", ["claude-tools-l6vx", SCHED])));
+  // idempotent re-create = re-schedule (deterministic id; overwrites the same card)
+  const SCHED2 = "2099-05-16T18:00:00Z";
+  const pc2 = await call(GOOD, "pair-create", ["claude-tools-l6vx", SCHED2]);
+  ck("re-create returns the SAME deterministic id", pc2.body && pc2.body.id === PD);
+  ck("re-create RE-SCHEDULED the appointment (scheduled_at updated)", (await GET(PD)).scheduled_at === SCHED2);
+
   // ── EXIT-E: binds §2.2/§10.2 · anti-drift (structural) ──
   console.log("── EXIT-E: binds §2.2/§10.2 · anti-drift (structural) ──");
   ck("§4 registry dossier⇒2 (pair added NO record type; rides the dossier type)", schemaVersion("dossier") === 2);

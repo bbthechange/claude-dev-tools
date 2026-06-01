@@ -345,6 +345,65 @@ pair_arm() {
   printf '%s' "$at"
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# N10-10 (claude-tools-l6vx) — THE PRODUCER (bash twin of cf/src/timer.js
+# pairCreate). Build a `kind:"pair"` SESSION CARD and arm it on the §2.2 timer
+# at `scheduled_at`, in ONE call. N3 (uxg6) realized the reserved `kind:"pair"`
+# discriminator + the arm/surface fire-action + Inbox rendering, but left "a
+# real PRODUCER that creates kind:'pair' dossiers" a follow-up — nothing
+# PRODUCED one. This is that surface.
+# ════════════════════════════════════════════════════════════════════════════
+# pair_create <bearer> <bead_ref> <scheduled_at> [tldr] [full_detail] [dossier_id]
+#   Compose do_dossier_put (the §4.1 + §5.1-CORE write gate) + pair_arm (§2.2
+#   arm) in ONE call, so a CLIENT crash between two manual calls can't strand a
+#   written-but-un-armed pair (which would render "upcoming" forever, never
+#   promoting / firing the blocking ping). NOT all-or-nothing: a rare arm
+#   failure after the write returns nonzero with the dossier written — re-run to
+#   re-arm (the deterministic id re-puts + re-arms; idempotent). The
+#   envelope is the canonical pair shape (kind:"pair", trigger
+#   proactive_checkpoint, tier blocking, a conformant §5 body, items:[]) —
+#   byte-identical to the N3 oracle fixture `mkpair`. The id is deterministic
+#   (`pair-<bead_ref>` unless an explicit id is passed), so re-running RE-PUTS
+#   (re-schedules) the same card. A missing bead_ref / unparseable scheduled_at
+#   / unsafe id is REJECTED fail-closed (NO dossier), the pair_arm discipline
+#   applied BEFORE the write. Echoes the dossier id on success.
+pair_create() {
+  local bearer="${1:-}" bref="${2:-}" sa="${3:-}" tldr="${4:-}" fd="${5:-}" did="${6:-}"
+  local bound created env id
+  [[ -n "$bref" ]] || { echo "ready-to-pair: create — need <bead_ref> (the bead the session pairs on — §4.1)" >&2; return 2; }
+  if ! tf__rfc_to_epoch "$sa" >/dev/null 2>&1; then
+    echo "ready-to-pair: create REJECTED — scheduled_at '$sa' missing/unparseable (§0.4 RFC-3339 …Z); fail-closed, NO dossier (the pair_arm-on-bad-scheduled_at discipline applied BEFORE the write)" >&2
+    return 3
+  fi
+  id="${did:-pair-$bref}"
+  if ! co__safe_key "$id"; then
+    echo "ready-to-pair: create REJECTED — dossier id '$id' unsafe ([A-Za-z0-9._-], no '..'; §0.4) — pass an explicit safe <dossier_id> when the bead_ref is not key-safe" >&2
+    return 2
+  fi
+  bound="$(do__bound_sv)" || bound=""
+  [[ -n "$bound" ]] || { echo "ready-to-pair: create — 'dossier' absent from the §4 registry (co__schema_version) — store-surface contract gap (§0.5)" >&2; return 4; }
+  created="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || created="$sa"
+  [[ -n "$tldr" ]] || tldr="pair on $bref"
+  [[ -n "$fd"   ]] || fd="A scheduled collaborative-stage working session on $bref."
+  env="$(jq -cn --arg id "$id" --argjson sv "$bound" --arg br "$bref" \
+               --arg sa "$sa" --arg ca "$created" --arg tldr "$tldr" --arg fd "$fd" '
+    { id:$id, schema_version:$sv, kind:"pair", trigger:"proactive_checkpoint",
+      bead_ref:$br, tier:"blocking", created_at:$ca, timer_fire_at:null,
+      scheduled_at:$sa,
+      body:{ dossier_schema_version:$sv, tldr:$tldr, sections:[], diagrams:[], full_detail:$fd },
+      items:[] }')" \
+    || { echo "ready-to-pair: create — could not assemble the kind:\"pair\" envelope for '$id'" >&2; return 4; }
+  # 1) Persist through the §4.1 + §5.1-CORE write gate.
+  do_dossier_put "$bearer" "$env" >/dev/null \
+    || { echo "ready-to-pair: create — dossier-put rejected the kind:\"pair\" envelope for '$id' (§4.1/§5.1 write gate)" >&2; return 5; }
+  # 2) Arm the §2.2 timer at scheduled_at (pair_arm re-reads + validates the
+  #    just-written record, so the two steps cannot drift). A rare arm failure
+  #    is surfaced; the dossier is written, so re-running re-arms it.
+  pair_arm "$bearer" "$id" >/dev/null \
+    || { echo "ready-to-pair: create — §2.2 pair_arm failed for '$id' (the dossier is written; re-run to re-arm)" >&2; return 6; }
+  printf '%s' "$id"
+}
+
 # pair_surface <bearer> <dossier_id>
 #   The SURFACE fire-action (opposite of tf_fire's auto-proceed). Fire the
 #   blocking `ready_to_pair` notification through the N1 catalog spine

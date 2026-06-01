@@ -212,6 +212,44 @@ ck  "a 0-item kind:'decide' dossier is NOT in the lane (the open-item gate holds
    eq "$(jq -r '[.waiting_on_you[]|select(.dossier_id=="dNV0")]|length' <<<"$SNAP")" "0"
 
 echo ""
+echo "── EXIT-PROD: the PRODUCER (pair_create) creates a kind:'pair' card + arms it, end-to-end (N10-10) ──"
+# N10-10 (claude-tools-l6vx): the producer N3 left as a follow-up. ONE call
+# builds the canonical kind:"pair" SESSION CARD AND arms the §2.2 timer at
+# scheduled_at; the EXISTING uxg6/N3 path (timer-due → pair_surface → §4.3
+# blocking notif + §4.5 lane visibility) then carries it through UNCHANGED.
+: > "$BD_LOG"
+PD="$(pair_create "$GOOD" claude-tools-l6vx "$SCHED" "pair on the producer")"
+ck  "pair_create succeeds, echoes the deterministic id"     eq "$PD" "pair-claude-tools-l6vx"
+ck  "the produced dossier exists with kind:'pair'"          eq "$(GET "$PD" | jq -r '.kind')" "pair"
+ck  "produced tier is 'blocking' (§10.2 r10)"               eq "$(GET "$PD" | jq -r '.tier')" "blocking"
+ck  "produced trigger is 'proactive_checkpoint' (N3 fixture shape)" eq "$(GET "$PD" | jq -r '.trigger')" "proactive_checkpoint"
+ck  "produced carries the scheduled_at appointment"         eq "$(GET "$PD" | jq -r '.scheduled_at')" "$SCHED"
+ck  "produced is a 0-item SESSION CARD (not a form — §4.2)" eq "$(GET "$PD" | jq -r '.items|length')" "0"
+ck  "produced body tldr is the session topic"               eq "$(GET "$PD" | jq -r '.body.tldr')" "pair on the producer"
+ck  "produced wrote NO timer_fire_at (scheduled_at is the pair's field)" eq "$(GET "$PD" | jq -r '.timer_fire_at')" "null"
+ck  "PRODUCER armed the §2.2 timer — DUE after scheduled_at"  DUE "$PD" "$FAR"
+ckn "NOT due BEFORE scheduled_at (upcoming, not ready)"      DUE "$PD" "$NEAR"
+ckn "BEFORE its appointment: NO §4.3 notification (upcoming — N2 cannot push early)" NHAS "$PD"
+# the produced card flows through the EXISTING uxg6/N3 surface path UNCHANGED:
+NIDP="$(pair_surface "$GOOD" "$PD")"
+ck  "produced card SURFACES through the N3 path (blocking ready_to_pair notif fires)" NHAS "$PD"
+ck  "surfaced producer notif is tier 'blocking'"           eq "$(NTIER "$PD")" "blocking"
+ck  "produced card applied NO §5.3 consequence (a session card, not a decide)" eq "$(BDN 'create')" "0"
+# the produced card is visible in the §4.5 lane (visibility by kind)
+SNAPP="$(co_request "$GOOD" work-snapshot projA '[]' 2>/dev/null)"
+ck  "produced card APPEARS in waiting_on_you with kind:'pair' + scheduled_at" \
+   eq "$(jq -r --arg id "$PD" '.waiting_on_you[]|select(.dossier_id==$id)|.kind+"|"+.scheduled_at' <<<"$SNAPP")" "pair|$SCHED"
+# producer rejects, fail-closed (NO dossier): missing bead_ref / bad scheduled_at / unsafe id
+ckn "pair_create REJECTS a missing bead_ref"               pair_create "$GOOD" "" "$SCHED"
+ckn "pair_create REJECTS an unparseable scheduled_at"      pair_create "$GOOD" claude-tools-l6vx "not-a-date"
+ckn "pair_create REJECTS an unsafe dossier id"             pair_create "$GOOD" claude-tools-l6vx "$SCHED" "t" "fd" "../evil"
+# idempotent re-create = re-schedule (deterministic id; overwrites the same card)
+SCHED2="2026-05-16T18:00:00Z"
+PD2="$(pair_create "$GOOD" claude-tools-l6vx "$SCHED2")"
+ck  "re-create returns the SAME deterministic id"          eq "$PD2" "$PD"
+ck  "re-create RE-SCHEDULED the appointment (scheduled_at updated)" eq "$(GET "$PD" | jq -r '.scheduled_at')" "$SCHED2"
+
+echo ""
 echo "── EXIT-E: binds §2.2/§10.2 · anti-drift (structural) ──"
 ck  "§4 registry dossier⇒2 (pair added NO record type; rides the dossier type)" eq "$(co__schema_version dossier)" "2"
 ck  "NO §4 record type added — 'pair' unregistered"     eq "$(co__schema_version pair)" ""
