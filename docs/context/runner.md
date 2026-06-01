@@ -14,8 +14,10 @@ cutover.
 **Owns / scope (the files this doc covers):**
 - `beads-runner/run-beads-tasks.sh` — **v1, LIVE in production** (~2626 lines,
   imperative `while true` loop). This is what runs today.
-- `beads-runner/runner.sh` — **v2, the state-machine rewrite, NOT deployed**
-  (~2556 lines; explicit `st_*` states). Finished + cut over by the `v2cut` epic.
+- `beads-runner/runner.sh` — **v2, the state-machine rewrite. PILOTING LIVE on
+  rhythmGame** (~2556 lines; explicit `st_*` states) as of the staged cutover
+  (claude-tools-v2c4); v1 is still the default on the other 4 workspaces. Cut
+  over by the `v2cut` epic.
 - `beads-runner/launch-detached.sh` — double-fork/`nohup` detach so a runner
   reparents to PID 1 and outlives its launcher (used by the daemon + manual launch).
 - `beads-runner/BEHAVIORAL-CONTRACT.md` — the runner's frozen behavioral contract
@@ -55,11 +57,16 @@ loop, not in worker discipline: `pin_head_to_main` runs at the loop top (sourced
 from `lib/git-pin-main.sh`; a no-op when absent or the tree is dirty).
 
 **v1 vs v2 is a split inside the per-workspace runner only** (the daemon has no
-such fork). v1 (`run-beads-tasks.sh`) is what production runs. v2 (`runner.sh`) is
-a rewrite-complete, conformance-green state machine that **drifted behind v1** and
-is not yet live. The `v2cut` epic policy: build new **runner-touching** features
-on the clean v2 machine *while it is offline* (gated behind `v2c3`), then one
-controlled cutover — do NOT patch live v1. See HANDOFF-UX-V2 §2.
+such fork). v1 (`run-beads-tasks.sh`) is the production default (4 of 5
+workspaces). v2 (`runner.sh`) is a rewrite-complete, conformance-green state
+machine now **PILOTING LIVE on rhythmGame** via the staged cutover
+(claude-tools-v2c4): a per-workspace, machine-local, **gitignored** marker
+`<ws>/.beads/runner-logs/use-runner-v2` flips the daemon's M3 spawn to v2 with
+`RUNNER_BACKEND=real` (mandatory — the stub backend's capacity gate is a no-op);
+instant rollback = remove the marker, next respawn is v1. The `v2cut` epic
+policy: build new **runner-touching** features on the clean v2 machine *while it
+is offline* (gated behind `v2c3`), then this controlled staged cutover — do NOT
+patch live v1. See HANDOFF-UX-V2 §2.
 
 ## Key files
 
@@ -135,6 +142,21 @@ beads-runner/launch-detached.sh <workspace-dir>   # detaches, prints the pid
 Normally you don't: the daemon respawns a runner whenever `desired=running` and no
 runner is alive. You control the **branch** it comes back on, not the start.
 Runbooks: `runner-status-check.md`, `cleanup-orphan-runners.md`, `reset-stuck-bead.md`.
+
+**Flip a workspace to v2 (or roll back to v1) — the staged cutover
+(claude-tools-v2c4):**
+```bash
+touch <ws>/.beads/runner-logs/use-runner-v2          # arm v2 (gitignored, machine-local)
+kill -TERM "$(cat <ws>/.beads/runner-logs/detached-runner.pid)"   # trigger respawn
+# daemon M3 (≤60s) respawns as v2 with RUNNER_BACKEND=real; the spawn log line reads
+#   "launching v2 (runner.sh, RUNNER_BACKEND=real) [use-runner-v2 marker]"
+rm <ws>/.beads/runner-logs/use-runner-v2             # instant rollback: next respawn is v1
+```
+The marker is per-workspace + machine-local (never committed), so each machine
+opts in independently. A missing `runner.sh` fails safe to v1 (BC-43). Watch the
+new runner's `detached-*.log` for the `state: STARTING -> …` v2 banner and the
+absence of any `BACKEND_STUB_ON_HOSTED` notice (which would mean the safety pin
+was lost).
 
 ## Gotchas / scars
 

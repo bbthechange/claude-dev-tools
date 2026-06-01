@@ -44,10 +44,10 @@ everyone):
         │ desired=running + no runner ⇒ M3 respawn (≤60s)
         ▼
 ┌─ PER-WORKSPACE RUNNER ── one per project ──────────────────────────────┐
-│  beads-runner/run-beads-tasks.sh   ← "v1" (LIVE, in production)         │
-│  beads-runner/runner.sh            ← "v2" (state-machine rewrite, NOT   │
-│                                       deployed; the v2cut epic finishes  │
-│                                       + cuts over to it)                 │
+│  beads-runner/run-beads-tasks.sh   ← "v1" (default — 4 of 5 workspaces) │
+│  beads-runner/runner.sh            ← "v2" (state machine — PILOTING     │
+│                                       LIVE on rhythmGame; per-workspace  │
+│                                       use-runner-v2 marker (v2c4)        │
 │  • while-loop: bd ready → pick → spawn one worker → repeat              │
 │  • per-bead auto-commit on whatever branch HEAD is on                   │
 └─────────────────────────────────────────────────────────────────────────┘

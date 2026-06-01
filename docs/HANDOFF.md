@@ -113,8 +113,8 @@ The production `mcp__askbrian__ask-brian` MCP registration requires `COORDINATOR
 | Design docs (frozen) | `beads-runner/DESIGN.md`, `beads-runner/UX-DESIGN.md`, `beads-runner/INTERFACE.md`, `beads-runner/BEHAVIORAL-CONTRACT.md` |
 | Headless-stuck-signal research | `beads-runner/research/headless-stuck-signal.md` |
 | MCP-tool research | `beads-runner/research/mcp-interactive-tool.md` |
-| Runner script (v1, active in production) | `beads-runner/run-beads-tasks.sh` |
-| Runner script (v2 rewrite target, not yet deployed) | `beads-runner/runner.sh` |
+| Runner script (v1, default in production — 4 of 5 workspaces) | `beads-runner/run-beads-tasks.sh` |
+| Runner script (v2 state machine — PILOTING LIVE on rhythmGame; per-workspace opt-in via the `<ws>/.beads/runner-logs/use-runner-v2` marker — claude-tools-v2c4) | `beads-runner/runner.sh` |
 | Per-workspace runner config | `<workspace>/.beads/runner.sh` |
 | Daemon | `beads-runner/daemon/daemon.sh` + `beads-runner/daemon/*.sh` |
 | Daemon install | `~/Library/LaunchAgents/com.beads-runner.daemon.plist` |
