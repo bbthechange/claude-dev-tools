@@ -77,6 +77,7 @@ runner (Flow D), bounded to ≤ one `DESIRED_STATE_POLL_INTERVAL` (60s).
 | `workspace-registry.sh` | `registry_load`/`registry_count` → parses `workspaces.json` into `REGISTRY_DIRS[]`/`REGISTRY_PROJECT_REFS[]`/`REGISTRY_COORDINATOR_URLS[]`/`REGISTRY_TOKEN_KEYCHAIN_ITEMS[]`. The daemon's index of "workspaces this machine owns." |
 | `desired-state-poll.sh` | **M3**: `daemon_m3_reconcile_all` → per-workspace `fetch_desired` (engine RunnerState) → spawn/SIGTERM state machine. Adopts the runner pidfile `<ws>/.beads/runner-logs/detached-runner.pid` (written by `launch-detached.sh`) as authoritative liveness. |
 | `usage-poll.sh` | **M2**: one Keychain read + one Anthropic usage API call per machine, verdict written atomically to `$DAEMON_CACHE_DIR/capacity.json`; workspaces read it via `la__capacity_via_daemon`. Also the D2 machine-state producer (`_machine_state_emit`) + the daemon's outbox drain (`daemon_outbox_drain_once`). |
+| `aux-dispatch-gate.sh` | **I5-cap** (claude-tools-pof7): the aux-pool budget guard. `daemon_aux_capacity_ok [cost_class]` reads `capacity.json` (same 2× `USAGE_CACHE_SECONDS` staleness as `la__capacity_via_daemon`) and SUPPRESSES on a fresh over-budget signal; `daemon_aux_dispatch_guard <kind> <cmd…>` is the run-iff-allowed wrapper. Gates on the **cheaper `low_priority`** class (dropped before the writer's `standard`); **fail-OPEN** on a missing/stale signal (the daemon is the cache producer). Pure read — no record/table (Contract A.2). I5 (uxvi5) consumes it; strict no-op until then. |
 | `hosted-resolution-poll.sh` | **M4**: per-workspace poll for phone-answered dossiers; captures the resume-answer into the workspace store, flips the S-2 bfh record, and **classifies M5 vs M6** dispatch (`daemon_dispatch_for_state`). |
 | `m6-dispatch.sh` | **M6**: when an answered dossier lands while the runner is busy on a DIFFERENT task, launch a short-lived READ-ONLY `claude -p` (reconciler hat) that does `bd` bookkeeping only (no Write/Edit, no commit). Daemon owns its lifecycle (`daemon_m6_kill_all` on exit). |
 | `intake-dispatch-poll.sh` | **I3**: poll engine `intake-pending`; for each request whose `project_ref` is registered here, dispatch the enricher hat (`specialist.sh --kind=enricher`) → new bd task, then mark the record processed. Flow A. |
@@ -174,4 +175,4 @@ didn't find here: a new poll job + its cadence env, a changed liveness oracle, a
 moved/renamed helper, a fresh plist scar, a new invariant. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete lines that have gone
 stale; don't let it grow into a copy of DESIGN.md or the README. Last substantive
-update: 2026-05-31.
+update: 2026-06-01 (added `aux-dispatch-gate.sh`, the I5-cap aux-pool budget guard).

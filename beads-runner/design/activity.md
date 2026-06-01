@@ -355,9 +355,24 @@ Each aux dispatch:
    feeds the whole table.
 
 **Capacity:** aux dispatches consult the same machine-wide capacity the daemon
-already publishes (`daemon.sh:62-67` → `capacity.json`,
-`la__capacity_via_daemon`) so a parallel pool can't blow the 5h/7d budget; gate
-aux spawns on a cheaper cost-class than the writer.
+already publishes (`usage-poll.sh` → `capacity.json`) so a parallel pool can't
+blow the 5h/7d budget; gate aux spawns on a cheaper cost-class than the writer.
+
+> **BUILT — the gate (I5-cap · claude-tools-pof7):** `daemon/aux-dispatch-gate.sh`
+> (sourced by `daemon.sh`). I5 MUST route every aux spawn through it:
+> - detached (`nohup … & ; disown`) block: `if daemon_aux_capacity_ok; then nohup … & disown; else log "$AUX_GATE_REASON"; fi`
+> - synchronous dispatch: `daemon_aux_dispatch_guard <kind> <cmd…>` (runs the cmd iff allowed)
+>
+> The gate reads `capacity.json` directly (same 2× `USAGE_CACHE_SECONDS` staleness
+> contract as `la__capacity_via_daemon`) and tests membership of the **cheaper
+> `low_priority`** cost-class — `usage-poll.sh` drops `low_priority` from
+> `allowed_cost_classes` (spare-cycles ramp) **before** it drops the writer's
+> `standard` (hard ceiling), so the aux pool is the first lane suppressed as
+> budget tightens and the last to resume. **Fail-OPEN** on a missing/stale/
+> unparseable signal (BC-34 §6.2): the daemon is the cache PRODUCER, so an absent
+> signal is transient + self-healing, and the gate is never stricter-on-
+> uncertainty than the writer it shadows. `AUX_GATE_REASON` carries the §6.3 WHY
+> for the log line. Pure read — no §4 record, no transient table (Contract A.2).
 
 **The open decision this rests on:** ARCH §9 decision 1 (v1 vs v2 runner
 placement) is **Brian's yes/no** and is *already filed there* as the one open item

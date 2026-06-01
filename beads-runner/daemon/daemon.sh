@@ -128,6 +128,14 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # daemon_usage_drain.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/usage-poll.sh"
+# I5-cap (claude-tools-pof7): the aux-pool capacity gate — the budget guard the
+# parallel auxiliary dispatch (I5/uxvi5) consults before each read-only aux spawn
+# so the pool can't blow the 5h/7d budget. Reads the capacity.json the usage-poll
+# above publishes; gates on the cheaper `low_priority` cost-class (suppressed
+# before the writer's `standard`). Defines daemon_aux_capacity_ok +
+# daemon_aux_dispatch_guard. Strict no-op until a caller (I5) invokes it.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/aux-dispatch-gate.sh"
 # N2 (claude-tools-uxg1): the notification DELIVERY clock — on cadence, ring the
 # engine's notif-deliver op (blocking sweep frequently, digest sweep ~daily) so
 # a dispatched §4.3 Notification becomes a real Web Push on Brian's installed
