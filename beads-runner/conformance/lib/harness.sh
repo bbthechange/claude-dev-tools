@@ -118,6 +118,15 @@ bd_seed() {
   if [[ -n "$deps" ]]; then printf '%s\n' "${deps//,/$'\n'}" > "$d/deps"; else : > "$d/deps"; fi
 }
 
+# bd_set_children <parent-id> <child1,child2,...> — declare FORMAL children so the
+# fake `bd show --children` emits the real {<parent>:[self,...kids]} object shape
+# (claude-tools-v2cut.1, BC-07/08). A child's status is read LIVE at query time, so
+# a close during the run is reflected. A child that IS bd_seed'd reports its seeded
+# status; a child WITHOUT its own seed reads status `open` (the `_get` default) —
+# the "phantom open child" the some-children-open rigs use to keep the child out of
+# `bd ready` while still counting it open in the parent's child list.
+bd_set_children() { printf '%s' "$2" > "$BD_STORE/$1/children"; }
+
 # claude_plan <behavior> [behavior...]   (one invocation per behavior; last repeats)
 claude_plan() { printf '%s\n' "$@" > "$HARNESS_CLAUDE_PLAN"; }
 

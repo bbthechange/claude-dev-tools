@@ -75,6 +75,25 @@ GATE_POLICY_SH="${GATE_POLICY_SH:-$RUNNER_DIR/gate-policy.sh}"
 # ALWAYS-ON and independent of this list — see _candidate_label_gated.
 RUNNER_NO_CLAIM_LABELS="${RUNNER_NO_CLAIM_LABELS:-human-live-session,human-triage,human-action}"
 
+# ── Cross-workspace scope check (BC-08d, claude-tools-v2cut.1) ────────────────
+# Port-forward of v1 run-beads-tasks.sh:87-107 (claude-tools-uxg8, GAP G8) —
+# UX-DESIGN-V2 §8.5 / design/cross-ws.md §2.4. A bead that references a
+# *cross-repo id* (a bead id belonging to a SIBLING workspace) and is not a
+# tracking-only bead is FLAGGED, not silently claimed by the wrong workspace's
+# runner (the "why is there a backend task in the frontend tracking" frustration
+# — a silent-misclaim hazard amplified by parallel FE/BE runners). The check
+# lives at the TAIL of _validate_workable. RUNNER_SIBLING_PREFIXES is the
+# comma-separated list of sibling bd id prefixes this workspace knows about
+# (e.g. an FE workspace sets 'thirsty-be'); EMPTY by default, so a single-repo
+# runner does nothing (no bd calls, behaviour unchanged). List PEER-workspace
+# prefixes only — do NOT list a prefix that is a parent-segment of your own
+# local prefix (e.g. 'thirsty' when you are 'thirsty-be'), or your own ids match.
+RUNNER_SIBLING_PREFIXES="${RUNNER_SIBLING_PREFIXES:-}"
+# Labels that EXEMPT a bead from the cross-repo flag — a coordination / tracking
+# bead is *meant* to reference sibling-workspace ids (the "isn't a tracking-only
+# task" carve-out, §8.5). Sticky + human-controlled like the no-claim labels.
+RUNNER_TRACKING_ONLY_LABELS="${RUNNER_TRACKING_ONLY_LABELS:-tracking-only}"
+
 # ── §0.5 frozen constants (env-overridable; literal default == §0.5 table) ────
 CONTROL_POLL_INTERVAL="${CONTROL_POLL_INTERVAL:-60}"   # §0.5 (60 s) desired-state poll DURING a task; stop honored ≤ this
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"         # §0.5 (60 s) actual-state+liveness heartbeat; lease renew
@@ -1466,6 +1485,131 @@ _candidate_label_gated() {
   return 1
 }
 
+# ── Workability validation (BC-06/07/08/52-DiD/08d, claude-tools-v2cut.1) ─────
+# Port of v1 run-beads-tasks.sh validate_task (745-855), folded into the
+# st_reconcile candidate WALK (BC-51): a candidate this rejects is SKIPPED-not-
+# failed and the walk advances to the next bead — no FAILED++, no lease, no
+# incident (the same cost-free posture as _candidate_label_gated). The label
+# gate (_candidate_label_gated, BC-08b/uxvj4) already ran in the walk BEFORE
+# this, so this fn covers the REMAINING v1 validate_task classes the v2c3
+# coverage audit found absent from runner.sh (the cutover-blocker: without it v2
+# would CLAIM a late-blocked / container / cross-repo bead):
+#   BC-06  bd blocked TOCTOU re-check — a dep added AFTER the bd ready snapshot.
+#   BC-52  epic defense-in-depth — redundant with the query-layer jq filter in
+#          the walk (line ~1640), kept for v1 parity + dual bd-shape coverage.
+#   BC-07  bd show --children self-inclusion filter + {<id>:[…]} object flatten.
+#   BC-08  all-children-closed ⇒ auto-close the parent; some open ⇒ skip it.
+#   BC-08d cross-workspace scope check (RUNNER_SIBLING_PREFIXES) — the LAST check
+#          (the bead is otherwise claimable by here); no-op when the env is empty.
+# Check order matches v1 (blocked → epic → parent → cross-ws). Returns 0
+# (workable ⇒ select) / 1 (skip ⇒ walk advances). bd calls ride safe_capture
+# (BD_UNAVAILABLE) with v1's fail-postures preserved: a degraded `bd blocked`
+# ⇒ "" ⇒ not-blocked (claim, matching v1's `|| true`); a degraded children read
+# ⇒ "[]" ⇒ 0 children (fail-CLOSED to zero, never a FALSE parent skip).
+# SCOPE NOTE (matches v1): this is applied ONLY to bd-ready candidates, NOT to
+# resumed crash-orphans — v1's next_task() orphan pass likewise does not
+# re-validate (a resumed orphan re-discovers a post-crash block itself).
+_validate_workable() {
+  local id="$1"
+
+  # BC-06 — re-check bd blocked (a dependency may have been added AFTER bd ready
+  # produced the snapshot we are walking). Skip-not-fail (no retry/breaker cost).
+  local blocked_ids
+  blocked_ids="$(safe_capture BD_UNAVAILABLE "" -- bd blocked --json | jq -r '.[].id // empty' 2>/dev/null || true)"
+  if printf '%s\n' "$blocked_ids" | grep -qxF "$id" 2>/dev/null; then
+    echo "  Skipping: has unresolved dependencies (added after task was queued)"
+    return 1
+  fi
+
+  # BC-52 (defense-in-depth) — an epic that slipped the query-layer filter. Both
+  # bd shapes: `bd show` wraps the object in a 1-elem array + names the field
+  # `issue_type`; `bd list` is top-level `type`. Accept either.
+  local task_type
+  task_type="$(safe_capture BD_UNAVAILABLE "" -- bd show "$id" --json \
+               | jq -r '(if type == "array" then .[0] else . end) | (.issue_type // .type // "")' 2>/dev/null || echo "")"
+  if [[ "$task_type" == "epic" ]]; then
+    echo "  Skipping: epic (containers are not workable; see children for actual work)"
+    return 1
+  fi
+
+  # BC-07 + BC-08 — parent/container check. `bd show --children` INCLUDES self
+  # and wraps the children array in a {<parent-id>: [...]} object (a bd quirk).
+  # Flatten that to the children array and filter self out; fail-CLOSED to [] on
+  # any jq error (treat as 0 children — never a false "skipping parent"). All
+  # children closed ⇒ auto-close the parent and skip; some open ⇒ skip it.
+  local children child_count
+  children="$(safe_capture BD_UNAVAILABLE "[]" -- bd show "$id" --children --json)"
+  children="$(printf '%s' "$children" | jq --arg id "$id" '
+    ((if type == "object" then [.[] | .[]?] else . end) | map(select(.id? != $id)))
+  ' 2>/dev/null || echo "[]")"
+  child_count="$(printf '%s' "$children" | jq 'length' 2>/dev/null || echo "0")"
+  if [[ "${child_count:-0}" -gt 0 ]]; then
+    local open_children
+    open_children="$(printf '%s' "$children" | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || echo "0")"
+    if [[ "${open_children:-0}" -eq 0 ]]; then
+      echo "  Auto-closing parent task: all $child_count children completed"
+      safe_capture BD_UNAVAILABLE "" -- bd close "$id" --reason="All children completed" >/dev/null
+    else
+      echo "  Skipping parent task: $open_children of $child_count children still open"
+    fi
+    return 1
+  fi
+
+  # BC-08d — cross-workspace scope check (LAST; port of v1 806-853). Opt-in:
+  # with RUNNER_SIBLING_PREFIXES empty (single-repo default) this whole block is
+  # skipped — no bd calls. A bead whose title/description references a declared
+  # SIBLING prefix's id is FLAGGED (loud skip-not-fail) unless it carries a
+  # RUNNER_TRACKING_ONLY_LABELS label (cross-ref is its job).
+  if [[ -n "${RUNNER_SIBLING_PREFIXES:-}" ]]; then
+    # The local prefix is the bead's own id minus its short suffix — the bead
+    # lives in THIS workspace's DB, so its own prefix IS the local prefix.
+    local local_prefix="${id%-*}"
+    local show_json title desc haystack
+    show_json="$(safe_capture BD_UNAVAILABLE "[]" -- bd show "$id" --json)"
+    title="$(printf '%s' "$show_json" | jq -r '(if type == "array" then .[0] else . end) | (.title // "")' 2>/dev/null || echo "")"
+    desc="$(printf '%s' "$show_json"  | jq -r '(if type == "array" then .[0] else . end) | (.description // "")' 2>/dev/null || echo "")"
+    haystack="$title"$'\n'"$desc"
+    local sib hit=""
+    local -a sib_arr=()
+    IFS=',' read -ra sib_arr <<< "$RUNNER_SIBLING_PREFIXES"
+    for sib in "${sib_arr[@]}"; do
+      sib="${sib## }"; sib="${sib%% }"
+      [[ -z "$sib" ]] && continue
+      [[ "$sib" == "$local_prefix" ]] && continue   # never flag our own prefix
+      # Match a <sibling-prefix>-<shortid> token. The left boundary (start-of-line
+      # or a non-id char) keeps it from matching inside a longer hyphenated word;
+      # the second grep extracts the clean id for the message.
+      hit="$(printf '%s' "$haystack" \
+            | grep -oE "(^|[^[:alnum:]-])${sib}-[a-z0-9]+" 2>/dev/null \
+            | grep -oE "${sib}-[a-z0-9]+" 2>/dev/null | head -1 || true)"
+      [[ -n "$hit" ]] && break
+    done
+    if [[ -n "$hit" ]]; then
+      # A tracking-only bead is allowed to reference sibling ids. Fetch labels
+      # only now — the common no-hit path paid nothing.
+      local task_labels tlabel exempt=""
+      local -a tlabel_arr=()
+      task_labels="$(safe_capture BD_UNAVAILABLE "" -- bd label list "$id" --json | jq -r '.[]?' 2>/dev/null || echo "")"
+      IFS=',' read -ra tlabel_arr <<< "$RUNNER_TRACKING_ONLY_LABELS"
+      for tlabel in "${tlabel_arr[@]}"; do
+        tlabel="${tlabel## }"; tlabel="${tlabel%% }"
+        [[ -z "$tlabel" ]] && continue
+        if printf '%s\n' "$task_labels" | grep -qxF "$tlabel" 2>/dev/null; then
+          exempt="$tlabel"; break
+        fi
+      done
+      if [[ -n "$exempt" ]]; then
+        echo "  Note: references cross-repo id '$hit' but is labelled '$exempt' (tracking-only — cross-ref is intentional, claiming normally)"
+      else
+        echo "  Skipping: references cross-repo id '$hit' (workspace-scope check — this looks misfiled in '$local_prefix'; move it to its home repo, or add a '${RUNNER_TRACKING_ONLY_LABELS%%,*}' label if the cross-ref is intentional). Not claimed."
+        return 1
+      fi
+    fi
+  fi
+
+  return 0
+}
+
 # ── BC-04 — resume ONE crash-orphan per reconcile, status re-checked at resume ─
 # Drains the startup orphan snapshot (BC-02) one bead per loop. The snapshot may
 # be stale by the time a loop reaches it (RECLAIM_POLL_INTERVAL — or, capacity-
@@ -1570,11 +1714,13 @@ st_reconcile() {
   # this bead closes). st_claim's lease acquire is where the §6.1 strong-plane
   # orphan-recovery composes (re-acquire the crashed owner's expired lease); the
   # `bd update --status=in_progress` re-write there is idempotent. ACCEPTED
-  # v1 carry-over: like v1's next_task, this does NOT re-validate deps — if a
-  # sibling reopened the orphan's dependency post-crash, the now-effectively-
-  # blocked orphan is resumed anyway (the worker re-discovers the block). Folding
-  # the BC-06/07/08/51 workability gate over BOTH orphans and ready candidates is
-  # the separately-filed claude-tools-v2cut.1 bead's surface.
+  # v1 carry-over (claude-tools-v2cut.1 decision): like v1's next_task, the orphan
+  # path does NOT re-validate deps — if a sibling reopened the orphan's dependency
+  # post-crash, the now-effectively-blocked orphan is resumed anyway (the worker
+  # re-discovers the block). The BC-06/07/08/51 workability gate that v2cut.1
+  # added (_validate_workable) is applied ONLY to bd-ready candidates below, NOT
+  # to resumed orphans — matching v1 exactly (v1's validate_task runs only inside
+  # select_workable_task over the ready array, never over the orphan resume).
   if _drain_one_orphan; then
     transition CLAIM; return
   fi
@@ -1605,25 +1751,34 @@ st_reconcile() {
 
   # Select the FIRST workable NON-EPIC candidate at the ONE reconcile point (no
   # scattered downstream skip — keeps the v2 state-machine shape; claude-tools-dzc).
-  # Epics are dropped by the jq select (containers, not workable); each surviving
-  # candidate is then walked through the pickup label gate (claude-tools-v2c3),
-  # which skips-not-fails past any human-* fixture (BC-08b) or gate:<id> Gate
-  # (uxvj4) — printing a named skip line and advancing to the next candidate (the
-  # v1 select_workable_task no-starvation posture for THIS skip class). If EVERY
-  # ready item is an epic OR gated, the candidate is empty and we DRAIN/idle
-  # (§1.2): nothing autonomously-claimable ⇒ honest idle, never a claimed
-  # epic/gated bead and never the v1 skip-spin.
+  # This IS v1's select_workable_task (BC-51) as a state-machine walk: epics are
+  # dropped by the jq select (containers, not workable); each surviving candidate
+  # is then run through BOTH gates in v1's order —
+  #   1. the pickup label gate (_candidate_label_gated, claude-tools-v2c3) — any
+  #      human-* fixture (BC-08b) or gate:<id> Gate (uxvj4); then
+  #   2. the workability validation (_validate_workable, claude-tools-v2cut.1) —
+  #      BC-06 late-blocked deps, BC-52 epic DiD, BC-07/08 parent/container,
+  #      BC-08d cross-repo scope.
+  # A candidate either gate rejects is SKIPPED-not-failed and the walk advances
+  # to the next bead (the v1 no-starvation posture — a single unworkable head no
+  # longer starves the workable beads below it, the claude-tools-uxqj/dzc class).
+  # `job_heartbeat idle` per skip keeps actual-state warm while we scan past a
+  # long unworkable run (the v1 select_workable_task `hb idle` / g20 hot-spin
+  # guard). If EVERY ready item is an epic / gated / unworkable, CANDIDATE_ID is
+  # empty and we DRAIN/idle (§1.2): nothing autonomously-claimable ⇒ honest idle,
+  # never a claimed epic/gated/blocked/container/cross-repo bead, never a skip-spin.
   local cand_ids
   cand_ids="$(printf '%s' "$ready_json" | jq -r 'map(select((.issue_type // .type // "") != "epic")) | .[].id // empty' 2>/dev/null)"
   CANDIDATE_ID=""
   local _cid
   while IFS= read -r _cid; do
     [[ -z "$_cid" ]] && continue
-    if _candidate_label_gated "$_cid"; then continue; fi
+    if _candidate_label_gated "$_cid"; then job_heartbeat idle "" "" >/dev/null; continue; fi
+    if ! _validate_workable "$_cid"; then    job_heartbeat idle "" "" >/dev/null; continue; fi
     CANDIDATE_ID="$_cid"; break
   done <<< "$cand_ids"
   if [[ -z "$CANDIDATE_ID" ]]; then
-    transition DRAINED; return                 # §1.2 empty / all-epic / all-gated queue
+    transition DRAINED; return                 # §1.2 empty / all-epic / all-gated / all-unworkable queue
   fi
   local candidate_obj
   candidate_obj="$(printf '%s' "$ready_json" | jq -c --arg id "$CANDIDATE_ID" 'map(select(.id == $id)) | .[0] // empty' 2>/dev/null)"

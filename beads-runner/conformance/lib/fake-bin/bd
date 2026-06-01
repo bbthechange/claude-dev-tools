@@ -98,6 +98,22 @@ case "$cmd" in
       [[ "$(_get "$id" status open)" == "closed" ]] && continue
       _blocked "$id" && ids+=("$id")
     done
+    # claude-tools-v2cut.1 (BC-06): HARNESS_FORCE_BLOCKED models the TOCTOU window
+    # — a bead `bd ready` still surfaces (it has no REAL dep, so _ready_ids returns
+    # it) but a dependency added AFTER the snapshot now blocks. Comma-separated
+    # ids, injected here regardless of real deps so `bd ready` and `bd blocked`
+    # can disagree within a single loop (impossible from static store state alone).
+    if [[ -n "${HARNESS_FORCE_BLOCKED:-}" ]]; then
+      IFS=',' read -ra _fbarr <<< "$HARNESS_FORCE_BLOCKED"
+      for _fb in "${_fbarr[@]}"; do
+        _fb="${_fb## }"; _fb="${_fb%% }"
+        [[ -z "$_fb" ]] && continue
+        _exists "$_fb" || continue
+        _seen=0
+        for _x in "${ids[@]+"${ids[@]}"}"; do [[ "$_x" == "$_fb" ]] && { _seen=1; break; }; done
+        [[ $_seen -eq 0 ]] && ids+=("$_fb")
+      done
+    fi
     _emit_issues "${ids[@]+"${ids[@]}"}"; echo ; exit 0 ;;
 
   show)
@@ -112,9 +128,26 @@ case "$cmd" in
     fi
     if ! _exists "$id"; then echo '[]'; exit 0; fi
     if [[ $children -eq 1 ]]; then
-      # bd quirk (BC-07): --children includes self. Emit only self → 0 children.
-      jq -cn --arg id "$id" --arg s "$(_get "$id" status open)" \
-        '[{id:$id,status:$s}]'; exit 0
+      # bd quirk (BC-07): --children INCLUDES self; real bd also wraps the
+      # children array in a {<parent-id>:[...]} object. With NO children file we
+      # keep the historical self-only flat array (every existing leaf rig is
+      # unchanged → 0 children after the runner's self-exclusion). With a children
+      # file (claude-tools-v2cut.1 bd_set_children) we emit the faithful
+      # {<id>:[self,...kids]} object so the runner's object-flatten (BC-07) and
+      # all-closed/some-open parent logic (BC-08) are exercised; each child object
+      # carries its CURRENT status so an auto-close reflects live state.
+      kids="$(_get "$id" children "")"
+      if [[ -z "$kids" ]]; then
+        jq -cn --arg id "$id" --arg s "$(_get "$id" status open)" '[{id:$id,status:$s}]'
+        exit 0
+      fi
+      kid_objs="$(jq -cn --arg id "$id" --arg s "$(_get "$id" status open)" '{id:$id,status:$s}')"
+      for kid in ${kids//,/ }; do
+        [[ -z "$kid" ]] && continue
+        kid_objs="$kid_objs"$'\n'"$(jq -cn --arg id "$kid" --arg s "$(_get "$kid" status open)" '{id:$id,status:$s}')"
+      done
+      printf '%s\n' "$kid_objs" | jq -cs --arg id "$id" '{($id): .}'
+      exit 0
     fi
     _emit_issues "$id"; echo ; exit 0 ;;
 
