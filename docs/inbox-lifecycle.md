@@ -579,6 +579,26 @@ The naive fix is "only adopt in_progress tasks where `updated_at` is older than 
 - Implementation: standalone `beads-runner/sweep-stranded-live-sessions.sh`. Ship the script; scheduling can come later.
 - Triage subagent's filed bead has NO `human-triage` label (per §11 labelling principle). If subagent is genuinely unsure, files a follow-up `human-action` bead — that's the warranted use.
 
+> **IMPLEMENTATION NOTE (claude-tools-uxc3, SHIPPED):** the standalone
+> `beads-runner/sweep-stranded-live-sessions.sh` exists with three verbs:
+> `sweep` (find + file a triage bead per new strand), `scan` (dry-run, files
+> nothing), `list` (machine-readable stranded ids). Exit 0 = clean, 1 = at
+> least one stranded found (a scheduler signal, not an error). It NEVER mutates
+> the stranded bead (the hard C-3 invariant); the triage bead it files carries
+> the audit data + a `STRANDED_TASK=<id>` dedup marker, the
+> `stranded-live-session-triage` label, a non-blocking `discovered-from` dep
+> back to the strand, and NO `human-triage`. Two deliberate refinements of the
+> step-2/3 wording above: (a) "no claim file" is read as **no LIVE claim** — a
+> stale dead-pid Mechanism-A claim is itself a crash signal, so it still counts
+> as stranded (its details are captured as audit data, not used to skip);
+> (b) **coordinator heartbeat is NOT consulted** — the live work-snapshot tracks
+> runner, not interactive-session, liveness and is offline-unsafe here, so the
+> sweep gates on the two robust offline signals (claim liveness + `updated_at`
+> staleness, default `STRANDED_STALE_HOURS=4`) and records the coordinator
+> cross-check as a follow-up, the same posture uxc1 took for §8.3.3
+> cross-workspace liveness. Regression test: `test-sweep-stranded-live-sessions.sh`
+> (`top` tier). Scheduling remains unfiled (the C-3 stretch goal).
+
 #### 8.3.6 Edge cases the (A)+(B)+(C) stack handles
 
 | Scenario | Handled by | Outcome |
@@ -639,7 +659,7 @@ All autonomous-claim-eligible. File in `claude-tools`.
   - `RUNNER_PID=$$` exported by `run-beads-tasks.sh` near `:309`, verified to reach the spawned `claude` child's env (the critical test case).
   - Hook applies label on `bd update --status=in_progress` and `--claim` when RUNNER_PID absent; pass-through when present.
 
-**Bead C-3 — Mechanism C: triage sweep for stranded live-session tasks**
+**Bead C-3 — Mechanism C: triage sweep for stranded live-session tasks** *(SHIPPED: claude-tools-uxc3 — see the §8.3.5 implementation note)*
 - **Title:** "Periodic sweep files triage for stranded `human-live-session` tasks (interactive agent crashed)"
 - **Type:** task. **Priority:** P2. **Labels:** `runner-reliability`. Cross-link to C-2.
 - **Acceptance:**
