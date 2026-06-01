@@ -52,11 +52,43 @@ H_init_test bc43tree-standalone-unchanged
 bd_seed T1 "task one" "do a thing"
 claude_plan success
 # No COORDINATOR_URL, default RUNNER_BACKEND ⇒ the in-process stub/standalone path.
+# ENFORCE the standalone precondition this section asserts: run-tests.sh scrubs
+# COORDINATOR_URL before the tier, but a DIRECT subset run (run-conformance.sh
+# bc-43, per README) on the operator/daemon host inherits the ambient
+# COORDINATOR_URL and would trip the §D cutover-safety warning below — a false
+# RED of the "stays silent standalone" check on exactly the production machine.
+# Clear it here so "standalone" is real regardless of how the rig is invoked
+# (claude-tools-v2c4).
+unset COORDINATOR_URL COORDINATOR_TOKEN 2>/dev/null || true
 run_runner
 _expect "BC-43" "§15" "absent coordination tier (default stub path) ⇒ a seeded task still processes to closed unchanged; runner drains exit 0"
 _need "T1 closed (core behaviour unchanged on the standalone path)" test "$(bd_status T1)" = closed
 _need "runner drained exit 0"                        test "${RUN_EXIT:-1}" -eq 0
 _need "no backend-unknown degrade emitted (stub default chosen cleanly)" \
       notcontains "$(out)" "BACKEND_UNKNOWN"
+# The bare standalone path (no COORDINATOR_URL) must stay SILENT about the stub
+# backend — the cutover-safety warning is for the hosted context only, and a
+# false positive on every conformance/standalone run would train the operator
+# to ignore it (claude-tools-v2c4).
+_need "standalone stub path does NOT emit the hosted-stub warning (no false positive)" \
+      notcontains "$(out)" "BACKEND_STUB_ON_HOSTED"
+_emit
+H_cleanup
+
+# ── D · cutover safety: stub backend + hosted context ⇒ a LOUD warning ──────────
+# claude-tools-v2c4. RUNNER_BACKEND=stub makes la_capacity_check a no-op (no 5h/7d
+# ceiling). That is fine standalone (§C above proves it stays silent), but a
+# runner WIRED to the hosted engine (COORDINATOR_URL set — the daemon/production
+# path) on the stub backend is an accidental unguarded launch that can burn
+# quota. Never-silent-degradation (claude-tools-18c): it must be HEARD. The
+# daemon M3 spawn pins RUNNER_BACKEND=real, so this only fires on misconfig.
+H_init_test bc43tree-stub-on-hosted-warning
+_expect "BC-43" "§15" "RUNNER_BACKEND=stub + COORDINATOR_URL set ⇒ a loud BACKEND_STUB_ON_HOSTED degrade notice (cutover safety; the hosted/production path pins RUNNER_BACKEND=real) (runner.sh)"
+_need "warning guarded on stub backend AND a set COORDINATOR_URL" \
+      grep -qE '\[\[ "\$RUNNER_BACKEND" == "stub" && -n "\$\{COORDINATOR_URL:-\}" \]\]' "$RUNNER"
+_need "warning carries the greppable BACKEND_STUB_ON_HOSTED degrade token" \
+      grep -qE 'degrade: BACKEND_STUB_ON_HOSTED' "$RUNNER"
+_need "warning names the missing usage ceiling + the RUNNER_BACKEND=real fix" \
+      grep -qE 'Set RUNNER_BACKEND=real' "$RUNNER"
 _emit
 H_cleanup

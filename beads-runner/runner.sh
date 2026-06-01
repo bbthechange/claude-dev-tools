@@ -321,6 +321,26 @@ case "$RUNNER_BACKEND" in
     ;;
 esac
 
+# ── Cutover safety: LOUD notice if we are on the stub backend in a HOSTED
+#    context (claude-tools-v2c4). Under RUNNER_BACKEND=stub la_capacity_check is
+#    a hardcoded no-op (lib/local-agent-stub.sh) — there is NO 5h/7d usage
+#    ceiling. That is correct and silent for a bare standalone `bash runner.sh`
+#    (no COORDINATOR_URL — the conformance/standalone path), but a runner WIRED
+#    to the hosted engine (COORDINATOR_URL set — the daemon/production path)
+#    running stub capacity is an ACCIDENTAL unguarded launch that can burn
+#    Anthropic quota. Per the never-silent-degradation principle (claude-tools-18c)
+#    we make it HEARD immediately rather than discovered after the burn. The
+#    production cutover path (daemon M3 spawn) pins RUNNER_BACKEND=real, so this
+#    only fires on a misconfiguration. ──────────────────────────────────────
+if [[ "$RUNNER_BACKEND" == "stub" && -n "${COORDINATOR_URL:-}" ]]; then
+  echo "════════════════════════════════════════════════════════════════════" >&2
+  echo "degrade: BACKEND_STUB_ON_HOSTED — RUNNER_BACKEND=stub but COORDINATOR_URL is set." >&2
+  echo "  The stub backend's la_capacity_check is a NO-OP: this runner has NO 5h/7d usage" >&2
+  echo "  ceiling and can burn Anthropic quota UNGUARDED. Set RUNNER_BACKEND=real for any" >&2
+  echo "  hosted/production launch (claude-tools-v2c4 cutover safety)." >&2
+  echo "════════════════════════════════════════════════════════════════════" >&2
+fi
+
 # ── Node v25 PATH prime (claude-tools-18c; shared lib at lib/node25-prime.sh,
 #    pattern proven in specialist.sh = claude-tools-3kd and run-beads-tasks.sh
 #    = claude-tools-4tj). The body lives in the shared helper because the same

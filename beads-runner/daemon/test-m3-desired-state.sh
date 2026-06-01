@@ -335,6 +335,46 @@ has "$logs" "would SIGTERM pid=$$" "E: first reconcile after restart honors stop
 has "$logs" "desired <unset> → stopped" "E: first observation logs <unset> → stopped (pidfile adoption + state observation)"
 
 # ════════════════════════════════════════════════════════════════════════════
+# PART G — v2 staged-cutover marker (claude-tools-v2c4): a per-workspace
+#          use-runner-v2 marker flips daemon_m3_spawn to the v2 runner with the
+#          mandatory RUNNER_BACKEND=real; absent ⇒ v1 default, byte-for-byte
+#          unchanged. We exercise the DAEMON_M3_DISABLED=1 canary so the spawn
+#          resolves to a log line (no real launch-detached invocation).
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART G — v2 cutover marker selection (canary branch) ──"
+GWS="$WSC"   # reuse C's workspace (already has .beads/runner-logs)
+GMARK="$GWS/.beads/runner-logs/use-runner-v2"
+rm -f "$GMARK"
+
+# G0 — marker-path helper + the uses-v2 predicate (absent marker).
+eq "$(daemon_m3_v2_marker "$GWS")" "$GMARK" "G0: daemon_m3_v2_marker echoes the runner-logs/use-runner-v2 path"
+if daemon_m3_uses_v2 "$GWS"; then bad "G0: absent marker must NOT select v2"; else ok "G0: absent marker ⇒ daemon_m3_uses_v2 false (v1 default)"; fi
+
+# G1 — no marker ⇒ spawn selects v1 (default path unchanged, no backend pin).
+: > "$M3_LOGS"
+daemon_m3_spawn "$GWS" >/dev/null 2>&1
+logs="$(cat "$M3_LOGS")"
+has "$logs" "would launch v1 (run-beads-tasks.sh)" "G1: absent marker ⇒ canary spawn selects v1 (default unchanged)"
+nothas "$logs" "RUNNER_BACKEND=real"               "G1: v1 spawn never pins RUNNER_BACKEND"
+
+# G2 — marker present ⇒ uses_v2 true + spawn selects v2 with RUNNER_BACKEND=real.
+: > "$GMARK"
+if daemon_m3_uses_v2 "$GWS"; then ok "G2: marker present (+ runner.sh exists) ⇒ daemon_m3_uses_v2 true"; else bad "G2: marker present must select v2"; fi
+: > "$M3_LOGS"
+daemon_m3_spawn "$GWS" >/dev/null 2>&1
+logs="$(cat "$M3_LOGS")"
+has "$logs" "would launch v2 (runner.sh, RUNNER_BACKEND=real)" "G2: marker ⇒ canary spawn selects v2 with the mandatory real backend"
+has "$logs" "use-runner-v2 marker"                              "G2: spawn log names the marker that flipped it"
+
+# G3 — instant rollback: removing the marker reverts to v1 on the next spawn.
+rm -f "$GMARK"
+: > "$M3_LOGS"
+daemon_m3_spawn "$GWS" >/dev/null 2>&1
+logs="$(cat "$M3_LOGS")"
+has "$logs" "would launch v1 (run-beads-tasks.sh)" "G3: marker removed ⇒ next spawn is v1 again (instant rollback)"
+
+# ════════════════════════════════════════════════════════════════════════════
 # PART F — daemon.sh wires desired-state-poll.sh into the main loop
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

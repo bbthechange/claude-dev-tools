@@ -177,6 +177,34 @@ _daemon_m3_fetch_desired_one() {
   )
 }
 
+# ── v2 staged cutover (claude-tools-v2c4) ──────────────────────────────────
+# A per-workspace, MACHINE-LOCAL opt-in flips that workspace's runner from v1
+# (run-beads-tasks.sh, the launch-detached default) to the v2 state-machine
+# runner (runner.sh). The marker lives under the gitignored runner-logs/ dir,
+# so the choice is a property of THIS machine and is never committed to the
+# project (a clone on another machine stays on v1 until its own operator opts
+# in). Instant rollback = remove the marker; the next respawn is v1 again.
+#
+# daemon_m3_v2_marker <workspace_dir> → echo the marker path
+daemon_m3_v2_marker() {
+  local ws="${1:-}"
+  [[ -n "$ws" ]] || return 0
+  printf '%s/.beads/runner-logs/use-runner-v2' "$ws"
+}
+
+# daemon_m3_uses_v2 <workspace_dir>
+#   rc 0 iff this workspace is flipped to v2 AND the v2 runner script is
+#   actually present. A missing runner.sh must NEVER strand a workspace, so we
+#   fall back to v1 (BC-43 guarded-optional posture) rather than spawn nothing.
+daemon_m3_uses_v2() {
+  local ws="${1:-}" marker
+  [[ -n "$ws" ]] || return 1
+  marker="$(daemon_m3_v2_marker "$ws")"
+  [[ -f "$marker" ]] || return 1
+  [[ -f "$DAEMON_REPO_DIR/runner.sh" ]] || return 1
+  return 0
+}
+
 # daemon_m3_spawn <workspace_dir>
 #   Spawn a runner via launch-detached.sh. Returns 0 on launch (regardless
 #   of whether confirm-pid races us); 1 on a precondition failure. Honors
@@ -192,16 +220,37 @@ daemon_m3_spawn() {
       log "M3 spawn: refuse — launch-detached.sh missing at $DAEMON_LAUNCH_DETACHED"
     return 1
   fi
+  # Resolve which runner this workspace gets (v1 default / v2 opt-in marker).
+  # CRITICAL SAFETY (claude-tools-v2c4 bead notes): a v2 runner MUST run with
+  # RUNNER_BACKEND=real. Under the default stub backend la_capacity_check is a
+  # hardcoded no-op, so a v2 runner wired to the hosted engine would have NO
+  # 5h/7d usage ceiling and could burn Anthropic quota unguarded. v1 ignores
+  # RUNNER_BACKEND (it always sources the real capacity lib), so pinning it on
+  # the v2 path is correct and load-bearing.
+  local runner_label="v1 (run-beads-tasks.sh)"
+  local use_v2=0
+  if daemon_m3_uses_v2 "$ws"; then
+    use_v2=1
+    runner_label="v2 (runner.sh, RUNNER_BACKEND=real) [use-runner-v2 marker]"
+  fi
   if [[ "$DAEMON_M3_DISABLED" == "1" ]]; then
     declare -F log >/dev/null 2>&1 && \
-      log "M3 spawn: DAEMON_M3_DISABLED=1 ⇒ would launch $DAEMON_LAUNCH_DETACHED for workspace=$ws"
+      log "M3 spawn: DAEMON_M3_DISABLED=1 ⇒ would launch $runner_label via $DAEMON_LAUNCH_DETACHED for workspace=$ws"
     return 0
   fi
-  declare -F log >/dev/null 2>&1 && log "M3 spawn: workspace=$ws via $DAEMON_LAUNCH_DETACHED"
-  # The launcher itself detaches; we don't hold onto the child. The
-  # workspace's .beads/runner.sh supplies COORDINATOR_URL/PROJECT_REF/
-  # permissions — we don't override them here.
-  "$DAEMON_LAUNCH_DETACHED" "$ws" >/dev/null 2>&1
+  declare -F log >/dev/null 2>&1 && \
+    log "M3 spawn: workspace=$ws ⇒ launching $runner_label via $DAEMON_LAUNCH_DETACHED"
+  # The launcher itself detaches; we don't hold onto the child. The workspace's
+  # .beads/runner.sh supplies COORDINATOR_URL/PROJECT_REF/permissions — we don't
+  # override those here. For the v2 opt-in we add the RUNNER_CMD selection plus
+  # the mandatory RUNNER_BACKEND=real, scoped to this one launch via a subshell
+  # export so v1 spawns stay byte-for-byte identical to before.
+  if [[ "$use_v2" == "1" ]]; then
+    ( export RUNNER_CMD="$DAEMON_REPO_DIR/runner.sh" RUNNER_BACKEND=real
+      "$DAEMON_LAUNCH_DETACHED" "$ws" >/dev/null 2>&1 )
+  else
+    "$DAEMON_LAUNCH_DETACHED" "$ws" >/dev/null 2>&1
+  fi
   return 0
 }
 
