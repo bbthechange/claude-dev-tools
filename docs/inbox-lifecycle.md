@@ -552,6 +552,20 @@ The naive fix is "only adopt in_progress tasks where `updated_at` is older than 
 
 **The critical test case:** if `RUNNER_PID` doesn't reach the spawned `claude` child's env, runner-owned tasks get auto-labelled and the runner refuses its own work — instant deadlock.
 
+> **IMPLEMENTATION NOTE (claude-tools-n6ek, shipped on the v2 `runner.sh`):** the
+> `RUNNER_PID` framing above is the v1 plan. On the v2 runner the
+> runner-identity marker is **`BEADS_RUNNER_SESSION=1`** (set as a command-prefix
+> env on `claude -p` at `runner.sh:2121`) plus **`CURRENT_TASK_ID`** (exported at
+> `runner.sh:2006`) — both already reach the worker AND its PreToolUse hook
+> subprocesses (the same `BEADS_RUNNER_SESSION` marker `close-checklist.sh:101`
+> relies on), so **no new `RUNNER_PID` export was needed**. The hook
+> (`auto-label-live-session.sh`) passes through with NO label when EITHER is
+> present; detection is env-ONLY (it deliberately does not read the
+> `current-task` file, which would false-positive interactive sessions in a
+> workspace where the runner ever ran). For the §8.3.7 test, "set the runner
+> marker, exec" means `BEADS_RUNNER_SESSION=1` / `CURRENT_TASK_ID=<id>`, not
+> `RUNNER_PID`.
+
 #### 8.3.5 Mechanism C — Triage sweep for stranded `human-live-session` tasks
 
 **Purpose:** catch edge case where an interactive agent crashes (machine reboot, Claude Code quit) leaving a task `in_progress + human-live-session`. Runner refuses by label; task would otherwise rot forever.
