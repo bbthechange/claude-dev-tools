@@ -202,6 +202,27 @@ if [[ -f .beads/runner.sh ]]; then
   source .beads/runner.sh 2>/dev/null || echo "degrade: CONFIG_UNREADABLE — .beads/runner.sh failed to source; using defaults" >&2
 fi
 
+# ── BC-37 — first-arg --yolo escape hatch (port from v1 run-beads-tasks.sh
+#    ~290-296; claude-tools-92l3, the last BC-37 half v2 hadn't ported). Parsed
+#    at MODULE scope on purpose: the dispatch loop calls st_* with NO args, so
+#    `$1` here is the runner's OWN first positional arg (e.g. a human running
+#    `bash runner.sh --yolo`, or `RUNNER_CMD="bash …/runner.sh --yolo"` through
+#    launch-detached.sh's "$@" passthrough — the daemon never passes it).
+#    Applied AFTER the project `.beads/runner.sh` source so --yolo WINS over a
+#    project PERMISSION_FLAGS override (v1 ordering: config @178-183, yolo
+#    @290-296). It replaces the curated allowlist wholesale with
+#    --dangerously-skip-permissions and relabels the run; YOLO=1 also suppresses
+#    the opus→`--permission-mode auto` override below so the bypass flows through
+#    unmodified (yolo wins — BC-58/§12). SCAR (deliberate product surface), not
+#    scaffolding.
+MODE_LABEL="scoped permissions"
+YOLO=0
+if [[ "${1:-}" == "--yolo" ]]; then
+  PERMISSION_FLAGS=(--dangerously-skip-permissions)
+  MODE_LABEL="all permissions bypassed"
+  YOLO=1
+fi
+
 # claude-tools-qcoe: per-task permission mode. Opus supports `--permission-mode auto`
 # (LLM-classified auto-approval, still honors permissions.deny). Sonnet silently
 # downgrades auto→default in headless = block on first prompt = watchdog kill, so
@@ -211,10 +232,15 @@ fi
 # run-beads-tasks.sh's per-task path; runner.sh's DEFAULT_MODEL skeleton default
 # is already "opus[1m]" so `opus*)` matches both forms.
 # FORWARD COMPAT: when Sonnet gains auto support, change `opus*)` to `opus*|sonnet*)`.
+# --yolo WINS (claude-tools-92l3): YOLO=1 skips this override entirely so
+# --dangerously-skip-permissions (set above) flows through to the worker argv
+# instead of being replaced by --permission-mode auto (mirrors v1 ~1611).
 TASK_PERMISSION_FLAGS=("${PERMISSION_FLAGS[@]}")
-case "$DEFAULT_MODEL" in
-  opus*) TASK_PERMISSION_FLAGS=(--permission-mode auto) ;;
-esac
+if [[ "$YOLO" != 1 ]]; then
+  case "$DEFAULT_MODEL" in
+    opus*) TASK_PERMISSION_FLAGS=(--permission-mode auto) ;;
+  esac
+fi
 
 # ── The callee surface: a SELECTABLE six-job backend (BC §3 callees; T-final
 #    wiring, claude-tools-v2c2). The runner is the CALLER of the six §3 jobs; the
@@ -1460,6 +1486,7 @@ transition() { echo "state: ${STATE:-∅} -> $1"; STATE="$1"; }
 
 st_starting() {
   echo "runner: principal=$PRINCIPAL runner_id=$RUNNER_ID project=$PROJECT_REF"
+  echo "Running: $MODE_LABEL"   # BC-37 — surfaces "all permissions bypassed" under --yolo (claude-tools-92l3)
   rm -f "$STOP_FILE" 2>/dev/null || true       # clean slate (stop is consumed, not sticky)
   # claude-tools-2fkp: clear any stale current-task pointer a previous runner
   # left behind (SIGKILL, crash). It is regenerated per-task at claim; a stale

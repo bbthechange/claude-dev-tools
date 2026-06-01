@@ -14,14 +14,16 @@
 #  (d) SOURCE     — env-overridable knobs use the `${VAR:-default}` idiom
 #      (MAX_RETRIES, MAX_CONSECUTIVE_FAILURES, DEFAULT_MODEL).
 #
-# V2-VS-V1 GAP (asserted as a FORWARD _gate so it never FAILs the suite):
+# V1↔V2 PARITY (claude-tools-92l3 — the --yolo half is now PORTED + regression-locked):
 #  v1 run-beads-tasks.sh parses a first-arg `--yolo` → PERMISSION_FLAGS becomes
 #  `(--dangerously-skip-permissions)` + the run is relabelled "all permissions
-#  bypassed" (v1 lines 292-294). v2 runner.sh's STATE dispatch loop (~2542)
-#  calls the st_* functions with NO args and has NO `--yolo` / no
-#  `--dangerously-skip-permissions` parsing anywhere — the BC-37 §"First arg
-#  --yolo" surface is NOT yet ported. The _gate below documents that as the
-#  close-criterion the v2c cutover must flip GREEN; it is NOT a regression.
+#  bypassed" (v1 lines 292-294). v2 runner.sh now parses the same first-arg
+#  `--yolo` at MODULE scope (the dispatch loop calls st_* with no args, so $1 is
+#  the runner's own first positional), AFTER the project `.beads/runner.sh`
+#  source so --yolo wins, and YOLO=1 suppresses the opus→`--permission-mode auto`
+#  override so the bypass flows through. Asserted below as a real `_expect`
+#  regression-lock (was a FORWARD `_gate` while unported — the bc-58 precedent:
+#  a ported v2 fix earns a hard assertion, not a never-FAIL gate).
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 trap H_cleanup EXIT
 
@@ -79,17 +81,19 @@ _need "DEFAULT_MODEL is \${DEFAULT_MODEL:-...}"       grep -qE 'DEFAULT_MODEL="\
 _emit
 H_cleanup
 
-# ── FORWARD GATE — the --yolo escape hatch (v2 has NOT ported it; see header) ──
-H_init_test bc37tree-yolo-forward
+# ── --yolo escape hatch — PORTED to v2 + regression-locked (claude-tools-92l3) ─
+H_init_test bc37tree-yolo
 bd_seed T1 "task one" "do a thing"
 claude_plan success
-run_runner --yolo                # v2 ignores the arg (dispatch loop passes none on)
+run_runner --yolo                # v2 parses $1=="--yolo" at module scope
 av="$(argv_text)"
 o="$(out)"
-_gate "BC-37" "§452" "FORWARD: --yolo ⇒ --dangerously-skip-permissions + 'all permissions bypassed' (v1 ports; v2 not yet)"
-# These two will be UNMET on v2 (GATE-PENDING, never FAIL) until --yolo is ported.
+_expect "BC-37" "§452" "--yolo ⇒ --dangerously-skip-permissions in the worker argv + run relabelled 'all permissions bypassed'"
+_need "worker spawned (T1 closed)"                    test "$(bd_status T1)" = closed
 _need "claude argv carries --dangerously-skip-permissions under --yolo" \
                                                       contains "$av" "--dangerously-skip-permissions"
+_need "--yolo wins: opus did NOT downgrade the bypass to --permission-mode auto" \
+                                                      notcontains "$av" "--permission-mode"
 _need "run relabelled 'all permissions bypassed'"     matches "$o" "all permissions bypassed"
 _emit
 H_cleanup
