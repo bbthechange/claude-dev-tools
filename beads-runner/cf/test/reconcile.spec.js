@@ -891,6 +891,176 @@ it("CF.3 I2 workSnapshot activity{} + runner_health{} — DESIGN I §2/§3 + B.1
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// J2 (claude-tools-uxvj2) — the holds[] unifier (DESIGN J §3 / B.1). Joins the
+// THREE hold mechanisms into projects[].holds, derived AT READ time (A.3): our
+// editable Gate (gate:<id> label + the J1 gate_metadata LEFT-join), beads-native
+// dependency (blocked_on, read-only), beads-native scheduled (deferred_until,
+// read-only, optionally owned by a co-present gate). Two source paths: the inline
+// `beads` arg (the bash-twin / live-verify path) AND the production §4.6
+// `held_beads` channel (the GET-path source — the active in_progress/top_n lists
+// exclude held work). editable is true ONLY for gate (the C3 honesty rule).
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 J2 workSnapshot holds[] unifier — 3 mechanisms + gate_metadata join + held_beads channel (claude-tools-uxvj2)", async () => {
+  let jPASS = 0;
+  let jFAIL = 0;
+  const jfails = [];
+  function jck(name, cond) {
+    if (cond) {
+      jPASS++;
+      // eslint-disable-next-line no-console
+      console.log(`  ✓ ${name}`);
+    } else {
+      jFAIL++;
+      jfails.push(name);
+      // eslint-disable-next-line no-console
+      console.log(`  ✗ ${name}`);
+    }
+  }
+  const projOf = (snap, ref) => (snap.projects || []).find((p) => p.project_ref === ref) || {};
+  const find = (holds, pred) => (holds || []).find(pred);
+
+  // ── seed the J1 gate_metadata row the gate branch LEFT-joins (bare id) ────────
+  const setMeta = await call(GOOD, "gate-meta-set", [
+    JSON.stringify({
+      id: "audio-redesign",
+      why: "audio engine rewrite in flight",
+      unblock_condition: "rewrite merged",
+      owner: "agent:enricher",
+      scope: "cohort",
+    }),
+  ]);
+  jck("gate-meta-set seeded the join row (rc 0 ⇒ 200)", setMeta.status === 200);
+
+  // ── PATH 1: the inline beads arg (bash-twin / live-verify path) ───────────────
+  const HBEADS = JSON.stringify([
+    { bead_ref: "h-g1", title: "Gated A", stage: "impl", labels: ["gate:audio-redesign", "stage:impl"] },
+    { bead_ref: "h-g2", title: "Gated B", stage: "design", labels: ["gate:audio-redesign"] },
+    { bead_ref: "h-nm", title: "Gated no-meta", stage: "impl", labels: ["gate:no-meta"] },
+    { bead_ref: "h-dep", title: "Blocked", stage: "impl", blocked_on: "h-77a" },
+    { bead_ref: "h-s1", title: "Deferred owned", stage: "ux", deferred_until: "2026-07-01", labels: ["gate:audio-redesign"] },
+    { bead_ref: "h-s2", title: "Deferred free", stage: "ux", deferred_until: "2026-08-01" },
+    { bead_ref: "h-x", title: "No hold", stage: "impl", labels: ["stage:impl", "gateway"] },
+  ]);
+  const SNAP = await callJson("work-snapshot", ["projHinline", HBEADS]);
+  const H = projOf(SNAP, "projHinline").holds;
+  jck("holds is a named sub-object on projects[] (not a flat key)", Array.isArray(H));
+
+  // gate (with metadata) — the LEFT-join lights up
+  const gate = find(H, (h) => h.type === "gate" && h.id === "gate:audio-redesign");
+  jck("gate hold grouped by gate:<id> label (id carries the prefix)", !!gate);
+  jck("gate task_count = beads carrying the label (cohort=3: g1,g2,s1)", gate && gate.task_count === 3);
+  jck("gate editable:true (our native hold — the ONLY editable type)", gate && gate.editable === true);
+  jck("gate why joined from gate_metadata", gate && gate.why === "audio engine rewrite in flight");
+  jck("gate unblock_condition → unblocks_when (B.1 field name)", gate && gate.unblocks_when === "rewrite merged");
+  jck("gate owner joined (an INPUT, not the principal — §2.3)", gate && gate.owner === "agent:enricher");
+  jck("gate scope joined (D.2 closed enum)", gate && gate.scope === "cohort");
+  jck("gate set_at joined (the 'set 4d ago' line — non-null)", gate && typeof gate.set_at === "string" && gate.set_at.length > 0);
+  jck("gate degraded:[] when metadata present", gate && Array.isArray(gate.degraded) && gate.degraded.length === 0);
+  jck(
+    "gate field-set is EXACTLY the B.1+§3.2 keys",
+    gate &&
+      JSON.stringify(Object.keys(gate).sort()) ===
+        JSON.stringify(["degraded", "editable", "id", "owner", "scope", "set_at", "task_count", "type", "unblocks_when", "why"])
+  );
+
+  // gate (NO metadata) — B.4 degradation, never dropped/thrown
+  const gateNm = find(H, (h) => h.type === "gate" && h.id === "gate:no-meta");
+  jck("gate with NO metadata row is still rendered (B.4 — not dropped)", !!gateNm);
+  jck("gate with no metadata: why null", gateNm && gateNm.why === null);
+  jck("gate with no metadata: unblocks_when/owner/scope/set_at all null", gateNm && gateNm.unblocks_when === null && gateNm.owner === null && gateNm.scope === null && gateNm.set_at === null);
+  jck("gate with no metadata: degraded[] note present", gateNm && gateNm.degraded[0] === "gate placed before metadata existed");
+
+  // gate ordering (sorted by label) + no false-match
+  jck("gate holds sorted by label (audio-redesign before no-meta)", H.filter((h) => h.type === "gate").map((h) => h.id).join(",") === "gate:audio-redesign,gate:no-meta");
+  jck("a 'gateway' label does NOT false-match as a gate (^gate: anchor + id shape)", H.filter((h) => h.type === "gate" && h.id === "gateway").length === 0);
+
+  // dependency — beads-native, read-only
+  const dep = find(H, (h) => h.type === "dependency");
+  jck("dependency hold present (blocked + blocked_on)", dep && dep.task_ref === "h-dep");
+  jck("dependency blocked_on carried", dep && dep.blocked_on === "h-77a");
+  jck("dependency unblocks_when = '<ref> closes' (honest native)", dep && dep.unblocks_when === "h-77a closes");
+  jck("dependency editable:false (beads-native — read-only, C3)", dep && dep.editable === false);
+
+  // scheduled — beads-native, read-only, owning_gate from the co-present label
+  const sOwned = find(H, (h) => h.type === "scheduled" && h.task_ref === "h-s1");
+  const sFree = find(H, (h) => h.type === "scheduled" && h.task_ref === "h-s2");
+  jck("scheduled deferred_until carried", sOwned && sOwned.deferred_until === "2026-07-01");
+  jck("scheduled owning_gate = the co-present gate label (nest under gate)", sOwned && sOwned.owning_gate === "gate:audio-redesign");
+  jck("scheduled with NO co-present gate ⇒ owning_gate null", sFree && sFree.owning_gate === null);
+  jck("scheduled unblocks_when = the defer date", sOwned && sOwned.unblocks_when === "2026-07-01");
+  jck("scheduled editable:false (beads-native — read-only, C3)", sOwned && sOwned.editable === false);
+
+  // a bead with no hold trigger produces NO hold
+  jck("a bead with no hold trigger produces no hold (h-x absent)", H.filter((h) => h.task_ref === "h-x").length === 0);
+
+  // ── PATH 2: the production §4.6 held_beads channel (end-to-end) ───────────────
+  // The runner publishes held (blocked/deferred/gated) beads in the inventory's
+  // held_beads channel; the GET path (beads="") reads them back into holds. This
+  // is the "seeded gate appears end-to-end" requirement (gates.md §3.3 — the 56h
+  // trap) exercised through the REAL ingest → store → projection on the engine.
+  const INV = JSON.stringify({
+    report: "workspace_inventory",
+    schema_version: 1,
+    principal: "literal-overwritten",
+    runner_id: "hostHolds",
+    project_ref: "projHoldsX",
+    observed_at: ago(2),
+    counts: { open: 0, ready: 0, in_progress: 0, blocked: 1 },
+    in_progress_beads: [],
+    top_n_beads: [],
+    held_beads: [
+      { bead_ref: "i-g1", title: "inv gated+deferred", status: "deferred", stage: "impl", labels: ["gate:audio-redesign"], blocked_on: null, deferred_until: "2026-09-01" },
+      { bead_ref: "i-dep", title: "inv blocked", status: "blocked", stage: "impl", labels: [], blocked_on: "i-99", deferred_until: null },
+    ],
+  });
+  const putInv = await call(GOOD, "workspace-inventory-put", [INV]);
+  jck("workspace-inventory-put with held_beads accepted (200)", putInv.status === 200);
+  const SNAPi = await callJson("work-snapshot", ["projHoldsX", ""]); // beads="" ⇒ inventory fallback
+  const Hi = projOf(SNAPi, "projHoldsX").holds;
+  const gi = find(Hi, (h) => h.type === "gate");
+  jck("END-TO-END: a seeded gate bead in held_beads surfaces as a gate hold", gi && gi.id === "gate:audio-redesign" && gi.task_count === 1);
+  jck("END-TO-END: the gate_metadata join still lights up through the inventory path", gi && gi.why === "audio engine rewrite in flight" && gi.owner === "agent:enricher");
+  const si = find(Hi, (h) => h.type === "scheduled" && h.task_ref === "i-g1");
+  jck("END-TO-END: a deferred+gated held bead yields a scheduled hold owned by its gate", si && si.deferred_until === "2026-09-01" && si.owning_gate === "gate:audio-redesign");
+  const di = find(Hi, (h) => h.type === "dependency" && h.task_ref === "i-dep");
+  jck("END-TO-END: a blocked held bead yields a dependency hold (blocked_on)", di && di.blocked_on === "i-99");
+
+  // ── tolerance: held_beads is OPTIONAL ADDITIVE — absent / malformed never 422s ─
+  const invNoHeld = JSON.stringify({
+    report: "workspace_inventory", schema_version: 1, principal: "x", runner_id: "r2",
+    project_ref: "projHoldsNo", observed_at: ago(2),
+    counts: { open: 0, ready: 0, in_progress: 0, blocked: 0 },
+    in_progress_beads: [], top_n_beads: [],
+  });
+  jck("workspace-inventory-put with NO held_beads still accepted (optional additive)", (await call(GOOD, "workspace-inventory-put", [invNoHeld])).status === 200);
+  const invBadHeld = JSON.stringify({
+    report: "workspace_inventory", schema_version: 1, principal: "x", runner_id: "r3",
+    project_ref: "projHoldsBad", observed_at: ago(2),
+    counts: { open: 0, ready: 0, in_progress: 0, blocked: 0 },
+    in_progress_beads: [], top_n_beads: [],
+    held_beads: "not-an-array",
+  });
+  jck("workspace-inventory-put with MALFORMED held_beads does NOT 422 (ztb6 tolerance)", (await call(GOOD, "workspace-inventory-put", [invBadHeld])).status === 200);
+  const SNAPno = await callJson("work-snapshot", ["projHoldsNo", ""]);
+  jck("no held_beads ⇒ holds:[] (honest empty)", Array.isArray(projOf(SNAPno, "projHoldsNo").holds) && projOf(SNAPno, "projHoldsNo").holds.length === 0);
+
+  // ── READ-ONLY: holds derivation NEVER mutates a record (§4.5 invariant) ───────
+  const before = await recordSig();
+  await callJson("work-snapshot", ["projHinline", HBEADS]);
+  await callJson("work-snapshot", ["projHoldsX", ""]);
+  const after = await recordSig();
+  jck("read-only — holds derivation mutates ZERO records (§4.5)", before === after && before.length > 0);
+
+  // eslint-disable-next-line no-console
+  console.log(`\n══ CF.3 J2 holds[] unifier (vs DESIGN J §3 + B.1): PASS=${jPASS} FAIL=${jFAIL} ══`);
+  if (jFAIL > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + jfails.join("\n  - "));
+  }
+  expect(jFAIL, `J2 holds[] clauses failed: ${jfails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // claude-tools-lv9c — current_task_ref is AUTHORITATIVE per heartbeat.
 // Producer (lib/local-agent.sh la_report_heartbeat) OMITS the field on `hb idle`.
 // Before this fix, the CF handler only WROTE current_task_ref when non-empty,

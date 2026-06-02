@@ -570,6 +570,50 @@ la_publish_workspace_inventory() {
      ' 2>/dev/null) || queue_health=""
   [[ -n "$queue_health" ]] || queue_health='{"ready":0,"held":{"gate":0,"dependency":0,"scheduled":0},"hidden_under_deferred_parent":0,"net_velocity_7d":0,"epics_with_zero_ready_children":[]}'
 
+  # ── held_beads (claude-tools-uxvj2, DESIGN J §3.3) — the holds[] SOURCE ───────
+  # The hosted holds[] unifier (reconcile.js buildHolds) needs the per-bead
+  # labels/blocked_on/deferred_until to derive the three hold types, but the
+  # active in_progress/top_n lists deliberately EXCLUDE held work (a held bead is
+  # blocked/deferred). So the held beads are published in their OWN channel here —
+  # the 56h trap the design names: if the producer doesn't carry these, the
+  # unifier can never see them and the Gates facet renders empty. Derived from the
+  # already-captured non-closed `qh_list` (NO extra bd query): every bead that is
+  # blocked, deferred, OR carries a gate:* label, mapped to the hold-relevant
+  # shape. Field sources (bd's own `.blocked_on`/`.deferred_until` are unpopulated
+  # in this bd version — the real values live elsewhere):
+  #   blocked_on     = the first `blocks`-type dependency's depends_on_id
+  #                    (.dependencies[] — the dependency-edge read), null unless blocked.
+  #   deferred_until = `.defer_until` (bd's populated defer field), null unless deferred.
+  # Additive at schema_version 1 (the verified/queue_health precedent); the CF
+  # ingest coerces it tolerantly and never 422s on a malformed/absent block.
+  # NOTE (intentional divergence): holds[] scopes "gate" STRICTLY to the gate:<id>
+  # label (gates.md §1 / D.1 — a `human` label is a Checkpoint, NOT a Gate), so a
+  # bead held ONLY by `human` (no gate:*/blocked/deferred) yields no held_beads row
+  # even though queue_health.held.gate (above) lumps gate:*+human in its coarse
+  # tally. That coarse tally is the pre-Flow-J honest-degradation bridge; the
+  # unified holds[] is the precise source.
+  local held_beads
+  held_beads=$(printf '%s' "$qh_list" | jq -c '
+    [ .[]
+      | select(type=="object")
+      | . as $b
+      | (($b.labels // []) | map(select(type=="string"))) as $L
+      | select(($b.status=="blocked") or ($b.status=="deferred")
+               or ($L | any(test("^gate:[a-z0-9][a-z0-9-]*$"))))
+      | { bead_ref: $b.id,
+          title: ($b.title // ""),
+          status: ($b.status // ""),
+          stage: ($L | map(select(startswith("stage:"))) | (first // "")
+                  | sub("^stage:"; "") | if . == "" then "unknown" else . end),
+          labels: $L,
+          blocked_on: (if $b.status=="blocked"
+                       then ([ ($b.dependencies // [])[] | select(.type=="blocks") | .depends_on_id ] | (first // null))
+                       else null end),
+          deferred_until: (if $b.status=="deferred" then ($b.defer_until // null) else null end) }
+    ]' 2>/dev/null) || held_beads="[]"
+  [[ -n "$held_beads" ]] || held_beads="[]"
+  printf '%s' "$held_beads" | jq -e 'type=="array"' >/dev/null 2>&1 || held_beads="[]"
+
   jq -cn \
      --argjson sv 1 \
      --arg pr  "$(la_principal)" \
@@ -583,10 +627,11 @@ la_publish_workspace_inventory() {
      --argjson ipb "$ip_beads" \
      --argjson tb  "$top_beads" \
      --argjson qh "$queue_health" \
+     --argjson hb "$held_beads" \
      '{report:"workspace_inventory",schema_version:$sv,principal:$pr,
        runner_id:$rid,project_ref:$prj,observed_at:$at,
        counts:{open:$o,ready:$rd,in_progress:$ip,blocked:$bl},
-       in_progress_beads:$ipb,top_n_beads:$tb,queue_health:$qh}' \
+       in_progress_beads:$ipb,top_n_beads:$tb,queue_health:$qh,held_beads:$hb}' \
      >> "$(la__outbox)" 2>/dev/null || true
   return 0
 }

@@ -252,6 +252,42 @@ ck "twin: wedged keeps process 'alive' (§3 wedged is process-alive-but-stale)" 
 ck "twin: crashed ⇒ process 'dead'"                           eq "$(rh_proc projRhDead)" "dead"
 ck "twin: crashed ⇒ state 'idle', NOT wedged (process:dead carries the truth)" eq "$(rh_state projRhDead)" "idle"
 
+echo "── EXIT-3d: uxvj2 — holds[] unifier (DESIGN J §3 / B.1), bash twin ──"
+# The read-time holds[] unifier over the work-truth beads arg. dependency +
+# scheduled are pure beads-derived (a TRUE twin of cf/src/reconcile.js
+# buildHolds); the gate id + task_count come from the gate:<id> label. The gate
+# METADATA (why/unblock/owner/set_at/scope) DEGRADES to null + a degraded[] note
+# here — the bash oracle has NO gate_metadata store (gates.md §6), the
+# queue_health/current_task_title shape-parity posture. editable: gate=true,
+# dependency/scheduled=false (the C3 honesty rule, encoded in the projection).
+BEADS_HOLDS='[{"bead_ref":"t-g1","title":"Gated A","stage":"impl","labels":["gate:audio-redesign","stage:impl"]},{"bead_ref":"t-g2","title":"Gated B","stage":"design","labels":["gate:audio-redesign"]},{"bead_ref":"t-dep","title":"Blocked","stage":"impl","blocked_on":"t-77a"},{"bead_ref":"t-s1","title":"Deferred owned","stage":"ux","deferred_until":"2026-07-01","labels":["gate:audio-redesign"]},{"bead_ref":"t-s2","title":"Deferred free","stage":"ux","deferred_until":"2026-08-01"},{"bead_ref":"t-x","title":"No hold","stage":"impl","labels":["stage:impl","gateway"]}]'
+SNAPh="$(co_request "$GOOD" work-snapshot projA "$BEADS_HOLDS" 2>/dev/null)"
+HOLDS="$(jq -c '.projects[0].holds' <<<"$SNAPh")"
+ck "holds is a named sub-object on projects[] (not a flat key)" \
+   eq "$(jq -r '.projects[0]|has("holds")' <<<"$SNAPh")" "true"
+gate0="$(jq -c '[.[]|select(.type=="gate")][0]' <<<"$HOLDS")"
+ck "gate hold grouped by gate:<id> label (id carries the prefix)" eq "$(jq -r '.id' <<<"$gate0")" "gate:audio-redesign"
+ck "gate hold task_count = beads carrying the label (cohort=3: g1,g2,s1)" eq "$(jq -r '.task_count' <<<"$gate0")" "3"
+ck "two beads + one gate label ⇒ ONE gate hold (cohort row)"      eq "$(jq -r '[.[]|select(.type=="gate")]|length' <<<"$HOLDS")" "1"
+ck "gate hold editable:true (our native hold — the ONLY editable type)" eq "$(jq -r '.editable' <<<"$gate0")" "true"
+ck "gate metadata degrades to null why (no gate_metadata store)"  eq "$(jq -r '.why' <<<"$gate0")" "null"
+ck "gate degraded[] note present (B.4 — never dropped)"           eq "$(jq -r '.degraded[0]' <<<"$gate0")" "gate placed before metadata existed"
+ck "a 'gateway' label does NOT false-match as a gate (^gate: anchor)" eq "$(jq -r '[.[]|select(.type=="gate" and .id=="gateway")]|length' <<<"$HOLDS")" "0"
+dep0="$(jq -c '[.[]|select(.type=="dependency")][0]' <<<"$HOLDS")"
+ck "dependency hold present (blocked + blocked_on)"               eq "$(jq -r '.task_ref' <<<"$dep0")" "t-dep"
+ck "dependency blocked_on carried"                                eq "$(jq -r '.blocked_on' <<<"$dep0")" "t-77a"
+ck "dependency unblocks_when = '<ref> closes' (honest native)"    eq "$(jq -r '.unblocks_when' <<<"$dep0")" "t-77a closes"
+ck "dependency editable:false (beads-native — read-only, C3)"     eq "$(jq -r '.editable' <<<"$dep0")" "false"
+sOwned="$(jq -c '[.[]|select(.type=="scheduled" and .task_ref=="t-s1")][0]' <<<"$HOLDS")"
+sFree="$(jq -c '[.[]|select(.type=="scheduled" and .task_ref=="t-s2")][0]' <<<"$HOLDS")"
+ck "scheduled hold present (deferred_until)"                      eq "$(jq -r '.deferred_until' <<<"$sOwned")" "2026-07-01"
+ck "scheduled owning_gate = the co-present gate label (nest under gate)" eq "$(jq -r '.owning_gate' <<<"$sOwned")" "gate:audio-redesign"
+ck "scheduled with NO co-present gate ⇒ owning_gate null"         eq "$(jq -r '.owning_gate' <<<"$sFree")" "null"
+ck "scheduled editable:false (beads-native — read-only, C3)"      eq "$(jq -r '.editable' <<<"$sOwned")" "false"
+ck "a bead with no hold trigger produces no hold (t-x absent)"    eq "$(jq -r '[.[]|select(.task_ref=="t-x")]|length' <<<"$HOLDS")" "0"
+SNAPhe="$(co_request "$GOOD" work-snapshot projA '[]' 2>/dev/null)"
+ck "no work-truth beads ⇒ holds:[] (honest empty)"               eq "$(jq -rc '.projects[0].holds' <<<"$SNAPhe")" "[]"
+
 echo "── EXIT-3: NO write path from any reader (read-only invariant) ──"
 sig() { ( cd "$CO_STORE/records" 2>/dev/null && ls -1 2>/dev/null | sort | shasum ); }
 before="$(sig)"

@@ -245,6 +245,37 @@ function normalizeQueueHealth(qh) {
   };
 }
 
+// ── normalizeHeldBeads — the §4.6 held_beads channel (J2 claude-tools-uxvj2) ───
+// The per-bead holds[] SOURCE the runner publishes (the blocked/deferred/gated
+// beads the active in_progress/top_n lists exclude — §3.3). OPTIONAL ADDITIVE at
+// schema_version 1 (the verified/queue_health precedent) and TOLERANTLY coerced —
+// a malformed/absent block NEVER 422s the inventory write (the ztb6 canary-422
+// scar; this is optional telemetry, not a contract value like counts). Each
+// element is reshaped to exactly {bead_ref,title,status,stage,labels,blocked_on,
+// deferred_until}; a non-object element or one with no bead_ref is dropped.
+function normalizeHeldBeads(hb) {
+  if (!Array.isArray(hb)) return [];
+  const out = [];
+  for (const b of hb) {
+    if (!b || typeof b !== "object" || Array.isArray(b)) continue;
+    if (typeof b.bead_ref !== "string" || b.bead_ref.length === 0) continue;
+    out.push({
+      bead_ref: b.bead_ref,
+      title: typeof b.title === "string" ? b.title : "",
+      status: typeof b.status === "string" ? b.status : "",
+      stage: typeof b.stage === "string" && b.stage.length > 0 ? b.stage : "unknown",
+      labels: Array.isArray(b.labels) ? b.labels.filter((x) => typeof x === "string") : [],
+      blocked_on:
+        typeof b.blocked_on === "string" && b.blocked_on.length > 0 ? b.blocked_on : null,
+      deferred_until:
+        typeof b.deferred_until === "string" && b.deferred_until.length > 0
+          ? b.deferred_until
+          : null,
+    });
+  }
+  return out;
+}
+
 // Read a stored §4 record exactly the way CF.1 `opGet` / the bash
 // `co__store_get` does — a byte-identical typed SELECT (the SAME accepted
 // read-side pattern CF.6 `getRawDossier` / CF.9 `getRaw` document, NOT a reach
@@ -641,6 +672,12 @@ async function workspaceInventoryPut(co, principal, jsonStr) {
     // ALWAYS (zeroed default when absent) so projects[].queue_health is uniform
     // in the projection; a malformed block NEVER 422s the inventory write.
     queue_health: normalizeQueueHealth(parsed.queue_health),
+    // held_beads (claude-tools-uxvj2, §4.6 / J2) — the per-bead holds[] SOURCE
+    // (blocked/deferred/gated beads). OPTIONAL ADDITIVE at v1, tolerantly coerced
+    // (never 422s the write — the queue_health posture); persisted ALWAYS ([] when
+    // absent) so readHeldBeads has a uniform shape. The §4.5 workSnapshot reads it
+    // back into projects[].holds.
+    held_beads: normalizeHeldBeads(parsed.held_beads),
     updated_at: now,
   };
   const w = await co._writeRecord(principal, "workspace_inventory", proj, obj);
@@ -794,6 +831,200 @@ async function beadsFromWorkspaceInventory(co, proj) {
   return Array.from(byRef.values());
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// J2 (claude-tools-uxvj2) — the read-time holds[] unifier (DESIGN J §3 / B.1).
+// Joins the THREE mechanisms that hold a ready-looking task into ONE array
+// derived AT READ time (A.3 — never stored): our editable Gate (the gate:<id>
+// label + the J1 gate_metadata annotation), beads-native dependency (blocked +
+// blocked_on, read-only), beads-native scheduled (a defer date, read-only,
+// optionally owned by a co-present gate). `editable` is true ONLY for gate — the
+// projection itself encodes the C3 honesty rule so no UI can fake-edit a
+// beads-native hold. The gate branch LEFT-joins gate_metadata; a gate label with
+// no metadata row degrades per B.4 (null why/unblocks_when/owner/scope + a
+// degraded[] note) — never dropped, never thrown.
+// ════════════════════════════════════════════════════════════════════════════
+
+// readGateMeta — bulk read of the J1 `gate_metadata` transient (cf/src/gate-meta.js
+// owns the writes). Pure read ⇒ NO _serialize (the readActivity/readMachines
+// precedent). The table is lazily created by gate-meta.js on first gate-meta-set;
+// if no gate has ever been annotated the SELECT throws "no such table" and we
+// honestly degrade to an EMPTY map (NEVER DDL from a reader — the §3.C posture).
+// Keyed by the BARE gate id (the gate_id column = the <id> in gate:<id>);
+// buildHolds strips the `gate:` label prefix to look a row up (the §3.2 bulk path:
+// one read, then an in-memory map — avoids N queries).
+async function readGateMeta(co) {
+  const map = new Map();
+  let results = [];
+  try {
+    const r = await co.db
+      .prepare(
+        "SELECT gate_id, why, unblock_condition, owner, scope, set_at FROM gate_metadata"
+      )
+      .all();
+    results = (r && r.results) || [];
+  } catch {
+    return map; // table not yet created ⇒ honest empty (B.4)
+  }
+  for (const row of results) {
+    if (row && typeof row.gate_id === "string" && row.gate_id.length > 0) {
+      map.set(row.gate_id, row);
+    }
+  }
+  return map;
+}
+
+// readHeldBeads — the PRODUCTION holds source for the GET path (the §4.6
+// workspace_inventory `held_beads` channel the runner publishes). The inventory's
+// in_progress_beads/top_n_beads deliberately carry only ACTIVE work (status open/
+// in_progress) — a held bead is blocked/deferred and excluded from those lists —
+// so the holds[] join needs its OWN published source (§3.3, the 56h trap: if the
+// producer doesn't carry labels/blocked_on/deferred_until, the unifier can never
+// see them). la_publish_workspace_inventory derives held_beads from its existing
+// non-closed `bd list` read (the blocked + deferred + gate-labelled beads) and
+// ships it ADDITIVELY (no schema bump — the verified/queue_health precedent).
+// Pure read; honest empty on a missing table / row / parse error (never fabricates
+// work-truth). `proj` scopes to one workspace; absent ⇒ every stored inventory
+// (deduped by bead_ref so the all-projects rollup never double-counts).
+async function readHeldBeads(co, proj) {
+  let rows = [];
+  try {
+    if (proj) {
+      const r = await co.db
+        .prepare("SELECT json FROM records WHERE type = ? AND id = ?")
+        .bind("workspace_inventory", proj)
+        .first();
+      rows = r ? [r] : [];
+    } else {
+      const r = await co.db
+        .prepare("SELECT json FROM records WHERE type = ? ORDER BY id")
+        .bind("workspace_inventory")
+        .all();
+      rows = (r && r.results) || [];
+    }
+  } catch {
+    return []; // table not yet created / read failure ⇒ honest empty
+  }
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    let rec;
+    try {
+      rec = JSON.parse(row.json);
+    } catch {
+      continue;
+    }
+    if (!rec || typeof rec !== "object" || Array.isArray(rec)) continue;
+    const hb = Array.isArray(rec.held_beads) ? rec.held_beads : [];
+    for (const b of hb) {
+      if (!b || typeof b !== "object" || Array.isArray(b)) continue;
+      if (typeof b.bead_ref !== "string" || b.bead_ref.length === 0) continue;
+      if (seen.has(b.bead_ref)) continue; // dedup across workspaces (all-projects mode)
+      seen.add(b.bead_ref);
+      out.push({
+        bead_ref: b.bead_ref,
+        // Defaults MIRROR normalizeHeldBeads (the write normalizer) so a bead that
+        // round-trips through the store reads back with the same filler — title→"",
+        // stage→"unknown" (buildHolds consumes neither today, but the read/write
+        // pair claims one shape, so they agree before a facet renders these).
+        title: typeof b.title === "string" ? b.title : "",
+        stage: typeof b.stage === "string" && b.stage.length > 0 ? b.stage : "unknown",
+        status: typeof b.status === "string" ? b.status : "",
+        labels: Array.isArray(b.labels) ? b.labels.filter((x) => typeof x === "string") : [],
+        blocked_on:
+          typeof b.blocked_on === "string" && b.blocked_on.length > 0 ? b.blocked_on : null,
+        deferred_until:
+          typeof b.deferred_until === "string" && b.deferred_until.length > 0
+            ? b.deferred_until
+            : null,
+      });
+    }
+  }
+  return out;
+}
+
+// The gate label shape — mirrors gate-defer.sh `_is_valid_gate_id` / gate-meta.js
+// `gateIdOk` with the `gate:` namespace prefix. A label outside this shape is NOT
+// a gate (so `gateway`/`gate-foo:x` never false-match — the J4 anti-regression).
+const GATE_LABEL_RE = /^gate:[a-z0-9][a-z0-9-]*$/;
+
+// buildHolds — the unifier itself (DESIGN J §3.2). Reads ONLY the passed bead
+// array (the same work-truth shape the lifecycle ladder consumes, enriched per
+// §3.3 with labels/blocked_on/deferred_until). Order is deterministic for a
+// stable UI: gate holds first (sorted by label), then dependency, then scheduled
+// (both in bead order). The bash oracle co__work_snapshot derives the identical
+// structure from the same bead arg (a true differential twin for the
+// beads-derived shape); only the gate METADATA join is CF-side (the bash has no
+// gate_metadata store — gates.md §6 — so it degrades every gate to the B.4
+// null+degraded shape, the queue_health/current_task_title shape-parity posture).
+function buildHolds(beads, gateMetaMap) {
+  const gateCount = new Map(); // full "gate:<id>" label -> task_count
+  const depHolds = [];
+  const schedHolds = [];
+  for (const b of beads) {
+    if (!b || typeof b !== "object" || Array.isArray(b)) continue;
+    const ref = typeof b.bead_ref === "string" ? b.bead_ref : null;
+    const gateLabels = Array.isArray(b.labels)
+      ? b.labels.filter((x) => typeof x === "string" && GATE_LABEL_RE.test(x))
+      : [];
+    for (const gl of gateLabels) {
+      gateCount.set(gl, (gateCount.get(gl) || 0) + 1);
+    }
+    const blockedOn =
+      typeof b.blocked_on === "string" && b.blocked_on.length > 0 ? b.blocked_on : null;
+    if (blockedOn) {
+      depHolds.push({
+        type: "dependency",
+        task_ref: ref,
+        blocked_on: blockedOn,
+        unblocks_when: `${blockedOn} closes`,
+        editable: false,
+      });
+    }
+    const deferredUntil =
+      typeof b.deferred_until === "string" && b.deferred_until.length > 0
+        ? b.deferred_until
+        : null;
+    if (deferredUntil) {
+      schedHolds.push({
+        type: "scheduled",
+        task_ref: ref,
+        deferred_until: deferredUntil,
+        // owning_gate (§3.2 #3): the gate:<id> label co-present on the SAME bead,
+        // if any — the gate-defer.sh coupling that lets the UI nest a Scheduled
+        // hold under its Gate and show that lifting the gate clears the defer.
+        owning_gate: gateLabels.length > 0 ? gateLabels[0] : null,
+        unblocks_when: deferredUntil,
+        editable: false,
+      });
+    }
+  }
+  const gateHolds = Array.from(gateCount.keys())
+    .sort()
+    .map((gl) => {
+      const bareId = gl.slice(5); // strip the "gate:" label prefix → the row key
+      const meta = gateMetaMap.get(bareId) || null;
+      return {
+        type: "gate",
+        id: gl,
+        task_count: gateCount.get(gl),
+        owner: meta && typeof meta.owner === "string" ? meta.owner : null,
+        set_at: meta && typeof meta.set_at === "string" ? meta.set_at : null,
+        why: meta && typeof meta.why === "string" ? meta.why : null,
+        // unblock_condition → unblocks_when (the B.1 field name, §3.2 #1)
+        unblocks_when:
+          meta && typeof meta.unblock_condition === "string"
+            ? meta.unblock_condition
+            : null,
+        scope: meta && typeof meta.scope === "string" ? meta.scope : null,
+        editable: true,
+        // B.4 (§3.2 #1): a gate label with no metadata row is rendered honestly
+        // (null why/unblock) with a degraded note — NEVER dropped, never thrown.
+        degraded: meta ? [] : ["gate placed before metadata existed"],
+      };
+    });
+  return gateHolds.concat(depHolds, schedHolds);
+}
+
 async function workSnapshot(co, principal, proj, beadsStr) {
   // Work-truth read (beads/Dolt). Default empty array if absent/invalid — the
   // Coordinator never fabricates work-truth (Dolt is the source).
@@ -826,8 +1057,18 @@ async function workSnapshot(co, principal, proj, beadsStr) {
   // co__work_snapshot notes this), so this fallback is CF-side production infra
   // with no bash twin; the SHARED projection SHAPE (card normalisation, the
   // stage ladder, `verified`) stays parallel.
+  // J2 (claude-tools-uxvj2) — the holds[] SOURCE. The inline `beads` array carries
+  // the per-bead labels/blocked_on/deferred_until directly (the bash-twin / live-
+  // verify path), so it doubles as the holds source. The PRODUCTION GET path
+  // (beads=="") falls back to the §4.6 inventory: the lifecycle beads come from
+  // the active in_progress/top_n lists (which exclude held work), so the held
+  // (blocked/deferred/gated) beads are read from the dedicated `held_beads`
+  // channel — NOT merged into `beads`, so lifecycle_columns stays the active-work
+  // ladder (no Board behaviour change). holds is built from beads ∪ heldBeads.
+  let heldBeads = [];
   if (beads.length === 0) {
     beads = await beadsFromWorkspaceInventory(co, proj);
+    heldBeads = await readHeldBeads(co, proj);
   }
   // The lifecycle columns are the C1-seam stage ladder, keyed by each bead's
   // `stage:` label (INTERFACE §4.5). Frozen column order; a bead with no/an
@@ -860,6 +1101,14 @@ async function workSnapshot(co, principal, proj, beadsStr) {
   // the no-_serialize discipline) — the §4.5 no-reader-write invariant holds.
   const activityNowMs = Date.now();
   const activityRows = await readActivity(co);
+  // J2 (claude-tools-uxvj2) — the gate_metadata LEFT-join map + the unified
+  // holds[]. Read ONCE for the whole snapshot (the §3.2 bulk path). holds is the
+  // SAME for every project (per-project shape; the global rollup is UI-side —
+  // gates.md §3.4: J2 stays scoped to the single-project read shape, the /ws/<ref>
+  // /gates facet always asks per-project), so it is built once and attached to
+  // each entry below as a NAMED sub-object (ARCH §6 — never a loose flat key).
+  const gateMetaMap = await readGateMeta(co);
+  const holds = buildHolds(beads.concat(heldBeads), gateMetaMap);
   const projects = [];
   for (const pr of projs) {
     if (!pr) continue;
@@ -935,6 +1184,7 @@ async function workSnapshot(co, principal, proj, beadsStr) {
       },
       runner_health,
       activity,
+      holds,
       queue_health,
       lease: rec.lease,
     });

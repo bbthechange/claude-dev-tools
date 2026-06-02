@@ -1706,6 +1706,43 @@ co__work_snapshot() {
       [[ -n "$b" ]] && projs+=("$b")
     done
   fi
+  # claude-tools-uxvj2 — holds[] (DESIGN J §3). The read-time unifier over the
+  # SAME work-truth `beads` arg, built ONCE and attached to EVERY project (the
+  # per-project shape; the global rollup is UI-side — gates.md §3.4). dependency +
+  # scheduled are pure beads-derived ⇒ a TRUE differential twin of the CF
+  # buildHolds; the gate id + task_count come from the gate:<id> label (also
+  # beads-derived, true twin). The gate METADATA (why/unblock/owner/set_at/scope)
+  # needs the gate_metadata store this bash oracle does NOT mirror (a J1 miss —
+  # gates.md §6), so it degrades to null + a degraded[] note here (B.4) — exactly
+  # the SHAPE-PARITY posture queue_health/current_task_title follow, while the
+  # STRUCTURAL derivation stays a true twin. `editable` is true ONLY for gate (the
+  # C3 honesty rule encoded in the projection). Order: gate (sorted by label),
+  # then dependency, then scheduled (both in bead order) — matches CF buildHolds.
+  local holds
+  holds=$(printf '%s' "$beads" | jq -c '
+    [ .[] | select(type=="object") ] as $bs
+    | ( [ $bs[] | (.labels // [])[]
+          | select(type=="string" and test("^gate:[a-z0-9][a-z0-9-]*$")) ]
+        | group_by(.) | map({label: .[0], n: length}) ) as $gates
+    | ( $gates | map({type:"gate", id:.label, task_count:.n,
+                      owner:null, set_at:null, why:null, unblocks_when:null,
+                      scope:null, editable:true,
+                      degraded:["gate placed before metadata existed"]}) )
+    + ( [ $bs[]
+          | select((.blocked_on|type)=="string" and (.blocked_on != ""))
+          | {type:"dependency", task_ref:(.bead_ref // null),
+             blocked_on:.blocked_on,
+             unblocks_when:(.blocked_on + " closes"), editable:false} ] )
+    + ( [ $bs[]
+          | select((.deferred_until|type)=="string" and (.deferred_until != ""))
+          | . as $b
+          | ( ($b.labels // []) | map(select(type=="string" and test("^gate:[a-z0-9][a-z0-9-]*$"))) ) as $bg
+          | {type:"scheduled", task_ref:($b.bead_ref // null),
+             deferred_until:$b.deferred_until,
+             owning_gate:(if ($bg|length) > 0 then $bg[0] else null end),
+             unblocks_when:$b.deferred_until, editable:false} ] )
+  ' 2>/dev/null) || holds='[]'
+  printf '%s' "$holds" | jq -e 'type=="array"' >/dev/null 2>&1 || holds='[]'
   # Per-project RunnerState (desired+actual+liveness DERIVED) + capacity strip
   # (SURFACED from T4.4's aggregated verdict — NOT computed here).
   local proj_json='[]' pr rec cap
@@ -1742,7 +1779,7 @@ co__work_snapshot() {
     # default {writer:null,auxiliary:[]} for SHAPE PARITY; CF fills the real
     # lanes from the agent_activity rows.
     proj_json=$(printf '%s' "$proj_json" | jq -c \
-        --argjson r "$rec" --arg cap "$cap" \
+        --argjson r "$rec" --arg cap "$cap" --argjson holds "$holds" \
         '. + [{project_ref:$r.project_ref,
                runner_state:{desired:$r.desired, actual:$r.actual,
                              liveness:$r.liveness,
@@ -1761,6 +1798,7 @@ co__work_snapshot() {
                              elif $intask then "working"
                              else "idle" end ) }),
                activity:{writer:null, auxiliary:[]},
+               holds:$holds,
                queue_health:{ready:0,
                              held:{gate:0,dependency:0,scheduled:0},
                              hidden_under_deferred_parent:0,
