@@ -107,11 +107,15 @@ _reap_runner_pg() {
 H_cleanup() {
   _reap_runner_pg
   [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"
-  # return 0 explicitly (claude-tools-rqpv): rigs are contracted to exit 0 on a clean
-  # run so run-conformance.sh's exit-status guard can treat any non-zero rig exit as a
-  # mid-way abort. Most rigs end with H_cleanup, whose final `[[ ]] && rm` would
-  # otherwise return non-zero whenever WORKDIR was already gone — an incidental exit
-  # code that would false-RED an otherwise-green rig under that guard.
+  # return 0 explicitly (claude-tools-rqpv): supports the "rigs exit 0 on a clean run"
+  # contract that run-conformance.sh's exit-status guard relies on. NOTE this only
+  # governs the rig's exit code when H_cleanup is the rig's LITERAL last FOREGROUND
+  # command (the bare `bc-NN.sh` variants); for the majority that do `trap H_cleanup
+  # EXIT`, the script exits with the status pending when the trap fired (their last
+  # assertion command), and a `return` inside an EXIT trap does NOT overwrite it — so
+  # those rigs satisfy the exit-0 contract via their last command, not via this line.
+  # Without the explicit `return 0`, a foreground-call rig whose WORKDIR was already
+  # gone would exit on the final `[[ ]] && rm`'s non-zero status and false-RED.
   return 0
 }
 

@@ -208,7 +208,10 @@ map_path() {
     daemon/*)                                                          sel daemon; sel contract ;;
     hooks/*)                                                           sel hooks ;;
     agents/*)                                                          sel agents ;;
-    conformance/*)                                                     sel conformance ;;
+    # +top: the conformance-harness regression lock (test-conformance-rig-integrity.sh,
+    # claude-tools-rqpv) lives in the top tier, so a run-conformance.sh / harness.sh edit
+    # must re-run top or its own guard is skipped under --changed.
+    conformance/*)                                                     sel conformance; sel top ;;
     run-beads-tasks.sh|runner.sh)                                      sel conformance; sel top ;;
     test-*.sh)                                                         sel top ;;
     *.sh)  case "$rel" in */*) UNMAPPED+=("$f") ;; *) sel top ;; esac ;;

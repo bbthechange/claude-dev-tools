@@ -94,7 +94,14 @@ case "$JOBS" in *[!0-9]*|"") JOBS=1 ;; esac
 # machine AFTER the parallel batch. New rigs auto-enroll PARALLEL (glob discovery
 # preserved); a fragile rig opts into serial with the one-line marker.
 rigs=(); parallel_rigs=(); serial_rigs=()
-for rig in "$ASSERT_DIR"/bc-*.sh; do
+# Expand the discovery glob under nullglob (then RESTORE default globbing right away —
+# leaving nullglob on would make `_done_count`'s `ls "$RIGOUT"/*.done` list the cwd when
+# no markers exist yet). nullglob so an empty/misconfigured ASSERT_DIR yields an EMPTY
+# list ⇒ the clean `ran -eq 0` "no rigs matched" exit below, not the literal unexpanded
+# `bc-*.sh` pattern the parse gate would score as a confusing `bc-*` parse FAIL
+# (claude-tools-rqpv review).
+shopt -s nullglob; _discovered=("$ASSERT_DIR"/bc-*.sh); shopt -u nullglob
+for rig in "${_discovered[@]+"${_discovered[@]}"}"; do
   base="$(basename "$rig" .sh)"
   match "$base" || continue
   rigs+=("$rig")
@@ -225,8 +232,8 @@ for rig in "${rigs[@]}"; do
   # exited NON-ZERO aborted mid-way (a `set -u` unbound var, a runtime error, a partial
   # run) — every assertion AFTER the abort was silently skipped, and the ≥1-RESULT guard
   # above would pass it on its PARTIAL tally. Rigs are contracted to exit 0 on a clean
-  # run (H_cleanup returns 0; verified across the whole suite, claude-tools-rqpv), so a
-  # non-zero exit is always an abort. Emit a synthetic FAIL (the tier goes RED) AND fall
+  # run (each rig's last command returns 0 — verified across all 77 rigs, claude-tools-rqpv),
+  # so a non-zero exit is always an abort. Emit a synthetic FAIL (the tier goes RED) AND fall
   # through to replay whatever RESULT lines it DID emit, so the partial evidence stays
   # visible. A MISSING .rc (rig was killed before recording one) is treated the same.
   rc="$(cat "$RIGOUT/$base.rc" 2>/dev/null || echo MISSING)"
