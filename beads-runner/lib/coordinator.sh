@@ -410,6 +410,187 @@ co__intake_pending() {
   }
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# J1 (claude-tools-uxvj1 / claude-tools-pkgt) — gate_metadata transient store
+# ════════════════════════════════════════════════════════════════════════════
+# THE BASH ORACLE TWIN of cf/src/gate-meta.js (DESIGN J §2 / gates.md). A bare
+# `gate:<id>` bd label is the source of truth for "which beads are held by gate
+# X" (gate-defer.sh's cohort contract); this module stores the metadata Brian
+# asked for — `why`, `unblock_condition`, `owner`, `scope` — keyed to the bare
+# gate id, so one row annotates the whole cohort that carries the label.
+#
+# CRITICAL BOUNDARY (mirrors gate-meta.js verbatim, Contract A.2): gate_metadata
+# is a TRANSIENT SEPARATE namespace that ANNOTATES a beads-label. It has NO
+# (type,id) lifecycle, is read by JOIN (the J2 projection), and is NEVER a §4
+# record / never in a §4.3 Notification body. It is ABSENT from the §4
+# co__schema_version registry and MUST stay absent — so `put gate_metadata …`
+# is "unknown §4 record type" (co__store_put rc 2) and a gate row is structurally
+# never a §4 record / never in the §4.5 projection. It lives in its OWN
+# `gate_metadata/` namespace under CO_STORE — distinct from `records/`,
+# `timers/`, `forensic/` (the same separate-namespace discipline §10.3 uses).
+#
+# THE owner FIELD IS AN INPUT, NOT THE PRINCIPAL (§2.3): the §9.1 chokepoint
+# resolves the CONSTANT principal PRINCIPAL_V1 for EVERY caller (the GUI proxy
+# and every agent share one bearer), so the principal cannot distinguish "you"
+# from "agent:enricher". `owner` is therefore an explicit INPUT field — stored
+# verbatim, never overwritten with the resolved principal.
+#
+# THE AD1 PAYOFF: gate-meta-set is a read-prev-set_at → preserve → upsert
+# read-modify-write that runs INSIDE co__with_lock (the bash analogue of the CF
+# co._serialize single-threaded DO tail), so the set_at read and the write never
+# interleave. gate-meta-get is a pure read ⇒ NO lock (the machine-state /
+# relay-log-tail pure-op precedent).
+#
+# ANTI-DRIFT: the gate-id shape is gate-defer.sh `_is_valid_gate_id`
+# (^[a-z0-9][a-z0-9-]*$) — the EXACT shape the `gate:<id>` label enforces, so the
+# label and the metadata can never disagree on a legal id. GATE_SCOPE is the
+# closed D.2 enum {task,cohort}; absent scope defaults to "task" (the enum has no
+# null member). Behaviour is held byte-equal to cf/src/gate-meta.js by the
+# differential rig (cf/test/gate-meta.spec.js is the CF twin; lib/test-
+# coordinator-gate-meta.sh is this oracle's clauses).
+
+# gate_metadata namespace dir + the per-id row path. The id keying the row is
+# already validated to the gate shape (a strict subset of co__safe_key) before a
+# path is built, so no traversal is possible.
+co__gate_meta_dir()  { printf '%s/gate_metadata' "$(co__ensure_store)"; }
+co__gate_meta_path() { printf '%s/%s.json' "$(co__gate_meta_dir)" "$1"; }
+# Lazy + idempotent — the analogue of gate-meta.js ensureGateMetaSchema. Keeps
+# the module locally-runnable with no migrate step (co__ensure_store does not
+# create this namespace, so each op makes it on demand).
+co__gate_meta_ensure_dir() { mkdir -p "$(co__gate_meta_dir)" 2>/dev/null || true; }
+
+# co__gate_meta_set <principal> <meta_json> — §2.2 upsert. The write gate (the
+# single refusal point — conformance at WRITE, B.4), 1:1 with gate-meta.js
+# gateMetaSet:
+#   1. missing arg                                        ⇒ rc 2
+#   2. invalid JSON / not an object                       ⇒ rc 3
+#   3. `id` (or `gate_id` alias) not the gate-defer shape ⇒ rc 3
+#   4. `why` missing / empty / whitespace-only (B8/D.3)   ⇒ rc 3
+#   5. `scope` present-and-outside {task,cohort}          ⇒ rc 3
+#   6. otherwise ⇒ preserve set_at (read prev), upsert, rc 0
+# `set_at` is PRESERVED on update (read the prior row; only `updated_at`
+# advances) so "set 4d ago" stays honest. `owner`/`unblock_condition` are
+# tolerant free-text inputs (string ⇒ stored verbatim, else null). `scope`
+# defaults to "task" when absent. `principal` is intentionally UNUSED for the
+# stored row (owner is the input, §2.3) — it is threaded only to keep the
+# co_request dispatch signature uniform with every other authed op.
+co__gate_meta_set() {
+  local principal="$1" json="${2:-}" norm id now
+  if [[ -z "$json" ]]; then
+    echo "co: gate-meta-set needs <meta_json>" >&2; return 2
+  fi
+  # Parse + validate + normalize in ONE jq pass. Emits the {gate_id,why,
+  # unblock_condition,owner,scope} row on success, or NOTHING on any validation
+  # failure (caller persists NOTHING). `id` is preferred when a non-empty
+  # string, else the `gate_id` alias (the column name); why is rejected when
+  # absent/empty/whitespace-only but STORED verbatim (we reject emptiness, we do
+  # not mangle the text); scope absent ⇒ "task", present-and-invalid ⇒ reject.
+  norm=$(printf '%s' "$json" | jq -c '
+    if type != "object" then empty
+    else
+      (if (.id|type)=="string" and (.id|length)>0 then .id
+       elif (.gate_id|type)=="string" and (.gate_id|length)>0 then .gate_id
+       else "" end) as $id
+      | if ($id|test("^[a-z0-9][a-z0-9-]*$"))|not then empty
+        elif (.why|type)!="string" or ((.why|gsub("^\\s+|\\s+$";""))=="") then empty
+        else
+          (if (.scope==null) then "task"
+           elif (.scope|type)=="string" and (.scope=="task" or .scope=="cohort") then .scope
+           else null end) as $scope
+          | if $scope==null then empty
+            else {
+              gate_id: $id,
+              why: .why,
+              unblock_condition: (if (.unblock_condition|type)=="string" then .unblock_condition else null end),
+              owner: (if (.owner|type)=="string" then .owner else null end),
+              scope: $scope
+            } end
+        end
+    end' 2>/dev/null) || norm=""
+  if [[ -z "$norm" ]]; then
+    echo "co: gate-meta-set reject — bad/missing id, missing why, or scope outside {task,cohort} (nothing written; the agent gets a hard failure, never a false-success the Inbox would wall)" >&2
+    return 3
+  fi
+  id=$(printf '%s' "$norm" | jq -r '.gate_id' 2>/dev/null) || id=""
+  [[ -n "$id" ]] || { echo "co: gate-meta-set — internal: empty id after validation" >&2; return 3; }
+  co__gate_meta_ensure_dir
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  # The read-prev-set_at + write is one critical section under the per-id lock
+  # (AD1: the set_at read and the write never interleave — the bash analogue of
+  # gate-meta.js running inside co._serialize).
+  co__with_lock "gate_metadata.$id" co__gate_meta_commit "$(co__gate_meta_path "$id")" "$norm" "$now"
+}
+
+# The locked read-modify-write body: read the prior row's set_at (preserve it),
+# stamp updated_at=now, atomically replace the row.
+co__gate_meta_commit() {
+  local path="$1" norm="$2" now="$3" prev_set_at setat full tmp
+  prev_set_at=""
+  if [[ -f "$path" ]]; then
+    prev_set_at=$(jq -r '.set_at // empty' "$path" 2>/dev/null) || prev_set_at=""
+  fi
+  setat="$now"
+  [[ -n "$prev_set_at" ]] && setat="$prev_set_at"
+  full=$(printf '%s' "$norm" | jq -c --arg setat "$setat" --arg now "$now" \
+            '. + {set_at:$setat, updated_at:$now}' 2>/dev/null) \
+    || { echo "co: gate-meta-set — could not build row" >&2; return 3; }
+  tmp="$path.$$.tmp"
+  printf '%s\n' "$full" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 4; }
+  mv -f "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 4; }
+  return 0
+}
+
+# Reshape a stored row to the D.2 Gate object the projection/facet read:
+#   {id, why, unblock_condition, owner, scope, set_at, updated_at}
+# `gate_id` maps to `id` (the D.2 field name); absent columns surface as null
+# (B.4 honest absence). The jq filter is shared by the one-row and the bulk path.
+co__gate_meta_reshape='{id:.gate_id, why:.why, unblock_condition:.unblock_condition, owner:.owner, scope:.scope, set_at:.set_at, updated_at:.updated_at}'
+
+# co__gate_meta_get [gate_id] — §2.2 read. Pure read ⇒ NO lock. Two shapes,
+# keyed on whether a gate_id is supplied (1:1 with gate-meta.js gateMetaGet):
+#   • gate_id given  → {gate:<Gate>|null}   (missing row ⇒ null, never an error)
+#   • gate_id absent → {gates:[<Gate>…]}    (sorted by gate_id ASC — the J2 bulk
+#                       projection path: one read, then an in-memory map)
+# The id is trimmed (gate-meta.js gateIdArg.trim()); an UNSAFE id (one that
+# could not be a legal gate row key) reads as a missing row ⇒ {gate:null}.
+co__gate_meta_get() {
+  local id="${1:-}"
+  # trim leading/trailing whitespace (mirror gateIdArg.trim())
+  id="${id#"${id%%[![:space:]]*}"}"
+  id="${id%"${id##*[![:space:]]}"}"
+  co__gate_meta_ensure_dir
+  if [[ -n "$id" ]]; then
+    if co__safe_key "$id"; then
+      local path; path="$(co__gate_meta_path "$id")"
+      if [[ -f "$path" ]]; then
+        jq -c "{gate: $co__gate_meta_reshape}" "$path" 2>/dev/null || printf '{"gate":null}\n'
+        return 0
+      fi
+    fi
+    printf '{"gate":null}\n'
+    return 0
+  fi
+  # get-all: reshape every row INDEPENDENTLY, then slurp+sort by id ASC. A
+  # per-row read (not one slurp of all files concatenated) so a single torn /
+  # tampered row file degrades ONLY itself — it can never zero out the whole
+  # projection. This mirrors the sibling bulk-reader convention in this file
+  # (co__capacity_any_over reads each file with its own jq … || vd="") AND the
+  # CF twin's independent D1 rows, where one bad row can never drop its siblings
+  # from gateMetaGet's bulk SELECT (the J2 holds[] bulk path depends on this).
+  local dir f one reshaped="" rows
+  dir="$(co__gate_meta_dir)"
+  for f in "$dir"/*.json; do
+    [[ -e "$f" ]] || continue
+    one="$(jq -c "$co__gate_meta_reshape" "$f" 2>/dev/null)" || continue   # skip a torn row, don't poison the rest
+    [[ -n "$one" ]] || continue
+    reshaped+="$one"$'\n'
+  done
+  rows="$(printf '%s' "$reshaped" | jq -cs 'sort_by(.id)' 2>/dev/null)" || rows=""
+  [[ -n "$rows" ]] || rows="[]"
+  printf '{"gates":%s}\n' "$rows"
+  return 0
+}
+
 # ── §2.2 durable one-shot timer — CAPABILITY SURFACE ONLY ─────────────────────
 # fire(id)@T plus the S-6 backstop: a missed fire MUST degrade to
 # fire-on-next-poll. The skeleton has no alarm daemon (capability surface
@@ -577,7 +758,9 @@ co_request() {
     reconcile)        co__reconcile "$principal" "${1:-}" "${2:-}" ;;
     work-snapshot)    co__work_snapshot "$principal" "${1:-}" "${2:-}" ;;
     intake-pending)   co__intake_pending ;;  # I3 (claude-tools-06i) — daemon scan of unprocessed intake-request records
-    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot; I3: intake-pending)" >&2; return 2 ;;
+    gate-meta-set)    co__gate_meta_set "$principal" "${1:-}" ;;  # J1 (claude-tools-uxvj1/pkgt) — upsert gate_metadata (transient namespace, NOT a §4 record)
+    gate-meta-get)    co__gate_meta_get "${1:-}" ;;               # J1 — read one row ({gate:…|null}) or all ({gates:[…]})
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot; I3: intake-pending; J1: gate-meta-set|gate-meta-get)" >&2; return 2 ;;
   esac
 }
 

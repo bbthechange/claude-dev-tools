@@ -68,7 +68,7 @@ Three facts explain this layer:
 
 | File | Role |
 |---|---|
-| `coordinator.sh` | The bash Coordinator: §2.1 store (`co__store_put`/`_get` under `co__with_lock`), §2.2 timer, §2.3/§9.1 `co_authenticate`→`co_request` chokepoint, §4 record round-trip, plus capacity/forensic/reconcile/`co__work_snapshot`. **The frozen oracle.** Functions are `co_*`/`co__*`. |
+| `coordinator.sh` | The bash Coordinator: §2.1 store (`co__store_put`/`_get` under `co__with_lock`), §2.2 timer, §2.3/§9.1 `co_authenticate`→`co_request` chokepoint, §4 record round-trip, plus capacity/forensic/reconcile/`co__work_snapshot` + the J1 `gate-meta-set`/`-get` ops (transient `gate_metadata/` namespace, NOT a §4 record — twin of `cf/src/gate-meta.js`; clauses in `test-coordinator-gate-meta.sh`). **The frozen oracle.** Functions are `co_*`/`co__*`. |
 | `co-http-transport.sh` | When `COORDINATOR_URL` set: overrides `co_request` with authed HTTPS to the live Worker; maps HTTP status→bash rc op-aware (401/404/409→1, 422→2/3, 5xx→4), normalizes the JSON envelope back to bare stdout. The D0–D6 reconnection spec. |
 | `runner-backend-real.sh` | `RUNNER_BACKEND=real` adapter: bridges the runner's six-job names (`la_heartbeat`, `co_lease_acquire`, …) to the real libs' actual public names/arg-orders. An integration adapter, NOT an INTERFACE change. |
 | `dossier.sh` | §4.1/§4.1.1 Dossier+Item substrate: the per-Item state machine (open→answered→applied / open→expired) + the two single-writer idempotency-latch STRUCTURES (`consequence_applied`, the task_ref dedup record). Structures only — apply LOGIC is `consequence.sh`. |
@@ -190,4 +190,4 @@ When you finish a task in this area, append anything a future agent will need an
 didn't find here: a renamed/moved lib, a new env override, a fresh oracle clause,
 a new MUST-NOT boundary, a scar. **Keep it concise — this doc earns its keep only
 if agents read all of it.** Delete stale lines; never let it grow into a copy of
-INTERFACE.md or the lib headers it points at. Last substantive update: 2026-05-31.
+INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-02 (J1 gate-meta-set/-get added to the oracle — claude-tools-pkgt).
