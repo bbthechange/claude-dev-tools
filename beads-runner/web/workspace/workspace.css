@@ -222,3 +222,93 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .af-actions-status.pending{color:var(--amber-soft)}
 .af-actions-status.ok{color:var(--mint)}
 .af-actions-status.err{color:var(--coral)}
+
+/* ── J3 (claude-tools-uxvj3) — the Gates facet: the unified Hold view ──────────
+ * Three hold types in ONE list per workspace. The Gate (⛔) is OURS and editable;
+ * Dependency (⛓) + Scheduled (⏰) are beads-native and READ-ONLY (the .gf-readonly
+ * register mutes the affordance — there is no edit button, by construction). A
+ * Scheduled hold owned by a Gate nests beneath it (.gf-nest / .gf-nested). The
+ * .gf-* register deliberately mirrors the .af-* one (one visual language). */
+.gf-wrap{padding:8px 0 0}
+.gf-loading{padding:40px 22px;color:var(--dim);font-size:13px;letter-spacing:.08em}
+.gf-sec{margin:6px 0 0;padding:14px 0 16px;border-top:1px solid var(--line)}
+.gf-sl{font-size:10px;letter-spacing:.32em;color:var(--slate);
+  text-transform:uppercase;padding:0 22px;margin-bottom:11px}
+.gf-empty{color:var(--faint);font-size:12px;padding:0 22px;line-height:1.6}
+.gf-list{display:flex;flex-direction:column;gap:10px;padding:0 14px}
+
+.gf-card{border:1px solid var(--line);border-radius:13px;background:var(--panel);
+  padding:13px 14px}
+.gf-gate{border-color:var(--line-2)}
+/* read-only holds read quieter (no edit affordance) — honest "we only read". */
+.gf-readonly{background:var(--ink-2)}
+.gf-id{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:8px}
+.gf-glyph{font-size:14px;flex:none}
+.gf-type{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);
+  border:1px solid var(--line);border-radius:6px;padding:2px 6px;flex:none}
+.gf-gate .gf-type{color:var(--amber);border-color:rgba(245,191,99,.34)}
+.gf-name{font-family:var(--mono);font-size:11px;color:var(--text);letter-spacing:.02em;flex:none}
+.gf-count{font-size:11px;color:var(--dim)}
+.gf-setby{font-size:10px;letter-spacing:.04em;color:var(--faint);margin-left:auto}
+.gf-line{font-size:12px;color:var(--text);line-height:1.6;margin-top:3px}
+.gf-line.gf-faint{color:var(--faint)}
+.gf-k{color:var(--slate);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.gf-native{margin-left:8px;font-size:10px;color:var(--faint);font-style:italic}
+.gf-nest{margin-top:10px;padding-top:9px;border-top:1px dashed var(--line-2);
+  display:flex;flex-direction:column;gap:8px}
+.gf-nested{background:transparent;border-style:dashed}
+
+/* edit affordances — present ONLY on the editable Gate (keyed on the projection's
+ * `editable` flag). lift reads in the danger register; the edits are quieter. */
+.gf-actions-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;
+  padding-top:11px;border-top:1px dashed var(--line-2)}
+.gf-act{appearance:none;-webkit-appearance:none;cursor:pointer;font:inherit;
+  font-size:12px;letter-spacing:.04em;min-height:var(--tap);padding:8px 14px;
+  border-radius:10px;border:1px solid var(--line-2);background:var(--panel);
+  color:var(--text);transition:border-color .15s,color .15s,opacity .15s}
+.gf-act:hover{border-color:var(--amber);color:var(--amber)}
+.gf-act:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.gf-act:disabled{opacity:.45;cursor:default}
+.gf-act-lift{border-color:rgba(255,107,107,.4);color:var(--coral)}
+.gf-act-lift:hover{border-color:var(--coral);color:var(--coral)}
+.gf-act-add{border-color:var(--mint);color:var(--mint)}
+.gf-act-add:hover{border-color:var(--mint);color:var(--mint)}
+.gf-actions-status{margin-top:9px;font-size:11px;letter-spacing:.03em;
+  min-height:16px;line-height:1.5;color:var(--faint)}
+.gf-actions-status.pending{color:var(--amber-soft)}
+.gf-actions-status.ok{color:var(--mint)}
+.gf-actions-status.err{color:var(--coral)}
+
+/* add-a-gate form (the only ADD affordance — Gates are ours, §7.2/§7.4) */
+.gf-add-form{display:flex;flex-direction:column;gap:11px;padding:0 18px}
+.gf-field{display:flex;flex-direction:column;gap:4px}
+.gf-field-l{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--slate)}
+.gf-field-h{font-size:10px;color:var(--faint);letter-spacing:.02em}
+.gf-input{font:inherit;font-size:13px;color:var(--text);background:var(--ink-2);
+  border:1px solid var(--line-2);border-radius:9px;padding:9px 11px;min-height:var(--tap)}
+.gf-input:focus{outline:2px solid var(--amber);outline-offset:1px;border-color:var(--amber)}
+.gf-add-form .gf-act-add{align-self:flex-start;margin-top:2px}
+
+/* honest degraded[] footnotes (B.4) — mirror the af register */
+.gf-degraded{margin:6px 18px 0;border:1px dashed var(--line-2);border-radius:11px;
+  background:var(--ink-2);padding:11px 13px}
+.gf-degraded-h{font-size:9px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--slate);margin-bottom:7px}
+.gf-degraded-list{margin:0;padding-left:16px;color:var(--faint);font-size:11px;line-height:1.6}
+
+/* facet foot + error box (mirror the board/activity facets) */
+.gf-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  flex-wrap:wrap;padding:14px 22px max(14px,env(safe-area-inset-bottom));
+  border-top:1px solid var(--line);margin-top:8px}
+.gf-updated{font-size:10px;letter-spacing:.12em;color:var(--faint);text-transform:uppercase}
+.gf-errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
+  background:rgba(255,107,107,.08);border-radius:14px;padding:18px}
+.gf-err-h{color:var(--coral);font-size:13px;letter-spacing:.12em;
+  text-transform:uppercase;margin-bottom:9px}
+.gf-err-b{color:var(--amber-soft);font-size:13px;line-height:1.6}
+
+@media (min-width:880px){
+  .gf-list{padding:0 22px}
+  .gf-add-form{padding:0 22px}
+  .gf-add-form .gf-field{max-width:520px}
+}

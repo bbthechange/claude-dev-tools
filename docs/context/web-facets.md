@@ -16,8 +16,9 @@ facet (Blueprint/Activity/Gates/Cross-WS) to live content.
 - `web/capacity/` — the **Capacity** view ("how much Claude budget is left, what
   mode is each project in?"). MATURE.
 - `web/workspace/` — the per-workspace **hub / facet shell** (`/ws/<ref>/<facet>`).
-  The `board` **and `activity`** facets are real; `blueprint`/`gates` are honest
-  placeholders. (`activity` graduated to live content in I3, claude-tools-uxvi3.)
+  The `board`, `activity` **and `gates`** facets are real; only `blueprint` is an
+  honest placeholder. (`activity` graduated in I3 (claude-tools-uxvi3); `gates`
+  graduated in J3 (claude-tools-uxvj3).)
 - `web/cross-ws/` — the cross-workspace sync route. **SCAFFOLD ONLY** — nav shell
   + an honest "ships with track K" placeholder; makes no `/api` call.
 
@@ -64,7 +65,8 @@ calls `Shell.parseWorkspacePath(location.pathname)` to learn `{ref, facet}`.
 | `capacity/` | **Mature** — full pure view + Node test + shell. |
 | `workspace/` (`board` facet) | **Real** — reuses `BoardView`, scoped to `ref`. |
 | `workspace/` (`activity` facet) | **Real** (I3) — `ActivityView`: writer lane + aux pool + liveness dots + a distinct runner-health pip; pure view-model + `lib/test-activity-view.sh` + jsdom row. |
-| `workspace/` (blueprint/gates) | **Placeholders** — name the ship track. |
+| `workspace/` (`gates` facet) | **Real** (J3) — `GatesView`: the unified Hold view (gate editable: lift/edit-why/edit-unblock + add-a-gate; dependency/scheduled read-only; scheduled-under-its-gate); pure view-model + `lib/test-gates-view.sh` + jsdom row. Writes route through `/api/ws/gate-meta` (engine-direct) + `/api/control/gate-action` (host gate-apply/gate-lift). |
+| `workspace/` (blueprint) | **Placeholder** — names the ship track (H3). |
 | `cross-ws/` | **Scaffold** — nav + placeholder; no `/api` call, no view-model. |
 
 ## Key files
@@ -75,7 +77,8 @@ calls `Shell.parseWorkspacePath(location.pathname)` to learn `{ref, facet}`.
 | `workspaces/app.js` | Shell glue: read `/api/board`, paint cards (each an `<a>` into `/ws/<ref>/board`), surface `decisions_total` prominently. Read-only. |
 | `capacity/capacity-view.js` | `deriveCapacityView(snapshot, nowMs)` → `machines[]` (detailed per-machine bands + allowed line, **logically identical** to `board-view.js deriveMachine`) + `modes[]` (one honest actual mode per project). |
 | `capacity/app.js` | Shell glue: paint the detailed machine cards + mode rows; `machines_empty` → "no telemetry yet" banner (§3.C). |
-| `workspace/app.js` | The workspace-shell glue. `parseWorkspacePath` → `{ref, facet}`; `board` facet **reuses `window.BoardView`** scoped to `ctx.ref`; `activity` facet **reuses `window.ActivityView`** (read-only, 30s refresh, no write path — stuck actions are I4); blueprint/gates → `mountPlaceholder` naming the track (`FACET_TRACK = {blueprint:'H3', gates:'J3'}`). |
+| `workspace/app.js` | The workspace-shell glue. `parseWorkspacePath` → `{ref, facet}`; `board` facet **reuses `window.BoardView`** scoped to `ctx.ref`; `activity` facet **reuses `window.ActivityView`** (stuck actions are I4); `gates` facet **reuses `window.GatesView`** (J3 — the only facet write path: gate add/edit/lift); `blueprint` → `mountPlaceholder` naming the track (`FACET_TRACK = {blueprint:'H3'}`). |
+| `workspace/gates-view.js` | `deriveGatesView(snapshot, ref, nowMs)` (J3) → the unified Hold list: `gates[]` (editable, each with nested `scheduled_under[]` for gate-owned defers), `dependencies[]` + `scheduled[]` (read-only, native note), `other[]` (out-of-set holds, B.4). Reads ONLY `projects[].holds[]` (the J2 `buildHolds` shape); `editable` copied VERBATIM from the projection (C3 — the view never decides editability). One refusal = unknown-HIGHER schema_version; else degrade + `degraded[]`. Writes: `/api/ws/gate-meta` (engine-direct why/unblock) + `/api/control/gate-action` (host gate-apply/gate-lift). |
 | `workspace/activity-view.js` | `deriveActivityView(snapshot, ref, nowMs)` (I3) → the writer lane (one\|null, the B.1 8-key shape), the auxiliary pool (0..N, the narrower 5-key shape), and a `runner_health` bucket DISTINCT from agent activity. Reads ONLY B.1 keys (must-protect #2); derived states render as "looks like" with always-"derived" confidence; liveness dots consumed verbatim (90/180 never re-derived); B.4 per-field tolerance + `degraded[]`; one refusal = unknown-HIGHER schema_version. |
 | `workspace/index.html` | The catch-all page `_redirects` rewrites all `/ws/*` to. **Every asset ref is ABSOLUTE** (the q6z7 lesson) — loads `/board/board-view.js` verbatim, never copied. |
 | `cross-ws/index.html` | Scaffold: mounts only `Shell.mount({active:'cross-ws'})`; states it ships with track K (K2 relay log, K5 coupling map). No JS view-model file exists. |
@@ -179,4 +182,4 @@ a facet that graduated from placeholder to live (update the maturity table!), a 
 view-model field, a moved/renamed module, a fresh scar. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete stale lines; don't let
 it grow into a re-spec of Contract C. Last substantive update: 2026-06-02
-(Activity facet I3 graduated placeholder→live, claude-tools-uxvi3).
+(Gates facet J3 graduated placeholder→live, claude-tools-uxvj3; Activity I3 before it).

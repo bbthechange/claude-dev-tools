@@ -12,9 +12,13 @@
  *                            there is NO set-desired control here (control stays on
  *                            the global /board — this facet never widens the write
  *                            path). 30s refresh.
- *   blueprint/activity/gates — HONEST placeholders naming the track that ships them
- *                            (H3/I3/J3). The documented plug-in point; this shell
- *                            does NOT build the facet content.
+ *   activity               — LIVE facet (I3): writer lane + aux pool + runner-health
+ *                            pip (window.ActivityView), with the I4 stuck actions.
+ *   gates                  — LIVE facet (J3): the unified Hold view (window.GatesView) —
+ *                            gate editable; dependency/scheduled read-only.
+ *   blueprint              — HONEST placeholder naming the track that ships it (H3).
+ *                            The documented plug-in point; this shell does NOT build
+ *                            the placeholder's facet content.
  *
  * Honesty discipline (the shared brief): nothing fabricated; a stale runner is
  * shown as stale (BoardView enforces S-1); an unknown-HIGHER schema_version is the
@@ -30,10 +34,11 @@
   var Shell = window.Shell;
   var BoardView = window.BoardView;
   var ActivityView = window.ActivityView; // I3 (claude-tools-uxvi3)
+  var GatesView = window.GatesView; // J3 (claude-tools-uxvj3)
 
   // Which track ships each STILL-placeholder facet (honest placeholder copy).
-  // 'activity' graduated to live content in I3, so it is NOT listed here.
-  var FACET_TRACK = { blueprint: 'H3', gates: 'J3' };
+  // 'activity' graduated in I3, 'gates' graduated in J3 — neither is listed here.
+  var FACET_TRACK = { blueprint: 'H3' };
 
   var host = Dom.el('facet-host');
   var who = Dom.el('who');
@@ -59,6 +64,8 @@
     mountBoardFacet();
   } else if (ctx.facet === 'activity') {
     mountActivityFacet();
+  } else if (ctx.facet === 'gates') {
+    mountGatesFacet();
   } else {
     mountPlaceholder(ctx.facet);
   }
@@ -77,7 +84,7 @@
     host.appendChild(box);
   }
 
-  // ── placeholder facets (blueprint / activity / gates) ───────────────────────
+  // ── placeholder facets (blueprint only — activity I3 + gates J3 graduated) ──
   function mountPlaceholder(facet) {
     Dom.clear(host);
     var track = FACET_TRACK[facet] || '?';
@@ -582,6 +589,8 @@
 
   // Disable the bar's buttons, show an optimistic status, then ✓/✗ the outcome.
   // Idempotent on the disable (Kill+Gate disables synchronously up-front).
+  // Resolves to `true` on success / `false` on failure so a caller can refresh
+  // ONLY on success (the gates edit handlers, so a failed edit keeps its ✗).
   function runAction(btnEl, statusEl, verb, promise) {
     setRowDisabled(btnEl, true);
     statusEl.className = 'af-actions-status pending';
@@ -591,11 +600,14 @@
       var idNote = (d && d.action_id) ? (' (queued; the daemon reconciles within ~30s)')
         : (d && d.id) ? (' (decision card created — see the Inbox)') : '';
       statusEl.textContent = '✓ ' + verb + ' accepted' + idNote;
+      return true;
     }).catch(function (e) {
       statusEl.className = 'af-actions-status err';
       statusEl.textContent = '✗ ' + verb + ' failed: ' + (e && e.message ? e.message : String(e));
-    }).then(function () {
+      return false;
+    }).then(function (ok) {
       setRowDisabled(btnEl, false);
+      return ok;
     });
   }
 
@@ -637,6 +649,425 @@
     sec.hidden = false;
     sec.appendChild(Dom.mk('div', 'af-degraded-h', 'Degraded (honest gaps)'));
     var ul = Dom.mk('ul', 'af-degraded-list');
+    degraded.forEach(function (d) { ul.appendChild(Dom.mk('li', null, d)); });
+    sec.appendChild(ul);
+  }
+
+  // ── gates facet (J3 — the unified Hold view: gate editable, dep+sched read-only) ─
+  // REUSES window.GatesView.deriveGatesView (the pure view-model). DESIGN J §4 +
+  // the §7.2 mock (NORMATIVE). Three hold types in one list per workspace: our
+  // Gate is fully editable (lift / edit why / edit unblock + add-a-gate); the
+  // beads-native Dependency + Scheduled holds are READ-ONLY with their honest
+  // native note (C3 — "coexist with built-in beads blocked"); a Scheduled hold
+  // owned by a Gate nests UNDER it. Writes route through the control plane: the
+  // why/unblock metadata is an engine-DIRECT gate-meta-set (no host); the label
+  // lift/apply is a HOST-effecting agent-action the daemon reconciles via
+  // gate-defer.sh — NEVER a direct web→bd mutation (Local==remote). 30s refresh.
+  function mountGatesFacet() {
+    Dom.clear(host);
+    var wrap = Dom.mk('div', 'gf-wrap');
+
+    var loading = Dom.mk('p', 'gf-loading', 'Reading the projection…');
+    loading.id = 'gf-loading';
+    wrap.appendChild(loading);
+
+    var errbox = Dom.mk('section', 'gf-errbox');
+    errbox.id = 'gf-errbox';
+    errbox.hidden = true;
+    errbox.appendChild(Dom.mk('div', 'gf-err-h', 'Cannot render this workspace'));
+    var errB = Dom.mk('p', 'gf-err-b');
+    errB.id = 'gf-err-b';
+    errbox.appendChild(errB);
+    wrap.appendChild(errbox);
+
+    var body = Dom.mk('section', 'gf-body');
+    body.id = 'gf-body';
+    body.hidden = true;
+
+    // HELD IN <ref> — the one unified list (gate + dependency + scheduled).
+    var heldSec = Dom.mk('div', 'gf-sec');
+    var heldHead = Dom.mk('div', 'gf-sl');
+    heldHead.id = 'gf-held-sl';
+    heldHead.textContent = 'HELD IN ' + ctx.ref;
+    heldSec.appendChild(heldHead);
+    var listHost = Dom.mk('div', 'gf-list');
+    listHost.id = 'gf-list';
+    heldSec.appendChild(listHost);
+    var emptyEl = Dom.mk('p', 'gf-empty',
+      'Nothing is holding a task in ' + ctx.ref + ' — no gates, blocks, or defers.');
+    emptyEl.id = 'gf-empty';
+    emptyEl.hidden = true;
+    heldSec.appendChild(emptyEl);
+    body.appendChild(heldSec);
+
+    // ADD-A-GATE — the only ADD affordance (Gates are ours; §7.2/§7.4). The form
+    // is intentionally simple (the ergonomics are [free], DESIGN J §10): a bare
+    // bead-ref input rather than a picker, because the facet reads ONLY holds[]
+    // (must-protect #2) and has no full ready-task list to choose from.
+    body.appendChild(buildAddGateForm());
+
+    // Honest "degraded" footnotes (B.4) — every dropped/placeholder field named.
+    var degSec = Dom.mk('div', 'gf-degraded');
+    degSec.id = 'gf-degraded';
+    degSec.hidden = true;
+    body.appendChild(degSec);
+
+    var foot = Dom.mk('div', 'gf-foot');
+    var boardLink = Dom.mk('a', 'facet-link', 'Open this workspace’s board →');
+    boardLink.setAttribute('href', '/ws/' + encodeURIComponent(ctx.ref) + '/board');
+    foot.appendChild(boardLink);
+    var updated = Dom.mk('span', 'gf-updated', '—');
+    updated.id = 'gf-updated';
+    foot.appendChild(updated);
+    body.appendChild(foot);
+
+    wrap.appendChild(body);
+    host.appendChild(wrap);
+
+    refreshGates();
+    window.setInterval(refreshGates, REFRESH_MS);
+  }
+
+  function showGatesError(msg) {
+    var loading = Dom.el('gf-loading');
+    var body = Dom.el('gf-body');
+    var errbox = Dom.el('gf-errbox');
+    if (loading) loading.hidden = true;
+    if (body) body.hidden = true;
+    if (errbox) { errbox.hidden = false; Dom.el('gf-err-b').textContent = msg; }
+    if (healthDot) healthDot.classList.add('bad');
+  }
+
+  function refreshGates() {
+    Net.getJSON('/api/board')
+      .then(function (snapshot) {
+        var view = GatesView.deriveGatesView(snapshot, ctx.ref, Date.now());
+        renderGates(view);
+      })
+      .catch(function (e) {
+        showGatesError(e && e.message ? e.message : String(e));
+      });
+  }
+
+  // Repaint only when a write SUCCEEDED — a failed edit keeps its ✗ status line
+  // (a repaint rebuilds the card and would wipe it). runAction resolves the flag.
+  function refreshOnOk(ok) { if (ok) refreshGates(); }
+
+  function renderGates(view) {
+    // The one hard refusal (unknown-HIGHER schema_version) surfaces as an error.
+    if (!view.ok) { showGatesError(view.error); return; }
+
+    var loading = Dom.el('gf-loading');
+    var errbox = Dom.el('gf-errbox');
+    var body = Dom.el('gf-body');
+    if (loading) loading.hidden = true;
+    if (errbox) errbox.hidden = true;
+    if (body) body.hidden = false;
+    if (healthDot) healthDot.classList.remove('bad');
+
+    var sl = Dom.el('gf-held-sl');
+    if (sl) {
+      sl.textContent = 'HELD IN ' + ctx.ref +
+        (view.counts && view.counts.total ? ' · ' + view.counts.total + ' hold' +
+          (view.counts.total === 1 ? '' : 's') : '');
+    }
+
+    var list = Dom.el('gf-list');
+    Dom.clear(list);
+    // Order = the projection's deterministic order (gates, then dependency, then
+    // scheduled), then any out-of-set holds. Read-only holds carry NO edit
+    // affordance — the renderer keys on each row's `editable` flag, never decides.
+    view.gates.forEach(function (g) { list.appendChild(renderGateCard(g)); });
+    view.dependencies.forEach(function (d) { list.appendChild(renderDependencyRow(d)); });
+    view.scheduled.forEach(function (s) { list.appendChild(renderScheduledRow(s, false)); });
+    view.other.forEach(function (o) { list.appendChild(renderOtherRow(o)); });
+
+    var empty = Dom.el('gf-empty');
+    if (empty) empty.hidden = !view.empty;
+
+    renderGatesDegraded(view.degraded);
+
+    var updated = Dom.el('gf-updated');
+    if (updated) updated.textContent = 'updated ' + new Date().toLocaleTimeString();
+  }
+
+  // A GATE card (⛔) — editable IFF g.editable (the projection's call). Shows
+  // name + task count + owner/age + why + unblock, the edit affordances, and any
+  // Scheduled holds it owns nested beneath it (§7.2).
+  function renderGateCard(g) {
+    var card = Dom.mk('div', 'gf-card gf-gate');
+
+    var idr = Dom.mk('div', 'gf-id');
+    idr.appendChild(Dom.mk('span', 'gf-glyph', '⛔'));
+    idr.appendChild(Dom.mk('span', 'gf-type', 'Gate'));
+    idr.appendChild(Dom.mk('code', 'gf-name', g.name));
+    idr.appendChild(Dom.mk('span', 'gf-count', g.task_count_label));
+    var setBits = 'set by: ' + g.owner_label;
+    if (g.set_at_age) setBits += ' · ' + g.set_at_age;
+    idr.appendChild(Dom.mk('span', 'gf-setby', setBits));
+    card.appendChild(idr);
+
+    var whyLine = Dom.mk('div', 'gf-line' + (g.missing_meta ? ' gf-faint' : ''));
+    whyLine.appendChild(Dom.mk('span', 'gf-k', 'why: '));
+    whyLine.appendChild(document.createTextNode(g.why_label));
+    card.appendChild(whyLine);
+
+    var ubLine = Dom.mk('div', 'gf-line' + (g.unblocks_when ? '' : ' gf-faint'));
+    ubLine.appendChild(Dom.mk('span', 'gf-k', 'unblocks when: '));
+    ubLine.appendChild(document.createTextNode(g.unblocks_when_label));
+    card.appendChild(ubLine);
+
+    // Nested scheduled-under-gate holds (§7.2): lifting the Gate clears these.
+    if (g.scheduled_under && g.scheduled_under.length) {
+      var nest = Dom.mk('div', 'gf-nest');
+      g.scheduled_under.forEach(function (s) { nest.appendChild(renderScheduledRow(s, true)); });
+      card.appendChild(nest);
+    }
+
+    // EDIT AFFORDANCES — only when the projection says editable (C3). The lift is
+    // a HOST effect (agent-action gate-lift → gate-defer.sh lift); the why/unblock
+    // edits are engine-DIRECT (gate-meta-set), no host round-trip.
+    if (g.editable) {
+      var status = Dom.mk('div', 'gf-actions-status');
+      status.setAttribute('aria-live', 'polite');
+      var row = Dom.mk('div', 'gf-actions-row');
+
+      // Lift is a HOST effect the daemon reconciles within ~30s — we keep the
+      // optimistic "queued" status and let the 30s auto-refresh pick up the
+      // lifted gate (NO immediate refresh, which would wipe that status).
+      gfBtn(row, 'lift gate', 'gf-act-lift', function (b) {
+        if (!window.confirm('Lift gate "' + g.name + '"?\n\n' +
+          'Removes the gate:' + g.gate_id + ' label (and its defer) from ' +
+          g.task_count_label + ', so the runner can pick them up again.')) return;
+        runAction(b, status, 'lift gate',
+          Net.postJSON('/api/control/gate-action', {
+            intent: 'gate-lift', workspace: ctx.ref, target: { gate_id: g.gate_id }
+          }));
+      });
+
+      gfBtn(row, 'edit why', 'gf-act-edit', function (b) {
+        var next = window.prompt('Edit why gate "' + g.name + '" holds work:', g.why || '');
+        if (next === null) return; // cancelled
+        if (!next.trim()) { setStatus(status, 'err', 'a gate always needs a why — not changed'); return; }
+        runAction(b, status, 'edit why',
+          Net.postJSON('/api/ws/gate-meta', gateMetaBody(g, { why: next.trim() }))
+        ).then(refreshOnOk); // only refresh on success — a failed edit keeps its ✗ status
+      });
+
+      gfBtn(row, 'edit unblock', 'gf-act-edit', function (b) {
+        var next = window.prompt('Edit the unblock condition for gate "' + g.name +
+          '" (what would release it):', g.unblocks_when || '');
+        if (next === null) return; // cancelled
+        // why is REQUIRED on the upsert; a metadata-less gate has none yet, so
+        // ask for it too rather than letting the engine 422 (honest, not a throw).
+        var why = g.why;
+        if (!why) {
+          why = window.prompt('This gate has no recorded why yet — a gate always needs one. Why does it hold work?', '');
+          if (why === null) return;
+          if (!why.trim()) { setStatus(status, 'err', 'a gate always needs a why — not changed'); return; }
+          why = why.trim();
+        }
+        runAction(b, status, 'edit unblock',
+          Net.postJSON('/api/ws/gate-meta', gateMetaBody(g, { why: why, unblock_condition: next.trim() }))
+        ).then(refreshOnOk); // only refresh on success — a failed edit keeps its ✗ status
+      });
+
+      card.appendChild(row);
+      card.appendChild(status);
+    }
+
+    return card;
+  }
+
+  // gateMetaBody(g, overrides) — build the gate-meta-set body, preserving the
+  // gate's current why/unblock/scope and applying the edited field. The engine
+  // preserves set_at across edits (§2.2) and the proxy forces owner:"you".
+  function gateMetaBody(g, overrides) {
+    var gate = {
+      id: g.gate_id,
+      why: g.why || '',
+      scope: g.scope || g.scope_label || 'task'
+    };
+    if (g.unblocks_when) gate.unblock_condition = g.unblocks_when;
+    if (overrides) {
+      if (typeof overrides.why === 'string') gate.why = overrides.why;
+      if (typeof overrides.unblock_condition === 'string') gate.unblock_condition = overrides.unblock_condition;
+    }
+    return { gate: gate };
+  }
+
+  // A read-only DEPENDENCY row (⛓) — beads-native blocked; NO edit affordance.
+  function renderDependencyRow(d) {
+    var card = Dom.mk('div', 'gf-card gf-dep gf-readonly');
+    var idr = Dom.mk('div', 'gf-id');
+    idr.appendChild(Dom.mk('span', 'gf-glyph', '⛓'));
+    idr.appendChild(Dom.mk('span', 'gf-type', 'Dependency'));
+    idr.appendChild(Dom.mk('code', 'gf-name', d.task_ref_label));
+    idr.appendChild(Dom.mk('span', 'gf-count', 'blocked on ' + d.blocked_on_label));
+    card.appendChild(idr);
+    var line = Dom.mk('div', 'gf-line');
+    line.appendChild(Dom.mk('span', 'gf-k', 'unblocks when: '));
+    line.appendChild(document.createTextNode(d.unblocks_when_label));
+    line.appendChild(Dom.mk('span', 'gf-native', '(' + d.native_note + ')'));
+    card.appendChild(line);
+    return card;
+  }
+
+  // A read-only SCHEDULED row (⏰) — beads-native defer; NO edit affordance.
+  // `nested` true ⇒ rendered UNDER its owning Gate (compact, no glyph repeat).
+  function renderScheduledRow(s, nested) {
+    var card = Dom.mk('div', 'gf-card gf-sched gf-readonly' + (nested ? ' gf-nested' : ''));
+    var idr = Dom.mk('div', 'gf-id');
+    idr.appendChild(Dom.mk('span', 'gf-glyph', '⏰'));
+    idr.appendChild(Dom.mk('span', 'gf-type', 'Scheduled'));
+    idr.appendChild(Dom.mk('code', 'gf-name', s.task_ref_label));
+    idr.appendChild(Dom.mk('span', 'gf-count', 'deferred until ' + s.deferred_until_label));
+    card.appendChild(idr);
+    var line = Dom.mk('div', 'gf-line');
+    line.appendChild(Dom.mk('span', 'gf-k', 'unblocks when: '));
+    line.appendChild(document.createTextNode(s.unblocks_when_label));
+    line.appendChild(Dom.mk('span', 'gf-native', '(' + s.native_note + ')'));
+    card.appendChild(line);
+    return card;
+  }
+
+  // An out-of-set hold (B.4) — shown raw, read-only, never coerced into one of
+  // the three (which would fake editability). The degraded[] footnote names it.
+  function renderOtherRow(o) {
+    var card = Dom.mk('div', 'gf-card gf-other gf-readonly');
+    var idr = Dom.mk('div', 'gf-id');
+    idr.appendChild(Dom.mk('span', 'gf-glyph', '?'));
+    idr.appendChild(Dom.mk('span', 'gf-type', String(o.type)));
+    if (o.task_ref) idr.appendChild(Dom.mk('code', 'gf-name', o.task_ref));
+    card.appendChild(idr);
+    card.appendChild(Dom.mk('div', 'gf-line gf-faint', 'unknown hold type — read-only'));
+    return card;
+  }
+
+  // The ADD-A-GATE form (§7.2/§7.4). Two writes (design/agent-action.md §3 #2):
+  //   1. gate-meta-set (engine-DIRECT) — the why/unblock/scope metadata.
+  //   2. agent-action gate-apply (HOST) — places the gate:<id> label + the
+  //      coupled defer date on the selected bead(s) via gate-defer.sh.
+  function buildAddGateForm() {
+    var sec = Dom.mk('div', 'gf-sec gf-add');
+    sec.appendChild(Dom.mk('div', 'gf-sl', 'ADD A GATE · the only editable hold'));
+    var form = Dom.mk('div', 'gf-add-form');
+
+    function field(labelText, el, hint) {
+      var f = Dom.mk('label', 'gf-field');
+      f.appendChild(Dom.mk('span', 'gf-field-l', labelText));
+      f.appendChild(el);
+      if (hint) f.appendChild(Dom.mk('span', 'gf-field-h', hint));
+      return f;
+    }
+    function input(ph) {
+      var i = Dom.mk('input', 'gf-input');
+      i.setAttribute('type', 'text');
+      if (ph) i.setAttribute('placeholder', ph);
+      return i;
+    }
+
+    var idIn = input('audio-redesign');
+    var whyIn = input('waiting on the audio-engine decision');
+    var unblockIn = input('that decision lands (or you lift this)');
+    var dateIn = input('YYYY-MM-DD (blank = indefinite until lifted)');
+    var beadsIn = input('rhythmGame-77p rhythmGame-5kq');
+    var scopeSel = Dom.mk('select', 'gf-input');
+    [['task', 'task — one bead'], ['cohort', 'cohort — many beads, lift once']].forEach(function (o) {
+      var opt = Dom.mk('option', null, o[1]);
+      opt.setAttribute('value', o[0]);
+      scopeSel.appendChild(opt);
+    });
+
+    form.appendChild(field('gate id', idIn, 'lowercase, digits, hyphens (gate:<id>)'));
+    form.appendChild(field('why (required)', whyIn, 'a Gate always records why it holds work'));
+    form.appendChild(field('unblock condition', unblockIn, 'what would release it'));
+    form.appendChild(field('defer until', dateIn, 'the unblock date, or blank for indefinite'));
+    form.appendChild(field('scope', scopeSel));
+    form.appendChild(field('task(s) to hold (required)', beadsIn, 'one or more bead refs, space/comma separated'));
+
+    var status = Dom.mk('div', 'gf-actions-status');
+    status.setAttribute('aria-live', 'polite');
+    var addBtn = Dom.mk('button', 'gf-act gf-act-add', 'Add gate');
+    addBtn.setAttribute('type', 'button');
+    addBtn.addEventListener('click', function () {
+      submitAddGate({
+        btn: addBtn, status: status,
+        id: idIn.value.trim(), why: whyIn.value.trim(), unblock: unblockIn.value.trim(),
+        date: dateIn.value.trim(), scope: scopeSel.value,
+        beads: beadsIn.value.split(/[\s,]+/).map(function (x) { return x.trim(); })
+          .filter(function (x) { return x.length > 0; })
+      });
+    });
+
+    form.appendChild(addBtn);
+    sec.appendChild(form);
+    sec.appendChild(status);
+    return sec;
+  }
+
+  function submitAddGate(f) {
+    // Cheap client-side gates (the engine + proxies are authoritative — these
+    // give immediate, honest feedback before any round-trip).
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(f.id)) {
+      setStatus(f.status, 'err', 'gate id must be lowercase letters, digits, hyphens (gate:<id> shape)'); return;
+    }
+    if (!f.why) { setStatus(f.status, 'err', 'a gate always needs a why'); return; }
+    if (!f.beads.length) { setStatus(f.status, 'err', 'name at least one task (bead ref) to hold'); return; }
+    var date = f.date || FAR_FUTURE; // blank ⇒ "indefinite until lifted" sentinel
+
+    setRowDisabled(f.btn, true);
+    setStatus(f.status, 'pending', 'add gate — recording why…');
+    // 1) engine-DIRECT metadata write (why/unblock/scope). owner forced to "you".
+    var meta = { id: f.id, why: f.why, scope: f.scope };
+    if (f.unblock) meta.unblock_condition = f.unblock;
+    Net.postJSON('/api/ws/gate-meta', { gate: meta })
+      .then(function () {
+        // 2) HOST label+defer placement (the daemon reconciles within ~30s).
+        setStatus(f.status, 'pending', 'add gate — placing the label on ' + f.beads.length + ' task(s)…');
+        return Net.postJSON('/api/control/gate-action', {
+          intent: 'gate-apply', workspace: ctx.ref,
+          target: { gate_id: f.id, bead_refs: f.beads },
+          args: { date: date }
+        });
+      })
+      .then(function (d) {
+        var note = (d && d.action_id) ? ' (queued; the daemon places the label within ~30s)' : '';
+        setStatus(f.status, 'ok', '✓ gate "' + f.id + '" added' + note);
+      })
+      .catch(function (e) {
+        setStatus(f.status, 'err', '✗ add gate failed: ' + (e && e.message ? e.message : String(e)));
+      })
+      .then(function () { setRowDisabled(f.btn, false); });
+  }
+
+  // gfBtn(row, label, cls, handler) — append a button to an action row; the
+  // handler gets the button el. Mirrors the I4 btn() helper, gates-scoped.
+  function gfBtn(row, label, cls, handler) {
+    var b = Dom.mk('button', 'gf-act ' + cls, label);
+    b.setAttribute('type', 'button');
+    b.addEventListener('click', function () { handler(b); });
+    row.appendChild(b);
+    return b;
+  }
+
+  // setStatus(el, kind, msg) — paint a status line (kind ∈ pending|ok|err).
+  function setStatus(el, kind, msg) {
+    if (!el) return;
+    el.className = 'gf-actions-status ' + kind;
+    el.textContent = msg;
+  }
+
+  // Honest degraded[] footnotes (B.4): name every placeholder/dropped field.
+  function renderGatesDegraded(degraded) {
+    var sec = Dom.el('gf-degraded');
+    if (!sec) return;
+    Dom.clear(sec);
+    degraded = Array.isArray(degraded) ? degraded : [];
+    if (degraded.length === 0) { sec.hidden = true; return; }
+    sec.hidden = false;
+    sec.appendChild(Dom.mk('div', 'gf-degraded-h', 'Degraded (honest gaps)'));
+    var ul = Dom.mk('ul', 'gf-degraded-list');
     degraded.forEach(function (d) { ul.appendChild(Dom.mk('li', null, d)); });
     sec.appendChild(ul);
   }

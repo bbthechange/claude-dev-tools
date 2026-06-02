@@ -35,6 +35,7 @@ const P = {
   dom:        path.join(WEB, 'shared', 'dom.js'),
   boardView:  path.join(WEB, 'board', 'board-view.js'),
   activityView: path.join(WEB, 'workspace', 'activity-view.js'), // I3 (claude-tools-uxvi3)
+  gatesView:  path.join(WEB, 'workspace', 'gates-view.js'), // J3 (claude-tools-uxvj3)
   inboxView:  path.join(WEB, 'inbox', 'inbox-view.js'),
   inboxApp:   path.join(WEB, 'inbox', 'app.js'),
   wsIndex:    path.join(WEB, 'workspace', 'index.html'),
@@ -102,6 +103,7 @@ function loadWorkspaceRoute(pathname) {
   loadFileInWindow(window, P.shell);
   loadFileInWindow(window, P.boardView);
   loadFileInWindow(window, P.activityView); // I3 — app.js reads window.ActivityView
+  loadFileInWindow(window, P.gatesView); // J3 — app.js reads window.GatesView
   loadFileInWindow(window, P.wsApp);
   return window;
 }
@@ -324,9 +326,29 @@ test('F — /ws/<ref>/activity mounts the LIVE Activity facet scaffold (writer l
     assert.equal(nav.querySelector('.shell-tabs a.active').getAttribute('href'), '/ws/projA/activity');
   } finally { window.close(); }
 });
+// J3 (claude-tools-uxvj3): the Gates facet GRADUATED from placeholder to live
+// content — it now mounts the .gf-wrap scaffold (the unified Hold list +
+// add-a-gate form), the EXTENSION POINT below anticipated. Only Blueprint (H3)
+// remains an honest placeholder.
+test('F — /ws/<ref>/gates mounts the LIVE Gates facet scaffold (unified Hold list + add-a-gate), not a placeholder', () => {
+  const window = loadWorkspaceRoute('/ws/projA/gates');
+  try {
+    const host = window.document.getElementById('facet-host');
+    // The static scaffold mounts SYNCHRONOUSLY (before the never-settling fetch),
+    // exactly like the board/activity facets — that is all "which facet mounted"
+    // needs. The dynamic hold list (#gf-list) paints once /api/board resolves.
+    assert.ok(host.querySelector('.gf-wrap'), 'the gates-facet scaffold (.gf-wrap) mounted');
+    assert.ok(host.querySelector('#gf-list'), 'the unified Hold list host mounted');
+    assert.ok(host.querySelector('.gf-add'), 'the add-a-gate form (the only editable hold) mounted');
+    assert.equal(host.querySelector('.facet-placeholder'), null, 'the gates route is NOT a placeholder');
+    assert.equal(host.querySelector('.bf-wrap'), null, 'the gates route did NOT mount the board scaffold');
+    // Dispatch + nav agree: the gates facet tab is the active one.
+    const nav = window.document.getElementById('shell-nav');
+    assert.equal(nav.querySelector('.shell-tabs a.active').getAttribute('href'), '/ws/projA/gates');
+  } finally { window.close(); }
+});
 const PLACEHOLDER_FACETS = [
   { facet: 'blueprint', label: 'Blueprint', track: 'H3' },
-  { facet: 'gates',     label: 'Gates',     track: 'J3' },
 ];
 for (const pf of PLACEHOLDER_FACETS) {
   test(`F — /ws/<ref>/${pf.facet} mounts the honest ${pf.label} placeholder (names track ${pf.track})`, () => {

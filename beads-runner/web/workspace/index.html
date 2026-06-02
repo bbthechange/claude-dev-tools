@@ -18,8 +18,9 @@
   The 'board' facet REUSES window.BoardView (loaded by absolute path from
   /board/board-view.js — never modified, never copied). The 'activity' facet
   (I3, claude-tools-uxvi3) renders writer-lane + aux-pool + liveness dots via
-  window.ActivityView. Blueprint/Gates remain HONEST placeholders naming the
-  track that ships them (H3/J3).
+  window.ActivityView. The 'gates' facet (J3, claude-tools-uxvj3) renders the
+  unified Hold view (gate editable; dependency/scheduled read-only) via
+  window.GatesView. Blueprint remains an HONEST placeholder naming its track (H3).
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -46,6 +47,8 @@
   <script src="/board/board-view.js"></script>
   <!-- I3 (claude-tools-uxvi3): the Activity facet's pure view-model. -->
   <script src="/workspace/activity-view.js"></script>
+  <!-- J3 (claude-tools-uxvj3): the Gates facet's pure view-model. -->
+  <script src="/workspace/gates-view.js"></script>
   <script src="/workspace/app.js"></script>
   <!-- claude-tools-4zrn: shared offline-read service worker (last-known snapshot
        off-network; UX-DESIGN-V2 §2.4). Covers every /ws/<ref>/<facet>. NOT on
