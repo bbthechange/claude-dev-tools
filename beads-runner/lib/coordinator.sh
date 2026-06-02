@@ -1420,6 +1420,21 @@ co__work_snapshot() {
     # renderer's empty-queue/net-velocity path is identical regardless of which
     # producer fed the snapshot (the exact current_task_title:null precedent
     # above). CF fills the real per-project values from the inventory record.
+    #
+    # claude-tools-uxvi2 — runner_health{} (DESIGN I §3) + activity{} (DESIGN I
+    # §2), the Track-I named sub-objects (B.1). runner_health is a TRUE twin of
+    # the CF deriveRunnerHealth: derived from the SAME §4.2 RunnerState `$r`
+    # (liveness+actual+current_task_ref) co__reconcile produced, so the bash
+    # oracle and the CF producer compute byte-identical {process,heartbeat,
+    # last_pickup_at,state}. The SAFETY invariant (findings §180–182): a stale
+    # heartbeat with the process not explicitly down ⇒ wedged; everything fresh
+    # (incl. cooldown/capacity-deny/skip/starvation, which heartbeat `idle`
+    # within STALE_AFTER) ⇒ idle/working — never stuck. `starved` collapses to
+    # idle (runner_state alone can't tell it apart); last_pickup_at:null (no
+    # producer yet). activity has NO bash store (agent_activity is a CF-only
+    # transient, the machines[]/queue_health precedent) ⇒ the honest-empty
+    # default {writer:null,auxiliary:[]} for SHAPE PARITY; CF fills the real
+    # lanes from the agent_activity rows.
     proj_json=$(printf '%s' "$proj_json" | jq -c \
         --argjson r "$rec" --arg cap "$cap" \
         '. + [{project_ref:$r.project_ref,
@@ -1429,6 +1444,17 @@ co__work_snapshot() {
                              current_task_ref:$r.current_task_ref,
                              current_task_title:null,
                              desired_actual_mismatch:$r.desired_actual_mismatch},
+               runner_health:(
+                 ( ($r.actual=="stopped") or ($r.actual=="crashed") ) as $dead
+                 | ( $r.actual=="running" ) as $intask
+                 | { process:( if $dead then "dead" else "alive" end ),
+                     heartbeat:( if $r.liveness=="live" then "fresh" else "stale" end ),
+                     last_pickup_at:null,
+                     state:( if ( ($r.liveness!="live") and ($dead|not) ) then "wedged"
+                             elif $dead then "idle"
+                             elif $intask then "working"
+                             else "idle" end ) }),
+               activity:{writer:null, auxiliary:[]},
                queue_health:{ready:0,
                              held:{gate:0,dependency:0,scheduled:0},
                              hidden_under_deferred_parent:0,

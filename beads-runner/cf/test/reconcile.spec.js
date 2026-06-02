@@ -729,6 +729,168 @@ it("CF.3 §3.A workSnapshot machines[] projection — D2-faithful (claude-tools-
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// I2 (claude-tools-uxvi2) — activity{} + runner_health{} per-project sub-objects
+// (DESIGN I §2 lanes + §3 runner-vs-agent; Contract B.1). activity reads the I1
+// agent_activity transient and projects each lane DOWN to its EXACT B.1 shape;
+// runner_health is derived from runner_state (the loop process, blunt). Bound to
+// design/activity.md §2/§3 + UX-V2-ARCHITECTURE.md B.1.
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 I2 workSnapshot activity{} + runner_health{} — DESIGN I §2/§3 + B.1 (claude-tools-uxvi2)", async () => {
+  let i2PASS = 0;
+  let i2FAIL = 0;
+  const i2fails = [];
+  function i2ck(name, cond) {
+    if (cond) {
+      i2PASS++;
+      // eslint-disable-next-line no-console
+      console.log(`  ✓ ${name}`);
+    } else {
+      i2FAIL++;
+      i2fails.push(name);
+      // eslint-disable-next-line no-console
+      console.log(`  ✗ ${name}`);
+    }
+  }
+
+  async function freshActivity() {
+    try {
+      await env.DB.prepare("DELETE FROM agent_activity").run();
+    } catch {
+      /* lazy table absent ⇒ already empty */
+    }
+  }
+  // A valid §1.4 agent_activity line (overlay pattern). `state` stays in the
+  // closed D.2 enum (the I1 ingest gate rejects anything else, both lanes).
+  function actLine(overrides) {
+    return JSON.stringify({
+      report: "agent_activity",
+      schema_version: 1,
+      principal: "literal-should-be-overwritten",
+      agent_key: "writer:hostX",
+      workspace: "projWork",
+      lane: "writer",
+      kind: "impl",
+      bead_ref: "projWork-1",
+      title: "wire the input handler",
+      stage: "impl",
+      state: "writing-code",
+      state_confidence: "derived",
+      liveness_dot: "green",
+      observed_at: ago(2),
+      last_event_ts: ago(2),
+      seconds_in_state: 12,
+      current_tool: "Edit",
+      touching: ["Gameplay", "Input"],
+      ...overrides,
+    });
+  }
+  const actReport = (l) => call(GOOD, "agent-activity-report", [l]);
+  const projOf = (snap, ref) => (snap.projects || []).find((p) => p.project_ref === ref) || {};
+
+  // ── runner_health: derive the 4 states from runner_state (the loop process) ──
+  // Each runner_state is seeded via a heartbeat with a controlled actual + a
+  // fresh/stale observed_at (liveness is DERIVED from STALE_AFTER at read time).
+  await freshActivity();
+  await call(GOOD, "heartbeat", [hbLine("hostW", "projWork", "running", "projWork-1", ago(5))]); // fresh + in task ⇒ working
+  await call(GOOD, "heartbeat", [hbLine("hostI", "projIdle", "idle", "", ago(5))]); // fresh + no task ⇒ idle
+  await call(GOOD, "heartbeat", [hbLine("hostS", "projStarve", "idle", "", ago(5))]); // fresh idle = the starved-but-alive shape ⇒ idle (NEVER stuck)
+  await call(GOOD, "heartbeat", [hbLine("hostC", "projCool", "idle", "", ago(5))]); // capacity-deny/cooldown heartbeats idle ⇒ idle (findings 180-182)
+  await call(GOOD, "heartbeat", [hbLine("hostG", "projWedged", "running", "projWedged-9", ago(99999))]); // stale + not-down ⇒ wedged
+  await call(GOOD, "heartbeat", [hbLine("hostD", "projDead", "stopped", "", ago(5))]); // explicitly stopped ⇒ process dead, state idle (never "stuck")
+
+  const SNAP = await callJson("work-snapshot", ["", ""]);
+  const RH = (ref) => projOf(SNAP, ref).runner_health || {};
+
+  i2ck("runner_health is a named sub-object on projects[] (not a flat key)", typeof projOf(SNAP, "projWork").runner_health === "object");
+  i2ck("working — fresh heartbeat + in a task", RH("projWork").state === "working");
+  i2ck("working — heartbeat fresh", RH("projWork").heartbeat === "fresh");
+  i2ck("working — process alive", RH("projWork").process === "alive");
+  i2ck("idle — fresh heartbeat, no task", RH("projIdle").state === "idle");
+  i2ck("starved-but-alive reads 'idle', NEVER stuck (bead invariant; UX-DESIGN-V2 §5.4)", RH("projStarve").state === "idle");
+  i2ck("cooldown/capacity-deny reads 'idle', NEVER wedged (findings §180–182)", RH("projCool").state === "idle");
+  i2ck("wedged — stale heartbeat, process not explicitly down (the krxv/td0y wedge)", RH("projWedged").state === "wedged");
+  i2ck("wedged — heartbeat stale", RH("projWedged").heartbeat === "stale");
+  i2ck("wedged — process still 'alive' (§3: wedged is process-alive-but-stale)", RH("projWedged").process === "alive");
+  i2ck("stopped runner — process 'dead' (actual=stopped)", RH("projDead").process === "dead");
+  i2ck("stopped runner — state 'idle', NOT wedged (process:dead carries the truth)", RH("projDead").state === "idle");
+  i2ck("runner_health carries last_pickup_at (null — no producer yet, honest)", Object.prototype.hasOwnProperty.call(RH("projWork"), "last_pickup_at") && RH("projWork").last_pickup_at === null);
+  i2ck(
+    "runner_health field-set is EXACTLY {process,heartbeat,last_pickup_at,state} (B.1)",
+    JSON.stringify(Object.keys(RH("projWork")).sort()) === JSON.stringify(["heartbeat", "last_pickup_at", "process", "state"])
+  );
+
+  // ── activity: writer lane (8-key) + auxiliary pool (5-key), projected DOWN ──
+  await freshActivity();
+  await actReport(actLine({ agent_key: "writer:hostW", workspace: "projWork", lane: "writer" }));
+  await actReport(
+    actLine({
+      agent_key: "aux:enricher:7771",
+      workspace: "projWork",
+      lane: "auxiliary",
+      kind: "enricher",
+      state: "exploring",
+      liveness_dot: "green",
+      // an aux carries no bead-level identity to the UI; include some in the
+      // wire body to prove the projection DROPS them.
+      bead_ref: "projWork-99",
+      title: "should not surface on an aux",
+      seconds_in_state: 44,
+    })
+  );
+  const SNAP2 = await callJson("work-snapshot", ["", ""]);
+  const A = projOf(SNAP2, "projWork").activity || {};
+  i2ck("activity is a named sub-object on projects[] (not a flat key)", typeof A === "object" && A !== null);
+  i2ck("activity.writer is present (one writer row for this workspace)", A.writer && typeof A.writer === "object");
+  i2ck("writer projects bead_ref/title/stage from the §1.4 body", A.writer && A.writer.bead_ref === "projWork-1" && A.writer.title === "wire the input handler" && A.writer.stage === "impl");
+  i2ck("writer projects the D.2 state + always state_confidence:'derived'", A.writer && A.writer.state === "writing-code" && A.writer.state_confidence === "derived");
+  i2ck("writer projects seconds_in_state + touching[] (§1.5)", A.writer && A.writer.seconds_in_state === 12 && JSON.stringify(A.writer.touching) === JSON.stringify(["Gameplay", "Input"]));
+  i2ck("writer liveness_dot is green (fresh report)", A.writer && A.writer.liveness_dot === "green");
+  i2ck(
+    "writer field-set is EXACTLY the B.1 8 keys (current_tool/last_event_ts/kind/observed_at DROPPED — must-protect #2)",
+    A.writer &&
+      JSON.stringify(Object.keys(A.writer).sort()) ===
+        JSON.stringify(["bead_ref", "liveness_dot", "seconds_in_state", "stage", "state", "state_confidence", "title", "touching"])
+  );
+  i2ck("activity.auxiliary is an array with the one aux row", Array.isArray(A.auxiliary) && A.auxiliary.length === 1);
+  const aux0 = (A.auxiliary && A.auxiliary[0]) || {};
+  i2ck("aux projects kind + a label + the D.2 state + derived confidence", aux0.kind === "enricher" && aux0.state === "exploring" && aux0.state_confidence === "derived");
+  i2ck("aux carries a liveness_dot", aux0.liveness_dot === "green");
+  i2ck(
+    "aux field-set is EXACTLY the B.1 5 keys (NO bead_ref/title/seconds_in_state — §1.4)",
+    JSON.stringify(Object.keys(aux0).sort()) === JSON.stringify(["kind", "label", "liveness_dot", "state", "state_confidence"])
+  );
+
+  // ── uniform shape: a workspace with NO activity rows still carries the block ─
+  const Aidle = projOf(SNAP2, "projIdle").activity || {};
+  i2ck("a workspace with no activity rows ⇒ activity.writer is null (honest)", Aidle.writer === null);
+  i2ck("a workspace with no activity rows ⇒ activity.auxiliary is [] (uniform, never absent)", Array.isArray(Aidle.auxiliary) && Aidle.auxiliary.length === 0);
+
+  // ── honesty: a STALE report (reporter died) downgrades a frozen-green dot ───
+  // The agent last reported green, but >180s ago — the agent is gone, so a green
+  // dot would be a lie (S-1/C6). worseDot re-derives from observed_at age.
+  await freshActivity();
+  await actReport(actLine({ agent_key: "writer:hostStale", workspace: "projWork", liveness_dot: "green", observed_at: ago(99999) }));
+  const SNAP3 = await callJson("work-snapshot", ["projWork", ""]);
+  const As = projOf(SNAP3, "projWork").activity || {};
+  i2ck("stale report (reporter dead) downgrades a frozen green ⇒ red (never lie)", As.writer && As.writer.liveness_dot === "red");
+
+  // ── READ-ONLY: work-snapshot reads NEVER mutate the agent_activity namespace ─
+  const beforeA = await env.DB.prepare("SELECT COUNT(*) AS n FROM agent_activity").first();
+  await callJson("work-snapshot", ["", ""]);
+  await callJson("work-snapshot", ["projWork", ""]);
+  const afterA = await env.DB.prepare("SELECT COUNT(*) AS n FROM agent_activity").first();
+  i2ck("read-only — workSnapshot does NOT mutate the agent_activity namespace", (beforeA && beforeA.n) === (afterA && afterA.n));
+
+  // eslint-disable-next-line no-console
+  console.log(`\n══ CF.3 I2 activity{}+runner_health{} (vs design/activity.md §2/§3 + B.1): PASS=${i2PASS} FAIL=${i2FAIL} ══`);
+  if (i2FAIL > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + i2fails.join("\n  - "));
+  }
+  expect(i2FAIL, `I2 activity/runner_health clauses failed: ${i2fails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // claude-tools-lv9c — current_task_ref is AUTHORITATIVE per heartbeat.
 // Producer (lib/local-agent.sh la_report_heartbeat) OMITS the field on `hb idle`.
 // Before this fix, the CF handler only WROTE current_task_ref when non-empty,

@@ -213,6 +213,45 @@ echo "── EXIT-3b: 4g5o — current_task_title field present in projection (g
 ck "projection runner_state HAS current_task_title field"     eq "$(jq -r '.projects[0].runner_state|has("current_task_title")' <<<"$SNAP")" "true"
 ck "bash projection — current_task_title is null (no store)"  eq "$(jq -r '.projects[0].runner_state.current_task_title' <<<"$SNAP")" "null"
 
+echo "── EXIT-3c: uxvi2 — runner_health{} TWIN + activity{} default (DESIGN I §2/§3) ──"
+# runner_health is a TRUE differential twin of cf/src/reconcile.js
+# deriveRunnerHealth — derived from the SAME §4.2 RunnerState co__reconcile
+# produces (liveness+actual), so both engines compute byte-identical
+# {process,heartbeat,last_pickup_at,state}. activity has NO bash store
+# (agent_activity is a CF-only transient — the machines[]/queue_health
+# precedent), so the bash oracle emits the honest-empty default for SHAPE
+# PARITY. projA here is actual=idle + liveness=live (the §4.2 idle the lv9c
+# line at the top left), so it reads runner_health.state=idle.
+P0RH="$(jq -c '.projects[0].runner_health' <<<"$SNAP")"
+ck "runner_health is a named sub-object on projects[] (not a flat key)" \
+   eq "$(jq -r '.projects[0]|has("runner_health")' <<<"$SNAP")" "true"
+ck "runner_health field-set is EXACTLY {process,heartbeat,last_pickup_at,state} (B.1)" \
+   eq "$(jq -r 'keys|join(",")' <<<"$P0RH")" "heartbeat,last_pickup_at,process,state"
+ck "runner_health.process alive (actual=idle, not stopped/crashed)" eq "$(jq -r '.process' <<<"$P0RH")" "alive"
+ck "runner_health.heartbeat fresh (liveness=live)"                  eq "$(jq -r '.heartbeat' <<<"$P0RH")" "fresh"
+ck "runner_health.state idle (fresh, actual!=running) — starved/cooldown read idle, never stuck" \
+   eq "$(jq -r '.state' <<<"$P0RH")" "idle"
+ck "runner_health.last_pickup_at null (no producer yet — honest)"   eq "$(jq -r '.last_pickup_at' <<<"$P0RH")" "null"
+# activity — the honest-empty default (SHAPE PARITY; CF fills the real lanes).
+ck "activity is a named sub-object on projects[]"             eq "$(jq -r '.projects[0]|has("activity")' <<<"$SNAP")" "true"
+ck "activity.writer is null (bash has no agent_activity store)" eq "$(jq -r '.projects[0].activity.writer' <<<"$SNAP")" "null"
+ck "activity.auxiliary is [] (uniform, never absent)"         eq "$(jq -rc '.projects[0].activity.auxiliary' <<<"$SNAP")" "[]"
+# The other three runner_health states (true twin): seed new project_refs into
+# this store and re-snapshot all-projects. running+fresh⇒working;
+# running+stale⇒wedged (process still alive, §3); crashed⇒process dead,
+# state idle (never "stuck" — process:dead carries the truth).
+co_request "$GOOD" heartbeat "$(hb_line hW projRhWork running tW "$(ago 5)")"      >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hG projRhWedge running tG "$(ago 99999)")" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hD projRhDead crashed tD "$(ago 5)")"      >/dev/null 2>&1
+SNAPrh="$(co_request "$GOOD" work-snapshot "" "$BEADS" 2>/dev/null)"
+rh_state() { jq -r --arg p "$1" '.projects[]|select(.project_ref==$p)|.runner_health.state' <<<"$SNAPrh"; }
+rh_proc()  { jq -r --arg p "$1" '.projects[]|select(.project_ref==$p)|.runner_health.process' <<<"$SNAPrh"; }
+ck "twin: running + fresh heartbeat ⇒ working"                eq "$(rh_state projRhWork)" "working"
+ck "twin: running + STALE heartbeat ⇒ wedged (the krxv/td0y wedge)" eq "$(rh_state projRhWedge)" "wedged"
+ck "twin: wedged keeps process 'alive' (§3 wedged is process-alive-but-stale)" eq "$(rh_proc projRhWedge)" "alive"
+ck "twin: crashed ⇒ process 'dead'"                           eq "$(rh_proc projRhDead)" "dead"
+ck "twin: crashed ⇒ state 'idle', NOT wedged (process:dead carries the truth)" eq "$(rh_state projRhDead)" "idle"
+
 echo "── EXIT-3: NO write path from any reader (read-only invariant) ──"
 sig() { ( cd "$CO_STORE/records" 2>/dev/null && ls -1 2>/dev/null | sort | shasum ); }
 before="$(sig)"

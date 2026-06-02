@@ -854,6 +854,12 @@ async function workSnapshot(co, principal, proj, beadsStr) {
   // (§3.A). The §6.3 gate verdict still flows through report-capacity /
   // ask-capacity unchanged; that channel is internal to the CF.4 capacity
   // module and is NOT surfaced in this projection.
+  // I2 (claude-tools-uxvi2) — read the agent_activity transient ONCE for the
+  // whole snapshot (filtered per-project below by the §1.4 `workspace` field);
+  // one read-time clock for the dot re-derivation. Pure read (readActivity owns
+  // the no-_serialize discipline) — the §4.5 no-reader-write invariant holds.
+  const activityNowMs = Date.now();
+  const activityRows = await readActivity(co);
   const projects = [];
   for (const pr of projs) {
     if (!pr) continue;
@@ -901,6 +907,21 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     // default) so projects[].queue_health is UNIFORM — the Board strip always
     // has a block to render (empty-queue explainer + net-velocity alarm, §9).
     const queue_health = normalizeQueueHealth(wsiParsed ? wsiParsed.queue_health : null);
+    // I2 (claude-tools-uxvi2) — activity{} (DESIGN I §2): the §1.4 agent_activity
+    // rows for THIS workspace (keyed by the wire `workspace` field), projected
+    // DOWN to the EXACT B.1 lane shapes. writer = the singular `lane:"writer"`
+    // row (or null); auxiliary[] = the 0..N `lane:"auxiliary"` rows, kept in the
+    // agent_key order readActivity already SELECTs (deterministic UI).
+    const projActivityRows = activityRows.filter((b) => b.workspace === pr);
+    const writerRow = pickWriterRow(projActivityRows);
+    const activity = {
+      writer: writerRow ? projectWriterActivity(writerRow, activityNowMs) : null,
+      auxiliary: projActivityRows
+        .filter((b) => b.lane === "auxiliary")
+        .map((b) => projectAuxActivity(b, activityNowMs)),
+    };
+    // I2 — runner_health{} (DESIGN I §3): the loop PROCESS, runner_state-derived.
+    const runner_health = deriveRunnerHealth(rec);
     projects.push({
       project_ref: rec.project_ref,
       runner_state: {
@@ -912,6 +933,8 @@ async function workSnapshot(co, principal, proj, beadsStr) {
         current_task_title: currentTaskTitle,
         desired_actual_mismatch: rec.desired_actual_mismatch,
       },
+      runner_health,
+      activity,
       queue_health,
       lease: rec.lease,
     });
@@ -1127,6 +1150,207 @@ async function readMachines(co, nowMs) {
     out.push({ ...rec, fresh, age_seconds: ageSec });
   }
   return out;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// I2 (claude-tools-uxvi2) — activity{} + runner_health{} per-project sub-objects
+// (DESIGN I §2 lanes + §3 runner-vs-agent; Contract B.1). Both are READ-TIME
+// derivations added to projects[] as NAMED sub-objects (ARCH §6: each track owns
+// a sub-object so the shared workSnapshot() seam never merge-collides — never a
+// loose flat key). ADDITIVE at schema_version 1 (the queue_health/intake[]
+// precedent — the conformance v2 sub-object gate is version-gated and stays
+// PENDING until a coordinated bump to 2 lands ALL of {activity,holds,
+// queue_health,blueprint_meta,runner_health}; I2 ships 2 of the 5 early without
+// bumping). The bash oracle (co__work_snapshot) emits a runner_health TWIN
+// (same runner_state-derived values) + an honest-empty activity default for
+// SHAPE PARITY — the machines[]/queue_health precedent.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── readActivity — the §1.4 projection-side read of the agent_activity channel ─
+// Pure read of the SEPARATE `agent_activity` transient namespace cf/src/
+// activity.js (I1) owns — NO _serialize (the readMachines/get-agent-activity
+// pure-read precedent). The table is lazily created by activity.js on first
+// ingest; if no agent has ever reported, the SELECT throws "no such table" and
+// we honestly degrade to [] (the §3.C empty-state discipline readMachines
+// follows) rather than DDL from a reader. One pass for the whole snapshot — the
+// rows are filtered per-project in workSnapshot by the §1.4 `workspace` field.
+// A corrupt row is skipped (should not happen given activity.js's strict ingest
+// gate — defensive, mirrors readMachines).
+async function readActivity(co) {
+  let results = [];
+  try {
+    const r = await co.db
+      .prepare("SELECT json FROM agent_activity ORDER BY agent_key ASC")
+      .all();
+    results = (r && r.results) || [];
+  } catch {
+    return []; // table not yet created ⇒ honest empty (§3.C)
+  }
+  const out = [];
+  for (const row of results) {
+    let rec;
+    try {
+      rec = JSON.parse(row.json);
+    } catch {
+      continue;
+    }
+    if (rec && typeof rec === "object" && !Array.isArray(rec)) out.push(rec);
+  }
+  return out;
+}
+
+// ── liveness_dot honest re-derivation (D.2 90/180 windows — [spine], not moved) ─
+// The reported `liveness_dot` is the worker's EVENT-stream freshness (Δ from
+// last_event_ts, computed by the I1 classifier). It is honest WHILE the reporter
+// is alive (the §1.4 reporter heartbeats ≤60s, so a stuck-but-reporting writer
+// keeps emitting an honest red). But if the WHOLE agent dies, reports stop and
+// the stored dot FREEZES at whatever it last was (a stale green = a lie the
+// instant the agent stopped — the S-1/C6 "never lie" rule the `liveness`
+// derivation already obeys). B.1's writer/aux shape carries NO report-age field,
+// so the renderer (I3) cannot recover staleness from the projection — therefore
+// the projection itself must encode it in the one liveness field it has (the
+// must-protect #2 projection-field rule). We take the WORSE of the reported dot
+// and a dot re-derived from the report's own `observed_at` age: this can only
+// DOWNGRADE a stale green (never falsely downgrade a fresh agent — the reporter
+// writes observed_at on every report and reports while active, so a live agent
+// is never report-stale). The 90/180 numbers are the FROZEN D.2 windows
+// (green <90s · amber 90–180s · red >180s) — NOT tightened (must-protect #8).
+const ACTIVITY_AMBER_SECONDS = 90;
+const ACTIVITY_RED_SECONDS = 180;
+const DOT_RANK = { green: 0, amber: 1, red: 2 };
+function ageSeconds(obs, nowMs) {
+  if (typeof obs !== "string") return null;
+  const ms = Date.parse(obs);
+  if (!Number.isFinite(ms)) return null;
+  return Math.max(0, Math.floor((nowMs - ms) / 1000));
+}
+function reportAgeDot(obs, nowMs) {
+  const age = ageSeconds(obs, nowMs);
+  if (age === null) return "red"; // unestablishable freshness ⇒ honest red (the deriveLiveness unreadable-clock precedent)
+  if (age > ACTIVITY_RED_SECONDS) return "red";
+  if (age >= ACTIVITY_AMBER_SECONDS) return "amber";
+  return "green";
+}
+function worseDot(reported, ageBased) {
+  const r = DOT_RANK[reported];
+  if (r === undefined) return ageBased; // an out-of-enum reported dot can't be trusted ⇒ the age-derived honest value
+  return r >= DOT_RANK[ageBased] ? reported : ageBased;
+}
+
+// ── projectWriterActivity — project the §1.4 ingest superset DOWN to B.1's
+//    EXACT 8-key writer shape (§1.4 / must-protect #2 the 56h projection-drop
+//    guard). The wire body carries MORE (current_tool/last_event_ts/kind/…) —
+//    those are table-only derivation telemetry and are DELIBERATELY NOT surfaced.
+//    state/state_confidence/liveness_dot were gated to their closed D.2 sets at
+//    INGEST (activity.js), so they pass through trusted; state_confidence is
+//    re-pinned to "derived" (D.2 — nothing semantic is ever asserted).
+function projectWriterActivity(body, nowMs) {
+  return {
+    bead_ref: typeof body.bead_ref === "string" ? body.bead_ref : null,
+    title: typeof body.title === "string" ? body.title : null,
+    stage: typeof body.stage === "string" ? body.stage : "",
+    state: body.state,
+    state_confidence: "derived",
+    liveness_dot: worseDot(body.liveness_dot, reportAgeDot(body.observed_at, nowMs)),
+    seconds_in_state:
+      typeof body.seconds_in_state === "number" && Number.isFinite(body.seconds_in_state)
+        ? body.seconds_in_state
+        : null,
+    // touching[] (§1.5, [free] writer stretch) — domain ids for the Blueprint
+    // overlay; absent ⇒ [] (degradable, never blocks). Strings only.
+    touching: Array.isArray(body.touching)
+      ? body.touching.filter((x) => typeof x === "string")
+      : [],
+  };
+}
+
+// ── projectAuxActivity — project DOWN to B.1's NARROWER 5-key aux shape (§1.4).
+//    An aux carries NO bead_ref/title/seconds_in_state to the UI (§1.4: the aux
+//    pool shows kind+label+state+dot only). `label` is human-readable: prefer an
+//    explicit reporter-supplied label, else the title, else the kind ([free]
+//    presentation, §8) — never throws, honest "" when none.
+function projectAuxActivity(body, nowMs) {
+  const label =
+    typeof body.label === "string" && body.label
+      ? body.label
+      : typeof body.title === "string" && body.title
+        ? body.title
+        : typeof body.kind === "string"
+          ? body.kind
+          : "";
+  return {
+    kind: typeof body.kind === "string" ? body.kind : "",
+    label,
+    state: body.state,
+    state_confidence: "derived",
+    liveness_dot: worseDot(body.liveness_dot, reportAgeDot(body.observed_at, nowMs)),
+  };
+}
+
+// ── pickWriterRow — the writer is SINGULAR per workspace by construction (one
+//    serial st_run_task loop ⇒ one `writer:<runner_id>` agent_key, §2). Defensive
+//    against a transient duplicate (e.g. a runner_id change): keep the row with
+//    the newest observed_at (RFC-3339 UTC sorts lexically ≡ chronologically —
+//    the latest-wins convention activity.js's ingest uses). null ⇒ no writer.
+function pickWriterRow(rows) {
+  let best = null;
+  let bestObs = "";
+  for (const b of rows) {
+    if (b.lane !== "writer") continue;
+    const obs = typeof b.observed_at === "string" ? b.observed_at : "";
+    if (best === null || obs > bestObs) {
+      best = b;
+      bestObs = obs;
+    }
+  }
+  return best;
+}
+
+// ── deriveRunnerHealth — DESIGN I §3: the LOOP PROCESS health, BLUNT and NOT
+//    log-derived (the agent-activity §1 signal is separate). Derived purely from
+//    the §4.2 RunnerState `rec` (liveness + actual + current_task_ref) that
+//    reconcileData already produced — so BOTH the CF producer AND the bash oracle
+//    derive it identically (a true differential twin, unlike activity which has
+//    no bash store). B.1 shape: {process, heartbeat, last_pickup_at, state}.
+//
+//    THE SAFETY INVARIANT (findings §180–182 / UX-DESIGN-V2 §5.4 verbatim): a
+//    healthy-but-WAITING runner (usage-cooldown / capacity-deny / skip-backoff /
+//    starvation) must read `idle`, NEVER `wedged`/stuck. This holds for FREE
+//    because v2 runner.sh heartbeats `idle` every ~60s in EVERY waiting state
+//    (the skip loop, the capacity-deny RECONCILE re-poll, the idle poll — all
+//    RECLAIM_POLL_INTERVAL=60s < STALE_AFTER=180s), so a waiting runner stays
+//    FRESH ⇒ idle. The heartbeat freshness IS the "backoff marker" §3 names —
+//    only a genuinely hung/dead process drifts past 180s ⇒ stale ⇒ wedged (the
+//    krxv/td0y claude-won't-exit wedge). No engine-readable cooldown marker
+//    exists or is needed in v1.
+//
+//    `starved` (alive but the ready set is only-unworkable, the g20/dzc shape)
+//    collapses to `idle` here: from runner_state ALONE it is indistinguishable
+//    from a deliberately-idle loop (the runner heartbeats `idle` while it scans
+//    past unworkable beads), and emitting `starved` on a guess would be a false
+//    signal. The bead invariant pins this exactly ("a starved-but-alive runner
+//    reads 'idle'"). The enum value stays reserved for a future explicit
+//    starvation signal (additive, reversible). `last_pickup_at` has no producer
+//    yet ⇒ honest null (the current_task_title:null precedent).
+function deriveRunnerHealth(rec) {
+  const heartbeat = rec.liveness === "live" ? "fresh" : "stale";
+  const dead = rec.actual === "stopped" || rec.actual === "crashed";
+  const process = dead ? "dead" : "alive";
+  // "in a task" keys off the AUTHORITATIVE §4.2 actual-state (the runner's own
+  // report), NOT current_task_ref: a runner that reports `idle` is not working,
+  // even if a stale current_task_ref lingered (the lv9c leftover-ref combo).
+  const inTask = rec.actual === "running";
+  let state;
+  if (heartbeat === "stale" && process === "alive") {
+    state = "wedged"; // stale + not-explicitly-down + (every backoff stays fresh) ⇒ genuine wedge
+  } else if (process === "dead") {
+    state = "idle"; // intentionally/terminally down; process:dead carries that truth, never "stuck"
+  } else if (inTask) {
+    state = "working"; // fresh heartbeat + in a task
+  } else {
+    state = "idle"; // fresh, no task — incl. cooldown/capacity-deny/skip/starvation (all heartbeat idle)
+  }
+  return { process, heartbeat, last_pickup_at: null, state };
 }
 
 // ── deriveIntakeState — the L3 (claude-tools-uxvl3) phone-visible state thread ─
