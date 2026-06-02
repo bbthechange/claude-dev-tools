@@ -139,6 +139,20 @@ import { MACHINE_STATE_OPS, handleMachineStateOp } from "./machine-state.js";
 // "unreachable" op call is a contradiction) — exactly as bash co_lease_acquire
 // is NOT routed through co_request.
 import { LEASE_OPS, handleLeaseOp } from "./lease.js";
+// K2 (claude-tools-uxvk2) — DESIGN K §3 cross-workspace `relay_log` transient +
+// the relay-log-append/-tail ops, layered ON this substrate (a SEPARATE
+// module, the capacity.js/machine-state.js/forensic.js shape). It adds NO §4
+// record type: a cross-WS relay exchange is NOT a §4 record — `relay_log` is
+// the module's OWN sibling D1 namespace (lazy + idempotent DDL there), the
+// forensic_audit / capacity_reports "append-only, not a §4 record" precedent
+// (Contract A.2) — so `relay_log` stays ABSENT from the schema.js §4 registry
+// and is structurally never in the §4.5 projection / a §4.3 Notification body
+// (it must NEVER page anyone by itself; the batched FYI is K3's job). Its ops
+// are dispatched in a dedicated guard so this substrate stays untouched. The
+// §9.1 chokepoint (the Worker) has ALREADY authenticated + threaded
+// `principal` — no second auth path (C4); a no/invalid-token relay op is
+// rejected 401 at the Worker BEFORE this guard, so it writes NOTHING.
+import { RELAY_OPS, handleRelayOp } from "./relay.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -379,6 +393,21 @@ export class Coordinator {
     // rejected 401 at the Worker BEFORE this guard, so it writes NOTHING.
     if (LEASE_OPS.has(op)) {
       return await handleLeaseOp(this, op, args, principal);
+    }
+
+    // ── K2 (claude-tools-uxvk2) DESIGN K §3 cross-WS relay_log op guard ──────
+    // The append-only cross-workspace relay log + its B.3 tail projection,
+    // dispatched by its dedicated module so the CF.1 substrate switch below
+    // stays byte-identical. NOT a §4 record / NO §4 DDL: a relay exchange is
+    // NOT a §4 record — the module owns its OWN `relay_log` namespace (lazy +
+    // idempotent DDL there), so `relay_log` stays ABSENT from the §4
+    // registry/projection (the forensic_audit / capacity_reports "append-only,
+    // not a §4 record" precedent — Contract A.2). The §9.1 chokepoint (the
+    // Worker) has ALREADY authenticated + threaded `principal` — no second
+    // auth path (C4); a no/invalid-token relay op is rejected 401 at the
+    // Worker BEFORE this guard, so it writes NOTHING.
+    if (RELAY_OPS.has(op)) {
+      return await handleRelayOp(this, op, args, principal);
     }
 
     try {

@@ -79,6 +79,13 @@ function argsForGet(op, url) {
   }
   if (op === "get") return [q.get("type") || "", q.get("id") || ""];
   if (op === "forensic-fetch") return [q.get("id") || ""];
+  // K2 (claude-tools-uxvk2) — DESIGN K §3.3 cross-WS relay log tail. The read
+  // proxy (web/functions/api/cross-ws/relay.js) carries an optional
+  // `project_ref` scope filter and an optional `n` row cap; here they unwrap to
+  // relayTail's positional [projectRef, n] (relay.js handleRelayOp). An empty
+  // project_ref means "the global cross-WS log" (DESIGN K §3.3) — the adapter
+  // stays dumb plumbing and the engine owns the read shape (B.3).
+  if (op === "relay-log-tail") return [q.get("project_ref") || "", q.get("n") || ""];
   return null; // unmapped read op — caller emits 400 (never a guess)
 }
 function argsForPost(op, body) {
@@ -128,6 +135,17 @@ function argsForPost(op, body) {
   if (op === "put") {
     const rec = b.record && typeof b.record === "object" ? b.record : null;
     return [b.type, b.id, rec === null ? "" : JSON.stringify(rec)];
+  }
+  // K2 (claude-tools-uxvk2) — DESIGN K §3.3 cross-WS relay log append. The
+  // write proxy (web/functions/api/cross-ws/relay-append.js) sends the named
+  // body {exchange:{...}}; here it unwraps to relayAppend's positional
+  // [<exchange_json>] (relay.js handleRelayOp). The adapter re-stringifies it
+  // because the op's arg is a JSON STRING the engine parses inside (the `put`
+  // precedent — opPut's third arg). The proxy hard-codes the op + the closed
+  // outcome enum; the adapter stays dumb plumbing and the engine owns the gate.
+  if (op === "relay-log-append") {
+    const ex = b.exchange && typeof b.exchange === "object" ? b.exchange : null;
+    return [ex === null ? "" : JSON.stringify(ex)];
   }
   return null; // unmapped write op — caller emits 400
 }

@@ -77,6 +77,7 @@ Two storage classes (pick correctly — it's hard to move later):
 | `src/lease.js` | §6.1 exclusive TTL'd lease + monotonic `generation` fencing. |
 | `src/capacity.js` / `src/machine-state.js` | Coarse capacity verdict / per-machine telemetry. Both **transient** (smallest module templates to copy). |
 | `src/forensic.js` | §10.3 transient encrypted forensic store. Deliberately NOT a §4 record. |
+| `src/relay.js` | K2 (DESIGN K §3) cross-WS `relay_log` **transient** append-only log + `relay-log-append`/`-tail` (the B.3 `{exchanges[]}` projection). Typed columns (not forensic_audit's opaque `line`) so the tail can filter by `project_ref`. Proxies live at `web/functions/api/cross-ws/{relay,relay-append}.js`. |
 | `migrations/NNNN_*.sql` | Deploy-path schema source of truth (the DO lazy-DDLs locally, but ship the migration). |
 
 ## Contracts & invariants (don't break these)

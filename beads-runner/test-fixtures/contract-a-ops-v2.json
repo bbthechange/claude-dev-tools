@@ -60,13 +60,13 @@
       "proxy": "web/functions/api/ws/gate-meta.js", "adapter": true, "migration": "cf/migrations/0008_gate_metadata.sql"
     },
     {
-      "_planned_note": "Track K (Cross-WS) — K2. relay_log transient (append-only, forensic_audit precedent) + relay-log-append/-tail.",
-      "op": "relay-log-append", "track": "K", "status": "planned",
+      "_landed_note": "Track K (Cross-WS) — K2 (claude-tools-uxvk2) LANDED. relay_log transient (append-only, forensic_audit precedent / Contract A.2) + relay-log-append/-tail (B.3). Module cf/src/relay.js (RELAY_OPS), guard in coordinator.js, write proxy cross-ws/relay-append.js + read proxy cross-ws/relay.js, adapter-mapped, migration 0009_relay_log.sql.",
+      "op": "relay-log-append", "track": "K", "status": "wired",
       "module": "cf/src/relay.js", "ops_set": "RELAY_OPS", "guard": "RELAY_OPS",
       "proxy": "web/functions/api/cross-ws/relay-append.js", "adapter": true, "migration": "cf/migrations/0009_relay_log.sql"
     },
     {
-      "op": "relay-log-tail", "track": "K", "status": "planned",
+      "op": "relay-log-tail", "track": "K", "status": "wired",
       "module": "cf/src/relay.js", "ops_set": "RELAY_OPS", "guard": "RELAY_OPS",
       "proxy": "web/functions/api/cross-ws/relay.js", "adapter": true, "migration": "cf/migrations/0009_relay_log.sql"
     },
