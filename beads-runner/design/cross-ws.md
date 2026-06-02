@@ -367,6 +367,26 @@ cross-WS:
    digest. The split is the whole point: mechanical sync → batched FYI; real
    conflict → an immediate decision.
 
+> **Realized by [claude-tools-mhcp.1].** K3 built the read-side rollup (item 2)
+> but the answer path emitted a `relay_log` row only and pinged nothing, so the
+> rollup had zero cross-WS rows to batch and the C4 always-FYI promise was unmet
+> for the 80%. mhcp.1 wires item 1: after `relay-log-append`, the answer path
+> calls the engine-bridge `emit_fyi <from_ws> <ref>` → `no_emit_fyi`
+> (`lib/notification.sh`), a **dossier-less** §4.3 producer. It is dossier-less
+> by necessity: `no_emit` mirrors a dossier's §4.1 tier and the answer path
+> creates **no** dossier (only escalate does, §3.3), so the FYI stamps an
+> explicit `timed-fyi` tier + the `xws:<from_ws>` channel directly, with
+> `dossier_ref` = the relay **exchange id** it announces. Because a §4.3
+> notification carries **no content** (principle 2), the *"FE asked BE: …? → BE:
+> …. FE proceeding."* one-liner above is **not** stored on the notification — it
+> lives in the `relay_log` row (question + answer) and the digest **expands via
+> `relay-log-tail`** (item 2). The notification is the channel-tagged **counter**
+> the rollup groups. It composes the generic `put notification` front door, so
+> no new CF op / schema change is needed (the record store is already CF.9). The
+> id is deterministic (`notif.<exchange_id>`) ⇒ a re-emit is idempotent (no
+> double-count). The 20% escalate path keeps notifying `blocking` via the
+> inherited dossier emit — it never fires `emit_fyi`.
+
 ### 4.3 Shared with N1 (the notification spine)
 
 This is the **same batching spine** N1 builds for the whole trigger catalog

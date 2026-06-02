@@ -255,6 +255,49 @@ ck  "a digest entry carries NO content (only channel/count/tier/dossier_refs)" \
     eq "$(printf '%s' "$DIG" | jq -r '[.digests[0]|keys[]|select(.=="channel" or .=="count" or .=="tier" or .=="dossier_refs"|not)]|length')" "0"
 
 echo ""
+echo "── K3.1 (claude-tools-mhcp.1): the DOSSIER-LESS answer-path FYI producer ──"
+# no_emit_fyi is the §4.2-item-1 always-FYI producer the cross-WS ANSWER path
+# fires (via the engine-bridge emit_fyi sub-command). It is what gave K3's
+# rollup something to batch: before mhcp.1 the answer path emitted a relay_log
+# row ONLY (a non-paging A.2 transient) → 0 cross-WS notification rows → an
+# empty digest. CRUCIAL property: it emits WITHOUT a backing dossier (only the
+# 20% escalate creates one — §3.3), where no_emit REQUIRES one.
+XK="xws:XK"
+# NO do_dossier_put for "xws-exch-k1" — the referent is a relay EXCHANGE id, not
+# a dossier. no_emit would REJECT this (needs a dossier to mirror its tier).
+NFY="$(no_emit_fyi "$GOOD" "$XK" "xws-exch-k1")"
+ck  "no_emit_fyi emits WITHOUT a backing dossier (the answer path has none)" test -n "$NFY"
+ck  "no_emit_fyi derives a deterministic id from the exchange ref"           eq "$NFY" "notif.xws-exch-k1"
+ckn "no_emit on the SAME ref REJECTS (proves the dossier-less seam is needed)" \
+    no_emit "$GOOD" "xws-exch-k1"
+ck  "the FYI record validates against the closed §4.3 set (carries NO content)" \
+    no__validate "$(no_get "$GOOD" notif.xws-exch-k1)"
+ck  "the FYI tier is timed-fyi (D.2 — an answered exchange is always timed-fyi)" \
+    eq "$(NF xws-exch-k1 .tier)" "timed-fyi"
+ck  "the FYI is stamped with the cross-WS channel"                           eq "$(NF xws-exch-k1 .channel)" "$XK"
+ck  "the FYI is created ALREADY-ROUTED into its digest channel (dispatched=true)" \
+    eq "$(NF xws-exch-k1 .dispatched)" "true"
+ck  "the FYI's referent is the relay exchange id (dossier_ref)"              eq "$(NF xws-exch-k1 .dossier_ref)" "xws-exch-k1"
+# K3's rollup NOW has something to batch: no_digest groups the FYI by channel.
+DIGF="$(no_digest "$GOOD")"
+ck  "no_digest rolls the answer-path FYI into its xws channel group (count 1)" \
+    eq "$(printf '%s' "$DIGF" | jq -r '.digests[]|select(.channel=="xws:XK")|.count')" "1"
+ck  "the FYI group reports tier=timed-fyi (batched FYI, never blocking)" \
+    eq "$(printf '%s' "$DIGF" | jq -r '.digests[]|select(.channel=="xws:XK")|.tier')" "timed-fyi"
+# Idempotent: re-emit of the SAME exchange does NOT double-count (one row,
+# deterministic id — the one-per-referent analogue of one-per-Dossier).
+no_emit_fyi "$GOOD" "$XK" "xws-exch-k1" >/dev/null
+ck  "re-emit of the SAME exchange is idempotent (no double-count)" \
+    eq "$(printf '%s' "$(no_digest "$GOOD")" | jq -r '.digests[]|select(.channel=="xws:XK")|.count')" "1"
+# A DISTINCT exchange on the SAME channel rolls into the SAME group (N syncs →
+# ONE digest entry — the §4.2-item-2 "BE↔FE: N syncs" promise).
+no_emit_fyi "$GOOD" "$XK" "xws-exch-k2" >/dev/null
+ck  "a distinct exchange on the same channel rolls into the SAME group (count 2)" \
+    eq "$(printf '%s' "$(no_digest "$GOOD")" | jq -r '.digests[]|select(.channel=="xws:XK")|.count')" "2"
+ckn "no_emit_fyi REJECTS a missing channel"  no_emit_fyi "$GOOD" "" "xws-exch-x"
+ckn "no_emit_fyi REJECTS a missing ref"      no_emit_fyi "$GOOD" "$XK" ""
+
+echo ""
 echo "── N1 (claude-tools-uxvn1): §10.2 trigger catalog + producer batching spine ──"
 # Catalog completeness (the CLOSED §10.2 enum, D.2) + the pure accessors.
 for TR in new_dossier blueprint_changed cross_ws_exchange cross_ws_conflict \

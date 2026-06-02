@@ -573,6 +573,64 @@ no_digest() {
   } | no__group_digests "$prefix"
 }
 
+# ── K3.1 (claude-tools-mhcp.1) — the DOSSIER-LESS answer-path FYI producer ────
+# no_emit_fyi <bearer> <channel> <ref>  — emit ONE digest-eligible §4.3
+# notification for a cross-WS exchange that has NO backing dossier (the
+# mechanical-80% ANSWER path; cross-ws.md §4.2 item 1). This is what gives K3's
+# read-side rollup (no_digest) something to batch: before this, the answer path
+# emitted a relay_log row ONLY (a non-paging transient by A.2) and pinged Brian
+# NOTHING, so the C4 always-FYI promise was unmet for the 80% answer path.
+#
+# WHY NOT no_emit: no_emit MIRRORS a dossier's §4.1 tier (it reads it off
+# do_dossier_get) and requires a real dossier_ref. The answer path deliberately
+# creates NO dossier — only the 20% escalate does (§3.3) — so it cannot use
+# no_emit. This is the dossier-less sibling: it stamps an EXPLICIT `timed-fyi`
+# tier (D.2 — an answered exchange is always timed-fyi; the conflict/escalate
+# 20% notifies `blocking` via the inherited dossier path) and the cross-WS
+# `channel` directly, with `dossier_ref` set to the RELAY EXCHANGE id <ref> (the
+# exchange this FYI announces). The digest EXPANDS via relay-log-tail keyed on
+# the channel, NOT this ref (§4.2 item 2) — the relay row holds the question +
+# answer; the notification, terse by structure (principle 2), carries NONE of it
+# and is just the channel-tagged COUNTER K3's no_digest groups.
+#
+# Created ALREADY-ROUTED into its digest channel (dispatched=true,
+# dispatched_at set, channel set) — the SAME end state notif_fire reaches for a
+# batchable timed-fyi trigger (no_emit then no_dispatch <channel>): a cross-WS
+# FYI's delivery IS being rolled into the daily digest, never an individual
+# push. The id is DETERMINISTIC (`notif.<ref>`) so a re-emit for the same
+# exchange is idempotent (one row, no double-count) — the one-per-referent
+# analogue of no_emit's one-per-Dossier, minus the dossier. Unlike no_emit this
+# is an UNCONDITIONAL put (no read-decide-write guard): safe because the FYI id
+# namespace (`notif.<exchange_id>`, the server's `xws-<hash>`) is DISJOINT from
+# any dossier's `notif.<dossier_id>`, so an FYI can never clobber a dossier's
+# `blocking` notification; a re-emit overwrites with byte-identical content (it
+# resets `created_at`, which is NOT load-bearing — the digest groups by
+# `channel`, it never sorts by `created_at`).
+#
+# NO NEW CF OP / NO SCHEMA CHANGE: this COMPOSES the generic `put notification`
+# record write (the SAME front door no_emit persists through and the live CF
+# engine already serves via opGet/opPut). It adds no §4 type and no engine
+# behaviour — the record store is already differentially covered (CF.9) — so
+# there is intentionally no `notif-emit-fyi` CF twin: the engine-bridge runs
+# THIS bash producer against the live engine via the generic put. Echoes the
+# notification id on success.
+no_emit_fyi() {
+  local bearer="${1:-}" channel="${2:-}" ref="${3:-}" nid now out
+  [[ -n "$channel" ]] || { echo "notification: emit_fyi — need <channel> (the digest tag, e.g. xws:<project_ref>)" >&2; return 2; }
+  [[ -n "$ref" ]]     || { echo "notification: emit_fyi — need <ref> (the relay exchange id this FYI announces)" >&2; return 2; }
+  nid="$(no__notif_id "$ref")"
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  out=$(jq -cn --arg id "$nid" --argjson sv "$(no__bound_sv)" \
+        --arg dref "$ref" --arg at "$now" --arg ch "$channel" '
+        { id:$id, schema_version:$sv, dossier_ref:$dref, tier:"timed-fyi",
+          created_at:$at, dispatched:true, dispatched_at:$at,
+          channel:$ch }' 2>/dev/null) || out=""
+  [[ -n "$out" ]] || { echo "notification: emit_fyi — could not assemble the §4.3 record" >&2; return 3; }
+  no__validate "$out" || return $?
+  co_request "$bearer" put notification "$nid" "$out" >/dev/null || return $?
+  printf '%s' "$nid"
+}
+
 # ════════════════════════════════════════════════════════════════════════════
 # N1 (claude-tools-uxvn1) — the §10.2 TRIGGER CATALOG + the producer-side
 # BATCHING SPINE (§10.3). SHARES K3 (cross-ws.md §4.3): the read-side rollup

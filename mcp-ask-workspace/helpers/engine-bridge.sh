@@ -28,6 +28,16 @@
 #       pure read; the `/cross-ws` view (K5) is the primary consumer. Echoes
 #       the JSON projection on stdout.
 #
+#   emit_fyi <from_ws> <ref>   (claude-tools-mhcp.1; DESIGN K §4.2 item 1)
+#       Emit ONE digest-eligible `timed-fyi` notification for an ANSWERED
+#       cross-WS exchange so K3's read-side rollup (no_digest) batches it. The
+#       answer path has NO dossier (only the 20% escalate creates one), so this
+#       is the DOSSIER-LESS sibling of the escalation leg's emit_and_dispatch:
+#       it builds the K3-owned channel (xws:<from_ws>) and calls the
+#       notification.sh producer `no_emit_fyi`, which COMPOSES the generic
+#       `put notification` front door (NO new CF op). Echoes nothing on success;
+#       a miss is a tolerated caller warn (the relay row is the audit trail).
+#
 # Inherited escalation sub-commands (UNCHANGED from the ask-brian bridge):
 #
 #   id_for <task_ref>           — deterministic dossier id (sr_dossier_id_for).
@@ -153,6 +163,27 @@ cmd_relay_log_append() {
   co_request "$b" relay-log-append "$ex" >/dev/null || return $?
 }
 
+# emit_fyi <from_ws> <ref> — emit ONE digest-eligible timed-fyi notification for
+# an ANSWERED cross-WS exchange (claude-tools-mhcp.1; DESIGN K §4.2 item 1), so
+# K3's read-side rollup (no_digest) batches it into ONE daily digest entry. The
+# answer path has NO dossier (only the 20% escalate creates one — §3.3), so this
+# is the DOSSIER-LESS sibling of the escalation leg's emit_and_dispatch: it
+# builds the cross-WS channel via the K3-owned `no__xws_channel` convention
+# (xws:<from_ws>, matching the relay row's project_ref=from_ws so the digest
+# expands via relay-log-tail[from_ws]) and calls no_emit_fyi. CF-backed through
+# the generic `put notification` front door no_emit_fyi composes — NO new CF op.
+# Echoes nothing on success; nonzero rc on a transport/validation failure — the
+# CALLER treats a miss as a tolerated warn (the answer already landed in A and
+# the relay row is the durable audit trail; the FYI is a notification, never a
+# gate).
+cmd_emit_fyi() {
+  local from_ws="${1:-}" ref="${2:-}" b channel
+  [[ -n "$from_ws" && -n "$ref" ]] || { echo "engine-bridge: emit_fyi needs <from_ws> <ref>" >&2; return 2; }
+  b="$(bearer)"
+  channel="$(no__xws_channel "$from_ws")"
+  no_emit_fyi "$b" "$channel" "$ref" >/dev/null || return $?
+}
+
 # relay_log_tail [project_ref] [n] — the B.3 {exchanges:[...]} projection. Pure
 # read. Omitting project_ref returns the cross-WS log across all workspaces.
 # Only forward args that are actually present so the global call sends [] (not
@@ -181,8 +212,9 @@ main() {
     poll_once)         cmd_poll_once "$@" ;;
     relay_log_append)  cmd_relay_log_append "$@" ;;
     relay_log_tail)    cmd_relay_log_tail "$@" ;;
+    emit_fyi)          cmd_emit_fyi "$@" ;;
     *)
-      echo "engine-bridge: unknown subcommand '$sub' (id_for|write_polished|write_fallback|poll_once|relay_log_append|relay_log_tail)" >&2
+      echo "engine-bridge: unknown subcommand '$sub' (id_for|write_polished|write_fallback|poll_once|relay_log_append|relay_log_tail|emit_fyi)" >&2
       return 2
       ;;
   esac

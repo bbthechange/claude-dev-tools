@@ -16,9 +16,13 @@
 # server's K4 conformance is exercised end-to-end with no real `claude`, no
 # network, and no slow store op. It asserts, per the §5 contract:
 #
-#   ANSWER (the 80%):    relay-log-append(resolved) ONLY — NO dossier leg fires
-#                        (no id_for / write_fallback / poll); answer is relayed;
-#                        result.isError ABSENT (R1 §Q1).
+#   ANSWER (the 80%):    relay-log-append(resolved) + a batched timed-fyi
+#                        (emit_fyi from_ws=FE, ref=the exchange — §4.2 item 1,
+#                        claude-tools-mhcp.1) so K3's rollup has a row to batch;
+#                        NO dossier leg fires (no id_for / write_fallback /
+#                        poll); answer is relayed; result.isError ABSENT (R1 §Q1).
+#                        The escalate branches must NEVER fire emit_fyi (they
+#                        notify `blocking` via the dossier emit — the split).
 #   CONFLICT (the 20%):  the escalate verdict maps onto a §5 worker_ask (summary +
 #                        conflicting_claims + options + recommendation), is written
 #                        as a BLOCKING dossier, relay-log-append(escalated) carries
@@ -103,6 +107,14 @@ case "$sub" in
     # real bridge's contract).
     printf '%s\n' "${1:-}" >> "$XWS_STUB_RELAY"
     ;;
+  emit_fyi)
+    # $1 = from_ws, $2 = ref. The answer-path always-FYI (claude-tools-mhcp.1):
+    # record (from_ws, ref) so the test can assert the timed-fyi emission fired
+    # with the right inputs. rc 0, no stdout (the real bridge's contract — the
+    # caller tolerates a miss; the channel-build + record assembly is the
+    # bridge/no_emit_fyi's job, covered by test-notification.sh's K3.1 clause).
+    printf '%s\t%s\n' "${1:-}" "${2:-}" >> "$XWS_STUB_FYI"
+    ;;
   poll_once)
     # $1 = dossier_id. Return Brian's ruling immediately (the {items:[...]} shape
     # formatRuling consumes) so the server breaks its poll loop on cycle 1.
@@ -128,6 +140,7 @@ export POLL_MAX_MS=10000                       # never reached: stub poll rules 
 export XWS_STUB_CALLS="$SCRATCH/bridge-calls.log"
 export XWS_STUB_WORKER_ASK="$SCRATCH/worker-ask.json"
 export XWS_STUB_RELAY="$SCRATCH/relay-appends.jsonl"
+export XWS_STUB_FYI="$SCRATCH/fyi-emits.tsv"          # (from_ws \t ref) per emit_fyi
 
 [[ -d "$ME_DIR/node_modules/@modelcontextprotocol" ]] || {
   echo "node_modules missing — run 'npm install' in mcp-ask-workspace/ first" >&2
@@ -172,7 +185,7 @@ wait_for() {  # wait_for <grep-pattern> <seconds>
   done
   return 1
 }
-reset_logs() { : > "$XWS_STUB_CALLS"; rm -f "$XWS_STUB_WORKER_ASK"; : > "$XWS_STUB_RELAY"; }
+reset_logs() { : > "$XWS_STUB_CALLS"; rm -f "$XWS_STUB_WORKER_ASK"; : > "$XWS_STUB_RELAY"; : > "$XWS_STUB_FYI"; }
 calls()      { tr '\n' ' ' < "$XWS_STUB_CALLS" 2>/dev/null; }
 resp_text()  { grep -F "\"id\":$1" "$OUT" | tail -1 | jq -r '.result.content[0].text // ""'; }
 resp_has_iserr() { grep -F "\"id\":$1" "$OUT" | tail -1 | jq -r '.result | has("isError")'; }
@@ -199,7 +212,16 @@ printf '%s' "$C3" | grep -q "relay_log_append" || fail "[answer] no relay-log-ap
 printf '%s' "$C3" | grep -Eq "id_for|write_fallback|write_polished|poll_once" && fail "[answer] a DOSSIER leg fired on the mechanical answer path (must not)"
 [[ "$(jq -r '.outcome' < "$XWS_STUB_RELAY" 2>/dev/null)" == "resolved" ]] || fail "[answer] relay outcome must be 'resolved'"
 [[ "$(jq -r '.dossier_ref' < "$XWS_STUB_RELAY" 2>/dev/null)" == "" ]] || fail "[answer] resolved relay row must carry no dossier_ref"
-echo "[answer] OK — relay(resolved) only, no dossier leg, isError absent"
+# §4.2 item 1 (claude-tools-mhcp.1): the answer path MUST also emit the batched
+# timed-fyi so K3's rollup has a cross-WS row to batch — without it the C4
+# always-FYI promise is unmet for the 80% answer path.
+printf '%s' "$C3" | grep -q "emit_fyi" || fail "[answer] no emit_fyi fired (the always-FYI promise is unmet — K3 has nothing to batch)"
+[[ "$(cut -f1 < "$XWS_STUB_FYI" 2>/dev/null)" == "FE" ]] || fail "[answer] emit_fyi must carry from_ws=FE (server-resolved)"
+[[ -n "$(cut -f2 < "$XWS_STUB_FYI" 2>/dev/null)" ]] || fail "[answer] emit_fyi must carry the relay exchange ref"
+# The FYI ref is the SAME exchange the relay row recorded (one exchange, one ref).
+[[ "$(cut -f2 < "$XWS_STUB_FYI" 2>/dev/null)" == "$(jq -r '.exchange_id' < "$XWS_STUB_RELAY" 2>/dev/null)" ]] \
+  || fail "[answer] emit_fyi ref must match the relay row's exchange_id"
+echo "[answer] OK — relay(resolved) + batched timed-fyi (emit_fyi), no dossier leg, isError absent"
 
 # ── 2. CONFLICT branch (the 20%): full escalate → ruling round-trip ───────────
 reset_logs
@@ -216,6 +238,11 @@ echo "[conflict] bridge legs: $C4"
 for leg in id_for write_fallback relay_log_append poll_once; do
   printf '%s' "$C4" | grep -q "$leg" || fail "[conflict] escalate leg '$leg' did not fire"
 done
+# §4.2/D.2: the 20% escalate notifies `blocking` via the inherited dossier emit
+# (emit_and_dispatch, inside write_fallback) — it must NEVER fire the batched
+# answer-path FYI (mechanical sync → batched FYI; real conflict → an immediate
+# decision; the split is the whole point).
+printf '%s' "$C4" | grep -q "emit_fyi" && fail "[conflict] emit_fyi must NOT fire on the escalate path (blocking, never batched)"
 # §5 mapping: the responder's escalate verdict became a worker_ask the dossier
 # path consumes (summary + conflicting_claims + options + recommendation).
 WA="$XWS_STUB_WORKER_ASK"
@@ -241,6 +268,7 @@ printf '%s' "$T5" | grep -q "escalated to Brian, who ruled:" || fail "[missing] 
 C5="$(calls)"
 echo "[missing] bridge legs: $C5"
 printf '%s' "$C5" | grep -q "write_fallback" || fail "[missing] blocking dossier was not written"
+printf '%s' "$C5" | grep -q "emit_fyi" && fail "[missing] emit_fyi must NOT fire on the escalate path (blocking, never batched)"
 [[ "$(jq -r '.outcome' < "$XWS_STUB_RELAY" 2>/dev/null)" == "escalated" ]] || fail "[missing] relay outcome must be 'escalated'"
 echo "[missing] OK — missing-design escalates to a blocking dossier"
 
@@ -258,6 +286,7 @@ printf '%s' "$T6" | grep -q "escalated to Brian" || fail "[safe] non-verdict pro
 C6="$(calls)"
 echo "[safe] bridge legs: $C6"
 printf '%s' "$C6" | grep -q "write_fallback" || fail "[safe] escalate-to-safe did not route to the dossier path"
+printf '%s' "$C6" | grep -q "emit_fyi" && fail "[safe] emit_fyi must NOT fire on the escalate-to-safe path (blocking, never batched)"
 [[ "$(jq -r '.outcome' < "$XWS_STUB_RELAY" 2>/dev/null)" == "escalated" ]] || fail "[safe] relay outcome must be 'escalated'"
 echo "[safe] OK — non-verdict prose → escalate(missing_design), no fabricated answer"
 

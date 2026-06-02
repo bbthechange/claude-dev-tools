@@ -17,7 +17,9 @@
 //      read-only (takes no writer lease, cannot touch the tree). Time-budgeted;
 //      BLOCKS until it returns one of two verdicts.
 //   3. THE VERDICT SPLIT (DESIGN K §1.4 / §2.2):
-//        • answer  (the mechanical 80%) → relay-log-append(resolved), return the
+//        • answer  (the mechanical 80%) → relay-log-append(resolved) + a batched
+//          `timed-fyi` notification (emit_fyi → xws:<from_ws>; DESIGN K §4.2 item
+//          1, claude-tools-mhcp.1) so K3's rollup batches it, then return the
 //          answer to A as the tool_result. A resumes in-session.
 //        • escalate (a conflict or missing design — the 20%) → reuse the
 //          INHERITED ask-brian dossier-publish-and-block path VERBATIM
@@ -508,6 +510,25 @@ async function relayAppend({ exchange_id, from_ws, to_ws, question, answer, outc
   }
 }
 
+// Emit ONE digest-eligible timed-fyi notification for an ANSWERED exchange
+// (DESIGN K §4.2 item 1; claude-tools-mhcp.1) so K3's read-side rollup
+// (no_digest) batches it into ONE daily digest entry — the C4 "always FYI"
+// promise for the mechanical-80% answer path (without it, ONLY the 20%
+// escalations notify, via the inherited dossier emit). The bridge builds the
+// cross-WS channel (xws:<from_ws>) and stamps `ref`=the exchange_id (the relay
+// row this FYI announces; the digest expands via relay-log-tail). Tolerant like
+// relayAppend: a miss is logged, NEVER fails the tool — the answer already
+// landed in A and the relay row is the durable audit trail; an FYI is a
+// notification, never a gate.
+async function emitFyi({ exchange_id, from_ws, call_id }) {
+  const r = await runBridge("emit_fyi", [from_ws, exchange_id]);
+  if (r.rc !== 0) {
+    logLine({ event: "emit_fyi_warn", call_id, from_ws, rc: r.rc, stderr: (r.stderr || "").slice(0, 200) });
+  } else {
+    logLine({ event: "emit_fyi_ok", call_id, exchange_id, from_ws });
+  }
+}
+
 // ── the one tool ────────────────────────────────────────────────────────────
 const TOOL_NAME = "ask-workspace";
 
@@ -646,6 +667,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         outcome: "resolved",
         call_id,
       });
+      // Always-FYI: batched timed-fyi so K3's rollup has a cross-WS row to
+      // batch (DESIGN K §4.2 item 1; claude-tools-mhcp.1). After the relay
+      // append so the audit row exists first; tolerant (never fails the tool).
+      await emitFyi({ exchange_id, from_ws, call_id });
       logLine({ event: "answer_returned", call_id, exchange_id });
       return textResult(answerText);
     }
