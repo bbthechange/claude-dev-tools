@@ -428,8 +428,14 @@ fi
 # no value used to spin forever (shift 2 atomic-fail). Must be a clean exit 2.
 # Wrap in `timeout` so a regression FAILS the test instead of hanging the suite.
 B11="bead-11"
-if command -v timeout >/dev/null 2>&1; then RUN_T=(timeout 10); else RUN_T=(); fi
-err=$("${RUN_T[@]}" bash "$HELPER" apply trailing-flag-gate "$B11" 2026-09-01 --why 2>&1)
+# Use timeout when available so a hang regression FAILS (rc 124) instead of
+# wedging the suite. Avoid an empty-array expansion (`"${RUN_T[@]}"` trips
+# `set -u` on bash 3.2 = stock macOS /bin/bash, which run-tests.sh uses).
+if command -v timeout >/dev/null 2>&1; then
+  err=$(timeout 10 bash "$HELPER" apply trailing-flag-gate "$B11" 2026-09-01 --why 2>&1)
+else
+  err=$(bash "$HELPER" apply trailing-flag-gate "$B11" 2026-09-01 --why 2>&1)
+fi
 rc=$?
 if [[ "$rc" == "2" ]] && printf '%s' "$err" | grep -q "needs a value"; then
   pass "trailing --why with no value → exit 2 (no hang)"
