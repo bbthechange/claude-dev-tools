@@ -2,7 +2,7 @@
 # uxvj4 (FORWARD / v2) — runner refuses a gate:<id> Gate label on pickup.
 #
 # Binds: design/gates.md §5 (J4 runner-respect) + §5.3 (the mandatory BC
-# assertion) + BEHAVIORAL-CONTRACT.md BC-08c (reserved). A Gate is our native
+# assertion) + BEHAVIORAL-CONTRACT.md BC-08c (now written; this is its rig). A Gate is our native
 # hold: the bare `gate:<id>` bd label, GUI/agent add-and-lift-able, that the
 # runner must respect ("the runner respects them" — Brian B8). Authored HERE as
 # part of the claude-tools-v2c3 green bar (the conformance cutover gate), and

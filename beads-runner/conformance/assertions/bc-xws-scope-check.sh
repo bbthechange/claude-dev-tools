@@ -11,7 +11,7 @@
 # written, and pollutes the Inbox — the exact mis-pickup §8.5 exists to stop.
 # Rides the same skip-not-fail suppression the no-claim-label gate (BC-08b)
 # uses; opt-in via RUNNER_SIBLING_PREFIXES (empty default ⇒ single-repo no-op).
-# (BC-08c is reserved for J4 gate-respect, gates.md §5.2.)
+# (BC-08c, now written, is the J4 Gate-respect sibling — gates.md §5.2.)
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 trap H_cleanup EXIT
 
