@@ -205,10 +205,23 @@ ck "activity-view.js has no set-desired write path"    hasnt "set-desired" "$(ca
 ck "app.js routes the 'activity' facet to a live mount" has "ctx.facet === 'activity'" "$(cat "$APP")"
 ck "app.js reads /api/board for the facet"             has "Net.getJSON('/api/board')" "$(cat "$APP")"
 ck "app.js owns a 30s auto-refresh"                    has "REFRESH_MS = 30000" "$(cat "$APP")"
-# The facet is READ-ONLY: app.js makes no write call (Net.postJSON). The string
-# "set-desired" appears only in the board facet's explanatory "NO control here"
-# comments, so assert on the actual write VERB, not the documented absence.
-ck "app.js has NO write call (no Net.postJSON)"        hasnt "postJSON" "$(cat "$APP")"
+# I3 was read-only; I4 (claude-tools-uxvi4) ADDS the ONE write affordance — the
+# four stuck actions on a maybe-stuck writer. The write path must route through
+# the CONTROL PLANE (an agent-action intent / a dossier write), NEVER a direct
+# web→process kill, and NEVER widen to the runner-lifecycle set-desired verb here.
+ck "app.js posts the stuck actions to the agent-action control proxy" \
+   has "/api/control/agent-action" "$(cat "$APP")"
+ck "app.js posts 'escalate' to the dossier-write control proxy" \
+   has "/api/control/escalate" "$(cat "$APP")"
+ck "app.js stuck-actions render only on a maybe-stuck writer" \
+   has "writer.state === 'maybe-stuck'" "$(cat "$APP")"
+# (We deliberately do NOT assert hasnt "set-desired" on app.js — the board facet
+# carries "NO set-desired control here" explanatory comments, so the substring is
+# present though no set-desired WRITE call is. The control writes are the two
+# /api/control/* proxies asserted above; neither is the set-desired verb.)
+# The pure view-model stays write-free regardless (the producer↔renderer seam).
+ck "activity-view.js (the pure core) still makes no write call" \
+   hasnt "postJSON" "$(cat "$VIEW")"
 # Header pip lights ONLY on the contract's named alarm states (§5.3/§5.4): a
 # WEDGED runner or a MAYBE-STUCK writer — NEVER a benign process:'dead' stop.
 ck "app.js header alarm keys on rh.state==='wedged'"   has "rh.state === 'wedged'" "$(cat "$APP")"

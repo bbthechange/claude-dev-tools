@@ -166,6 +166,32 @@ function argsForPost(op, body) {
     const g = b.gate && typeof b.gate === "object" ? b.gate : null;
     return [g === null ? "" : JSON.stringify(g)];
   }
+  // I4 (claude-tools-uxvi4) — design/agent-action.md §5: the Activity facet's
+  // stuck-action write seam. The control proxy (web/functions/api/control/
+  // agent-action.js) sends the named body {action:{intent,workspace,target,
+  // args,owner}}; here it unwraps to handleAgentActionOp's positional
+  // [<envelope_json>] (the gate-meta-set / put / relay-log-append precedent —
+  // the op's arg is a JSON STRING the engine parses inside). The proxy
+  // hard-codes the op + owner:"you"; the adapter stays dumb plumbing and the
+  // engine owns the closed-intent / per-intent-required-field gate. (-pending
+  // and -ack are DAEMON-only and ride the native POST / {op,args} front door,
+  // never this `/request` REST re-frame — so they need NO adapter mapping.)
+  if (op === "agent-action") {
+    const ac = b.action && typeof b.action === "object" ? b.action : null;
+    return [ac === null ? "" : JSON.stringify(ac)];
+  }
+  // I4 (claude-tools-uxvi4) — the Activity facet's "Escalate to decision" stuck
+  // action (DESIGN I §4): a PURE engine write that converts a stuck task into a
+  // Flow B dossier. The control proxy (web/functions/api/control/escalate.js)
+  // builds the §5-valid generation-input SERVER-SIDE and sends the named body
+  // {gi:{...}}; here it unwraps to dossierGenerate's positional [gi]. UNLIKE the
+  // stringified ops (put/gate-meta-set), dossierGenerate takes an OBJECT
+  // (isObj(gi) gate), so the gi is passed through as an object, NOT re-stringified.
+  // The proxy hard-codes the op + the dossier template; the adapter stays dumb
+  // plumbing and the engine owns the §5 validateDossier gate.
+  if (op === "dossier-generate") {
+    return [b.gi && typeof b.gi === "object" ? b.gi : null];
+  }
   return null; // unmapped write op — caller emits 400
 }
 

@@ -291,6 +291,18 @@ no runner involvement at all — the daemon runs `gate-defer.sh` itself in `$ws`
 
 ## 5. The two remaining A.1 layers (so the freeze is end-to-end)
 
+> **IMPLEMENTED (uxvi4, 2026-06-02 — the I4 half of this op).** All A.1 layers are
+> wired: module `cf/src/agent-action.js` (full closed enum validated) + guard in
+> `coordinator.js` + migration `0011_agent_actions.sql` + bash-oracle twin in
+> `lib/coordinator.sh` + `argsForPost['agent-action']` in `cf/pages-dev/adapter.js`
+> + Pages proxy `web/functions/api/control/agent-action.js` (the three I4 intents).
+> Daemon executor `daemon/agent-action-poll.sh` dispatches **all five** intents
+> (nudge/kill-retry/kill-gate drop the runner control marker; gate-apply/gate-lift
+> run `gate-defer.sh`), so **J3 only needs to add its Gates UI + a gate-apply/lift
+> proxy** — the engine + executor already cover its intents. Live-verified against
+> the deployed Worker. Escalate is NOT here (a `dossier-generate` write — see
+> `web/functions/api/control/escalate.js`).
+
 A new op "is not done until every layer lists it" (A.1) — the closed-but-not-wired
 trap. For the impl beads:
 

@@ -215,6 +215,24 @@ was lost).
   Because v2 has **no `tail -f` parser**, this poll IS the activity seam (not a
   second tail). Guarded-optional (BC-43): absent lib / offline transport ⇒ no-op,
   never blocks or crashes the loop.
+- **v2 watchdog honors agent-action control markers (I4, claude-tools-uxvi4).**
+  `_watchdog_loop` (the always-alive subshell that OWNS `CLAUDE_PID` + the staged
+  kill) calls `_watchdog_scan_agent_action` each `WATCHDOG_POLL` tick, reading
+  `<ws>/.beads/runner-logs/agent-action/<action_id>.json` markers the daemon
+  (`agent-action-poll.sh`) drops: **nudge** resets the idle-grace one window (veto,
+  no kill); **kill-retry/kill-gate** run the staged SIGINT→SIGKILL and emit
+  `WATCHDOG_KILL=1` (reusing the FROZEN §8.1 class — kill-retry re-dispatches the
+  reset-to-open bead; kill-gate's daemon-applied `gate:*` label then makes J4 refuse
+  re-pickup). The scan's helper echoes go to **stderr** — its stdout is the captured
+  action verb. A marker for a different bead is consumed but ignored (stale/late).
+- **STUCK_NEEDS_HUMAN auto-flip is recency-gated (I4, must-protect #12).**
+  `run-beads-tasks.sh` `detect_worker_stuck_primary` no longer matches
+  `STUCK_NEEDS_HUMAN` *anywhere* in notes — the relaxed case-3 fires only on a
+  RECENT `STUCK_NEEDS_HUMAN@<epoch>` (within `STUCK_NOTE_RECENT_WINDOW`=1800s) or a
+  bare note that is NOT the runner's own `Runner: STUCK_NEEDS_HUMAN at …` audit line
+  (`(?<!Runner: )` lookbehind). Closes the HANDOFF "Fix-B over-trigger" (a once-stuck
+  bead re-looping forever). v2 has no such predicate — its STUCK path is `$sig`-file
+  based, already window-bounded by construction.
 - **Never gate a lease decision on the transport `rc==4`** — it conflates a
   GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
   AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409

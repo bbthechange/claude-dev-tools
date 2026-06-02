@@ -1012,8 +1012,36 @@ detect_worker_stuck_primary() {
   status=$(printf '%s' "$row" | jq -r '.[0].status // ""' 2>/dev/null)
   has_human=$(printf '%s' "$row" | jq -r '
     if (any(.[].labels[]?; . == "human")) then "yes" else "no" end' 2>/dev/null)
-  has_stuck_note=$(printf '%s' "$row" | jq -r '
-    if ((.[0].notes // "") | test("STUCK_NEEDS_HUMAN")) then "yes" else "no" end' 2>/dev/null)
+  # claude-tools-uxvi4 (must-protect #12 / HANDOFF "Fix-B over-trigger"): TIGHTEN
+  # the relaxed case-3 note match to a RECENT WINDOW so a once-stuck-then-resolved
+  # bead does not auto-loop forever on re-pickup (the 240 symptom). The old match
+  # was `STUCK_NEEDS_HUMAN anywhere in notes` — including STALE residue from a
+  # prior attempt. Now `has_stuck_note` is the OR of two recency-aware recognizers:
+  #   • recent_ts — a machine marker STUCK_NEEDS_HUMAN@<epoch> within
+  #     STUCK_NOTE_RECENT_WINDOW (default 1800s). A STALE @epoch (the runner's own
+  #     stuck-observation residue, stamped below) is IGNORED — this is the window.
+  #   • has_bare — a BARE STUCK_NEEDS_HUMAN that is NOT the runner's own
+  #     "Runner: STUCK_NEEDS_HUMAN at <time>" AUDIT line (the (?<!Runner: )
+  #     lookbehind drops that residue — the DOMINANT over-trigger vector this
+  #     predicate itself produced) and NOT an @epoch marker. This preserves the
+  #     claude-tools-2ir agent-slip safety net + the BC-53 back-compat the
+  #     existing fixtures pin, while closing the audit-residue loop.
+  local now_epoch stuck_win recent_ts has_bare
+  now_epoch=$(date +%s 2>/dev/null || echo 0)
+  stuck_win="${STUCK_NOTE_RECENT_WINDOW:-1800}"
+  recent_ts=$(printf '%s' "$row" | jq -r --argjson now "$now_epoch" --argjson win "$stuck_win" '
+    if (((.[0].notes // "")
+          | [scan("STUCK_NEEDS_HUMAN@([0-9]+)")] | map(.[0] | tonumber)
+          | map(select(($now - .) <= $win and ($now - .) >= -300)) | length) > 0)
+    then "yes" else "no" end' 2>/dev/null) || recent_ts="no"
+  has_bare=$(printf '%s' "$row" | jq -r '
+    if ((.[0].notes // "") | test("(?<!Runner: )STUCK_NEEDS_HUMAN(?!@[0-9])"))
+    then "yes" else "no" end' 2>/dev/null) || has_bare="no"
+  if [[ "$recent_ts" == "yes" || "$has_bare" == "yes" ]]; then
+    has_stuck_note="yes"
+  else
+    has_stuck_note="no"
+  fi
   # Case 2: canonical blocked+human — fires as before, no auto-flip needed.
   if [[ "$status" == "blocked" && "$has_human" == "yes" ]]; then
     echo "worker_stuck"; return 0
@@ -1028,7 +1056,15 @@ detect_worker_stuck_primary() {
       record_incident "$task_id" "STUCK_AUTOFLIP:relaxed-primary(human+note,no-blocked)" "-"
     fi
     if command -v append_runner_note >/dev/null 2>&1; then
-      append_runner_note "$task_id" "STUCK_AUTOFLIP relaxed-primary — agent set 'human' label + STUCK_NEEDS_HUMAN note but missed status=blocked; runner auto-flipped (claude-tools-2ir)" "-"
+      # NB: the descriptive note deliberately AVOIDS the literal STUCK_NEEDS_HUMAN
+      # token — writing it here would create exactly the bare-match residue this
+      # predicate's recency tightening (claude-tools-uxvi4) exists to kill.
+      append_runner_note "$task_id" "STUCK_AUTOFLIP relaxed-primary — agent set 'human' label + a stuck-ask note but missed status=blocked; runner auto-flipped (claude-tools-2ir)" "-"
+      # claude-tools-uxvi4: stamp a RECENCY-BOUNDED machine marker so (a) the
+      # recent_ts recognizer above has a live producer and (b) on a future
+      # re-pickup this observation reads as STALE (past STUCK_NOTE_RECENT_WINDOW)
+      # and does NOT re-trip the auto-flip — the over-trigger fix, made concrete.
+      append_runner_note "$task_id" "STUCK_NEEDS_HUMAN@${now_epoch}" "-"
     fi
     echo "worker_stuck"
     return 0

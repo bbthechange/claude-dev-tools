@@ -169,6 +169,18 @@ import { ACTIVITY_OPS, handleActivityOp } from "./activity.js";
 // — no second auth path (C4); a no/invalid-token gate-meta op is rejected 401
 // at the Worker BEFORE this guard, so it writes NOTHING.
 import { GATE_META_OPS, handleGateMetaOp } from "./gate-meta.js";
+// ── I4 (claude-tools-uxvi4) design/agent-action.md §2 control-plane queue ────
+// The `agent-action`/`-pending`/`-ack` ops over the transient `agent_actions`
+// command queue, dispatched by their dedicated module so the CF.1 substrate
+// switch below stays byte-identical. NOT a §4 record / NO §4 DDL: an agent_action
+// is a CONSUMED command (web enqueues → daemon executes the host effect → acks),
+// so the module owns its OWN `agent_actions` namespace (lazy + idempotent DDL
+// there) and stays ABSENT from the §4 registry/projection AND every notification
+// body — a control queue must never page anyone by itself (Contract A.2). The
+// §9.1 chokepoint (the Worker) has ALREADY authenticated + threaded `principal`
+// — no second auth path (C4); a no/invalid-token agent-action op is rejected 401
+// at the Worker BEFORE this guard, so it writes NOTHING.
+import { AGENT_ACTION_OPS, handleAgentActionOp } from "./agent-action.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -455,6 +467,17 @@ export class Coordinator {
     // 401 at the Worker BEFORE this guard, so it writes NOTHING.
     if (GATE_META_OPS.has(op)) {
       return await handleGateMetaOp(this, op, args, principal);
+    }
+
+    // ── I4 (claude-tools-uxvi4) agent-action control-plane queue guard ───────
+    // The host-effecting intent queue (nudge / kill-retry / kill-gate /
+    // gate-apply / gate-lift). Transient `agent_actions` namespace, NOT a §4
+    // record (the gate_metadata / capacity_reports "control row, not a §4
+    // record" precedent — Contract A.2). The §9.1 chokepoint has ALREADY authed
+    // + threaded `principal`; a no/invalid-token op is 401 at the Worker before
+    // this guard, so it writes NOTHING.
+    if (AGENT_ACTION_OPS.has(op)) {
+      return await handleAgentActionOp(this, op, args, principal);
     }
 
     try {

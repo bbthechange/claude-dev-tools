@@ -195,6 +195,73 @@ out="$(
   && ok "clean in_progress ⇒ NO fire" \
   || bad "clean in_progress must NOT fire (got '$out')"
 
+# ── claude-tools-uxvi4 (must-protect #12 / HANDOFF Fix-B): RECENT-WINDOW gate ──
+# The relaxed case-3 match is tightened: a STALE machine marker no longer re-trips
+# the auto-flip, the runner's OWN "Runner: STUCK_NEEDS_HUMAN at <time>" audit line
+# is excluded (the dominant over-trigger), and a RECENT @epoch marker fires.
+NOW="$(date +%s)"; STALE=$((NOW-99999)); FRESH=$((NOW-30))
+
+# Build a one-row bd-show JSON with a given notes blob (jq handles all escaping —
+# avoids the '"$VAR"'-inside-double-quotes literal-quote trap).
+stuck_row() { jq -cn --arg n "$1" '[{id:"x",status:"open",labels:["human"],notes:$n}]'; }
+
+echo ""
+echo "── Fix-B: STALE @epoch marker (no bare, no Runner: prefix) ⇒ NO fire ──"
+ROW_STALE="$(stuck_row "pending work STUCK_NEEDS_HUMAN@${STALE} ok")"
+out="$(
+  eval "$FN_SRC"
+  bd() { [[ "$1" == "show" ]] && { printf '%s' "$ROW_STALE"; return 0; }; return 0; }
+  export ROW_STALE
+  record_incident() { :; }; append_runner_note() { :; }
+  detect_worker_stuck_primary "x-stale" 0 2>/dev/null
+)"
+[[ -z "$out" ]] \
+  && ok "STALE STUCK_NEEDS_HUMAN@<old-epoch> ⇒ NO auto-loop (recency closes the over-trigger)" \
+  || bad "stale @epoch must NOT fire (got '$out')"
+
+echo ""
+echo "── Fix-B: RECENT @epoch marker ⇒ fires ──"
+ROW_FRESH="$(stuck_row "STUCK_NEEDS_HUMAN@${FRESH} fresh stuck")"
+out="$(
+  eval "$FN_SRC"
+  bd() { [[ "$1" == "show" ]] && { printf '%s' "$ROW_FRESH"; return 0; }; return 0; }
+  export ROW_FRESH
+  record_incident() { :; }; append_runner_note() { :; }
+  detect_worker_stuck_primary "x-fresh" 0 2>/dev/null
+)"
+[[ "$out" == "worker_stuck" ]] \
+  && ok "RECENT STUCK_NEEDS_HUMAN@<fresh-epoch> ⇒ fires (a genuinely-recent stuck is still caught)" \
+  || bad "recent @epoch must fire (got '$out')"
+
+echo ""
+echo "── Fix-B: runner AUDIT line only (Runner: STUCK_NEEDS_HUMAN at …) ⇒ NO fire ──"
+ROW_AUDIT="$(stuck_row "Runner: STUCK_NEEDS_HUMAN at 10:00:00Z — no stream preserved")"
+out="$(
+  eval "$FN_SRC"
+  bd() { [[ "$1" == "show" ]] && { printf '%s' "$ROW_AUDIT"; return 0; }; return 0; }
+  export ROW_AUDIT
+  record_incident() { :; }; append_runner_note() { :; }
+  detect_worker_stuck_primary "x-audit" 0 2>/dev/null
+)"
+[[ -z "$out" ]] \
+  && ok "the runner's own audit line is NOT a fresh stuck signal (lookbehind excludes it)" \
+  || bad "runner audit-only must NOT fire (got '$out')"
+
+echo ""
+echo "── Fix-B: the recent-window is env-tunable (STUCK_NOTE_RECENT_WINDOW) ──"
+ROW_WIN="$(stuck_row "STUCK_NEEDS_HUMAN@${FRESH}")"
+out="$(
+  eval "$FN_SRC"
+  export STUCK_NOTE_RECENT_WINDOW=10   # the 30s-old marker is now OUTSIDE the window
+  bd() { [[ "$1" == "show" ]] && { printf '%s' "$ROW_WIN"; return 0; }; return 0; }
+  export ROW_WIN
+  record_incident() { :; }; append_runner_note() { :; }
+  detect_worker_stuck_primary "x-win" 0 2>/dev/null
+)"
+[[ -z "$out" ]] \
+  && ok "a 30s-old marker with a 10s window ⇒ NO fire (window is honored)" \
+  || bad "tunable window not honored (got '$out')"
+
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"
 printf '  RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"

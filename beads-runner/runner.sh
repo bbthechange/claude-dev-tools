@@ -1602,10 +1602,79 @@ _inflight_tasks() {
 # threshold STRETCHES to IDLE_TIMEOUT × IDLE_TIMEOUT_INFLIGHT_MULT — the kill
 # is preserved (a genuinely deadlocked bg-Bash that registers as in-flight
 # still dies eventually), only deferred for legitimately-slow subagents.
+# I4 (claude-tools-uxvi4): the staged worker teardown used by the agent-action
+# control-marker kill (design/agent-action.md §4). Byte-identical posture to the
+# BC-22 idle-kill SCAR sequence (SIGINT first so the SDK flushes in-flight
+# HTTP-retry state to stderr, up to 10×1s grace, then SIGKILL) but extracted as a
+# helper so the FROZEN idle-kill block stays untouched. Signals the root worker
+# pid; full process-tree teardown is T2.4's owned surface (the EXIT funnel).
+_watchdog_signal_worker() {
+  local pid="$1" _
+  # Log to STDERR: this runs inside _watchdog_scan_agent_action's $(...) capture,
+  # so a stdout echo would pollute the scan's return value. stderr still lands in
+  # the runner's log (the watchdog subshell's fds are the runner's).
+  echo "  watchdog: staged kill — interrupt first, up to 10s grace, then hard-kill" >&2
+  echo "  watchdog: SIGINT sent" >&2
+  kill -INT "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    kill -0 "$pid" 2>/dev/null || break
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "  watchdog: SIGKILL sent (grace elapsed)" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+}
+
+# I4 (claude-tools-uxvi4): honor a daemon-dropped agent-action CONTROL MARKER.
+# The watchdog OWNS CLAUDE_PID + the kill path + the idle-grace timer, so it is
+# the natural place to read the marker each WATCHDOG_POLL tick (design/agent-
+# action.md §4: "honored each 15s tick"). The daemon (agent-action-poll.sh) drops
+# <ws>/.beads/runner-logs/agent-action/<action_id>.json for the process intents;
+# this CONSUMES every marker it reads (the daemon already acked it engine-side)
+# and acts only on a marker targeting the CURRENT bead — a stale/late marker for
+# a bead the worker already moved past is dropped without effect. Echoes:
+#   ""       — nothing applicable this tick
+#   "nudge"  — a grace extension (the caller resets last_progress — veto one window)
+#   "kill"   — a kill-retry/kill-gate was requested AND already performed here
+# (kill wins over nudge; classification rides the existing WATCHDOG_KILL marker so
+# the FROZEN §8.1 exit table is untouched: kill-retry re-dispatches the reset-to-
+# open bead, kill-gate's daemon-applied gate:* label then makes J4 refuse re-pickup.)
+_watchdog_scan_agent_action() {
+  local dir="$1" bead="$2" pid="$3" sig="$4" mf intent mbead acted=""
+  [[ -n "$dir" && -d "$dir" ]] || { printf ''; return 0; }
+  for mf in "$dir"/*.json; do
+    [[ -e "$mf" ]] || continue
+    intent="$(jq -r '.intent // ""' "$mf" 2>/dev/null)" || intent=""
+    mbead="$(jq -r '.bead_ref // ""' "$mf" 2>/dev/null)" || mbead=""
+    rm -f "$mf" 2>/dev/null || true   # consume (the daemon already acked it engine-side)
+    [[ -n "$mbead" && -n "$bead" && "$mbead" != "$bead" ]] && continue  # stale/late ⇒ moot
+    # NB: informational echoes go to STDERR — this function's STDOUT is captured
+    # by the caller as the action verb (printf at the end), so a stray stdout
+    # log line would corrupt the "nudge"/"kill" return.
+    case "$intent" in
+      nudge)
+        echo "  watchdog: agent-action NUDGE (control marker) — vetoing the pending kill one more window, NO terminate" >&2
+        [[ -z "$acted" ]] && acted="nudge"
+        ;;
+      kill-retry|kill-gate)
+        echo "  watchdog: agent-action ${intent} (control marker) — terminating the worker on Brian's command" >&2
+        echo "WATCHDOG_KILL=1"          >> "$sig"   # FROZEN §8.1 class (re-dispatch / gate-refuse semantics)
+        echo "AGENT_ACTION_KILL=${intent}" >> "$sig"  # observability only (NOT a classifier input)
+        _watchdog_signal_worker "$pid"
+        acted="kill"
+        break
+        ;;
+    esac
+  done
+  printf '%s' "$acted"
+}
+
 _watchdog_loop() {
   local pid="$1" stream="$2" sig="$3" snap="$4" post_terminal_file="${5:-}"
+  local aa_marker_dir="${6:-}" aa_bead="${7:-}"   # I4: agent-action control-marker seam
   local now last_progress prev_bytes prev_cpu bytes cpu idle warned=0
-  local inflight effective_timeout pt_at pt_age
+  local inflight effective_timeout pt_at pt_age aa_act
   now="$(date +%s)"; last_progress="$now"
   prev_bytes="$(wc -c < "$stream" 2>/dev/null | tr -d ' ')"; prev_bytes="${prev_bytes:-0}"
   prev_cpu="$(_tree_cpu_secs "$pid" 2>/dev/null)"; prev_cpu="${prev_cpu:-0}"
@@ -1613,6 +1682,20 @@ _watchdog_loop() {
     sleep "$WATCHDOG_POLL"
     kill -0 "$pid" 2>/dev/null || break
     now="$(date +%s)"
+    # I4 (claude-tools-uxvi4): honor any daemon-dropped agent-action control
+    # marker FIRST — a Brian-initiated kill must win over (and pre-empt) the
+    # idle-progress heuristics below, and a nudge must veto a kill that is about
+    # to fire this same tick. A kill is performed in-scan; a nudge resets the
+    # idle-grace timer (one more soft window — the §4 "veto, don't terminate").
+    if [[ -n "$aa_marker_dir" ]]; then
+      aa_act="$(_watchdog_scan_agent_action "$aa_marker_dir" "$aa_bead" "$pid" "$sig")"
+      if [[ "$aa_act" == "kill" ]]; then
+        break                       # worker already signaled by the scan
+      elif [[ "$aa_act" == "nudge" ]]; then
+        last_progress="$now"; warned=0
+        continue                    # skip this tick's idle check — grace extended
+      fi
+    fi
     # claude-tools-2fkp (port of td0y): post-terminal SIGKILL backstop. The SDK
     # terminal record (`terminal_reason` or `type":"result"`) means claude is
     # contract-done; if it is STILL alive POST_TERMINAL_GRACE seconds later it is
@@ -2489,8 +2572,13 @@ st_run_task() {
   # resets subshell traps; making it explicit is defensive and documents
   # intent. T2.3's _watchdog_loop body is byte-unchanged — this is T2.4's
   # trap-isolation, not a watchdog-policy edit.)
+  # I4 (claude-tools-uxvi4): the agent-action control-marker dir the daemon drops
+  # into for THIS workspace's stuck-actions (nudge / kill-retry / kill-gate). The
+  # watchdog reads it each tick and honors a marker targeting CURRENT_TASK_ID.
+  local agent_action_dir="$log_dir/agent-action"
   ( trap - EXIT HUP INT TERM
-    _watchdog_loop "$CLAUDE_PID" "$STREAM_FILE" "$SIGNAL_FILE" "$PROC_SNAPSHOT" "$POST_TERMINAL_FILE" ) &
+    _watchdog_loop "$CLAUDE_PID" "$STREAM_FILE" "$SIGNAL_FILE" "$PROC_SNAPSHOT" "$POST_TERMINAL_FILE" \
+                   "$agent_action_dir" "$CURRENT_TASK_ID" ) &
   WATCHDOG_PID=$!
 
   # §2.5 DURING-task cadence. We poll on a fine RUNNER_TICK and act on the

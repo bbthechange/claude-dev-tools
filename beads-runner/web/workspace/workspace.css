@@ -198,3 +198,27 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   .af-writer-host,.af-aux-host{padding:0 22px}
   .af-rh-host{padding:0 22px}
 }
+
+/* I4 (claude-tools-uxvi4) — the four tappable stuck actions on a maybe-stuck
+ * writer card. These are the ONE write affordance on the Activity facet; they
+ * route through the control plane (an agent-action intent / a dossier write),
+ * never a direct web→process kill. Kill/Gate read in the danger register. */
+.af-actions{margin-top:13px;padding-top:12px;border-top:1px dashed var(--line-2)}
+.af-actions-h{font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--amber);margin-bottom:9px;line-height:1.5}
+.af-actions-row{display:flex;flex-wrap:wrap;gap:8px}
+.af-act{appearance:none;-webkit-appearance:none;cursor:pointer;font:inherit;
+  font-size:12px;letter-spacing:.04em;min-height:var(--tap);padding:8px 14px;
+  border-radius:10px;border:1px solid var(--line-2);background:var(--panel);
+  color:var(--text);transition:border-color .15s,color .15s,opacity .15s}
+.af-act:hover{border-color:var(--amber);color:var(--amber)}
+.af-act:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.af-act:disabled{opacity:.45;cursor:default}
+.af-act-escalate:hover{border-color:var(--amber);color:var(--amber)}
+.af-act-kill,.af-act-gate{border-color:rgba(255,107,107,.4);color:var(--coral)}
+.af-act-kill:hover,.af-act-gate:hover{border-color:var(--coral);color:var(--coral)}
+.af-actions-status{margin-top:9px;font-size:11px;letter-spacing:.03em;
+  min-height:16px;line-height:1.5;color:var(--faint)}
+.af-actions-status.pending{color:var(--amber-soft)}
+.af-actions-status.ok{color:var(--mint)}
+.af-actions-status.err{color:var(--coral)}

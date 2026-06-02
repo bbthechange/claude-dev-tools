@@ -109,7 +109,14 @@ co_http__op_is_data() {
     # (over⇒1) — handled as an explicit special case in the 2xx arm, NOT here.
     # I3 (claude-tools-06i) — `intake-pending` returns a JSON array of records;
     # the daemon poll consumes that stdout verbatim, so it is DATA-200 too.
-    get|timer-due|poll|reconcile|work-snapshot|capabilities|forensic-fetch|forensic-audit|intake-pending) return 0 ;;
+    # I4 (claude-tools-uxvi4) — `agent-action-pending` returns {actions:[…]} the
+    # daemon's agent-action-poll.sh consumes verbatim; WITHOUT this it suppresses
+    # to empty stdout and the live daemon sees ZERO pending actions and never
+    # executes them (the offline test passes because it uses the in-process oracle,
+    # not this transport — caught by live-verify). `agent-action`/`-ack` stay ACK
+    # ops: nothing reads their body via co_request (the web enqueues through the
+    # Pages proxy direct-to-Worker; the daemon's ack is fire-and-forget).
+    get|timer-due|poll|reconcile|work-snapshot|capabilities|forensic-fetch|forensic-audit|intake-pending|agent-action-pending) return 0 ;;
     *) return 1 ;;
   esac
 }

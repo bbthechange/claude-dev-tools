@@ -289,8 +289,10 @@
   // REUSES window.ActivityView.deriveActivityView (the pure view-model). Builds
   // the static scaffold ONCE; refresh repaints the dynamic regions in place so a
   // runner/agent going stale surfaces (30s, same cadence as the board facet).
-  // READ-ORIENTED: NO stuck-action controls here — those are I4's web+runner
-  // bead (claude-tools-uxvi4). I3 is the honest display only.
+  // I4 (claude-tools-uxvi4) adds the WRITE path: a maybe-stuck writer exposes the
+  // four tappable stuck actions (Nudge / Escalate / Kill+retry / Kill+Gate),
+  // which route through the control plane (an agent-action intent the daemon
+  // reconciles, or a dossier write) — never a direct web→process kill.
   function mountActivityFacet() {
     Dom.clear(host);
     var wrap = Dom.mk('div', 'af-wrap');
@@ -475,7 +477,126 @@
       metaBits.push('touching: ' + writer.touching.join(' ▸ '));
     }
     if (metaBits.length) card.appendChild(Dom.mk('div', 'af-meta', metaBits.join(' · ')));
+    // I4 (claude-tools-uxvi4): a maybe-stuck writer exposes the four tappable
+    // stuck actions (DESIGN I §4). They route through the control plane (an
+    // agent-action INTENT the daemon reconciles, or a dossier write) — NEVER a
+    // direct web→process kill (Local==remote). Shown only when there's a bead to
+    // target and the writer is flagged maybe-stuck.
+    if (writer.state === 'maybe-stuck' && writer.bead_ref) {
+      card.appendChild(renderStuckActions(writer));
+    }
     hostEl.appendChild(card);
+  }
+
+  // ── I4 stuck actions (Nudge / Escalate / Kill+retry / Kill+Gate) ────────────
+  // Each writes through a same-origin control proxy (bearer server-side); the
+  // host effect is the daemon's job. Optimistic status line; destructive kills
+  // are confirm()-gated. The buttons disable while a request is in flight.
+  var FAR_FUTURE = '2999-01-01'; // "indefinite until lifted" defer sentinel (gate-defer needs a date)
+
+  function renderStuckActions(writer) {
+    var box = Dom.mk('div', 'af-actions');
+    box.appendChild(Dom.mk('div', 'af-actions-h',
+      'Looks stuck — act (routes through the control plane, not a direct kill):'));
+    var row = Dom.mk('div', 'af-actions-row');
+    var status = Dom.mk('div', 'af-actions-status');
+    status.setAttribute('aria-live', 'polite');
+
+    function btn(label, cls, handler) {
+      var b = Dom.mk('button', 'af-act ' + cls, label);
+      b.setAttribute('type', 'button');
+      b.addEventListener('click', function () { handler(b, status); });
+      row.appendChild(b);
+      return b;
+    }
+
+    btn('Nudge', 'af-act-nudge', function (b, st) {
+      runAction(b, st, 'nudge',
+        Net.postJSON('/api/control/agent-action', agentActionBody('nudge', writer)));
+    });
+    btn('Escalate →', 'af-act-escalate', function (b, st) {
+      runAction(b, st, 'escalate',
+        Net.postJSON('/api/control/escalate', {
+          bead_ref: writer.bead_ref, project_ref: ctx.ref, title: writer.title || ''
+        }));
+    });
+    btn('Kill + retry', 'af-act-kill', function (b, st) {
+      if (!window.confirm('Kill the worker on ' + writer.bead_ref +
+        ' and re-dispatch a fresh one on the same bead?\n\n(In-flight work is lost; the bead is intact.)')) return;
+      runAction(b, st, 'kill+retry',
+        Net.postJSON('/api/control/agent-action', agentActionBody('kill-retry', writer)));
+    });
+    btn('Kill + Gate', 'af-act-gate', function (b, st) {
+      var why = window.prompt('Kill + Gate — why is ' + writer.bead_ref +
+        ' being held? (stops re-dispatch until the gate is lifted)', 'stuck — needs investigation');
+      if (why === null) return; // cancelled
+      // Disable the row SYNCHRONOUSLY (before the pre-flight gate-meta POST) so a
+      // double-click can't enqueue two kill-gate actions while gate-meta is in
+      // flight; runAction re-enables on completion.
+      setRowDisabled(b, true);
+      var gateId = mkGateId(writer.bead_ref);
+      // Two writes (design/agent-action.md §3): the why/scope annotation is a
+      // direct engine write (gate-meta-set, best-effort); the label+kill is the
+      // agent-action the daemon reconciles. The kill-gate is the load-bearing one
+      // — the metadata is annotation, so we proceed even if it fails.
+      Net.postJSON('/api/ws/gate-meta', { gate: { id: gateId, why: why || 'stuck', scope: 'task' } })
+        .catch(function () { /* annotation is best-effort; the gate still applies */ })
+        .then(function () {
+          var body = agentActionBody('kill-gate', writer);
+          body.target.gate_id = gateId;
+          body.args.date = FAR_FUTURE;
+          return runAction(b, st, 'kill+gate',
+            Net.postJSON('/api/control/agent-action', body));
+        });
+    });
+
+    box.appendChild(row);
+    box.appendChild(status);
+    return box;
+  }
+
+  function agentActionBody(intent, writer) {
+    return {
+      intent: intent,
+      workspace: ctx.ref,
+      target: { bead_ref: writer.bead_ref },
+      args: { reason: 'from the Activity view' }
+    };
+  }
+
+  // gate:<id> shape is ^[a-z0-9][a-z0-9-]*$ (gate-defer.sh / gate-meta gate-id).
+  function mkGateId(beadRef) {
+    var id = ('stuck-' + beadRef).toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^[^a-z0-9]+/, '')
+      .replace(/-+$/, '');
+    return id || 'stuck';
+  }
+
+  // Enable/disable every button in the action row a button belongs to.
+  function setRowDisabled(btnEl, disabled) {
+    var rowEl = btnEl ? btnEl.parentNode : null;
+    var btns = rowEl ? rowEl.querySelectorAll('button') : [];
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = !!disabled;
+  }
+
+  // Disable the bar's buttons, show an optimistic status, then ✓/✗ the outcome.
+  // Idempotent on the disable (Kill+Gate disables synchronously up-front).
+  function runAction(btnEl, statusEl, verb, promise) {
+    setRowDisabled(btnEl, true);
+    statusEl.className = 'af-actions-status pending';
+    statusEl.textContent = verb + ' — sending…';
+    return promise.then(function (d) {
+      statusEl.className = 'af-actions-status ok';
+      var idNote = (d && d.action_id) ? (' (queued; the daemon reconciles within ~30s)')
+        : (d && d.id) ? (' (decision card created — see the Inbox)') : '';
+      statusEl.textContent = '✓ ' + verb + ' accepted' + idNote;
+    }).catch(function (e) {
+      statusEl.className = 'af-actions-status err';
+      statusEl.textContent = '✗ ' + verb + ' failed: ' + (e && e.message ? e.message : String(e));
+    }).then(function () {
+      setRowDisabled(btnEl, false);
+    });
   }
 
   // AUXILIARY POOL — 0..N cards (kind + label + derived state + dot). Honest

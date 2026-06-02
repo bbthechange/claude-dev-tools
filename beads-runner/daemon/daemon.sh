@@ -47,6 +47,11 @@ HOSTED_RESOLUTION_POLL_INTERVAL="${BEADS_DAEMON_HOSTED_RESOLUTION_POLL_INTERVAL:
 # observes desired-state mutations at the same rate the runner used to
 # self-reconcile, and the AD8/Flow-D loop closes within ~60s end-to-end.
 DESIRED_STATE_POLL_INTERVAL="${BEADS_DAEMON_DESIRED_STATE_POLL_INTERVAL:-60}"
+# I4 (claude-tools-uxvi4): control-plane agent-action queue poll cadence. 30s
+# default — FASTER than set-desired's 60s because these are interactive button
+# presses (nudge / kill+retry / kill+gate); Brian wants the kill to land soon
+# (design/agent-action.md §4). [free] to tune.
+AGENT_ACTION_POLL_INTERVAL="${BEADS_DAEMON_AGENT_ACTION_POLL_INTERVAL:-30}"
 # I3: intake-request poll cadence. ~30s default per the task spec, so an
 # intake tap on the phone lands ⇒ enricher fires ⇒ a new bd task appears
 # the runner can pick up within ~60s end-to-end (cf claude-tools-06i
@@ -101,6 +106,14 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # state machine. Defines daemon_m3_reconcile_all + daemon_m3_* helpers.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/desired-state-poll.sh"
+# I4 (claude-tools-uxvi4): control-plane agent-action queue executor — reads the
+# transient agent_actions pending intents and reconciles the host (drops the
+# runner-honored control marker for nudge/kill; runs gate-defer.sh apply/lift
+# for the gate intents). Defines daemon_agent_action_poll_once + daemon_aa_*
+# helpers. Same sourcing posture as the M3 poll — strict no-op until the main
+# loop calls into it (design/agent-action.md §4).
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/agent-action-poll.sh"
 # I3 (claude-tools-06i): intake-request poll + enricher dispatch. Defines
 # daemon_intake_poll_once + daemon_intake_* helpers. Same sourcing posture
 # as the M3 poll above — strict no-op until the main loop calls into it.
@@ -288,6 +301,7 @@ main() {
   # API call per machine, §3.2 job 1).
   local _last_hosted_poll=0
   local _last_desired_poll=0
+  local _last_agent_action_poll=0
   local _last_intake_poll=0
   local _last_flow_f_poll=0
   local _last_wc_poll=0
@@ -318,6 +332,16 @@ main() {
     if [ "$((_now - _last_desired_poll))" -ge "$DESIRED_STATE_POLL_INTERVAL" ] || [ "$_last_desired_poll" -eq 0 ]; then
       _last_desired_poll="$_now"
       daemon_m3_reconcile_all || true
+    fi
+    # I4 (claude-tools-uxvi4): on cadence (~30s), read each workspace's pending
+    # agent_actions and reconcile the host — drop the runner-honored control
+    # marker for nudge/kill-retry/kill-gate, run gate-defer.sh apply/lift for the
+    # gate intents — then ack each. First iteration runs at boot (|| -eq 0) so a
+    # tap that landed while the daemon was down is honored promptly. ALWAYS rc 0;
+    # a per-action failure never aborts the sweep (design/agent-action.md §4).
+    if [ "$((_now - _last_agent_action_poll))" -ge "$AGENT_ACTION_POLL_INTERVAL" ] || [ "$_last_agent_action_poll" -eq 0 ]; then
+      _last_agent_action_poll="$_now"
+      daemon_agent_action_poll_once || true
     fi
     # I3 (claude-tools-06i): on cadence (~30s), scan the engine for unprocessed
     # intake-request records and dispatch the enricher hat in the chosen

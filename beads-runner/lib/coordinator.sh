@@ -591,6 +591,126 @@ co__gate_meta_get() {
   return 0
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# I4 (claude-tools-uxvi4) — agent_actions transient control queue (oracle twin)
+# ════════════════════════════════════════════════════════════════════════════
+# THE BASH ORACLE TWIN of cf/src/agent-action.js (design/agent-action.md §2/§3).
+# The control-plane command queue the web tier enqueues and the daemon's
+# agent-action-poll.sh consumes to cause a host-side effect. TRANSIENT, NOT a §4
+# record (Contract A.2 control-row class): it lives in its OWN `agent_actions/`
+# namespace under CO_STORE, is ABSENT from the §4 registry, never a §4.5
+# projection / §4.3 notification body. `status` is at-most-once bookkeeping
+# (pending→done|failed), NOT a §4 lifecycle. owner is a DECLARED input (§2.4),
+# never the resolved principal. The closed intent enum + per-intent required
+# fields mirror the JS validateEnvelope; held functionally parallel to
+# agent-action.js (the daemon poll + offline path consume this when no
+# COORDINATOR_URL is set; in prod co-http-transport overrides to the live Worker).
+co__agent_action_dir()  { printf '%s/agent_actions' "$(co__ensure_store)"; }
+co__agent_action_path() { printf '%s/%s.json' "$(co__agent_action_dir)" "$1"; }
+co__agent_action_ensure_dir() { mkdir -p "$(co__agent_action_dir)" 2>/dev/null || true; }
+
+# co__agent_action_enqueue <principal> <envelope_json> — §2.2 validate + mint +
+# write pending. Echoes {ok:true,action_id} on success, {ok:false,error} + rc 3
+# on a bad envelope (the closed enum + per-intent required fields). principal is
+# threaded for signature uniformity but UNUSED for the stored row (owner is the
+# input, §2.4).
+co__agent_action_enqueue() {
+  local principal="$1" json="${2:-}" norm aid now
+  if [[ -z "$json" ]]; then
+    printf '{"ok":false,"error":"agent-action needs <envelope_json>"}\n'; return 3
+  fi
+  # One jq pass: validate the closed intent enum + workspace + the §3 per-intent
+  # required fields; emit the normalized {intent,workspace,target,args,owner} or
+  # NOTHING on any failure.
+  norm=$(printf '%s' "$json" | jq -c '
+    def safews: (type=="string" and length>0 and (test("^[A-Za-z0-9._-]+$")) and (test("\\.\\.")|not));
+    if type != "object" then empty
+    else
+      (.intent) as $i
+      | (["nudge","kill-retry","kill-gate","gate-apply","gate-lift"]|index($i)) as $known
+      | if $known==null then empty
+        elif (.workspace|safews|not) then empty
+        else
+          ((.target // {})|if type=="object" then . else {} end) as $t
+          | ((.args // {})|if type=="object" then . else {} end) as $a
+          | ($t.bead_ref // "") as $bead
+          | ($t.gate_id // "") as $gate
+          | ($a.date // "") as $date
+          | ((($t.bead_refs // []) | map(select(type=="string" and length>0)))) as $refs
+          | (if   ($i=="nudge" or $i=="kill-retry") then (($bead|type=="string") and ($bead|length>0))
+             elif ($i=="kill-gate") then (($bead|length>0) and ($gate|length>0) and ($date|length>0))
+             elif ($i=="gate-apply") then (($gate|length>0) and ($date|length>0) and (($bead|length>0) or ($refs|length>0)))
+             elif ($i=="gate-lift") then ($gate|length>0)
+             else false end) as $ok
+          | if ($ok|not) then empty
+            else {intent:$i, workspace:.workspace, target:$t, args:$a,
+                  owner:(if (.owner|type)=="string" and (.owner|length)>0 then .owner else "you" end)}
+            end
+        end
+    end' 2>/dev/null) || norm=""
+  if [[ -z "$norm" ]]; then
+    printf '{"ok":false,"error":"agent-action reject — bad intent / unsafe workspace / missing per-intent required field"}\n'
+    return 3
+  fi
+  co__agent_action_ensure_dir
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  aid="aa-$(date -u +%Y%m%dT%H%M%S 2>/dev/null)-${RANDOM}${RANDOM}-$$"
+  local full path
+  full=$(printf '%s' "$norm" | jq -c --arg a "$aid" --arg now "$now" \
+            '{action_id:$a} + . + {status:"pending", requested_at:$now, acked_at:null, result_json:null}' 2>/dev/null) \
+    || { printf '{"ok":false,"error":"agent-action — could not build row"}\n'; return 3; }
+  path="$(co__agent_action_path "$aid")"
+  printf '%s\n' "$full" > "$path.$$.tmp" 2>/dev/null && mv -f "$path.$$.tmp" "$path" 2>/dev/null \
+    || { rm -f "$path.$$.tmp" 2>/dev/null; printf '{"ok":false,"error":"agent-action — write failed"}\n'; return 4; }
+  printf '{"ok":true,"action_id":"%s"}\n' "$aid"
+  return 0
+}
+
+# co__agent_action_pending [workspace] — §2.2 daemon read. Pure read ⇒ NO lock.
+# Echoes {actions:[{action_id,workspace,intent,target,args,owner,requested_at}…]}
+# for status==pending, optionally scoped to one workspace, sorted by requested_at.
+co__agent_action_pending() {
+  local ws="${1:-}" dir f one collected="" rows
+  co__agent_action_ensure_dir
+  dir="$(co__agent_action_dir)"
+  for f in "$dir"/*.json; do
+    [[ -e "$f" ]] || continue
+    one="$(jq -c --arg ws "$ws" '
+      if (.status=="pending") and ($ws=="" or .workspace==$ws)
+      then {action_id, workspace, intent, target, args, owner, requested_at}
+      else empty end' "$f" 2>/dev/null)" || continue
+    [[ -n "$one" ]] || continue
+    collected+="$one"$'\n'
+  done
+  rows="$(printf '%s' "$collected" | jq -cs 'sort_by(.requested_at)' 2>/dev/null)" || rows=""
+  [[ -n "$rows" ]] || rows="[]"
+  printf '{"actions":%s}\n' "$rows"
+  return 0
+}
+
+# co__agent_action_ack <action_id> <status> [result_json] — §2.2 daemon write.
+# Sets status∈{done,failed} + acked_at + result_json. Missing id ⇒ {ok:false}+rc3.
+co__agent_action_ack() {
+  local aid="${1:-}" status="${2:-}" result="${3:-}" path now
+  if [[ -z "$aid" ]]; then printf '{"ok":false,"error":"agent-action-ack needs <action_id>"}\n'; return 3; fi
+  case "$status" in done|failed) ;; *) printf '{"ok":false,"error":"status must be done|failed"}\n'; return 3 ;; esac
+  co__safe_key "$aid" || { printf '{"ok":false,"error":"unsafe action_id"}\n'; return 3; }
+  path="$(co__agent_action_path "$aid")"
+  [[ -f "$path" ]] || { printf '{"ok":false,"error":"no such action"}\n'; return 3; }
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  co__with_lock "agent_actions.$aid" co__agent_action_ack_commit "$path" "$status" "$now" "$result"
+}
+co__agent_action_ack_commit() {
+  local path="$1" status="$2" now="$3" result="${4:-}" full
+  full=$(jq -c --arg s "$status" --arg now "$now" --arg r "$result" \
+            '. + {status:$s, acked_at:$now, result_json:(if ($r|length)>0 then $r else null end)}' \
+            "$path" 2>/dev/null) || { printf '{"ok":false,"error":"ack build failed"}\n'; return 3; }
+  printf '%s\n' "$full" > "$path.$$.tmp" 2>/dev/null && mv -f "$path.$$.tmp" "$path" 2>/dev/null \
+    || { rm -f "$path.$$.tmp" 2>/dev/null; printf '{"ok":false,"error":"ack write failed"}\n'; return 4; }
+  printf '{"ok":true}\n'
+  return 0
+}
+
 # ── §2.2 durable one-shot timer — CAPABILITY SURFACE ONLY ─────────────────────
 # fire(id)@T plus the S-6 backstop: a missed fire MUST degrade to
 # fire-on-next-poll. The skeleton has no alarm daemon (capability surface
@@ -760,7 +880,10 @@ co_request() {
     intake-pending)   co__intake_pending ;;  # I3 (claude-tools-06i) — daemon scan of unprocessed intake-request records
     gate-meta-set)    co__gate_meta_set "$principal" "${1:-}" ;;  # J1 (claude-tools-uxvj1/pkgt) — upsert gate_metadata (transient namespace, NOT a §4 record)
     gate-meta-get)    co__gate_meta_get "${1:-}" ;;               # J1 — read one row ({gate:…|null}) or all ({gates:[…]})
-    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot; I3: intake-pending; J1: gate-meta-set|gate-meta-get)" >&2; return 2 ;;
+    agent-action)         co__agent_action_enqueue "$principal" "${1:-}" ;;  # I4 (claude-tools-uxvi4) — enqueue a host-effecting intent (transient queue, NOT a §4 record)
+    agent-action-pending) co__agent_action_pending "${1:-}" ;;                # I4 — daemon read: pending rows, optionally one workspace
+    agent-action-ack)     co__agent_action_ack "${1:-}" "${2:-}" "${3:-}" ;;  # I4 — daemon write: terminal status (done|failed)
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot; I3: intake-pending; J1: gate-meta-set|gate-meta-get; I4: agent-action|agent-action-pending|agent-action-ack)" >&2; return 2 ;;
   esac
 }
 

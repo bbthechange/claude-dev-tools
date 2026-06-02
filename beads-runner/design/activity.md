@@ -322,6 +322,32 @@ serves the new bytes** (CLAUDE.md web-track discipline / claude-tools-bgw):
 `verify-pages-deploy.sh` → `mismatches=0`, and a live runner honors a real
 `agent-action`. Local-green + committed is not acceptance.
 
+> **IMPLEMENTED (uxvi4, 2026-06-02).** uxcap froze the design only — I4 built the
+> whole control plane end-to-end. **Engine:** `cf/src/agent-action.js`
+> (`agent-action`/`-pending`/`-ack` over the transient `agent_actions` queue,
+> guarded before the substrate switch in `coordinator.js`; migration
+> `0011_agent_actions.sql`; bash-oracle twin in `lib/coordinator.sh`). **Daemon:**
+> `daemon/agent-action-poll.sh` (`daemon_agent_action_poll_once`, ticked in
+> `daemon.sh` every `AGENT_ACTION_POLL_INTERVAL`=30s) drops the runner control
+> marker for nudge/kill, runs `gate-defer.sh apply/lift` for the gate intents,
+> at-most-once via a local handled-marker. **Runner (v2 `runner.sh`, per the §1
+> RECONCILED v2 directive, consistent with I1):** `_watchdog_scan_agent_action`
+> in `_watchdog_loop` honors `<ws>/.beads/runner-logs/agent-action/*.json` each
+> tick — nudge resets the idle-grace one window, kill-retry/kill-gate run the
+> staged SIGINT→SIGKILL and emit `WATCHDOG_KILL=1` (so the FROZEN §8.1 table is
+> untouched: kill-retry re-dispatches the reset-to-open bead; kill-gate's
+> daemon-applied `gate:*` then makes J4 refuse re-pickup). **Web:**
+> `web/functions/api/control/agent-action.js` (the three intents, `owner:"you"`
+> stamped server-side) + `escalate.js` (a PURE engine write — builds a §5-valid
+> `worker_stuck`/`blocking` dossier via `dossier-generate`, NOT an agent-action);
+> the Activity facet (`web/workspace/app.js`) renders the four tappable actions on
+> a `maybe-stuck` writer card. **Must-protect #12** tightened: `run-beads-tasks.sh`
+> `detect_worker_stuck_primary` now recency-gates the relaxed match
+> (`STUCK_NEEDS_HUMAN@<epoch>` within `STUCK_NOTE_RECENT_WINDOW`=1800s) and the
+> `(?<!Runner: )` lookbehind drops the runner's own audit residue — a once-stuck-
+> then-reset bead no longer auto-loops. Pages-verified (`mismatches=0`) +
+> engine/runner live-verified against the deployed Worker.
+
 ---
 
 ## 5. Parallel auxiliary dispatch — daemon-driven, no runner rewrite  [§5.1 + ARCH §9.1 · I5 · claude-tools-uxvi5]
