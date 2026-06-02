@@ -602,8 +602,92 @@ ck "app.js calls renderMachines with view.machines + machines_empty" has "view.m
 ck "board.css declares the .machines container"                    has ".machines{" "$(cat "$CSS")"
 ck "board.css declares per-band classes (green/amber/red)"         has ".band-red" "$(cat "$CSS")"
 
+echo "── EXIT-9: Q1 (claude-tools-uxvq1) — §9 queue_health strip (empty-queue + net-velocity) ──"
+# queue_health is per-project (B.1); deriveBoardView aggregates the projects
+# into the board-level view.queue_health strip + health-strip chips. The bash
+# twin emits a ZEROED queue_health (no workspace_inventory store — CF fills the
+# real values), so — like the machine-state EXIT-8 strip — we craft snapshots
+# directly to exercise real queue_health values through the renderer.
+qh_snap() {  # <ready> <gate> <dep> <sched> <hidden> <net> <epics-json-array>
+  jq -cn --argjson ready "$1" --argjson gate "$2" --argjson dep "$3" \
+         --argjson sched "$4" --argjson hidden "$5" --argjson net "$6" \
+         --argjson epics "$7" \
+    '{schema_version:1,principal:"PRINCIPAL_V1",read_only:true,
+      lifecycle_columns:{},waiting_on_you:[],machines:[],
+      projects:[{project_ref:"projQ",
+        runner_state:{desired:"running",actual:"running",liveness:"live",
+                      last_heartbeat_at:(now|todateiso8601),
+                      current_task_ref:null,current_task_title:null,
+                      desired_actual_mismatch:false},
+        queue_health:{ready:$ready,held:{gate:$gate,dependency:$dep,scheduled:$sched},
+                      hidden_under_deferred_parent:$hidden,net_velocity_7d:$net,
+                      epics_with_zero_ready_children:$epics},
+        lease:null}]}'
+}
+
+# ─ Runaway net-velocity (positive) ⇒ velocity_alarm + a 'bad' health chip ─
+RUNAWAY="$(qh_snap 4 3 1 2 5 8 '["rg-aaa"]')"
+VQ="$(render_snap "$RUNAWAY")"
+ck "queue_health: board strip view present (ok:true)"            eq "$(jq -r '.ok' <<<"$VQ")" "true"
+ck "queue_health: board-level aggregate exposed"                 eq "$(jq -r '.queue_health.ready' <<<"$VQ")" "4"
+ck "queue_health: net_velocity_7d surfaced verbatim (COMPUTED, not a cutoff)" eq "$(jq -r '.queue_health.net_velocity_7d' <<<"$VQ")" "8"
+ck "queue_health: positive net ⇒ velocity_alarm true (runaway, §9)" eq "$(jq -r '.queue_health.velocity_alarm' <<<"$VQ")" "true"
+ck "queue_health: runaway surfaces a 'bad' health chip"           has "runaway" "$(jq -r '[.health.tags[]|select(.kind=="bad").text]|join(" ")' <<<"$VQ")"
+ck "queue_health: velocity_text carries a signed number"          has "+8/7d net" "$(jq -r '.queue_health.velocity_text' <<<"$VQ")"
+ck "queue_health: held_total = gate+dep+sched (3+1+2=6)"          eq "$(jq -r '.queue_health.held_total' <<<"$VQ")" "6"
+ck "queue_health: epics-zero-ready count surfaced"               eq "$(jq -r '.queue_health.epics_zero_ready_count' <<<"$VQ")" "1"
+ck "queue_health: epics-zero-ready surfaces a warn chip"          has "0-ready" "$(jq -r '[.health.tags[]|select(.kind=="warn").text]|join(" ")' <<<"$VQ")"
+# per-project (B.1): the runner row carries its own queue_health.
+RQ="$(jq -c '.runners[]|select(.project_ref=="projQ")' <<<"$VQ")"
+ck "queue_health: per-project row carries queue_health (B.1)"     eq "$(jq -r '.queue_health.ready' <<<"$RQ")" "4"
+ck "queue_health: per-project velocity_alarm set"                eq "$(jq -r '.queue_health.velocity_alarm' <<<"$RQ")" "true"
+
+# ─ Empty queue (0 ready, work held) ⇒ empty_queue + a warn chip ─
+EMPTY="$(qh_snap 0 2 1 0 3 -1 '[]')"
+VE9="$(render_snap "$EMPTY")"
+ck "queue_health: 0 ready + held/hidden ⇒ empty_queue true"       eq "$(jq -r '.queue_health.empty_queue' <<<"$VE9")" "true"
+ck "queue_health: empty-queue explainer chip present (warn)"      has "0 ready" "$(jq -r '[.health.tags[]|select(.kind=="warn").text]|join(" ")' <<<"$VE9")"
+ck "queue_health: negative net ⇒ NO velocity_alarm (draining)"    eq "$(jq -r '.queue_health.velocity_alarm' <<<"$VE9")" "false"
+ck "queue_health: explainer names the held breakdown"            has "gate" "$(jq -r '.queue_health.explainer' <<<"$VE9")"
+
+# ─ All-zero queue ⇒ NO empty-queue chip (no work at all is not an alarm) ─
+ZERO="$(qh_snap 0 0 0 0 0 0 '[]')"
+VZ="$(render_snap "$ZERO")"
+ck "queue_health: all-zero ⇒ empty_queue false (no false alarm)"  eq "$(jq -r '.queue_health.empty_queue' <<<"$VZ")" "false"
+ck "queue_health: all-zero ⇒ no velocity_alarm"                  eq "$(jq -r '.queue_health.velocity_alarm' <<<"$VZ")" "false"
+
+# ─ Aggregate across TWO projects: net sums, epics union ─
+TWO="$(jq -cn '{schema_version:1,principal:"PRINCIPAL_V1",read_only:true,
+  lifecycle_columns:{},waiting_on_you:[],machines:[],
+  projects:[
+    {project_ref:"pA",runner_state:{desired:"running",actual:"running",liveness:"live",last_heartbeat_at:(now|todateiso8601),current_task_ref:null,current_task_title:null,desired_actual_mismatch:false},
+     queue_health:{ready:1,held:{gate:1,dependency:0,scheduled:0},hidden_under_deferred_parent:0,net_velocity_7d:3,epics_with_zero_ready_children:["e1"]},lease:null},
+    {project_ref:"pB",runner_state:{desired:"running",actual:"running",liveness:"live",last_heartbeat_at:(now|todateiso8601),current_task_ref:null,current_task_title:null,desired_actual_mismatch:false},
+     queue_health:{ready:2,held:{gate:0,dependency:1,scheduled:0},hidden_under_deferred_parent:0,net_velocity_7d:5,epics_with_zero_ready_children:["e2"]},lease:null}
+  ]}')"
+VT="$(render_snap "$TWO")"
+ck "queue_health: aggregate ready sums across projects (1+2=3)"  eq "$(jq -r '.queue_health.ready' <<<"$VT")" "3"
+ck "queue_health: aggregate net_velocity sums (3+5=8)"           eq "$(jq -r '.queue_health.net_velocity_7d' <<<"$VT")" "8"
+ck "queue_health: aggregate epics union (e1,e2 = 2)"             eq "$(jq -r '.queue_health.epics_zero_ready_count' <<<"$VT")" "2"
+
+# ─ Missing queue_health block ⇒ tolerant zeroed view (render-tolerance) ─
+NOQH="$(jq -cn '{schema_version:1,principal:"PRINCIPAL_V1",read_only:true,
+  lifecycle_columns:{},waiting_on_you:[],machines:[],
+  projects:[{project_ref:"pNo",runner_state:{desired:"running",actual:"running",liveness:"live",last_heartbeat_at:(now|todateiso8601),current_task_ref:null,current_task_title:null,desired_actual_mismatch:false},lease:null}]}')"
+VN="$(render_snap "$NOQH")"
+ck "queue_health: absent block ⇒ tolerant zeroed view (ok:true)" eq "$(jq -r '.ok' <<<"$VN")" "true"
+ck "queue_health: absent block ⇒ per-project row still has block" eq "$(jq -r '.runners[0].queue_health.ready' <<<"$VN")" "0"
+
+# ─ STRUCTURAL — app.js + index.html + css wire the §9 strip ─
+ck "index.html declares the #qh queue-health container"          has 'id="qh"' "$(cat "$SHELL_HTML")"
+ck "app.js exposes a renderQueueHealth() painter"                has "renderQueueHealth" "$(cat "$APP")"
+ck "app.js paints the board-level view.queue_health"             has "view.queue_health" "$(cat "$APP")"
+ck "app.js renders the per-runner r.queue_health line"           has "r.queue_health" "$(cat "$APP")"
+ck "board.css declares the .qh strip container"                  has ".qh{" "$(cat "$CSS")"
+ck "board.css declares the runaway .qh-vel.alarm style"          has ".qh-vel.alarm" "$(cat "$CSS")"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
-echo " test-board (T6a + F2 claude-tools-8fh + C4 zdxd.5):  PASS=$PASS  FAIL=$FAIL"
+echo " test-board (T6a + F2 8fh + C4 zdxd.5 + Q1 uxvq1):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]

@@ -290,6 +290,71 @@ it("CF workspace-inventory-put (claude-tools-8dfb) — schema validation + write
     storedVer && storedVer.top_n_beads[1].verified === false
   );
 
+  // ── CASE 9: queue_health optional additive (claude-tools-uxvq1, §9 / B.1) ─
+  // Present block round-trips normalized; absent ⇒ stored zeroed default;
+  // malformed ⇒ TOLERATED (coerced), never 422 (the ztb6 canary-422 scar — a
+  // malformed OPTIONAL telemetry sub-block must not void the inventory write).
+  const rQh = await put(
+    line({
+      project_ref: "case9-qh",
+      queue_health: {
+        ready: 4,
+        held: { gate: 3, dependency: 1, scheduled: 2 },
+        hidden_under_deferred_parent: 5,
+        net_velocity_7d: 2,
+        epics_with_zero_ready_children: ["rhythmGame-aaa"],
+      },
+    })
+  );
+  ck("queue_health-carrying payload ⇒ 200", rQh.status === 200);
+  const storedQh = await getRecord("workspace_inventory", "case9-qh");
+  ck("queue_health.ready round-trips", storedQh && storedQh.queue_health && storedQh.queue_health.ready === 4);
+  ck(
+    "queue_health.held breakdown round-trips (gate/dependency/scheduled)",
+    storedQh && storedQh.queue_health.held.gate === 3 &&
+      storedQh.queue_health.held.dependency === 1 &&
+      storedQh.queue_health.held.scheduled === 2
+  );
+  ck("queue_health.hidden_under_deferred_parent round-trips", storedQh && storedQh.queue_health.hidden_under_deferred_parent === 5);
+  ck("queue_health.net_velocity_7d round-trips", storedQh && storedQh.queue_health.net_velocity_7d === 2);
+  ck(
+    "queue_health.epics_with_zero_ready_children round-trips",
+    storedQh && Array.isArray(storedQh.queue_health.epics_with_zero_ready_children) &&
+      storedQh.queue_health.epics_with_zero_ready_children[0] === "rhythmGame-aaa"
+  );
+  // Absent block ⇒ stored zeroed default (uniform B.1 shape in the projection).
+  const rNoQh = await put(line({ project_ref: "case9-noqh" }));
+  ck("absent queue_health ⇒ 200", rNoQh.status === 200);
+  const storedNoQh = await getRecord("workspace_inventory", "case9-noqh");
+  ck(
+    "absent queue_health ⇒ stored zeroed default block (uniform B.1)",
+    storedNoQh && storedNoQh.queue_health && storedNoQh.queue_health.ready === 0 &&
+      storedNoQh.queue_health.held.gate === 0 &&
+      Array.isArray(storedNoQh.queue_health.epics_with_zero_ready_children) &&
+      storedNoQh.queue_health.epics_with_zero_ready_children.length === 0
+  );
+  // Malformed block ⇒ tolerated (coerced to the safe zeroed block), NOT 422.
+  const rBadQh = await put(
+    line({
+      project_ref: "case9-badqh",
+      queue_health: { ready: "lots", held: [1, 2, 3], net_velocity_7d: "x", epics_with_zero_ready_children: "nope" },
+    })
+  );
+  ck("malformed queue_health ⇒ still 200 (tolerant, not 422)", rBadQh.status === 200);
+  const storedBadQh = await getRecord("workspace_inventory", "case9-badqh");
+  ck(
+    "malformed queue_health coerced to a safe zeroed block",
+    storedBadQh && storedBadQh.queue_health.ready === 0 &&
+      storedBadQh.queue_health.held.gate === 0 &&
+      Array.isArray(storedBadQh.queue_health.epics_with_zero_ready_children) &&
+      storedBadQh.queue_health.epics_with_zero_ready_children.length === 0
+  );
+  // net_velocity_7d MAY be negative (a draining/healthy queue) — preserved, not floored.
+  const rNegQh = await put(line({ project_ref: "case9-negqh", queue_health: { net_velocity_7d: -3 } }));
+  ck("negative net_velocity_7d preserved (draining queue, not floored)", rNegQh.status === 200);
+  const storedNegQh = await getRecord("workspace_inventory", "case9-negqh");
+  ck("queue_health.net_velocity_7d === -3 round-trips", storedNegQh && storedNegQh.queue_health.net_velocity_7d === -3);
+
   // ── ANTI-DRIFT: schema registry carries workspace_inventory at v1 ─────────
   ck("workspace_inventory IS in the §4 schema registry at v1", schemaVersion("workspace_inventory") === 1);
 

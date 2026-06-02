@@ -227,6 +227,26 @@ may not change meaning without an explicit amend.
 > `INTAKE_MAX_ATTEMPTS` (`gave-up`), and writes an in-flight `enriching` marker.
 > Surface: the Workspaces hub (`web/workspaces/`). schema_version stays 1.
 
+> **Amendment (Q1 claude-tools-uxvq1, 2026-06-01):** `projects[].queue_health`
+> (§9 / B.1) is now produced. SOURCE: the runner — the only tier with `bd`
+> access — computes the block in `la_publish_workspace_inventory`
+> (`lib/local-agent.sh`) and publishes it ADDITIVELY in its §4.6
+> `workspace_inventory` record (the `verified`/counts precedent). The hosted
+> `workSnapshot()` reads it back per-project, NORMALIZED to this frozen shape
+> (`normalizeQueueHealth`), defaulting to an honest all-zero block when no
+> inventory/block exists — so the field is UNIFORM (the Board strip always has a
+> block). CF-only in spirit, but the bash oracle (`co__work_snapshot`) emits the
+> zeroed default for SHAPE PARITY (the `current_task_title:null` precedent).
+> Implementation choices (all reversible — the contract-test invariant is
+> "computed AND surfaced, not a specific alarm cutoff", UX-DESIGN-V2 Open-Q#3):
+> `net_velocity_7d` = created − closed over the trailing 7d (POSITIVE = runaway;
+> may be negative for a draining queue, NOT floored); the §5.2 hold types are
+> mapped onto what `bd` exposes today (gate = `gate:*`/`human` label, dependency
+> = blocked-without-gate, scheduled = `bd defer`) until Flow J's unified
+> `holds[]` producer lands. The net-velocity alarm threshold is a named tunable
+> (`NET_VELOCITY_ALARM_THRESHOLD`, default `> 0`) in `web/board/board-view.js`;
+> moving it needs NO producer/projection change. schema_version stays 1.
+
 ### B.2 `blueprint-get(project_ref)` → the `blueprint` §4 record body
 
 ```jsonc

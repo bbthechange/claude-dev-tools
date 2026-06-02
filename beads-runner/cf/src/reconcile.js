@@ -202,6 +202,49 @@ function jqStr(v) {
   }
 }
 
+// ── normalizeQueueHealth — the §9 / Contract B.1 queue_health sub-block ───────
+// claude-tools-uxvq1 (epic claude-tools-mhcp, track Q). queue_health is OPTIONAL
+// ADDITIVE telemetry the runner publishes in its §4.6 workspace_inventory record
+// (the only tier with bd access — same posture as counts/`verified`). This
+// COERCES any input to the FROZEN B.1 shape, defaulting every missing/malformed
+// field to a safe value. It does NOT 422 a malformed optional sub-block — a
+// reject there would void the whole inventory write over telemetry the contract
+// marks optional (the ztb6 canary-422 scar; the same tolerance `verified`
+// follows). Used at BOTH the write boundary (persist the normalized block) and
+// the read projection (defend a legacy/partial stored block). A null/absent
+// input yields the honest all-zero block so projects[].queue_health is UNIFORM
+// per B.1 — the Board's empty-queue explainer + net-velocity alarm read it
+// directly and never have to special-case "absent".
+function intOr0(v) {
+  return typeof v === "number" && Number.isFinite(v) && Math.floor(v) === v ? v : 0;
+}
+function normalizeQueueHealth(qh) {
+  const o = qh && typeof qh === "object" && !Array.isArray(qh) ? qh : {};
+  const held = o.held && typeof o.held === "object" && !Array.isArray(o.held) ? o.held : {};
+  const epics = Array.isArray(o.epics_with_zero_ready_children)
+    ? o.epics_with_zero_ready_children.filter((x) => typeof x === "string" && x.length > 0)
+    : [];
+  // net_velocity_7d is the ONE field that may be NEGATIVE (more closed than
+  // created — a healthy, draining queue), so it is NOT floored at 0; it is
+  // coerced to a finite integer (rounded — the producer emits an integer, but a
+  // legacy/float value is rounded to a stable surfaced number), default 0.
+  const nv =
+    typeof o.net_velocity_7d === "number" && Number.isFinite(o.net_velocity_7d)
+      ? Math.round(o.net_velocity_7d)
+      : 0;
+  return {
+    ready: intOr0(o.ready),
+    held: {
+      gate: intOr0(held.gate),
+      dependency: intOr0(held.dependency),
+      scheduled: intOr0(held.scheduled),
+    },
+    hidden_under_deferred_parent: intOr0(o.hidden_under_deferred_parent),
+    net_velocity_7d: nv,
+    epics_with_zero_ready_children: epics,
+  };
+}
+
 // Read a stored §4 record exactly the way CF.1 `opGet` / the bash
 // `co__store_get` does — a byte-identical typed SELECT (the SAME accepted
 // read-side pattern CF.6 `getRawDossier` / CF.9 `getRaw` document, NOT a reach
@@ -592,6 +635,12 @@ async function workspaceInventoryPut(co, principal, jsonStr) {
       stage: b.stage,
       verified: b.verified === true,
     })),
+    // queue_health (claude-tools-uxvq1, §9 / B.1) — OPTIONAL additive at v1 (no
+    // schema_version bump; the `verified`/`machines[]`/`intake[]` additive
+    // precedent). Tolerantly normalized to the frozen B.1 shape and persisted
+    // ALWAYS (zeroed default when absent) so projects[].queue_health is uniform
+    // in the projection; a malformed block NEVER 422s the inventory write.
+    queue_health: normalizeQueueHealth(parsed.queue_health),
     updated_at: now,
   };
   const w = await co._writeRecord(principal, "workspace_inventory", proj, obj);
@@ -809,39 +858,49 @@ async function workSnapshot(co, principal, proj, beadsStr) {
   for (const pr of projs) {
     if (!pr) continue;
     const rec = await reconcileData(co, principal, pr, undefined);
-    // claude-tools-4g5o — workspace_inventory join: look up the title for
-    // current_task_ref from the stored §4.6 workspace_inventory record's
-    // in_progress_beads[]. Graceful degradation: no record / no match / no
-    // current_task_ref / unparseable body ⇒ current_task_title=null and the
-    // Board renderer falls back to ref-only. O(1) per project (typically one
-    // in_progress bead per workspace); deliberately no pre-cache, no staleness
-    // check (v1 trusts the lookup — bounded staleness comes from next pickup
-    // rewriting the record).
-    let currentTaskTitle = null;
-    if (typeof rec.current_task_ref === "string" && rec.current_task_ref) {
+    // Read this project's stored §4.6 workspace_inventory record ONCE — it feeds
+    // BOTH the current_task_title join (4g5o) AND the queue_health surface
+    // (uxvq1). O(1) per project; no pre-cache, no staleness check (v1 trusts the
+    // lookup — bounded staleness comes from the next pickup rewriting the row).
+    let wsiParsed = null;
+    {
       const wsi = await co.db
         .prepare("SELECT json FROM records WHERE type = ? AND id = ?")
         .bind("workspace_inventory", pr)
         .first();
       if (wsi && typeof wsi.json === "string") {
-        let parsed = null;
         try {
-          parsed = JSON.parse(wsi.json);
+          wsiParsed = JSON.parse(wsi.json);
         } catch {
-          parsed = null;
+          wsiParsed = null;
         }
-        const ip = parsed && Array.isArray(parsed.in_progress_beads)
-          ? parsed.in_progress_beads : null;
-        if (ip) {
-          const match = ip.find(
-            (b) => b && typeof b === "object" && b.bead_ref === rec.current_task_ref
-          );
-          if (match && typeof match.title === "string") {
-            currentTaskTitle = match.title;
-          }
+        if (!wsiParsed || typeof wsiParsed !== "object" || Array.isArray(wsiParsed)) {
+          wsiParsed = null;
         }
       }
     }
+    // claude-tools-4g5o — workspace_inventory title join. Graceful degradation:
+    // no record / no match / no current_task_ref / unparseable body ⇒ null and
+    // the Board renderer falls back to ref-only.
+    let currentTaskTitle = null;
+    if (typeof rec.current_task_ref === "string" && rec.current_task_ref && wsiParsed) {
+      const ip = Array.isArray(wsiParsed.in_progress_beads)
+        ? wsiParsed.in_progress_beads : null;
+      if (ip) {
+        const match = ip.find(
+          (b) => b && typeof b === "object" && b.bead_ref === rec.current_task_ref
+        );
+        if (match && typeof match.title === "string") {
+          currentTaskTitle = match.title;
+        }
+      }
+    }
+    // claude-tools-uxvq1 — queue_health (§9 / B.1). Surfaced per-project from the
+    // runner-published §4.6 record, NORMALIZED to the frozen B.1 shape. Absent
+    // record / absent block ⇒ the honest all-zero block (normalizeQueueHealth's
+    // default) so projects[].queue_health is UNIFORM — the Board strip always
+    // has a block to render (empty-queue explainer + net-velocity alarm, §9).
+    const queue_health = normalizeQueueHealth(wsiParsed ? wsiParsed.queue_health : null);
     projects.push({
       project_ref: rec.project_ref,
       runner_state: {
@@ -853,6 +912,7 @@ async function workSnapshot(co, principal, proj, beadsStr) {
         current_task_title: currentTaskTitle,
         desired_actual_mismatch: rec.desired_actual_mismatch,
       },
+      queue_health,
       lease: rec.lease,
     });
   }

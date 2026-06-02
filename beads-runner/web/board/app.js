@@ -64,6 +64,7 @@
     woyEmpty: document.getElementById('woy-empty'),
     woyCount: document.getElementById('woy-count'),
     cols: document.getElementById('cols'),
+    qh: document.getElementById('qh'),
     machines: document.getElementById('machines'),
     msEmpty: document.getElementById('ms-empty'),
     runners: document.getElementById('runners'),
@@ -173,6 +174,37 @@
       });
       el.cols.appendChild(c);
     });
+  }
+
+  /* renderQueueHealth(qh) — Q1 (claude-tools-uxvq1) §9 board strip. Paints the
+   * net-velocity (runaway) alarm + the empty-queue explainer + any epics with
+   * zero ready children, from the board-level aggregate view.queue_health. All
+   * decisions (alarm boolean, explainer string) live in board-view.js; this
+   * only writes the derived strings. */
+  function renderQueueHealth(qh) {
+    clear(el.qh);
+    if (!qh) return;
+    // Net-velocity row — `.alarm` when the trend is runaway (positive, §9).
+    var vrow = mk('div', 'qh-row');
+    vrow.appendChild(mk('span', 'qh-lbl', 'NET VELOCITY · 7d'));
+    vrow.appendChild(mk('span', 'qh-vel' + (qh.velocity_alarm ? ' alarm' : ''),
+      qh.velocity_text + (qh.velocity_alarm ? ' · runaway' : '')));
+    el.qh.appendChild(vrow);
+    // Empty-queue explainer row — ready / held / hidden. `.empty` highlights
+    // the "0 ready but work is held" case (the "why is bd ready empty?" moment).
+    var erow = mk('div', 'qh-row' + (qh.empty_queue ? ' empty' : ''));
+    erow.appendChild(mk('span', 'qh-lbl', 'QUEUE'));
+    erow.appendChild(mk('span', 'qh-explain', qh.explainer));
+    el.qh.appendChild(erow);
+    // Epics with zero ready children — only when present (the §9 "is this epic
+    // done or does it have hidden deferred children?" flag).
+    if (qh.epics_zero_ready_count) {
+      var prow = mk('div', 'qh-row');
+      prow.appendChild(mk('span', 'qh-lbl', 'EPICS · 0-READY'));
+      prow.appendChild(mk('span', 'qh-epics',
+        qh.epics_with_zero_ready_children.join(', ')));
+      el.qh.appendChild(prow);
+    }
   }
 
   function postSetDesired(projectRef, state, btn) {
@@ -293,6 +325,17 @@
       if (r.stale_controls_note) {
         box.appendChild(mk('div', 'rstale', r.stale_controls_note));
       }
+      // Q1 (claude-tools-uxvq1) — per-project §9 queue health (B.1). A compact
+      // secondary line under the runner controls: the empty-queue explainer +
+      // a runaway-velocity flag, scoped to THIS workspace's queue. `.alarm`
+      // when this workspace's net-velocity is runaway (positive).
+      if (r.queue_health) {
+        var qhLine = mk('div', 'rqh' + (r.queue_health.velocity_alarm ? ' alarm' : ''));
+        qhLine.textContent = r.queue_health.explainer + ' · ' +
+          r.queue_health.velocity_text +
+          (r.queue_health.velocity_alarm ? ' ⚠ runaway' : '');
+        box.appendChild(qhLine);
+      }
       // The per-runner "capacity: <verdict>" pill was REMOVED in
       // claude-tools-zdxd.5 (C4). Per-machine usage now surfaces ONCE at
       // the top of the board via renderMachines (MACHINE-STATE.md §4).
@@ -371,6 +414,7 @@
         if (waitingBeads[card.bead_ref]) gatedStages[col.stage] = true;
       });
     });
+    renderQueueHealth(view.queue_health);
     renderLifecycle(view.lifecycle, gatedStages);
     renderMachines(view.machines || [], view.machines_empty === true);
     renderRunners(view.runners);

@@ -90,6 +90,69 @@
     { state: 'stopped',    label: 'Stop' }
   ];
 
+  // Q1 (claude-tools-uxvq1) — the §9 net-velocity (runaway-expansion) alarm
+  // threshold. net_velocity_7d = created − closed over 7 days; POSITIVE means
+  // more opened than closed = the queue is GROWING ("8 hours, more open than we
+  // started"). The exact cutoff is [free] / UX-DESIGN-V2 Open-Q#3 — a named,
+  // tunable constant, NOT a magic number scattered in the logic. The contract
+  // intent ("positive trend = runaway alarm") is `> 0`; raise this to require a
+  // steeper trend before alarming, with NO change to the producer/projection
+  // (the alarm derives from the surfaced number, the contract-test invariant).
+  var NET_VELOCITY_ALARM_THRESHOLD = 0;
+
+  /* deriveQueueHealth(qh, opts?) → the §9 / B.1 queue_health view model.
+   *
+   * Q1 (claude-tools-uxvq1). `qh` is a projects[].queue_health block (per B.1:
+   * { ready, held{gate,dependency,scheduled}, hidden_under_deferred_parent,
+   * net_velocity_7d, epics_with_zero_ready_children }). The projection always
+   * emits a normalized block (zeroed when the runner hasn't published), so this
+   * is tolerant-by-construction: a missing/garbage field degrades to 0/[] and
+   * the strip still renders (the same render-tolerance discipline as
+   * deriveMachine). Presentation ONLY — every number is a projection fact; the
+   * alarm BOOLEAN is derived from net_velocity_7d (a presentation threshold,
+   * not new state). Reused for BOTH the per-project row and the board-level
+   * aggregate strip (deriveBoardView sums the projects into one qh-shaped
+   * object and calls this again). */
+  function deriveQueueHealth(qh, opts) {
+    var q = (qh && typeof qh === 'object' && !Array.isArray(qh)) ? qh : {};
+    var held = (q.held && typeof q.held === 'object' && !Array.isArray(q.held)) ? q.held : {};
+    function n(v) { return (typeof v === 'number' && isFinite(v)) ? v : 0; }
+    var ready = n(q.ready);
+    var gate = n(held.gate), dep = n(held.dependency), sched = n(held.scheduled);
+    var heldTotal = gate + dep + sched;
+    var hidden = n(q.hidden_under_deferred_parent);
+    // net_velocity may be NEGATIVE (a draining/healthy queue) — keep the sign.
+    var netV = (typeof q.net_velocity_7d === 'number' && isFinite(q.net_velocity_7d))
+      ? q.net_velocity_7d : 0;
+    var epics = Array.isArray(q.epics_with_zero_ready_children)
+      ? q.epics_with_zero_ready_children.filter(function (x) { return typeof x === 'string' && x; })
+      : [];
+    var threshold = (opts && typeof opts.net_velocity_threshold === 'number' && isFinite(opts.net_velocity_threshold))
+      ? opts.net_velocity_threshold : NET_VELOCITY_ALARM_THRESHOLD;
+    var velocityAlarm = netV > threshold; // positive trend = runaway (§9)
+    // The empty-queue explainer fires only when there is NO ready work AND a
+    // REASON to explain it (held/hidden/blocked-by-epic work) — "why is bd ready
+    // empty / only epics?" An all-zero queue (no work at all) is NOT an alarm.
+    var emptyQueue = ready === 0 && (heldTotal > 0 || hidden > 0 || epics.length > 0);
+    var netText = (netV > 0 ? '+' : '') + netV + '/7d net';
+    var explainer = ready + ' ready · ' + heldTotal + ' held' +
+      (heldTotal ? ' (' + gate + ' gate · ' + dep + ' dep · ' + sched + ' sched)' : '') +
+      ' · ' + hidden + ' hidden under deferred parent';
+    return {
+      ready: ready,
+      held: { gate: gate, dependency: dep, scheduled: sched },
+      held_total: heldTotal,
+      hidden_under_deferred_parent: hidden,
+      net_velocity_7d: netV,
+      velocity_alarm: velocityAlarm,
+      velocity_text: netText,
+      epics_with_zero_ready_children: epics,
+      epics_zero_ready_count: epics.length,
+      empty_queue: emptyQueue,
+      explainer: explainer
+    };
+  }
+
   /* formatAgo(fromIso, nowMs?) → "Nm" | "Nh" | "Nd" | "Ns" — a presentation
    * formatting of the §4.2 `last_heartbeat_at` contract datum (NOT a derived
    * liveness decision; that is the Coordinator's, consumed verbatim). Honest
@@ -235,6 +298,14 @@
     row.stale_controls_note = liveness === 'stale'
       ? 'stale — last seen ' + ago + ' ago, controls may not apply quickly'
       : null;
+
+    // Q1 (claude-tools-uxvq1) — per-project §9 / B.1 queue_health. UNLIKE the
+    // runner-state fields above, queue_health is NOT gated by liveness: it is
+    // the WORK-TRUTH queue shape (ready/held/hidden/velocity/epics), valid even
+    // when the runner is stale or stopped (a paused workspace can still have a
+    // runaway backlog Brian needs to see). Always present in the projection
+    // (normalized zeroed default), so the row always carries a block.
+    row.queue_health = deriveQueueHealth(p && p.queue_health);
 
     return row;
   }
@@ -561,6 +632,36 @@
       return a + (w.open_item_count || 0);
     }, 0);
 
+    // Q1 (claude-tools-uxvq1) — the board-level QUEUE-HEALTH strip (§9). Each
+    // project owns its own queue_health (B.1, per-project); the board strip is
+    // the at-a-glance AGGREGATE across them. We sum the counts and net-velocity
+    // and UNION the flagged epics into one queue_health-shaped object, then run
+    // it back through deriveQueueHealth so the strip view model is derived by
+    // the SAME code path as a per-project row (one source of truth). The
+    // net-velocity alarm + empty-queue explainer (the §9 highest-value items)
+    // surface as health-strip chips below.
+    var qhEpicSet = [];
+    var qhTotals = projects.reduce(function (acc, p) {
+      var d = deriveQueueHealth(p && p.queue_health);
+      acc.ready += d.ready;
+      acc.held.gate += d.held.gate;
+      acc.held.dependency += d.held.dependency;
+      acc.held.scheduled += d.held.scheduled;
+      acc.hidden_under_deferred_parent += d.hidden_under_deferred_parent;
+      acc.net_velocity_7d += d.net_velocity_7d;
+      d.epics_with_zero_ready_children.forEach(function (e) {
+        if (qhEpicSet.indexOf(e) === -1) qhEpicSet.push(e);
+      });
+      return acc;
+    }, {
+      ready: 0,
+      held: { gate: 0, dependency: 0, scheduled: 0 },
+      hidden_under_deferred_parent: 0,
+      net_velocity_7d: 0
+    });
+    qhTotals.epics_with_zero_ready_children = qhEpicSet;
+    var queueHealth = deriveQueueHealth(qhTotals);
+
     var healthy =
       staleRunners.length === 0 &&
       mismatchRunners.length === 0 &&
@@ -612,6 +713,21 @@
           : null,
         overCapacity.length
           ? { kind: 'warn', text: '⚠ ' + overCapacity.length + ' over capacity' }
+          : null,
+        // Q1 (claude-tools-uxvq1) — §9 queue-health chips. The net-velocity
+        // alarm is the single highest-value signal ("runaway task creation"),
+        // so it carries `kind:'bad'` (loudest weight); the empty-queue
+        // explainer and zero-ready-children epics are `kind:'warn'`.
+        queueHealth.velocity_alarm
+          ? { kind: 'bad', text: '⚠ ' + queueHealth.velocity_text + ' (runaway)' }
+          : null,
+        queueHealth.empty_queue
+          ? { kind: 'warn', text: '0 ready · ' + queueHealth.held_total +
+              ' held · ' + queueHealth.hidden_under_deferred_parent + ' hidden' }
+          : null,
+        queueHealth.epics_zero_ready_count
+          ? { kind: 'warn', text: '⚠ ' + queueHealth.epics_zero_ready_count +
+              (queueHealth.epics_zero_ready_count === 1 ? ' epic' : ' epics') + ' 0-ready' }
           : null
       ].filter(Boolean)
     };
@@ -633,7 +749,11 @@
       waiting_on_you: waiting,
       lifecycle: lifecycle,
       machines: machineRows,
-      machines_empty: machineRows.length === 0
+      machines_empty: machineRows.length === 0,
+      // Q1 (claude-tools-uxvq1) — the board-level §9 QUEUE-HEALTH strip model
+      // (aggregate across projects). Per-project queue_health rides on each
+      // runners[].queue_health (B.1, per-project).
+      queue_health: queueHealth
     };
   }
 
@@ -641,11 +761,13 @@
     deriveBoardView: deriveBoardView,
     deriveRunner: deriveRunner,
     deriveMachine: deriveMachine,
+    deriveQueueHealth: deriveQueueHealth,
     formatAgo: formatAgo,
     formatAgeSeconds: formatAgeSeconds,
     formatPct: formatPct,
     STAGE_ORDER: STAGE_ORDER,
     DESIRED_CONTROLS: DESIRED_CONTROLS,
+    NET_VELOCITY_ALARM_THRESHOLD: NET_VELOCITY_ALARM_THRESHOLD,
     SUPPORTED_SNAPSHOT_SCHEMA: SUPPORTED_SNAPSHOT_SCHEMA
   };
 });

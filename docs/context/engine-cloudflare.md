@@ -145,6 +145,14 @@ never committed.
   match). An unknown *higher* version is refused, never best-effort-parsed (§0.3).
 - **Capacity/machine-state absence degrades to a value, not an error** — an absent
   aggregation surfaces as `"unknown"` / `machines: []`, matching the bash oracle.
+- **`projects[].queue_health` (§9 / B.1, Q1 claude-tools-uxvq1) is runner-sourced,
+  read-back per project.** The runner computes the block (`la_publish_workspace_inventory`)
+  and ships it ADDITIVELY in its §4.6 `workspace_inventory`; `workspaceInventoryPut`
+  accepts it TOLERANTLY (`normalizeQueueHealth` coerces — a malformed optional
+  sub-block never 422s the write, the ztb6 scar), and `workSnapshot` reads it back
+  per project, defaulting to a zeroed block when absent (uniform shape). The bash
+  oracle emits the zeroed default for shape parity (the `current_task_title:null`
+  precedent) — so it is CF-only in spirit but in-contract for the differential.
 
 ## Go deeper
 

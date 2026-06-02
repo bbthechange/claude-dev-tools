@@ -71,7 +71,7 @@ Three facts explain almost everything:
 
 | File | Role |
 |---|---|
-| `web/board/board-view.js` | The pure core. `deriveBoardView(snapshot, nowMs?, opts?)` is the entry; helpers `deriveRunner`, `deriveMachine`, `formatAgo`/`formatAgeSeconds`/`formatPct`. Holds `STAGE_ORDER`, `DESIRED_CONTROLS`, `SUPPORTED_SNAPSHOT_SCHEMA`, the `SILENT_CLASSES` back-compat set, the §0.3 reject. |
+| `web/board/board-view.js` | The pure core. `deriveBoardView(snapshot, nowMs?, opts?)` is the entry; helpers `deriveRunner`, `deriveMachine`, `deriveQueueHealth`, `formatAgo`/`formatAgeSeconds`/`formatPct`. Holds `STAGE_ORDER`, `DESIRED_CONTROLS`, `NET_VELOCITY_ALARM_THRESHOLD`, `SUPPORTED_SNAPSHOT_SCHEMA`, the `SILENT_CLASSES` back-compat set, the §0.3 reject. |
 | `web/board/app.js` | Browser glue. `refresh()` (the GET + render + auto-poll), `postSetDesired()` (the one POST), `render*` painters, the ephemeral `pendingDesired` overlay + `clearHonoredPending`. |
 | `web/board/index.html` | The shell DOM: status strip, WAITING-ON-YOU lane, lifecycle spine, machine strip, runners grid. Mounts `Shell.mount({active:null})`. Asset links are absolute (`/board/*`, `/shared/*`) — also served at `/` via `web/_redirects` (q6z7). |
 | `web/board/board.css` | Responsive phone-first → desktop. Band classes (`band-green/amber/red/neutral/stale/missing`), `.silent`/`.failbead`, `.sub.verified`/`.sub.code` (done substate), `.rbtn.active`. |
@@ -157,6 +157,17 @@ bash beads-runner/verify-pages-deploy.sh board   # must print mismatches=0
 - **The pending overlay is in-memory only.** A reload starts honest with no
   pending banner. `clearHonoredPending` deletes an entry the instant the
   projection's actual catches up — never on a timer.
+- **Queue Health (§9, Q1 claude-tools-uxvq1) is per-project, summed for the strip.**
+  `projects[].queue_health` (B.1) is sourced from the runner's §4.6
+  `workspace_inventory` (computed in `lib/local-agent.sh`, normalized in
+  `cf/src/reconcile.js`), so it is WORK-TRUTH, not runner-state — `deriveRunner`
+  attaches it ungated by liveness (a paused workspace can still have a runaway
+  backlog). `deriveBoardView` sums the projects into the board-level
+  `view.queue_health` and emits the §9 chips (net-velocity *runaway* alarm =
+  `kind:'bad'`; empty-queue explainer + 0-ready epics = `kind:'warn'`). The
+  alarm cutoff is the named, tunable `NET_VELOCITY_ALARM_THRESHOLD` (default
+  `> 0`) — never a magic number; queue health is deliberately NOT folded into
+  `health.ok` (machine health ≠ backlog trend).
 - **`g2s` soft "thinking" is presentation-only.** Between 90s–180s heartbeat age
   on a `running` runner the pill softens to `thinking`, but wire `liveness`
   stays binary and control-button gating still keys off `liveness === 'live'`,
@@ -185,4 +196,4 @@ honest-state invariant, a fresh scar, a changed control set. Keep new
 honest-state logic in `board-view.js` (not `app.js`) so the Node test covers it.
 **Keep it concise — this doc earns its keep only if agents read all of it.**
 Delete stale lines; don't let it grow into a copy of the README or INTERFACE.md.
-Last substantive update: 2026-05-31.
+Last substantive update: 2026-06-01 (Q1 queue_health strip, claude-tools-uxvq1).

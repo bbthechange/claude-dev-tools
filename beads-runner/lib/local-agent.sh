@@ -439,9 +439,14 @@ la_publish_workspace_inventory() {
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
 
   # counts — each query is independently best-effort; an empty/failed count
-  # falls to 0 (the wire contract requires integers, not nulls).
+  # falls to 0 (the wire contract requires integers, not nulls). `bd ready`'s
+  # raw JSON is captured (not just its length) because queue_health below needs
+  # each ready bead's `parent` to flag epics with zero ready children (§9).
+  local ready_json
   open=$(bd list --status=open --json 2>/dev/null | jq 'length' 2>/dev/null) || open=0
-  ready=$(bd ready --json 2>/dev/null | jq 'length' 2>/dev/null) || ready=0
+  ready_json=$(bd ready --json 2>/dev/null) || ready_json="[]"
+  printf '%s' "$ready_json" | jq -e 'type=="array"' >/dev/null 2>&1 || ready_json="[]"
+  ready=$(printf '%s' "$ready_json" | jq 'length' 2>/dev/null) || ready=0
   in_prog=$(bd list --status=in_progress --json 2>/dev/null | jq 'length' 2>/dev/null) || in_prog=0
   blocked=$(bd list --status=blocked --json 2>/dev/null | jq 'length' 2>/dev/null) || blocked=0
   [[ "$open"    =~ ^[0-9]+$ ]] || open=0
@@ -495,6 +500,65 @@ la_publish_workspace_inventory() {
                             | any(type=="string" and . == "verified"))})' 2>/dev/null) || top_beads="[]"
   [[ -n "$top_beads" ]] || top_beads="[]"
 
+  # ── queue_health (claude-tools-uxvq1, UX-DESIGN-V2 §9 + Contract B.1) ────────
+  # The runner is the ONLY tier with bd access, so — exactly like counts and the
+  # `verified` flag — it computes the queue-health facts HERE and publishes them
+  # additively in this same §4.6 record. The hosted projection surfaces
+  # projects[].queue_health and the Board renders the empty-queue explainer +
+  # net-velocity alarm (§9 — the two highest-value items). Every query is
+  # best-effort: any failure degrades to a safe 0/[] so a producer hiccup never
+  # aborts task pickup (same posture as counts above).
+  #
+  # The 3 §5.2 hold mechanisms are mapped onto what bd exposes TODAY (Flow J's
+  # unified holds[] producer is not built yet — this is the honest-degradation
+  # bridge until it lands, NOT a competing source):
+  #   gate       = non-closed beads carrying a `gate:*` or `human` label (the
+  #                human/gate hold — the runner auto-blocks `human`-labelled work)
+  #   dependency = status==blocked beads WITHOUT a gate/human label (pure dep block)
+  #   scheduled  = status==deferred beads (`bd defer` = "on ice for later")
+  # hidden_under_deferred_parent = non-deferred beads whose parent is deferred.
+  # net_velocity_7d = created − closed over the trailing 7 days (POSITIVE =
+  #   runaway creation, the §9 alarm signal). closed uses updated_at as the
+  #   close-time proxy (bd does not populate closed_at). created spans both the
+  #   non-closed list AND the closed list (a bead created-and-closed in-window
+  #   still counts as created). epics_with_zero_ready_children = open epics
+  #   ((.issue_type // .type)=="epic", non-closed) with no child appearing in
+  #   `bd ready`. The `// .type` fallback is the repo's documented defensive
+  #   idiom for bd's issue_type/type inconsistency (run-beads-tasks.sh:774-780):
+  #   current `bd list --json` emits issue_type, but the field name has drifted
+  #   across bd versions, so accept both so a future bd can't silently zero the
+  #   epic flag.
+  local qh_list qh_closed qh_cut queue_health
+  qh_list=$(bd list --json 2>/dev/null) || qh_list="[]"
+  printf '%s' "$qh_list" | jq -e 'type=="array"' >/dev/null 2>&1 || qh_list="[]"
+  qh_closed=$(bd list --status=closed --json 2>/dev/null) || qh_closed="[]"
+  printf '%s' "$qh_closed" | jq -e 'type=="array"' >/dev/null 2>&1 || qh_closed="[]"
+  qh_cut=$(date -u -v-7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+           || date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || qh_cut=""
+  queue_health=$(jq -cn \
+     --argjson list "$qh_list" \
+     --argjson ready "$ready_json" \
+     --argjson closed "$qh_closed" \
+     --arg cut "$qh_cut" \
+     '
+     ($list // []) as $L | ($ready // []) as $R | ($closed // []) as $C
+     | ([ $L[] | select((.labels // []) | any(type=="string" and (startswith("gate:") or . == "human"))) ] | length) as $gate
+     | ([ $L[] | select(.status=="blocked" and (((.labels // []) | any(type=="string" and (startswith("gate:") or . == "human"))) | not)) ] | length) as $dep
+     | ([ $L[] | select(.status=="deferred") ] | length) as $sched
+     | ([ $L[] | select(.status=="deferred") | .id ]) as $deferredIds
+     | ([ $L[] | select(.status!="deferred" and .parent != null and (((.parent) as $p | ($deferredIds | index($p))) != null)) ] | length) as $hidden
+     | ([ $R[] | .parent // empty ] | unique) as $readyParents
+     | ([ $L[] | select((.issue_type // .type) == "epic") | select((.id) as $id | ($readyParents | index($id)) == null) | .id ]) as $epicsZero
+     | (([ $L[] | select(.created_at >= $cut) ] | length) + ([ $C[] | select(.created_at >= $cut) ] | length)) as $created7
+     | ([ $C[] | select(.updated_at >= $cut) ] | length) as $closed7
+     | { ready: ($R | length),
+         held: { gate: $gate, dependency: $dep, scheduled: $sched },
+         hidden_under_deferred_parent: $hidden,
+         net_velocity_7d: (if $cut == "" then 0 else ($created7 - $closed7) end),
+         epics_with_zero_ready_children: $epicsZero }
+     ' 2>/dev/null) || queue_health=""
+  [[ -n "$queue_health" ]] || queue_health='{"ready":0,"held":{"gate":0,"dependency":0,"scheduled":0},"hidden_under_deferred_parent":0,"net_velocity_7d":0,"epics_with_zero_ready_children":[]}'
+
   jq -cn \
      --argjson sv 1 \
      --arg pr  "$(la_principal)" \
@@ -507,10 +571,11 @@ la_publish_workspace_inventory() {
      --argjson bl "${blocked:-0}" \
      --argjson ipb "$ip_beads" \
      --argjson tb  "$top_beads" \
+     --argjson qh "$queue_health" \
      '{report:"workspace_inventory",schema_version:$sv,principal:$pr,
        runner_id:$rid,project_ref:$prj,observed_at:$at,
        counts:{open:$o,ready:$rd,in_progress:$ip,blocked:$bl},
-       in_progress_beads:$ipb,top_n_beads:$tb}' \
+       in_progress_beads:$ipb,top_n_beads:$tb,queue_health:$qh}' \
      >> "$(la__outbox)" 2>/dev/null || true
   return 0
 }

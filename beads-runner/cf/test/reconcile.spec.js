@@ -960,6 +960,115 @@ it("CF.3 workSnapshot joins workspace_inventory.in_progress_beads → runner_sta
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// claude-tools-uxvq1 — §9 / Contract B.1 queue_health: workSnapshot surfaces
+// projects[].queue_health from the runner-published §4.6 record (normalized to
+// the frozen B.1 shape), defaulting to the honest zeroed block when no
+// inventory record / no block exists (uniform shape — the Board strip always
+// has a block to render the empty-queue explainer + net-velocity alarm).
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 workSnapshot surfaces projects[].queue_health (§9 / B.1, claude-tools-uxvq1)", async () => {
+  let pPASS = 0;
+  let pFAIL = 0;
+  const pfails = [];
+  function pck(name, cond) {
+    if (cond) {
+      pPASS++;
+      // eslint-disable-next-line no-console
+      console.log(`  ✓ ${name}`);
+    } else {
+      pFAIL++;
+      pfails.push(name);
+      // eslint-disable-next-line no-console
+      console.log(`  ✗ ${name}`);
+    }
+  }
+  function wsiWithQh(projectRef, qh) {
+    const base = {
+      report: "workspace_inventory",
+      schema_version: 1,
+      principal: "literal-overwritten",
+      runner_id: "hostQ",
+      project_ref: projectRef,
+      observed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      counts: { open: 0, ready: 0, in_progress: 0, blocked: 0 },
+      in_progress_beads: [],
+      top_n_beads: [],
+    };
+    if (qh) base.queue_health = qh;
+    return JSON.stringify(base);
+  }
+  async function seed(projectRef) {
+    await call(GOOD, "set-desired", [projectRef, "running", "ui:x"]);
+    await call(GOOD, "heartbeat", [hbLine("hostQ", projectRef, "running", "", ago(5))]);
+  }
+  async function pick(projectRef) {
+    const snap = await callJson("work-snapshot", ["", ""]);
+    return (snap.projects || []).find((p) => p.project_ref === projectRef);
+  }
+
+  // ── Case A: published queue_health surfaces (normalized) ──────────────────
+  await seed("projQA");
+  await call(GOOD, "workspace-inventory-put", [
+    wsiWithQh("projQA", {
+      ready: 4,
+      held: { gate: 3, dependency: 1, scheduled: 2 },
+      hidden_under_deferred_parent: 5,
+      net_velocity_7d: 2,
+      epics_with_zero_ready_children: ["rg-aaa"],
+    }),
+  ]);
+  const A = await pick("projQA");
+  pck("Case A — project carries a queue_health block", A && !!A.queue_health);
+  pck("Case A — ready surfaced", A && A.queue_health.ready === 4);
+  pck(
+    "Case A — held breakdown surfaced (gate/dependency/scheduled)",
+    A && A.queue_health.held.gate === 3 && A.queue_health.held.dependency === 1 &&
+      A.queue_health.held.scheduled === 2
+  );
+  pck("Case A — hidden_under_deferred_parent surfaced", A && A.queue_health.hidden_under_deferred_parent === 5);
+  pck("Case A — net_velocity_7d surfaced (COMPUTED, not a cutoff)", A && A.queue_health.net_velocity_7d === 2);
+  pck(
+    "Case A — epics_with_zero_ready_children surfaced",
+    A && Array.isArray(A.queue_health.epics_with_zero_ready_children) &&
+      A.queue_health.epics_with_zero_ready_children[0] === "rg-aaa"
+  );
+
+  // ── Case B: inventory exists but NO queue_health block ⇒ zeroed default ────
+  await seed("projQB");
+  await call(GOOD, "workspace-inventory-put", [wsiWithQh("projQB", null)]);
+  const B = await pick("projQB");
+  pck(
+    "Case B — no block ⇒ honest zeroed default (uniform B.1 shape)",
+    B && B.queue_health && B.queue_health.ready === 0 &&
+      B.queue_health.held.scheduled === 0 &&
+      Array.isArray(B.queue_health.epics_with_zero_ready_children) &&
+      B.queue_health.epics_with_zero_ready_children.length === 0
+  );
+
+  // ── Case C: NO inventory record at all ⇒ still a zeroed default block ──────
+  await seed("projQC");
+  const C = await pick("projQC");
+  pck(
+    "Case C — no inventory record ⇒ zeroed default block (never absent/null)",
+    C && C.queue_health && C.queue_health.ready === 0 && C.queue_health.net_velocity_7d === 0
+  );
+
+  // ── Case D: negative net_velocity_7d (draining) preserved through projection
+  await seed("projQD");
+  await call(GOOD, "workspace-inventory-put", [wsiWithQh("projQD", { net_velocity_7d: -4 })]);
+  const D = await pick("projQD");
+  pck("Case D — negative net_velocity_7d preserved (draining queue)", D && D.queue_health.net_velocity_7d === -4);
+
+  // eslint-disable-next-line no-console
+  console.log(`\n══ CF.3 queue_health projection (claude-tools-uxvq1): PASS=${pPASS} FAIL=${pFAIL} ══`);
+  if (pFAIL > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + pfails.join("\n  - "));
+  }
+  expect(pFAIL, `uxvq1 clauses failed: ${pfails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // claude-tools-7qf7 — the GET-path lifecycle work-truth feed + done·verified.
 // The PRODUCTION Board GET passes NO inline beads (a Worker can't exec bd), so
 // workSnapshot derives the lifecycle work-truth from the runner-published §4.6

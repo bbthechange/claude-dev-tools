@@ -1414,6 +1414,12 @@ co__work_snapshot() {
     # case here: title=null and the renderer falls back to ref-only. The
     # field exists for shape parity with CF so the renderer code path is the
     # same regardless of which producer fed the snapshot.
+    # claude-tools-uxvq1 — queue_health (§9 / B.1). The bash coordinator stores
+    # NO workspace_inventory (it is a CF-only §4.6 producer), so this is ALWAYS
+    # the honest all-zero default here — emitted for SHAPE PARITY with CF so the
+    # renderer's empty-queue/net-velocity path is identical regardless of which
+    # producer fed the snapshot (the exact current_task_title:null precedent
+    # above). CF fills the real per-project values from the inventory record.
     proj_json=$(printf '%s' "$proj_json" | jq -c \
         --argjson r "$rec" --arg cap "$cap" \
         '. + [{project_ref:$r.project_ref,
@@ -1423,6 +1429,11 @@ co__work_snapshot() {
                              current_task_ref:$r.current_task_ref,
                              current_task_title:null,
                              desired_actual_mismatch:$r.desired_actual_mismatch},
+               queue_health:{ready:0,
+                             held:{gate:0,dependency:0,scheduled:0},
+                             hidden_under_deferred_parent:0,
+                             net_velocity_7d:0,
+                             epics_with_zero_ready_children:[]},
                lease:$r.lease,
                capacity_strip:{cost_class:"standard", verdict:$cap,
                                source:"§6.3 aggregated coarse verdict (T4.4)"}}]' \

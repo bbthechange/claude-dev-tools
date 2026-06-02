@@ -322,6 +322,59 @@ ck "verified is a strict boolean (never a string) in_progress" \
 ck "verified is a strict boolean (never a string) top_n" \
    test "$(jq_field '[.top_n_beads[].verified | type] | unique | join(",")')" = "boolean"
 
+# ── Case 11: queue_health is computed + published (claude-tools-uxvq1, §9) ────
+# The runner is the only tier with bd access, so it computes the §9 / B.1
+# queue_health facts from bd and publishes them in this same §4.6 record.
+# Fixtures: a full non-closed list (gate/human/blocked/deferred/parent/epic
+# beads), a ready list (with parents), and a closed list (for net-velocity).
+echo "── Case 11: queue_health computed from bd work-truth (uxvq1 §9 / B.1) ──"
+: > "$OUTBOX"
+rm -f "$WIP_BD_FIXTURE"/*.json
+RECENT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"   # inside the 7d velocity window
+# Full non-closed list (bd list --json, no --status → shim reads list-.json):
+#  E1 epic w/ a ready child · E2 epic w/ NO ready child · r1 ready child of E1 ·
+#  g1 gate:* label · h1 human-labelled blocked · d1 pure dependency block ·
+#  s1 deferred (scheduled) · child1 hidden under deferred parent s1.
+# NOTE: E1 uses `issue_type` (what current `bd list --json` emits) while E2 uses
+# the alternate `type` field name — bd has drifted between the two across
+# versions (run-beads-tasks.sh:774-780). This pins the producer's defensive
+# `(.issue_type // .type)` fallback: if it ever regresses to bare `.issue_type`,
+# E2 stops matching and the "flags ONLY E2" assertion below fails loudly.
+cat > "$WIP_BD_FIXTURE/list-.json" <<JSON
+[
+  {"id":"E1","issue_type":"epic","status":"open","created_at":"$RECENT","labels":[]},
+  {"id":"E2","type":"epic","status":"open","created_at":"$RECENT","labels":[]},
+  {"id":"r1","issue_type":"feature","status":"open","parent":"E1","created_at":"$RECENT","labels":["stage:impl"]},
+  {"id":"g1","issue_type":"feature","status":"open","created_at":"$RECENT","labels":["gate:audio"]},
+  {"id":"h1","issue_type":"feature","status":"blocked","created_at":"$RECENT","labels":["human"]},
+  {"id":"d1","issue_type":"feature","status":"blocked","created_at":"$RECENT","labels":["stage:impl"]},
+  {"id":"s1","issue_type":"feature","status":"deferred","created_at":"$RECENT","labels":[]},
+  {"id":"child1","issue_type":"feature","status":"open","parent":"s1","created_at":"$RECENT","labels":[]}
+]
+JSON
+cat > "$WIP_BD_FIXTURE/ready.json" <<JSON
+[ {"id":"r1","parent":"E1","labels":["stage:impl"]} ]
+JSON
+cat > "$WIP_BD_FIXTURE/list-closed.json" <<JSON
+[ {"id":"c1","issue_type":"feature","status":"closed","created_at":"$RECENT","updated_at":"$RECENT"} ]
+JSON
+# open list (top_n) — reuse the non-closed list so the record stays valid.
+cp "$WIP_BD_FIXTURE/list-.json" "$WIP_BD_FIXTURE/list-open.json"
+
+la_publish_workspace_inventory
+ck "exactly one line appended"  test "$(wc -l < "$OUTBOX" | tr -d ' ')" = "1"
+ck "queue_health is an object"               test "$(jq_field '.queue_health | type')" = "object"
+ck "queue_health.ready == 1 (bd ready length)"            test "$(jq_field '.queue_health.ready')" = "1"
+ck "queue_health.held.gate == 2 (gate:* + human)"        test "$(jq_field '.queue_health.held.gate')" = "2"
+ck "queue_health.held.dependency == 1 (blocked, no gate/human)" test "$(jq_field '.queue_health.held.dependency')" = "1"
+ck "queue_health.held.scheduled == 1 (deferred)"         test "$(jq_field '.queue_health.held.scheduled')" = "1"
+ck "queue_health.hidden_under_deferred_parent == 1"      test "$(jq_field '.queue_health.hidden_under_deferred_parent')" = "1"
+# net_velocity_7d = created(8 non-closed + 1 closed) − closed(1) = 8.
+ck "queue_health.net_velocity_7d == 8 (created−closed/7d)" test "$(jq_field '.queue_health.net_velocity_7d')" = "8"
+ck "epics_with_zero_ready_children flags ONLY E2"        test "$(jq_field '.queue_health.epics_with_zero_ready_children | join(",")')" = "E2"
+ck "queue_health counts are integers (never null/strings)" \
+   test "$(jq_field '[.queue_health.ready, .queue_health.held.gate, .queue_health.held.dependency, .queue_health.held.scheduled, .queue_health.hidden_under_deferred_parent, .queue_health.net_velocity_7d] | map(type) | unique | join(",")')" = "number"
+
 echo ""
 echo "── Summary ──"
 echo "  PASS: $PASS"
