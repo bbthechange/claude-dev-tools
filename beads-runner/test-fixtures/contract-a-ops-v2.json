@@ -71,8 +71,8 @@
       "proxy": "web/functions/api/cross-ws/relay.js", "adapter": true, "migration": "cf/migrations/0009_relay_log.sql"
     },
     {
-      "_planned_note": "Track I (Activity) — I1. agent_activity transient (latest-wins per agent, machine_state_reports precedent). DAEMON-EMITTED like report-machine-state/report-capacity: NO web proxy, NOT adapter-mapped (proxy:null, adapter:false) — that is correct, not a missing layer.",
-      "op": "agent-activity-report", "track": "I", "status": "planned",
+      "_landed_note": "Track I (Activity) — I1 (claude-tools-uxvi1) LANDED. agent_activity transient (latest-wins per agent_key, machine_state_reports precedent / Contract A.2). RUNNER/DAEMON-EMITTED like report-machine-state/report-capacity: NO web proxy, NOT adapter-mapped (proxy:null, adapter:false) — that is correct, not a missing layer. Module cf/src/activity.js (ACTIVITY_OPS: agent-activity-report ingest + get-agent-activity read), guard in coordinator.js, migration 0010_agent_activity.sql, vitest differential cf/test/activity.spec.js, fixture test-fixtures/agent-activity-v1.json.",
+      "op": "agent-activity-report", "track": "I", "status": "wired",
       "module": "cf/src/activity.js", "ops_set": "ACTIVITY_OPS", "guard": "ACTIVITY_OPS",
       "proxy": null, "adapter": false, "migration": "cf/migrations/0010_agent_activity.sql"
     }

@@ -78,6 +78,7 @@ Two storage classes (pick correctly — it's hard to move later):
 | `src/capacity.js` / `src/machine-state.js` | Coarse capacity verdict / per-machine telemetry. Both **transient** (smallest module templates to copy). |
 | `src/forensic.js` | §10.3 transient encrypted forensic store. Deliberately NOT a §4 record. |
 | `src/relay.js` | K2 (DESIGN K §3) cross-WS `relay_log` **transient** append-only log + `relay-log-append`/`-tail` (the B.3 `{exchanges[]}` projection). Typed columns (not forensic_audit's opaque `line`) so the tail can filter by `project_ref`. Proxies live at `web/functions/api/cross-ws/{relay,relay-append}.js`. |
+| `src/activity.js` | I1 (DESIGN I §1.4) `agent_activity` **transient** telemetry: `agent-activity-report` ingest (latest-wins per `agent_key`, §0.3+D.2-closed-enum gate, §9.1 principal stamp) + `get-agent-activity` read. `machine-state.js` precedent; NOT a §4 record, NO web proxy / NOT adapter-mapped (runner/daemon-emitted). Migration `0010_agent_activity.sql`. `ACTIVITY_STATES` is the engine enum mirror `conformance-contract-v2.sh` PART D pins ≡ `enums.js`. NB: `agent_key` (`writer:<id>`/`aux:<kind>:<id>`) has a `:`, so it uses a colon-widened key predicate, not `safeKey`. |
 | `migrations/NNNN_*.sql` | Deploy-path schema source of truth (the DO lazy-DDLs locally, but ship the migration). |
 
 ## Contracts & invariants (don't break these)

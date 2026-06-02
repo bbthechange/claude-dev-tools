@@ -81,6 +81,7 @@ Three facts explain this layer:
 | `local-agent.sh` | The per-computer Local Agent: §1.1 UP-only reports, §6.3 coarse capacity {ok,over} + USAGE_THRESHOLD ceiling, §6.2 unreachable posture (capacity fails OPEN, lease degraded-CLOSED), §8.2 terminal-reason re-home. |
 | `*-stub.sh` | `local-agent-stub.sh` / `coordinator-stub.sh`: NO-OP six-job surface (signature-conformant) so the runner loop shape is provable before the real backend. |
 | `activity-classifier.sh` | PURE log→activity-enum + liveness-dot classifier (Contract D.2 closed enum, 90/180s windows). No LLM, no I/O. |
+| `activity-report.sh` | I1 runner-side companion (sources `activity-classifier.sh`): extracts facts (last tool from assistant **content** blocks, ask-brian-in-flight, real-429 vs benign subscription) from a `stream-json` capture → classifies → **throttled, backgrounded** `agent-activity-report` POST. The shared seam I5 reuses on daemon aux streams. NB: tab is IFS-whitespace, so its `read` sites translate tab→`\x1f` to keep empty fields. |
 | `git-pin-main.sh` / `node25-prime.sh` / `sweep-fixtures.sh` | Loop hygiene: pin HEAD back to trunk each iteration; prime Node-version PATH (avoid the v25-crashes-claude bug); self-heal orphaned LIVE-bd test fixtures. |
 | `test-assert.sh` | Optional shared assert vocabulary (`ok`/`bad`/`ck`/`has`/`hasnt`/`eq`/`nz` + `summary`) so a new `test-*.sh` sources it instead of copy-pasting. |
 

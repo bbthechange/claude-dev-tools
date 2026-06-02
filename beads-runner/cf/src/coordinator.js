@@ -153,6 +153,7 @@ import { LEASE_OPS, handleLeaseOp } from "./lease.js";
 // `principal` — no second auth path (C4); a no/invalid-token relay op is
 // rejected 401 at the Worker BEFORE this guard, so it writes NOTHING.
 import { RELAY_OPS, handleRelayOp } from "./relay.js";
+import { ACTIVITY_OPS, handleActivityOp } from "./activity.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -408,6 +409,22 @@ export class Coordinator {
     // Worker BEFORE this guard, so it writes NOTHING.
     if (RELAY_OPS.has(op)) {
       return await handleRelayOp(this, op, args, principal);
+    }
+
+    // ── I1 (claude-tools-uxvi1) DESIGN I §1.4 agent_activity telemetry guard ──
+    // The closed-D.2 activity enum + liveness dot, latest-wins per agent_key,
+    // dispatched by its dedicated module so the CF.1 substrate switch below
+    // stays byte-identical. NOT a §4 record / NO §4 DDL: an agent_activity
+    // report is EPHEMERAL telemetry (Contract A.2) — the module owns its OWN
+    // `agent_activity` namespace (lazy + idempotent DDL there), so it stays
+    // ABSENT from the §4 registry/projection's record path and from every §4.3
+    // Notification body (activity NEVER pages by itself; the machine_state /
+    // capacity_reports "telemetry, not a §4 record" precedent). The §9.1
+    // chokepoint (the Worker) has ALREADY authenticated + threaded `principal`
+    // — no second auth path; a no/invalid-token activity op is rejected 401 at
+    // the Worker BEFORE this guard, so it writes NOTHING.
+    if (ACTIVITY_OPS.has(op)) {
+      return await handleActivityOp(this, op, args, principal);
     }
 
     try {

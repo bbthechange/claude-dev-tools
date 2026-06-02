@@ -52,6 +52,7 @@ COORDINATOR_JS="$REPO_ROOT/cf/src/coordinator.js"
 ADAPTER_JS="$REPO_ROOT/cf/pages-dev/adapter.js"
 RECONCILE_JS="$REPO_ROOT/cf/src/reconcile.js"
 NOTIFICATION_JS="$REPO_ROOT/cf/src/notification.js"
+ACTIVITY_JS="$REPO_ROOT/cf/src/activity.js"
 ENUMS_JS="$REPO_ROOT/web/shared/enums.js"
 
 # Contract B — the projection schema_version this tree is bound to today. The
@@ -319,6 +320,18 @@ if (m) engineTiers = [...m[1].matchAll(/["']([^"']+)["']/g)].map((x) => x[1]);
 ck("engine notification.js TIERS extracted", Array.isArray(engineTiers) && engineTiers.length > 0);
 ck("NOTIFICATION_TIER ≡ engine notification.js TIERS (byte-equivalent sets)", setEq(E.NOTIFICATION_TIER, engineTiers));
 
+// (b cont.) I1 (claude-tools-uxvi1) LANDED the ACTIVITY_STATE engine mirror:
+// cf/src/activity.js exports the closed D.2 enum it gates ingest on. Assert it
+// is byte-equivalent to enums.js ACTIVITY_STATE (which PART (a) already pinned
+// to the frozen §5.2 set) — so the bash classifier, the engine, and the web
+// enum cannot drift apart. Same regex-extract technique as TIERS above.
+const act = fs.readFileSync("${ACTIVITY_JS}", "utf8");
+const am = act.match(/ACTIVITY_STATES\s*=\s*\[([^\]]*)\]/);
+let engineStates = null;
+if (am) engineStates = [...am[1].matchAll(/["']([^"']+)["']/g)].map((x) => x[1]);
+ck("engine activity.js ACTIVITY_STATES extracted", Array.isArray(engineStates) && engineStates.length > 0);
+ck("ACTIVITY_STATE ≡ engine activity.js ACTIVITY_STATES (byte-equivalent sets)", setEq(E.ACTIVITY_STATE, engineStates));
+
 fs.writeFileSync(process.argv[2], JSON.stringify({ steps }));
 NODE_EOF
 
@@ -336,7 +349,8 @@ if [[ -f "$PART_D_RESULT" ]]; then
 else
   bad "PART D produced no result file"
 fi
-info "engine mirrors PENDING (added by their track, then promoted to enforced): ACTIVITY_STATE (I1), HOLD_TYPE (J2), LIVENESS_WINDOWS (I2)."
+info "engine mirror ENFORCED: ACTIVITY_STATE (I1, claude-tools-uxvi1 — activity.js)."
+info "engine mirrors PENDING (added by their track, then promoted to enforced): HOLD_TYPE (J2), LIVENESS_WINDOWS (I2)."
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART B.4 — tolerance conformance (Contract B.4 — the 4xe/R5 fix)

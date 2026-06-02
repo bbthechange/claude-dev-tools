@@ -207,6 +207,14 @@ was lost).
 - **Two `runner.sh` names.** The v2 *script* `beads-runner/runner.sh` vs the
   per-workspace *config* `<ws>/.beads/runner.sh` (sourced by both runners) — same
   filename, different role. The collision cleanup is `v2c5`.
+- **v2 emits `agent_activity` from the during-task loop (I1, claude-tools-uxvi1).**
+  `st_run_task`'s `while kill -0 $CLAUDE_PID` loop calls `activity_report_tick`
+  (`lib/activity-report.sh`) every `ACTIVITY_REPORT_INTERVAL` — the sibling ticker
+  beside the heartbeat/control beats. It classifies the worker's `STREAM_FILE`
+  (D.2 enum + liveness) and **throttled, backgrounded** POSTs `agent-activity-report`.
+  Because v2 has **no `tail -f` parser**, this poll IS the activity seam (not a
+  second tail). Guarded-optional (BC-43): absent lib / offline transport ⇒ no-op,
+  never blocks or crashes the loop.
 - **Never gate a lease decision on the transport `rc==4`** — it conflates a
   GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
   AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409

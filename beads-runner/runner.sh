@@ -99,6 +99,12 @@ CONTROL_POLL_INTERVAL="${CONTROL_POLL_INTERVAL:-60}"   # §0.5 (60 s) desired-st
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"         # §0.5 (60 s) actual-state+liveness heartbeat; lease renew
 RECLAIM_POLL_INTERVAL="${RECLAIM_POLL_INTERVAL:-60}"   # §0.5 (60 s) re-poll cadence after a clean drain (relaunch itself is T3)
 RUNNER_TICK="${RUNNER_TICK:-1}"                        # during-task poll granularity (s); test-tunable
+# I1 (claude-tools-uxvi1) — how often the during-task loop classifies the worker
+# stream + (throttled) reports agent_activity. [free] per ARCH §8 (any cadence
+# that keeps liveness ≤ the 90s soft window). The lib throttles the actual POST
+# to transitions + an ≤ACTIVITY_REPORT_FRESHNESS_S heartbeat; this is just the
+# classify/scan cadence (the jq scan is bounded to the stream tail).
+ACTIVITY_REPORT_INTERVAL="${ACTIVITY_REPORT_INTERVAL:-15}"
 
 # ── BC-22 watchdog constants (T2.3, claude-tools-9e7) ────────────────────────
 # IDLE_TIMEOUT is the ONLY env-overridable knob (BC-22). The 15s poll cadence
@@ -367,6 +373,18 @@ pin_head_to_main() { :; }   # default no-op; overridden by the lib if present
 if [[ -f "$RUNNER_DIR/lib/git-pin-main.sh" ]]; then
   # shellcheck source=lib/git-pin-main.sh
   source "$RUNNER_DIR/lib/git-pin-main.sh"
+fi
+
+# ── I1 (claude-tools-uxvi1) activity-state stream→report wiring ──────────────
+# Sourced ONCE at startup (it sources lib/activity-classifier.sh, the pure D.2
+# classifier). OPTIONAL & guarded (BC-43): an absent lib degrades to a no-op —
+# the during-task loop calls activity_report_tick only when it is defined, so a
+# missing lib never crashes the runner. The actual POST is a further-guarded,
+# backgrounded best-effort (activity__post no-ops unless the live-engine
+# transport is wired), so offline/stub runs never touch the network.
+if [[ -f "$RUNNER_DIR/lib/activity-report.sh" ]]; then
+  # shellcheck source=lib/activity-report.sh
+  source "$RUNNER_DIR/lib/activity-report.sh" 2>/dev/null || true
 fi
 
 # ── close-discipline hook settings builder (claude-tools-2fkp) ────────────────
@@ -2481,11 +2499,36 @@ st_run_task() {
   # immediately) but only ACTED ON after the task completes (§2.5 "stop after
   # current task" — no mid-task kill for a stop). The watchdog above is the
   # separate BC-22 liveness concern. Heartbeat (job 3) renews the held lease.
+  # I1 (claude-tools-uxvi1): the writer-lane activity reporter state. The writer
+  # is singular per workspace BY CONSTRUCTION (one serial st_run_task loop), so
+  # its latest-wins key is `writer:<runner_id>` (design/activity.md §1.4). The
+  # ACTIVITY_STATE_FILE rides the BC-29 timestamped basename so a killed
+  # iteration's leak is cleanable; it is under the BC-27 self-gitignored log_dir.
+  local act_state_file="$base.activity-state"
+  local act_agent_key="writer:${RUNNER_ID}"
+  local since_act=0
+  rm -f "$act_state_file" 2>/dev/null || true
+
   local since_ctl=0 since_hb=0
   while kill -0 "$CLAUDE_PID" 2>/dev/null; do
     sleep "$RUNNER_TICK"
     since_ctl=$((since_ctl + RUNNER_TICK))
     since_hb=$((since_hb + RUNNER_TICK))
+    since_act=$((since_act + RUNNER_TICK))
+    # I1: out-of-band activity classify + (throttled) agent-activity-report.
+    # OPTIONAL & guarded — only when the lib is sourced; the tick itself is
+    # best-effort (always rc 0) and BACKGROUNDS its POST so this loop never
+    # blocks on the network. This is the §1.4 "separate throttled reporter,
+    # not in the hot loop" mirror — v2 has NO tail-f parser, so the during-task
+    # control cadence IS the sibling ticker. current_tool/stage are best-effort;
+    # the projection (I2) reads only the B.1 subset it promises.
+    if [[ $since_act -ge $ACTIVITY_REPORT_INTERVAL ]] \
+       && command -v activity_report_tick >/dev/null 2>&1; then
+      since_act=0
+      activity_report_tick "$STREAM_FILE" "$act_state_file" "$act_agent_key" \
+        "$PROJECT_REF" "writer" "impl" "$CURRENT_TASK_ID" "${CANDIDATE_TITLE:-}" "" \
+        2>/dev/null || true
+    fi
     if [[ $since_ctl -ge $CONTROL_POLL_INTERVAL ]]; then
       since_ctl=0
       local d

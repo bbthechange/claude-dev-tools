@@ -1,0 +1,21 @@
+{
+  "_comment_DO_NOT_REMOVE": "Canonical fixture for DESIGN I §1.4 agent_activity v1 (I1 / claude-tools-uxvi1). Every test (ingest, latest-wins, projection) loads from THIS file. Changing a gated field here breaks every test that does not change in lockstep — that is the drift-blocker. The gated keys are report/schema_version/agent_key/observed_at/lane/state/state_confidence/liveness_dot; the rest (workspace/kind/bead_ref/title/stage/last_event_ts/seconds_in_state/current_tool/touching) are the §1.4 ingest superset, tolerated verbatim and projected DOWN by I2's workSnapshot. Adding a GATED field = a D.2 amend. See design/activity.md §1.4.",
+  "report": "agent_activity",
+  "schema_version": 1,
+  "principal": "PRINCIPAL_V1",
+  "agent_key": "writer:macbook-pro.local",
+  "workspace": "rhythmGame",
+  "lane": "writer",
+  "kind": "impl",
+  "bead_ref": "rhythmGame-93o",
+  "title": "wire the input handler",
+  "stage": "impl",
+  "state": "writing-code",
+  "state_confidence": "derived",
+  "liveness_dot": "green",
+  "observed_at": "2026-05-24T06:38:20Z",
+  "last_event_ts": "2026-05-24T06:38:18Z",
+  "seconds_in_state": 12,
+  "current_tool": "Edit",
+  "touching": ["Gameplay", "Input"]
+}

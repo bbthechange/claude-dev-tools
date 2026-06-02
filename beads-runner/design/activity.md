@@ -186,6 +186,21 @@ telemetry** (debug/derivation inputs) and are **not** in B.1 for either lane —
 the raw tool name. If a future view needs a key, it is **added to B.1 first**, then
 emitted — never read off the table directly.
 
+> **IMPLEMENTED (uxvi1, 2026-06-02).** The reporter is **`lib/activity-report.sh`**
+> — a sourceable companion to the pure `lib/activity-classifier.sh`: it extracts
+> the classifier's input facts (last tool from assistant **content** blocks, the
+> ask-brian-MCP-in-flight + real-429 overrides) from the worker's stream-json
+> capture, classifies, writes a local `ACTIVITY_STATE_FILE`, and **throttled +
+> backgrounded** POSTs `agent-activity-report`. **v2 reality:** `runner.sh` has
+> **no `tail -f` parser** (it closed the BC-39/40 leak), so the reporter is POLLED
+> on the `st_run_task` during-task control cadence (`ACTIVITY_REPORT_INTERVAL`,
+> the heartbeat-beat sibling ticker) — **that** is the §1.4 "separate throttled
+> reporter, not in the hot loop", not a second tail process. The engine op is
+> **`cf/src/activity.js`** (`agent_activity` transient, latest-wins per
+> `agent_key`, the `machine-state.js` precedent). Both are factored as the shared
+> seam I5 reuses on the daemon's aux streams. Engine+runner live-verified against
+> the deployed Worker (a writer report round-trips with `principal:"brian"`).
+
 ### 1.5 `touching[]` (writer only, [free] stretch)
 
 For the Blueprint overlay, the writer report may carry the domain ids it is
