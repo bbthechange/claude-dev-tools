@@ -40,6 +40,19 @@ engine (K2 is deployed, so it is no longer the tolerated-warn no-op the bead was
 filed against). To let runner-spawned workers (not just hand-driven ones) call
 it, the tool must also be in each workspace's `.beads/runner.sh` `--allowedTools`
 (per `docs/runbooks/add-tool-to-runner-allowlist.md`) — not yet wired.
+**Verdict split (K4, claude-tools-uxvk4):** the two outcomes are conformance-
+tested offline by `mcp-ask-workspace/test-escalate-conformance.sh` — a stubbed
+responder + a stubbed engine bridge (`XWS_BRIDGE_BIN`, the bridge twin of
+`XWS_SPECIALIST_BIN`) drive BOTH branches deterministically: **answer** → a single
+`relay-log-append(resolved)` and NO dossier leg; **escalate** (`conflict`,
+`missing_design`, and the escalate-to-safe prose default) → the responder's
+verdict is mapped onto a §5 `worker_ask` (`escalateToWorkerAsk`), a **blocking**
+dossier is written, `relay-log-append(escalated)` links the `dossier_ref`, and the
+**full ruling round-trip** returns Brian's ruling to A. (The real-store §5-gate
+proof — `dg__validate_dossier` accepts the persisted record, `tier=blocking` —
+stays in `test-mcp-protocol.sh`'s opt-in `XWS_SMOKE_ESCALATE=1` leg.) Neither
+mcp-ask-workspace smoke is enrolled in `run-tests.sh` (the MCP smokes are
+standalone, like askbrian's); run them by hand or at live-verify.
 
 **Not here (go to the right doc):**
 - The dossier-builder PROMPT this server dispatches (`agents/dossier-builder.system.md`)

@@ -123,7 +123,11 @@ echo "ANSWER path: answer relayed + isError absent (R1 §Q1) OK"
 # (identical cost in the ask-brian fork). It is therefore OPT-IN so the core
 # fork-parity framing test above stays fast + deterministic in the offline gate.
 # Set XWS_SMOKE_ESCALATE=1 to exercise the full split → blocking-dossier write.
-# (The full ruling-returns round-trip is K4 / claude-tools-uxvk4's conformance.)
+# (The full ruling-returns round-trip + conflict/missing-design/escalate-to-safe
+# conformance is K4 / claude-tools-uxvk4's — see test-escalate-conformance.sh,
+# which drives BOTH branches deterministically via a stubbed XWS_BRIDGE_BIN; THIS
+# leg keeps the heavier real-store §5-gate proof: dg__validate_dossier accepts the
+# persisted record with tier=blocking.)
 if [[ "${XWS_SMOKE_ESCALATE:-0}" == "1" ]]; then
   TREF="thirsty-fe-77e"
   send "$(jq -cn --arg t "$TREF" '

@@ -55,7 +55,14 @@ import { createHash } from "node:crypto";
 // ── paths ───────────────────────────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const BRIDGE_PATH = join(__dirname, "helpers", "engine-bridge.sh");
+// The engine bridge: id_for/write_polished/write_fallback/poll_once for the §5
+// ESCALATION leg + relay_log_append/-tail for the answer leg. Overridable so the
+// K4 (claude-tools-uxvk4) conformance test can drive the FULL escalate→blocking-
+// dossier→ruling round-trip deterministically — stubbing out the slow jq store
+// ops the real bridge inherits from ask-brian — exactly as XWS_SPECIALIST_BIN
+// stubs the responder. Unset in prod ⇒ the real engine-bridge.sh is used.
+const BRIDGE_PATH =
+  process.env.XWS_BRIDGE_BIN || join(__dirname, "helpers", "engine-bridge.sh");
 // The read-only responder is spawned through the canonical hat shim
 // (specialist.sh --kind=xws-responder) so the permission lockdown lives in ONE
 // place (DESIGN K §2.1; must-protect #11). Overridable for the offline smoke.
