@@ -68,3 +68,28 @@ Say you've registered `claude mcp add my-server --scope user -- node /path/to/se
 ```
 
 Then restart the runner. The next worker that picks up a task will have access.
+
+## Currently-allowlisted MCP tools (and where)
+
+| Tool | Allowlisted in | Bead |
+|---|---|---|
+| `mcp__askbrian__ask-brian` | every workspace runner (`claude-tools`, `thirsty`, `thirsty-backend`, …) | claude-tools-qxz |
+| `mcp__ask-workspace__ask-workspace` | `thirsty` (FE) + `thirsty-backend` (BE) runner.sh — the verified cross-WS pair | claude-tools-c3es |
+
+`ask-workspace` is the worker→worker cross-WS bridge (DESIGN K). Its responder is
+bounded by `RESPONDER_TIMEOUT_MS` (default 300s), comfortably under the
+`IDLE_TIMEOUT=21600` already set in those runner.sh files for the blocking
+`ask-brian` tool, so adding it needs **no watchdog change**.
+
+### Cross-repo nuance (claude-tools-c3es scar)
+
+`thirsty/.beads/runner.sh` and `thirsty-backend/.beads/runner.sh` live in the
+**thirsty / thirsty-backend** git repos, not claude-tools. The runner sources the
+file from its **local** working tree at startup, so the change is functionally
+live the moment you edit + restart — independent of whether the sibling repo is
+pushed. Note `--permission-mode` interaction (`run-beads-tasks.sh` ~L1617): an
+**opus** worker is launched with `--permission-mode auto` (LLM-classified
+approval) and never consults `--allowedTools`; only **non-opus (sonnet)** workers
+read the allowlist. So the allowlist entry is the load-bearing fix for the sonnet
+path — verify on that path (`--model sonnet`), where `permission_denials:[]` in
+the final `result` event is the acceptance signal.
