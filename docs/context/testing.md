@@ -92,6 +92,16 @@ both run inside the gate (tiers `lib` and `cf`). `lib/test-<x>.sh` tests `lib/<x
   `BEHAVIORAL-CONTRACT.md` + INTERFACE §-clauses). A red rig means the harness is
   wrong (fix it to match the contract) or the script regressed — **never** edit a
   rig to make it pass. Changing an expected behavior is a §11 escalation, not a test edit.
+- **A rig that can't RUN must turn the tier RED, never read GREEN on an empty tally**
+  (claude-tools-rqpv). `run-conformance.sh` has three guards: (1) `bash -n` parse
+  pre-check at discovery — a heredoc-inside-`$(...)` with an odd quote parses on bash
+  5.x but ABORTS under the harness's `/bin/bash` 3.2, emitting zero RESULT lines; (2)
+  the ≥1-RESULT-line guard (no output ⇒ crashed/killed); (3) an exit-status guard — a
+  rig that emits RESULT lines then exits non-zero aborted mid-way (later assertions
+  silently skipped). **Rigs are contracted to exit 0 on a clean run** (`H_cleanup`
+  returns 0), so any non-zero rig exit is treated as an abort. Pinned by top-tier
+  `test-conformance-rig-integrity.sh` (drives the gate over fixture rigs via the
+  `CONF_ASSERT_DIR` override). If you add a rig, make sure its last command returns 0.
 - **Per-test isolation stays:** own `mktemp -d` store, own fake `bd` on PATH,
   `trap rm` cleanup. The shared helper (`test-assert.sh`) is vocabulary only.
 - **Deterministic clocks:** never assert on wall-clock; pass an explicit `now` into

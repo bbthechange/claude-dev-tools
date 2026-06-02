@@ -26,7 +26,10 @@
 set -u
 
 CONF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ASSERT_DIR="$CONF_DIR/assertions"
+# CONF_ASSERT_DIR override exists ONLY so the meta-test (claude-tools-rqpv:
+# test-conformance-rig-integrity.sh) can point the gate at a hermetic temp dir of
+# fixture rigs; production always uses the real assertions/ dir.
+ASSERT_DIR="${CONF_ASSERT_DIR:-$CONF_DIR/assertions}"
 RESULTS="$(mktemp)"
 RIGOUT="$(mktemp -d)"           # per-rig captured stdout/stderr + .done markers
 trap 'rm -f "$RESULTS"; rm -rf "$RIGOUT"' EXIT
@@ -95,6 +98,22 @@ for rig in "$ASSERT_DIR"/bc-*.sh; do
   base="$(basename "$rig" .sh)"
   match "$base" || continue
   rigs+=("$rig")
+  # PARSE GATE (claude-tools-rqpv). The harness's actual `bash` is /bin/bash 3.2,
+  # which parses heredocs-inside-$(...) and other constructs MORE strictly than the
+  # bash 4/5 a rig is often authored under. A rig that parses on the author's box can
+  # ABORT at parse time here, emitting ZERO RESULT lines to stdout — which would
+  # otherwise contribute 0 pass/0 fail and let the per-BC rollup read GREEN while every
+  # assertion in the rig was silently skipped (the exact silent-when-wrong failure this
+  # gate exists to catch, reproduced inside the gate). `bash -n` rejects it up front,
+  # so the replay scores it a NAMED parse FAIL with the captured syntax error — never a
+  # silent coverage drop. (Belt-and-suspenders with the ≥1-RESULT and exit-status guards
+  # below: this one names the failure precisely and skips launching a rig that cannot run.)
+  if bash -n "$rig" 2> "$RIGOUT/$base.parsefail.tmp"; then
+    rm -f "$RIGOUT/$base.parsefail.tmp"
+  else
+    mv "$RIGOUT/$base.parsefail.tmp" "$RIGOUT/$base.parsefail"
+    continue   # do NOT launch an unparseable rig; the replay scores it FAIL
+  fi
   if grep -qiE '^#[[:space:]]*conformance-lane:[[:space:]]*serial' "$rig"; then
     serial_rigs+=("$rig")
   else
@@ -137,9 +156,12 @@ for rig in "${parallel_rigs[@]+"${parallel_rigs[@]}"}"; do
     sleep 0.2
   done
   base="$(basename "$rig" .sh)"
-  # Each rig prints RESULT|… on stdout, diagnostics on stderr; the trailing
-  # `: > .done` runs after the rig returns (any exit code), marking the slot free.
-  ( bash "$rig" > "$RIGOUT/$base.out" 2> "$RIGOUT/$base.err"; : > "$RIGOUT/$base.done" ) &
+  # Each rig prints RESULT|… on stdout, diagnostics on stderr; we record its exit
+  # code to $base.rc (claude-tools-rqpv — a rig that emits RESULT lines but then
+  # aborts non-zero silently skips every later assertion; the replay turns that into
+  # a NAMED red). The trailing `: > .done` runs after the rig returns (any exit
+  # code), marking the slot free.
+  ( bash "$rig" > "$RIGOUT/$base.out" 2> "$RIGOUT/$base.err"; echo $? > "$RIGOUT/$base.rc"; : > "$RIGOUT/$base.done" ) &
   launched=$((launched+1))
   printf '   … launched %-34s (%d/%d)\n' "$base" "$launched" "$_nparallel" >&2
 done
@@ -171,7 +193,7 @@ set +m                          # job control no longer needed (parallel launch 
 for rig in "${serial_rigs[@]+"${serial_rigs[@]}"}"; do
   base="$(basename "$rig" .sh)"
   printf '   … serial   %-34s (serial lane, %d rig(s))\n' "$base" "${#serial_rigs[@]}" >&2
-  bash "$rig" > "$RIGOUT/$base.out" 2> "$RIGOUT/$base.err"
+  bash "$rig" > "$RIGOUT/$base.out" 2> "$RIGOUT/$base.err"; echo $? > "$RIGOUT/$base.rc"
   : > "$RIGOUT/$base.done"
 done
 
@@ -181,6 +203,15 @@ for rig in "${rigs[@]}"; do
   base="$(basename "$rig" .sh)"
   echo ""
   echo "▶ $base"
+  # PARSE-FAIL guard (claude-tools-rqpv): a rig rejected by `bash -n` at discovery
+  # never ran. Score it a NAMED parse FAIL and surface the captured syntax error —
+  # a parse-aborted rig must turn the tier RED, never read GREEN on an empty tally.
+  if [[ -f "$RIGOUT/$base.parsefail" ]]; then
+    sed 's/^/    /' "$RIGOUT/$base.parsefail" >&2
+    echo "RESULT|FAIL|$base|parse|rig failed bash -n (syntax error; ZERO assertions ran)" >> "$RESULTS"
+    printf '   %s %-9s %-7s %s\n' "✗ FAIL       " "$base" "parse" "syntax error — bash -n rejected the rig"
+    continue
+  fi
   [[ -s "$RIGOUT/$base.err" ]] && sed 's/^/    /' "$RIGOUT/$base.err" >&2
   # Determinism guard: a rig that emitted NO RESULT line crashed or was killed
   # (e.g. starved under load). Make that a NAMED red, never a silent coverage
@@ -189,6 +220,19 @@ for rig in "${rigs[@]}"; do
     echo "RESULT|FAIL|$base|-|rig produced no RESULT line (crashed or killed)" >> "$RESULTS"
     printf '   %s %-9s %-7s %s\n' "✗ FAIL       " "$base" "-" "rig produced no RESULT line"
     continue
+  fi
+  # EXIT-STATUS guard (claude-tools-rqpv): a rig that emitted RESULT line(s) but then
+  # exited NON-ZERO aborted mid-way (a `set -u` unbound var, a runtime error, a partial
+  # run) — every assertion AFTER the abort was silently skipped, and the ≥1-RESULT guard
+  # above would pass it on its PARTIAL tally. Rigs are contracted to exit 0 on a clean
+  # run (H_cleanup returns 0; verified across the whole suite, claude-tools-rqpv), so a
+  # non-zero exit is always an abort. Emit a synthetic FAIL (the tier goes RED) AND fall
+  # through to replay whatever RESULT lines it DID emit, so the partial evidence stays
+  # visible. A MISSING .rc (rig was killed before recording one) is treated the same.
+  rc="$(cat "$RIGOUT/$base.rc" 2>/dev/null || echo MISSING)"
+  if [[ "$rc" != 0 ]]; then
+    echo "RESULT|FAIL|$base|exit|rig exited non-zero ($rc) — assertions after the abort were skipped" >> "$RESULTS"
+    printf '   %s %-9s %-7s %s\n' "✗ FAIL       " "$base" "exit" "rig exited non-zero ($rc) — partial run"
   fi
   tee -a "$RESULTS" < "$RIGOUT/$base.out" \
     | while IFS='|' read -r tag status bc cite desc; do

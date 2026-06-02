@@ -107,6 +107,12 @@ _reap_runner_pg() {
 H_cleanup() {
   _reap_runner_pg
   [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"
+  # return 0 explicitly (claude-tools-rqpv): rigs are contracted to exit 0 on a clean
+  # run so run-conformance.sh's exit-status guard can treat any non-zero rig exit as a
+  # mid-way abort. Most rigs end with H_cleanup, whose final `[[ ]] && rm` would
+  # otherwise return non-zero whenever WORKDIR was already gone — an incidental exit
+  # code that would false-RED an otherwise-green rig under that guard.
+  return 0
 }
 
 # bd_seed <id> <title> <desc> [status=open] [labels] [deps(comma)] [issue_type=task]
