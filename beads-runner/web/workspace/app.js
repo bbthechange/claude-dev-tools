@@ -29,9 +29,11 @@
   var Dom = window.Dom;
   var Shell = window.Shell;
   var BoardView = window.BoardView;
+  var ActivityView = window.ActivityView; // I3 (claude-tools-uxvi3)
 
-  // Which track ships each non-board facet (honest placeholder copy).
-  var FACET_TRACK = { blueprint: 'H3', activity: 'I3', gates: 'J3' };
+  // Which track ships each STILL-placeholder facet (honest placeholder copy).
+  // 'activity' graduated to live content in I3, so it is NOT listed here.
+  var FACET_TRACK = { blueprint: 'H3', gates: 'J3' };
 
   var host = Dom.el('facet-host');
   var who = Dom.el('who');
@@ -55,6 +57,8 @@
 
   if (ctx.facet === 'board') {
     mountBoardFacet();
+  } else if (ctx.facet === 'activity') {
+    mountActivityFacet();
   } else {
     mountPlaceholder(ctx.facet);
   }
@@ -279,5 +283,240 @@
       cols.appendChild(c);
     });
     empty.hidden = totalScoped !== 0;
+  }
+
+  // ── activity facet (I3 — writer lane + aux pool + liveness dots) ─────────────
+  // REUSES window.ActivityView.deriveActivityView (the pure view-model). Builds
+  // the static scaffold ONCE; refresh repaints the dynamic regions in place so a
+  // runner/agent going stale surfaces (30s, same cadence as the board facet).
+  // READ-ORIENTED: NO stuck-action controls here — those are I4's web+runner
+  // bead (claude-tools-uxvi4). I3 is the honest display only.
+  function mountActivityFacet() {
+    Dom.clear(host);
+    var wrap = Dom.mk('div', 'af-wrap');
+
+    var loading = Dom.mk('p', 'af-loading', 'Reading the projection…');
+    loading.id = 'af-loading';
+    wrap.appendChild(loading);
+
+    var errbox = Dom.mk('section', 'af-errbox');
+    errbox.id = 'af-errbox';
+    errbox.hidden = true;
+    errbox.appendChild(Dom.mk('div', 'af-err-h', 'Cannot render this workspace'));
+    var errB = Dom.mk('p', 'af-err-b');
+    errB.id = 'af-err-b';
+    errbox.appendChild(errB);
+    wrap.appendChild(errbox);
+
+    var body = Dom.mk('section', 'af-body');
+    body.id = 'af-body';
+    body.hidden = true;
+
+    // RUNNER HEALTH — the loop PROCESS, drawn DISTINCT from agent activity (§5.4).
+    var rhSec = Dom.mk('div', 'af-sec');
+    rhSec.appendChild(Dom.mk('div', 'af-sl', 'RUNNER HEALTH · the loop process (§5.4)'));
+    var rhHost = Dom.mk('div', 'af-rh-host');
+    rhHost.id = 'af-rh-host';
+    rhSec.appendChild(rhHost);
+    body.appendChild(rhSec);
+
+    // WRITER LANE — exactly one (serial), by construction.
+    var wSec = Dom.mk('div', 'af-sec');
+    wSec.appendChild(Dom.mk('div', 'af-sl', 'WRITER LANE · serial — exactly one'));
+    var wHost = Dom.mk('div', 'af-writer-host');
+    wHost.id = 'af-writer-host';
+    wSec.appendChild(wHost);
+    body.appendChild(wSec);
+
+    // AUXILIARY POOL — 0..N read-only / non-code agents, parallel with the writer.
+    var aSec = Dom.mk('div', 'af-sec');
+    var aHead = Dom.mk('div', 'af-sl');
+    aHead.id = 'af-aux-sl';
+    aHead.textContent = 'AUXILIARY POOL · parallel — read-only or non-code';
+    aSec.appendChild(aHead);
+    var aHost = Dom.mk('div', 'af-aux-host');
+    aHost.id = 'af-aux-host';
+    aSec.appendChild(aHost);
+    body.appendChild(aSec);
+
+    // Honest "degraded" footnotes (B.4) — every dropped/placeholder field is named.
+    var degSec = Dom.mk('div', 'af-degraded');
+    degSec.id = 'af-degraded';
+    degSec.hidden = true;
+    body.appendChild(degSec);
+
+    // Foot: link to the board facet + a quiet updated stamp.
+    var foot = Dom.mk('div', 'af-foot');
+    var boardLink = Dom.mk('a', 'facet-link', 'Open this workspace’s board →');
+    boardLink.setAttribute('href', '/ws/' + encodeURIComponent(ctx.ref) + '/board');
+    foot.appendChild(boardLink);
+    var updated = Dom.mk('span', 'af-updated', '—');
+    updated.id = 'af-updated';
+    foot.appendChild(updated);
+    body.appendChild(foot);
+
+    wrap.appendChild(body);
+    host.appendChild(wrap);
+
+    refreshActivity();
+    window.setInterval(refreshActivity, REFRESH_MS);
+  }
+
+  function showActivityError(msg) {
+    var loading = Dom.el('af-loading');
+    var body = Dom.el('af-body');
+    var errbox = Dom.el('af-errbox');
+    if (loading) loading.hidden = true;
+    if (body) body.hidden = true;
+    if (errbox) { errbox.hidden = false; Dom.el('af-err-b').textContent = msg; }
+    if (healthDot) healthDot.classList.add('bad');
+  }
+
+  function refreshActivity() {
+    Net.getJSON('/api/board')
+      .then(function (snapshot) {
+        var view = ActivityView.deriveActivityView(snapshot, ctx.ref, Date.now());
+        renderActivity(view);
+      })
+      .catch(function (e) {
+        showActivityError(e && e.message ? e.message : String(e));
+      });
+  }
+
+  function renderActivity(view) {
+    // The one hard refusal (unknown-HIGHER schema_version) surfaces as an error.
+    if (!view.ok) { showActivityError(view.error); return; }
+
+    var loading = Dom.el('af-loading');
+    var errbox = Dom.el('af-errbox');
+    var body = Dom.el('af-body');
+    if (loading) loading.hidden = true;
+    if (errbox) errbox.hidden = true;
+    if (body) body.hidden = false;
+
+    // The coarse header pip lights ONLY on the contract's named alarm states
+    // (UX-DESIGN-V2 §5.3/§5.4, DESIGN I §4): a WEDGED runner OR a MAYBE-STUCK
+    // writer. A deliberately-stopped runner reports process:'dead' + state:'idle'
+    // (intentional/terminal down, never "stuck" — DESIGN I §3), so it stays
+    // NEUTRAL — we never read a clean stop as trouble. (The producer collapses
+    // stopped+crashed into 'dead', so we key on the named alarm, not 'dead'.)
+    if (healthDot) {
+      var rh = view.runner_health || {};
+      var w = view.writer;
+      var alarm = rh.state === 'wedged' || (w && w.state === 'maybe-stuck');
+      if (alarm) healthDot.classList.add('bad');
+      else healthDot.classList.remove('bad');
+    }
+
+    renderRunnerHealth(view.runner_health);
+    renderWriter(view.writer);
+    renderAux(view.auxiliary, view.found);
+    renderDegraded(view.degraded);
+
+    var updated = Dom.el('af-updated');
+    if (updated) updated.textContent = 'updated ' + new Date().toLocaleTimeString();
+  }
+
+  // RUNNER-HEALTH PIP — a labeled CHIP (square indicator), deliberately a
+  // different visual register from the round agent liveness dots (§5.4 distinct).
+  function renderRunnerHealth(rh) {
+    var hostEl = Dom.el('af-rh-host');
+    Dom.clear(hostEl);
+    rh = rh || {};
+    var chip = Dom.mk('div', 'af-rh ' + (rh.state_class || 'rh-unknown'));
+    chip.appendChild(Dom.mk('span', 'af-rh-pip'));
+    chip.appendChild(Dom.mk('span', 'af-rh-state', rh.state_label || 'unknown'));
+    var meta = Dom.mk('span', 'af-rh-meta',
+      'process ' + (rh.process || 'unknown') + ' · heartbeat ' + (rh.heartbeat || 'unknown'));
+    chip.appendChild(meta);
+    hostEl.appendChild(chip);
+  }
+
+  // Build the round liveness dot + the derived state line shared by both lanes.
+  // The dot color is green/amber/red (consumed verbatim); 'unknown' reads neutral.
+  function buildStateLine(agent) {
+    var line = Dom.mk('div', 'af-state');
+    line.appendChild(Dom.mk('span', 'af-dot dot-' + (agent.liveness_dot || 'unknown')));
+    if (agent.icon) line.appendChild(Dom.mk('span', 'af-icon', agent.icon));
+    line.appendChild(Dom.mk('span', 'af-state-label', agent.state_label));
+    // state_confidence is ALWAYS "derived" — show it so the card never asserts.
+    line.appendChild(Dom.mk('span', 'af-conf', agent.state_confidence || 'derived'));
+    return line;
+  }
+
+  // WRITER LANE — one card, or an honest "no writer" empty state.
+  function renderWriter(writer) {
+    var hostEl = Dom.el('af-writer-host');
+    Dom.clear(hostEl);
+    if (!writer) {
+      hostEl.appendChild(Dom.mk('div', 'af-empty',
+        'No writer active in ' + ctx.ref + ' right now.'));
+      return;
+    }
+    var card = Dom.mk('div', 'af-card af-writer');
+    // Identity row: bead_ref + title + stage (each honest-absent if missing).
+    var idr = Dom.mk('div', 'af-id');
+    if (writer.bead_ref) idr.appendChild(Dom.mk('code', 'af-ref', writer.bead_ref));
+    if (writer.title) {
+      var t = writer.title;
+      if (t.length > 72) t = t.slice(0, 72) + '…';
+      idr.appendChild(Dom.mk('span', 'af-title', t));
+    }
+    if (writer.stage) idr.appendChild(Dom.mk('span', 'af-stage', writer.stage));
+    if (!writer.bead_ref && !writer.title) {
+      idr.appendChild(Dom.mk('span', 'af-title af-faint', '(no bead reported)'));
+    }
+    card.appendChild(idr);
+    card.appendChild(buildStateLine(writer));
+    // Meta row: time-in-state + touching domains (Blueprint overlay hint, §1.5).
+    var metaBits = [];
+    if (writer.duration_label) metaBits.push(writer.duration_label + ' in state');
+    if (writer.touching && writer.touching.length) {
+      metaBits.push('touching: ' + writer.touching.join(' ▸ '));
+    }
+    if (metaBits.length) card.appendChild(Dom.mk('div', 'af-meta', metaBits.join(' · ')));
+    hostEl.appendChild(card);
+  }
+
+  // AUXILIARY POOL — 0..N cards (kind + label + derived state + dot). Honest
+  // empty state distinguishes "found the workspace, no aux" from "no workspace".
+  function renderAux(aux, found) {
+    var hostEl = Dom.el('af-aux-host');
+    var sl = Dom.el('af-aux-sl');
+    Dom.clear(hostEl);
+    aux = aux || [];
+    if (sl) {
+      sl.textContent = 'AUXILIARY POOL · parallel — read-only or non-code' +
+        (aux.length ? ' · ' + aux.length : '');
+    }
+    if (aux.length === 0) {
+      hostEl.appendChild(Dom.mk('div', 'af-empty',
+        found ? 'No auxiliary agents running.'
+              : 'No runner reported for ' + ctx.ref + '.'));
+      return;
+    }
+    aux.forEach(function (a) {
+      var card = Dom.mk('div', 'af-card af-aux');
+      var idr = Dom.mk('div', 'af-id');
+      if (a.kind) idr.appendChild(Dom.mk('span', 'af-kind', a.kind));
+      if (a.label && a.label !== a.kind) idr.appendChild(Dom.mk('span', 'af-title', a.label));
+      card.appendChild(idr);
+      card.appendChild(buildStateLine(a));
+      hostEl.appendChild(card);
+    });
+  }
+
+  // Honest degraded[] footnotes (B.4): name every placeholder/dropped field.
+  function renderDegraded(degraded) {
+    var sec = Dom.el('af-degraded');
+    if (!sec) return;
+    Dom.clear(sec);
+    degraded = Array.isArray(degraded) ? degraded : [];
+    if (degraded.length === 0) { sec.hidden = true; return; }
+    sec.hidden = false;
+    sec.appendChild(Dom.mk('div', 'af-degraded-h', 'Degraded (honest gaps)'));
+    var ul = Dom.mk('ul', 'af-degraded-list');
+    degraded.forEach(function (d) { ul.appendChild(Dom.mk('li', null, d)); });
+    sec.appendChild(ul);
   }
 })();

@@ -109,10 +109,92 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   text-transform:uppercase;margin-bottom:9px}
 .bf-err-b{color:var(--amber-soft);font-size:13px;line-height:1.6}
 
+/* ── activity facet (I3, claude-tools-uxvi3) ───────────────────────────────── */
+/* Writer lane (one) + auxiliary pool (0..N) + per-agent liveness dots + a
+ * runner-health pip drawn DISTINCT from the agent dots (§5.4). Reuses the board
+ * facet's section/empty/foot/error visual register (.af-* mirrors .bf-*). */
+.af-wrap{padding:8px 0 0}
+.af-loading{padding:40px 22px;color:var(--dim);font-size:13px;letter-spacing:.08em}
+.af-sec{margin:6px 0 0;padding:14px 0 16px;border-top:1px solid var(--line)}
+.af-sl{font-size:10px;letter-spacing:.32em;color:var(--slate);
+  padding:0 20px 13px;text-transform:uppercase}
+.af-empty{color:var(--faint);font-size:12px;padding:0 22px;line-height:1.6}
+
+/* RUNNER-HEALTH PIP — a labeled chip with a SQUARE indicator (deliberately not a
+ * round agent dot). Color encodes the loop-process bucket: working/idle/starved/
+ * wedged(=stuck). This is the "the script got stuck" signal, separate from agents. */
+.af-rh-host{padding:0 18px}
+.af-rh{display:inline-flex;align-items:center;gap:9px;border:1px solid var(--line);
+  border-radius:11px;background:var(--panel);padding:9px 13px;flex-wrap:wrap}
+.af-rh-pip{width:9px;height:9px;border-radius:2px;flex:none;background:var(--slate)}
+.af-rh-state{font-family:var(--font-display);font-size:14px;letter-spacing:-.01em;color:var(--text)}
+.af-rh-meta{font-size:10px;letter-spacing:.06em;color:var(--faint);text-transform:uppercase}
+.af-rh.rh-working .af-rh-pip{background:var(--mint);box-shadow:0 0 7px var(--mint)}
+.af-rh.rh-working .af-rh-state{color:var(--mint)}
+.af-rh.rh-idle .af-rh-pip{background:var(--slate)}
+.af-rh.rh-starved{border-color:rgba(245,191,99,.34)}
+.af-rh.rh-starved .af-rh-pip{background:var(--amber);box-shadow:0 0 7px var(--amber)}
+.af-rh.rh-starved .af-rh-state{color:var(--amber)}
+.af-rh.rh-wedged{border-color:rgba(255,107,107,.4);
+  background:linear-gradient(160deg,rgba(255,107,107,.12),var(--panel))}
+.af-rh.rh-wedged .af-rh-pip{background:var(--coral);box-shadow:0 0 7px var(--coral)}
+.af-rh.rh-wedged .af-rh-state{color:var(--coral)}
+.af-rh.rh-unknown .af-rh-pip{background:var(--slate);opacity:.6}
+.af-rh.rh-unknown .af-rh-state{color:var(--faint)}
+
+/* agent cards (writer lane + aux pool share the card register) */
+.af-writer-host{display:flex;flex-wrap:wrap;gap:10px;padding:0 14px}
+.af-aux-host{display:flex;flex-wrap:wrap;gap:10px;padding:0 14px}
+.af-card{flex:1 1 280px;min-width:0;border:1px solid var(--line);border-radius:13px;
+  background:var(--panel);padding:13px 14px}
+.af-writer{flex-basis:100%;border-color:var(--line-2)}
+.af-id{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:9px}
+.af-ref{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.02em;flex:none}
+.af-kind{font-family:var(--mono);font-size:11px;color:var(--mint);letter-spacing:.04em;flex:none}
+.af-title{font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis}
+.af-title.af-faint{color:var(--faint)}
+.af-stage{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);
+  border:1px solid var(--line);border-radius:6px;padding:2px 6px;flex:none}
+
+/* the derived state line — round liveness dot + icon + "looks like" phrase + the
+ * always-present "derived" confidence tag (never an asserted semantic claim). */
+.af-state{display:flex;align-items:center;gap:8px;font-size:13px;
+  font-family:var(--font-display);letter-spacing:-.01em}
+.af-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--slate)}
+.af-dot.dot-green{background:var(--mint);box-shadow:0 0 7px var(--mint)}
+.af-dot.dot-amber{background:var(--amber);box-shadow:0 0 7px var(--amber)}
+.af-dot.dot-red{background:var(--coral);box-shadow:0 0 7px var(--coral)}
+.af-dot.dot-unknown{background:var(--slate);opacity:.55}
+.af-icon{font-size:13px;flex:none}
+.af-state-label{color:var(--text)}
+.af-conf{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);
+  border:1px solid var(--line);border-radius:5px;padding:1px 5px;margin-left:2px}
+.af-meta{margin-top:8px;font-size:10px;color:var(--faint);letter-spacing:.04em;line-height:1.5}
+
+/* honest degraded[] footnotes (B.4) */
+.af-degraded{margin:6px 18px 0;border:1px dashed var(--line-2);border-radius:11px;
+  background:var(--ink-2);padding:11px 13px}
+.af-degraded-h{font-size:9px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--slate);margin-bottom:7px}
+.af-degraded-list{margin:0;padding-left:16px;color:var(--faint);font-size:11px;line-height:1.6}
+
+/* facet foot + error box (mirror the board facet) */
+.af-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  flex-wrap:wrap;padding:14px 22px max(14px,env(safe-area-inset-bottom));
+  border-top:1px solid var(--line);margin-top:8px}
+.af-updated{font-size:10px;letter-spacing:.12em;color:var(--faint);text-transform:uppercase}
+.af-errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
+  background:rgba(255,107,107,.08);border-radius:14px;padding:18px}
+.af-err-h{color:var(--coral);font-size:13px;letter-spacing:.12em;
+  text-transform:uppercase;margin-bottom:9px}
+.af-err-b{color:var(--amber-soft);font-size:13px;line-height:1.6}
+
 /* desktop breathing room (mirrors board.css breakpoints) */
 @media (min-width:880px){
   .bf-runner-host{padding:0 22px}
   .cols{padding:0 22px 6px}
   .col{width:190px}
   .facet-empty,.facet-placeholder{margin:32px 22px}
+  .af-writer-host,.af-aux-host{padding:0 22px}
+  .af-rh-host{padding:0 22px}
 }

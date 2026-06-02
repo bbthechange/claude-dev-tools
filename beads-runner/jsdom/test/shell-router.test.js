@@ -34,6 +34,7 @@ const P = {
   shell:      path.join(WEB, 'shared', 'shell.js'),
   dom:        path.join(WEB, 'shared', 'dom.js'),
   boardView:  path.join(WEB, 'board', 'board-view.js'),
+  activityView: path.join(WEB, 'workspace', 'activity-view.js'), // I3 (claude-tools-uxvi3)
   inboxView:  path.join(WEB, 'inbox', 'inbox-view.js'),
   inboxApp:   path.join(WEB, 'inbox', 'app.js'),
   wsIndex:    path.join(WEB, 'workspace', 'index.html'),
@@ -100,6 +101,7 @@ function loadWorkspaceRoute(pathname) {
   loadFileInWindow(window, P.dom);
   loadFileInWindow(window, P.shell);
   loadFileInWindow(window, P.boardView);
+  loadFileInWindow(window, P.activityView); // I3 — app.js reads window.ActivityView
   loadFileInWindow(window, P.wsApp);
   return window;
 }
@@ -299,9 +301,31 @@ test('F — /ws/<ref>/board mounts the BOARD facet scaffold (reuses BoardView), 
     assert.equal(nav.querySelector('.shell-tabs a.active').getAttribute('href'), '/ws/projA/board');
   } finally { window.close(); }
 });
+// I3 (claude-tools-uxvi3): the Activity facet GRADUATED from placeholder to live
+// content — it now mounts the .af-wrap scaffold (writer lane + aux pool +
+// runner-health pip), the EXTENSION POINT below anticipated. Blueprint (H3) and
+// Gates (J3) remain honest placeholders.
+test('F — /ws/<ref>/activity mounts the LIVE Activity facet scaffold (writer lane + aux pool), not a placeholder', () => {
+  const window = loadWorkspaceRoute('/ws/projA/activity');
+  try {
+    const host = window.document.getElementById('facet-host');
+    // The static scaffold mounts SYNCHRONOUSLY (before the never-settling fetch),
+    // exactly like the board facet's .bf-wrap — that is all "which facet mounted"
+    // needs. The dynamic regions (.af-writer-host / .af-aux-host / the runner-health
+    // pip) exist as the scaffold; the data paints once /api/board resolves.
+    assert.ok(host.querySelector('.af-wrap'), 'the activity-facet scaffold (.af-wrap) mounted');
+    assert.ok(host.querySelector('.af-writer-host'), 'the writer lane host mounted');
+    assert.ok(host.querySelector('.af-aux-host'), 'the auxiliary-pool host mounted');
+    assert.ok(host.querySelector('#af-rh-host'), 'the distinct runner-health pip host mounted');
+    assert.equal(host.querySelector('.facet-placeholder'), null, 'the activity route is NOT a placeholder');
+    assert.equal(host.querySelector('.bf-wrap'), null, 'the activity route did NOT mount the board scaffold');
+    // Dispatch + nav agree: the activity facet tab is the active one.
+    const nav = window.document.getElementById('shell-nav');
+    assert.equal(nav.querySelector('.shell-tabs a.active').getAttribute('href'), '/ws/projA/activity');
+  } finally { window.close(); }
+});
 const PLACEHOLDER_FACETS = [
   { facet: 'blueprint', label: 'Blueprint', track: 'H3' },
-  { facet: 'activity',  label: 'Activity',  track: 'I3' },
   { facet: 'gates',     label: 'Gates',     track: 'J3' },
 ];
 for (const pf of PLACEHOLDER_FACETS) {
