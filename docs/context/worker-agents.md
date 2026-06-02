@@ -84,7 +84,7 @@ Three facts explain almost everything here:
 | `claim-eligibility.md` | Empirical contract for `bd ready` ordering (priority-asc, deterministic, created-at-desc tiebreak) — what `next_task()` relies on. |
 | `capacity.md` | The spare-only daily-ramp gate (`spare_ramp_today`, UI `spare-only` ↔ wire `spare-cycles`). |
 | `intake-presets.{md,json}` | Closed entry-intent preset catalog; each preset reduces to `(entry_stage, gate_aggressiveness)`. **The JSON wins** on drift. |
-| `defer-cascade-audit.md` / `gate-defer.md` | bd defer hygiene: diagnose a silent parent→child defer cascade; couple a defer to its owning `gate:<id>` so lifting the gate reverses it. |
+| `defer-cascade-audit.md` / `gate-defer.md` | bd defer hygiene: diagnose a silent parent→child defer cascade; couple a defer to its owning `gate:<id>` so lifting the gate reverses it. `gate-defer.sh apply` also takes `--why/--unblock/--owner/--scope` (claude-tools-escz) → writes the Gate's metadata via the J1 `gate-meta-set` op in the same call (an agent places a Gate *with a why*). |
 
 ## Contracts & invariants (don't break these)
 

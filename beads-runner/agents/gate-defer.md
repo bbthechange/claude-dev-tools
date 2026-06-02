@@ -56,6 +56,13 @@ this one bead". Both call themselves "gate"; they are different concerns:
     # Apply: stamp Deferred + the gate label in one step.
     gate-defer.sh apply impl-gate-2026-04-22 claude-tools-abc 2026-07-01
 
+    # Apply WITH a why (an agent placing a Gate): also records the Gate's
+    # metadata in the engine via gate-meta-set, in the same call.
+    gate-defer.sh apply audio-redesign claude-tools-abc 2026-07-01 \
+        --why "blocked on the audio-redesign decision" \
+        --unblock "design J ratified" \
+        --owner "agent:impl" --scope cohort
+
     # Lift: dry-run first (the default) — shows what would clear.
     gate-defer.sh lift  impl-gate-2026-04-22
 
@@ -64,6 +71,30 @@ this one bead". Both call themselves "gate"; they are different concerns:
 
     # Audit: print every bead currently held by the gate.
     gate-defer.sh list  impl-gate-2026-04-22
+
+### Apply metadata — the why/unblock/owner write seam (claude-tools-escz)
+
+The bare `apply <gate> <bead> <date>` only places the `gate:<id>` label + defer
+— the cohort source of truth. An **agent that holds work** must place a Gate
+*with a why* (DESIGN J §6 / `design/gates.md`; the thirsty invisible-defer fix,
+D.3 "nothing is held invisibly"). The optional flags do that in the **same**
+call, so the label and its metadata can never drift:
+
+- `--why <text>` — **required** whenever any metadata flag is given. A Gate
+  always carries a why; the engine rejects a why-less write.
+- `--unblock <text>` — the condition that would lift the Gate (free text or a
+  ref). Surfaces as `unblocks_when` on the Gates facet / Board.
+- `--owner <who>` — an **input, not the principal** (§2.3). An agent passes
+  `agent:<hat-id>` (e.g. `agent:impl`); the GUI passes `you`.
+- `--scope task|cohort` — the closed D.2 enum; defaults to `task` when omitted.
+
+The metadata is written via the J1 `gate-meta-set` op over the `co_request`
+transport, so it lands in the **live** hosted `gate_metadata` table (the same
+row the Gates facet / `holds[]` projection read back). If that write fails after
+the label is placed (engine unreachable / rejected), `apply` exits **5** — the
+label (source of truth) stands and the hold renders B.4-degraded (`why:null`)
+until re-run with the engine reachable. The label↔defer coupling itself never
+depends on the engine being up.
 
 ### Lift semantics
 

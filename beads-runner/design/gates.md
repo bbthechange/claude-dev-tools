@@ -439,8 +439,21 @@ human-only fixture burns per-dossier spend) applied to Gates.
 | Actor | Can | Via |
 |---|---|---|
 | **Brian (GUI)** | add a Gate; set/edit why + unblock; lift a Gate; see all holds | the Gates facet (J3) → `gate-meta-set` + `gate-defer.sh apply/lift` |
-| **Agents** | place a Gate with a why + unblock; read existing Gates before deciding | `gate-defer.sh apply` + `gate-meta-set owner:"agent:<hat>"`; read via `gate-meta-get` |
+| **Agents** | place a Gate with a why + unblock; read existing Gates before deciding | `gate-defer.sh apply <gate> <bead> <date> --why … --unblock … --owner agent:<hat> [--scope …]` (one step — places the `gate:<id>` label/defer AND writes `gate-meta-set`); read via `gate-meta-get` |
 | **The runner** | refuse to pick up any `gate:*`-labelled task | the §5 prefix rule in `validate_task` |
+
+> **PLACEMENT WRITE SEAM LANDED (claude-tools-escz):** `gate-defer.sh apply`
+> now takes optional `--why/--unblock/--owner/--scope` flags and, when any is
+> given, performs the `gate-meta-set` write itself (via the `co_request`
+> transport → the live engine, J1) right after stamping the label+defer. So an
+> agent places a Gate *with a why* in ONE call — the label (source of truth,
+> §2.4) and its metadata can't drift. `--why` is REQUIRED whenever metadata is
+> supplied (D.3: nothing held invisibly); a metadata-write failure after the
+> label lands surfaces as exit 5 (label stands, hold renders B.4-degraded until
+> re-run). The bare `apply <gate> <bead> <date>` (the GUI's `agent-action
+> gate-apply` intent path, §4) is unchanged. NOTE: the bash oracle
+> (`lib/coordinator.sh`) does not yet mirror the gate-meta ops (a J1 miss — the
+> offline test uses a faithful fake `co_request`); the live engine has them.
 
 **Placement authority** follows the spine's assumed answer (§9 dec.2 / §14.1):
 **any agent** may place a Gate; the safeguard is not *who* but that **every

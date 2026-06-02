@@ -17,6 +17,15 @@
 #   • list prints exactly the bead ids carrying gate:<id>
 #   • a single bd-update failure during lift is reported (exit 3) without
 #     stranding the rest of the cohort
+#
+# Plus the gate-PLACEMENT metadata write seam (claude-tools-escz, DESIGN J §6):
+#   • apply --why/--unblock/--owner/--scope records the Gate's metadata via the
+#     J1 gate-meta-set op, retrievable verbatim via gate-meta-get (the bead's
+#     acceptance)
+#   • a metadata flag WITHOUT --why is rejected (exit 2) and places NO label
+#   • bare apply (no flags) writes NO metadata row — backward-compatible, the
+#     label↔defer coupling stays the source of truth
+#   • a gate-meta-set failure after the label lands → exit 5, label still placed
 
 set -uo pipefail
 
@@ -163,6 +172,52 @@ BDEOF
 chmod +x "$FAKEBIN/bd"
 export PATH="$FAKEBIN:$PATH"
 
+# ── fake co_request — the engine for the gate-meta-set/-get round-trip ───────
+# (claude-tools-escz) cmd_apply's metadata seam calls `co_request <bearer>
+# gate-meta-set <json>` (the J1 op). gate-defer.sh's _ensure_co_request finds
+# this EXPORTED function FIRST (command -v co_request) and uses it, so the test
+# never sources the real transport and never sets COORDINATOR_URL. The fake is
+# a faithful stand-in for cf/src/gate-meta.js: it enforces the same write gate
+# (id shape, why-required, scope ∈ {task,cohort}, scope defaults to task), keys
+# one row per gate id under $GMSTORE, and answers gate-meta-get with the engine's
+# `{gate:<obj>|null}` shape. The sentinel id `force-fail` returns non-zero to
+# exercise the exit-5 (label-placed-but-metadata-failed) path.
+export GMSTORE="$WORK/gmstore"
+mkdir -p "$GMSTORE"
+co_request() {
+  local op="${2:-}"
+  case "$op" in
+    gate-meta-set)
+      local json="${3:-}" id why scope
+      id="$(printf '%s' "$json" | jq -r '.id // .gate_id // empty' 2>/dev/null)"
+      [[ "$id" == "force-fail" ]] && return 1        # sentinel: simulate engine reject
+      [[ "$id" =~ ^[a-z0-9][a-z0-9-]*$ ]] || return 1
+      why="$(printf '%s' "$json" | jq -r '.why // empty' 2>/dev/null)"
+      [[ -n "${why// /}" ]] || return 1
+      scope="$(printf '%s' "$json" | jq -r '.scope // "task"' 2>/dev/null)"
+      [[ "$scope" == "task" || "$scope" == "cohort" ]] || return 1
+      printf '%s' "$json" \
+        | jq -c --arg scope "$scope" \
+            '{id:(.id // .gate_id), why:.why, unblock_condition:(.unblock_condition // null), owner:(.owner // null), scope:$scope}' \
+            > "$GMSTORE/$id.json" 2>/dev/null
+      return 0 ;;
+    gate-meta-get)
+      local id="${3:-}"
+      if [[ -n "$id" ]]; then
+        if [[ -f "$GMSTORE/$id.json" ]]; then
+          jq -c '{gate: .}' "$GMSTORE/$id.json" 2>/dev/null
+        else
+          printf '{"gate":null}\n'
+        fi
+      else
+        printf '{"gates":[]}\n'
+      fi
+      return 0 ;;
+    *) return 2 ;;
+  esac
+}
+export -f co_request
+
 # Helpers used by cases.
 labels_of() {
   local f="$BDST/$1.labels"
@@ -278,6 +333,108 @@ if [[ "$rc" == "2" ]]; then
   pass "bare invocation exits 2 (usage)"
 else
   fail "bare invocation: rc=$rc (expected 2)"
+fi
+
+# ── case 9: apply --why/... records metadata, retrievable via gate-meta-get ──
+# The bead's acceptance: "placing a gate records its metadata (why/unblock/owner)
+# retrievable via gate-meta-get." Round-trip through the fake engine.
+B6="bead-6"
+out=$(bash "$HELPER" apply audio-redesign "$B6" 2026-08-01 \
+        --why "blocked on the audio redesign decision" \
+        --unblock "design J ratified" \
+        --owner "agent:impl" \
+        --scope cohort 2>&1)
+rc=$?
+got=$(co_request bearer-test gate-meta-get audio-redesign 2>/dev/null)
+ok=1
+[[ "$rc" == "0" ]] || ok=0
+# label + defer still placed (existing behavior preserved)
+[[ "$(defer_of "$B6")" == "2026-08-01" ]] || ok=0
+labels_of "$B6" | grep -Fxq "gate:audio-redesign" || ok=0
+# metadata round-trips verbatim
+[[ "$(printf '%s' "$got" | jq -r '.gate.why')"               == "blocked on the audio redesign decision" ]] || ok=0
+[[ "$(printf '%s' "$got" | jq -r '.gate.unblock_condition')" == "design J ratified" ]] || ok=0
+[[ "$(printf '%s' "$got" | jq -r '.gate.owner')"             == "agent:impl" ]] || ok=0
+[[ "$(printf '%s' "$got" | jq -r '.gate.scope')"             == "cohort" ]] || ok=0
+[[ "$(printf '%s' "$got" | jq -r '.gate.id')"                == "audio-redesign" ]] || ok=0
+if [[ "$ok" == "1" ]]; then
+  pass "apply --why/--unblock/--owner/--scope records metadata (gate-meta-get round-trip)"
+else
+  fail "apply+meta: rc=$rc out='$out' get='$got' defer='$(defer_of "$B6")'"
+fi
+
+# ── case 9b: scope defaults to task when --scope omitted ────────────────────
+B7="bead-7"
+bash "$HELPER" apply single-task-gate "$B7" 2026-08-15 --why "waiting on Brian" >/dev/null 2>&1
+got=$(co_request bearer-test gate-meta-get single-task-gate 2>/dev/null)
+if [[ "$(printf '%s' "$got" | jq -r '.gate.scope')" == "task" ]] \
+   && [[ "$(printf '%s' "$got" | jq -r '.gate.unblock_condition')" == "null" ]]; then
+  pass "scope defaults to task; absent unblock surfaces null (B.4 honest absence)"
+else
+  fail "scope default: get='$got'"
+fi
+
+# ── case 10: a metadata flag WITHOUT --why is rejected (exit 2), no label ────
+B8="bead-8"
+err=$(bash "$HELPER" apply nowhy-gate "$B8" 2026-08-01 --owner "agent:impl" 2>&1)
+rc=$?
+ok=1
+[[ "$rc" == "2" ]] || ok=0
+printf '%s' "$err" | grep -q "requires --why" || ok=0
+# label must NOT be placed — the local reject fires BEFORE bd is touched
+labels_of "$B8" | grep -Fxq "gate:nowhy-gate" && ok=0
+[[ -z "$(defer_of "$B8")" ]] || ok=0
+if [[ "$ok" == "1" ]]; then
+  pass "metadata flag without --why → exit 2, no label half-placed"
+else
+  fail "nowhy: rc=$rc err='$err' labels='$(labels_of "$B8")' defer='$(defer_of "$B8")'"
+fi
+
+# ── case 11: bare apply (no flags) writes NO metadata row (backward compat) ──
+B9="bead-9"
+bash "$HELPER" apply plain-gate "$B9" 2026-09-01 >/dev/null 2>&1
+rc=$?
+ok=1
+[[ "$rc" == "0" ]] || ok=0
+labels_of "$B9" | grep -Fxq "gate:plain-gate" || ok=0
+# no metadata row should exist for a flagless apply
+[[ ! -f "$GMSTORE/plain-gate.json" ]] || ok=0
+if [[ "$ok" == "1" ]]; then
+  pass "bare apply writes no metadata row (label↔defer stays the source of truth)"
+else
+  fail "plain apply: rc=$rc label='$(labels_of "$B9")' metafile-exists=$([[ -f "$GMSTORE/plain-gate.json" ]] && echo yes || echo no)"
+fi
+
+# ── case 12: gate-meta-set failure after the label lands → exit 5 ────────────
+# Sentinel gate id `force-fail` makes the fake engine reject the write; the
+# label (source of truth) must still be placed, and apply exits 5.
+B10="bead-10"
+out=$(bash "$HELPER" apply force-fail "$B10" 2026-09-01 --why "real why" 2>&1)
+rc=$?
+ok=1
+[[ "$rc" == "5" ]] || ok=0
+[[ "$(defer_of "$B10")" == "2026-09-01" ]] || ok=0
+labels_of "$B10" | grep -Fxq "gate:force-fail" || ok=0
+[[ ! -f "$GMSTORE/force-fail.json" ]] || ok=0
+printf '%s' "$out" | grep -q "WARN" || ok=0
+if [[ "$ok" == "1" ]]; then
+  pass "gate-meta-set failure → exit 5, label still placed (degraded, B.4)"
+else
+  fail "force-fail: rc=$rc out='$out' defer='$(defer_of "$B10")' label='$(labels_of "$B10")'"
+fi
+
+# ── case 13: a value-flag with NO value exits 2 (no infinite-loop hang) ─────
+# Regression for the claude-tools-escz review finding: a trailing `--why` with
+# no value used to spin forever (shift 2 atomic-fail). Must be a clean exit 2.
+# Wrap in `timeout` so a regression FAILS the test instead of hanging the suite.
+B11="bead-11"
+if command -v timeout >/dev/null 2>&1; then RUN_T=(timeout 10); else RUN_T=(); fi
+err=$("${RUN_T[@]}" bash "$HELPER" apply trailing-flag-gate "$B11" 2026-09-01 --why 2>&1)
+rc=$?
+if [[ "$rc" == "2" ]] && printf '%s' "$err" | grep -q "needs a value"; then
+  pass "trailing --why with no value → exit 2 (no hang)"
+else
+  fail "trailing --why: rc=$rc err='$err' (expected rc=2; rc=124 = timed-out hang regression)"
 fi
 
 if [[ "$FAILED" == "0" ]]; then

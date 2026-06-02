@@ -23,9 +23,20 @@
 #   was a hazard called out in the vb7 dossier.
 #
 # USAGE:
-#   gate-defer.sh apply <gate-id> <bead-id> <date>
+#   gate-defer.sh apply <gate-id> <bead-id> <date> \
+#       [--why <text>] [--unblock <text>] [--owner <who>] [--scope task|cohort]
 #     Stamp `Deferred: <date>` on <bead-id> AND add label gate:<gate-id>.
 #     <date> is whatever `bd update --defer` accepts (e.g. 2026-07-01).
+#
+#     When any metadata flag is given, ALSO record the Gate's why/unblock/owner
+#     in the engine via the J1 `gate-meta-set` op (DESIGN J §6 / gates.md, bead
+#     claude-tools-escz): "an agent that holds work places a Gate WITH A WHY."
+#     `--why` is REQUIRED whenever metadata is supplied (a Gate always carries a
+#     why — D.3 "nothing is held invisibly"); `--owner` is an INPUT, not the
+#     principal (§2.3) — an agent passes `agent:<hat>`, the GUI passes `you`;
+#     `--scope` is the closed D.2 enum {task,cohort}, default `task`. The bare
+#     `apply <gate> <bead> <date>` (no flags) is unchanged — the label↔defer
+#     coupling stays the source of truth; the metadata is annotation (§2.4).
 #
 #   gate-defer.sh lift  <gate-id> [--commit]
 #     Default DRY-RUN: list every bead carrying gate:<gate-id> with its
@@ -45,18 +56,32 @@
 #   3  partial failure during lift (some beads updated, others not — the
 #      script prints which failed so the caller can retry)
 #   4  bd subprocess failure on a pre-flight call (nothing changed)
+#   5  apply placed the gate:<id> label + defer, but the gate-meta-set write
+#      (the why/unblock/owner metadata) failed (engine unreachable or rejected).
+#      The label — the source of truth — STANDS; the hold renders degraded
+#      (why:null, a B.4 `degraded[]` note) until re-run with the engine reachable.
 #
 # Safe under `set -uo pipefail`; every bd call is guarded.
 
 set -uo pipefail
+
+# Directory of this script — used to lazily source the coordinator transport
+# (lib/coordinator.sh + lib/co-http-transport.sh) ONLY when a Gate is placed
+# WITH metadata, so the pure label↔defer apply/lift/list paths stay
+# dependency-free (claude-tools-escz).
+GD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+GD_LIB_DIR="$GD_DIR/lib"
 
 usage() {
   cat <<'EOF'
 gate-defer.sh — gate↔defer ownership coupling (R3, claude-tools-vb7)
 
 Usage:
-  gate-defer.sh apply <gate-id> <bead-id> <date>
+  gate-defer.sh apply <gate-id> <bead-id> <date> \
+      [--why <text>] [--unblock <text>] [--owner <who>] [--scope task|cohort]
       Stamp Deferred:<date> on <bead-id> AND add label gate:<gate-id>.
+      With --why (et al.): also record the Gate's why/unblock/owner/scope in
+      the engine via gate-meta-set (a Gate placed by an agent carries a why).
 
   gate-defer.sh lift  <gate-id> [--commit]
       Default dry-run: list every bead carrying gate:<gate-id> + its defer.
@@ -106,8 +131,94 @@ _defer_of() {
   printf '%s' "$out" | grep -m1 -E '^Deferred:' | sed 's/^Deferred:[[:space:]]*//'
 }
 
+# ── the gate-PLACEMENT metadata write seam (claude-tools-escz, DESIGN J §6) ──
+# Make co_request available for the gate-meta-set write. Lazily sources the
+# in-process oracle (lib/coordinator.sh) then the HTTP override
+# (lib/co-http-transport.sh) — the SAME ordering the runner/daemon use
+# (run-beads-tasks.sh:226-235, daemon/*-poll.sh) so production's authed HTTPS
+# co_request wins when COORDINATOR_URL is set and the write lands in the hosted
+# gate_metadata table (J1). If co_request is ALREADY defined (a caller that
+# sourced the transport, or a test that injects a fake) we keep it untouched.
+# Returns 0 iff co_request is callable afterwards.
+_ensure_co_request() {
+  command -v co_request >/dev/null 2>&1 && return 0
+  [[ -f "$GD_LIB_DIR/coordinator.sh" ]] && . "$GD_LIB_DIR/coordinator.sh" 2>/dev/null
+  [[ -n "${COORDINATOR_URL:-}" && -f "$GD_LIB_DIR/co-http-transport.sh" ]] \
+    && . "$GD_LIB_DIR/co-http-transport.sh" 2>/dev/null
+  command -v co_request >/dev/null 2>&1
+}
+
+# _gate_meta_set <gate> <why> <unblock> <owner> <scope>
+#   Attach the Gate's metadata via the J1 `gate-meta-set` op (Contract A — the
+#   EXISTING op, no new surface). The op takes ONE positional arg: a JSON object
+#   {id, why, unblock_condition, owner, scope}. `why` is required and re-enforced
+#   engine-side; empty unblock/owner/scope are omitted so the engine applies its
+#   own defaults (scope ⇒ "task"). Returns 0 on success; non-zero (loud stderr)
+#   on any unavailable-transport / engine-reject / unreachable failure — the
+#   caller maps that to exit 5 (label placed, metadata not yet recorded).
+_gate_meta_set() {
+  local gate="$1" why="$2" unblock="$3" owner="$4" scope="$5"
+  if ! _ensure_co_request; then
+    echo "gate-defer apply: WARN — co_request unavailable (COORDINATOR_URL unset / transport not sourced); Gate metadata NOT recorded. The gate:$gate label is placed (source of truth); attach the why later from the Gates facet or re-run with the engine reachable." >&2
+    return 1
+  fi
+  local meta_json
+  meta_json="$(jq -cn \
+      --arg id "$gate" --arg why "$why" --arg unblock "$unblock" \
+      --arg owner "$owner" --arg scope "$scope" \
+      '{id:$id, why:$why}
+        + (if $unblock != "" then {unblock_condition:$unblock} else {} end)
+        + (if $owner   != "" then {owner:$owner}            else {} end)
+        + (if $scope   != "" then {scope:$scope}            else {} end)' 2>/dev/null)" \
+    || { echo "gate-defer apply: WARN — could not build gate-meta JSON for gate:$gate" >&2; return 1; }
+  # The HTTP transport ignores this passed bearer and uses the resolved
+  # per-workspace token (COORDINATOR_TOKEN / Local Agent Keychain); the
+  # in-process oracle authenticates it. Mirrors run-beads-tasks.sh:669.
+  local bearer="${COORDINATOR_TOKEN:-bearer-gate-defer}"
+  if co_request "$bearer" gate-meta-set "$meta_json" >/dev/null 2>&1; then
+    return 0
+  fi
+  # Distinguish "no live engine configured" from "engine rejected/unreachable":
+  # with COORDINATOR_URL unset, _ensure_co_request falls back to the in-process
+  # oracle, which has NO gate-meta op (returns unknown-op) — so the failure is
+  # configuration, not a reject. The clearer message points at the real fix.
+  if [[ -z "${COORDINATOR_URL:-}" ]]; then
+    echo "gate-defer apply: WARN — COORDINATOR_URL unset: no live engine to record Gate metadata (the in-process oracle has no gate-meta op). The gate:$gate label is placed (source of truth); set COORDINATOR_URL and re-run to attach the why." >&2
+  else
+    echo "gate-defer apply: WARN — gate-meta-set for gate:$gate failed (engine rejected or unreachable); the gate:$gate label is placed but its why/unblock are not recorded yet." >&2
+  fi
+  return 1
+}
+
 cmd_apply() {
-  local gate="${1:-}" bead="${2:-}" date="${3:-}"
+  # Three positionals (gate bead date) + optional metadata flags. Flags may be
+  # interspersed; everything after `--` is positional. (claude-tools-escz)
+  local why="" unblock="" owner="" scope="" have_meta=0
+  local -a pos=()
+  # A value-taking flag MUST have a following value — `shift 2` is atomic-fail,
+  # so a trailing `--why` with no value would never shift and spin forever
+  # (claude-tools-escz review). Guard each with `$# -ge 2` ⇒ a clean exit 2,
+  # mirroring the missing-positional rejects below.
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --why)       [[ $# -ge 2 ]] || { echo "gate-defer apply: reject — --why needs a value" >&2; exit 2; }
+                   why="$2";          have_meta=1; shift 2 ;;
+      --why=*)     why="${1#--why=}"; have_meta=1; shift ;;
+      --unblock)   [[ $# -ge 2 ]] || { echo "gate-defer apply: reject — --unblock needs a value" >&2; exit 2; }
+                   unblock="$2";      have_meta=1; shift 2 ;;
+      --unblock=*) unblock="${1#--unblock=}"; have_meta=1; shift ;;
+      --owner)     [[ $# -ge 2 ]] || { echo "gate-defer apply: reject — --owner needs a value" >&2; exit 2; }
+                   owner="$2";        have_meta=1; shift 2 ;;
+      --owner=*)   owner="${1#--owner=}"; have_meta=1; shift ;;
+      --scope)     [[ $# -ge 2 ]] || { echo "gate-defer apply: reject — --scope needs a value" >&2; exit 2; }
+                   scope="$2";        have_meta=1; shift 2 ;;
+      --scope=*)   scope="${1#--scope=}"; have_meta=1; shift ;;
+      --)          shift; while [[ $# -gt 0 ]]; do pos+=("$1"); shift; done ;;
+      -*)          echo "gate-defer apply: reject — unknown flag '$1'" >&2; usage >&2; exit 2 ;;
+      *)           pos+=("$1"); shift ;;
+    esac
+  done
+  local gate="${pos[0]:-}" bead="${pos[1]:-}" date="${pos[2]:-}"
   [[ -n "$gate" ]] || { echo "gate-defer apply: reject — gate-id required" >&2; usage >&2; exit 2; }
   [[ -n "$bead" ]] || { echo "gate-defer apply: reject — bead-id required" >&2; usage >&2; exit 2; }
   [[ -n "$date" ]] || { echo "gate-defer apply: reject — date required" >&2; usage >&2; exit 2; }
@@ -115,15 +226,42 @@ cmd_apply() {
     echo "gate-defer apply: reject — gate-id '$gate' must be [a-z0-9][a-z0-9-]*" >&2
     exit 2
   }
+  # A Gate placed WITH metadata ALWAYS carries a why (D.3 — nothing held
+  # invisibly; the engine rejects a why-less metadata write anyway). Reject
+  # locally with a clear message BEFORE touching bd, so a missing --why never
+  # half-places a label.
+  if [[ $have_meta -eq 1 ]] && [[ -z "${why// /}" ]]; then
+    echo "gate-defer apply: reject — placing a Gate with metadata requires --why (a Gate always carries a why; gates.md §2.2/§6)" >&2
+    exit 2
+  fi
+  # Validate scope locally too (closed D.2 enum) so an obvious typo fails fast
+  # rather than as an opaque engine 422.
+  if [[ -n "$scope" ]] && [[ "$scope" != "task" && "$scope" != "cohort" ]]; then
+    echo "gate-defer apply: reject — --scope '$scope' must be task|cohort (D.2 enum)" >&2
+    exit 2
+  fi
 
   # Stamp the defer first; if bd rejects the date format we surface the
   # error from bd rather than swallowing it. Then the label — `--add-label`
-  # is the documented way to add without replacing existing labels.
+  # is the documented way to add without replacing existing labels. The label
+  # is the SOURCE OF TRUTH for cohort membership (§2.4), so it lands first;
+  # the metadata is annotation written next.
   if ! bd update "$bead" --defer "$date" --add-label "gate:$gate" >/dev/null 2>&1; then
     echo "gate-defer apply: reject — bd update '$bead' --defer '$date' --add-label 'gate:$gate' failed" >&2
     exit 4
   fi
   printf 'gate:%s applied to %s (Deferred: %s)\n' "$gate" "$bead" "$date"
+
+  # Metadata write — only when the caller supplied any metadata flag. A failure
+  # here leaves the gate placed-but-degraded (B.4 tolerated), surfaced as exit 5
+  # so the caller knows the why/unblock are not recorded yet.
+  if [[ $have_meta -eq 1 ]]; then
+    if _gate_meta_set "$gate" "$why" "$unblock" "$owner" "$scope"; then
+      printf 'gate:%s metadata recorded (why/unblock/owner via gate-meta-set)\n' "$gate"
+    else
+      exit 5
+    fi
+  fi
 }
 
 cmd_lift() {
