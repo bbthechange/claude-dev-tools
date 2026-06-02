@@ -442,9 +442,13 @@ la_publish_workspace_inventory() {
   # falls to 0 (the wire contract requires integers, not nulls). `bd ready`'s
   # raw JSON is captured (not just its length) because queue_health below needs
   # each ready bead's `parent` to flag epics with zero ready children (§9).
+  # `--limit 0` (bd's "unlimited") is MANDATORY on the queue_health inputs:
+  # `bd ready`/`bd list` default to a 100/50-row cap, and a capped ready set
+  # would falsely flag epics whose ready children sit beyond the cap as
+  # 0-ready (claude-tools-uxvq1 review).
   local ready_json
   open=$(bd list --status=open --json 2>/dev/null | jq 'length' 2>/dev/null) || open=0
-  ready_json=$(bd ready --json 2>/dev/null) || ready_json="[]"
+  ready_json=$(bd ready --limit 0 --json 2>/dev/null) || ready_json="[]"
   printf '%s' "$ready_json" | jq -e 'type=="array"' >/dev/null 2>&1 || ready_json="[]"
   ready=$(printf '%s' "$ready_json" | jq 'length' 2>/dev/null) || ready=0
   in_prog=$(bd list --status=in_progress --json 2>/dev/null | jq 'length' 2>/dev/null) || in_prog=0
@@ -528,10 +532,17 @@ la_publish_workspace_inventory() {
   #   current `bd list --json` emits issue_type, but the field name has drifted
   #   across bd versions, so accept both so a future bd can't silently zero the
   #   epic flag.
+  # `--limit 0` (bd's "unlimited") is REQUIRED here: `bd list` defaults to a
+  # 50-row cap that is NOT recency-ordered, so a capped closed list drops the
+  # most-recently-closed beads — undercounting `closed7` and inflating
+  # `net_velocity_7d` into a FALSE runaway alarm (the exact signal §9 exists to
+  # surface). The non-closed list is likewise capped, undercounting every held/
+  # hidden/epic figure on any workspace with >50 active beads (claude-tools-uxvq1
+  # review — the cap was biting THIS repo: 50 vs 54 active, 50 vs 261 closed).
   local qh_list qh_closed qh_cut queue_health
-  qh_list=$(bd list --json 2>/dev/null) || qh_list="[]"
+  qh_list=$(bd list --limit 0 --json 2>/dev/null) || qh_list="[]"
   printf '%s' "$qh_list" | jq -e 'type=="array"' >/dev/null 2>&1 || qh_list="[]"
-  qh_closed=$(bd list --status=closed --json 2>/dev/null) || qh_closed="[]"
+  qh_closed=$(bd list --status=closed --limit 0 --json 2>/dev/null) || qh_closed="[]"
   printf '%s' "$qh_closed" | jq -e 'type=="array"' >/dev/null 2>&1 || qh_closed="[]"
   qh_cut=$(date -u -v-7d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
            || date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || qh_cut=""
