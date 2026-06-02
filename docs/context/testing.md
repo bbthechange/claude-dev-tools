@@ -168,16 +168,24 @@ against the live host — not local-green + committed — is acceptance.
   the per-test unset across all three. The §9 autowire subtests stay green because they
   stub `CLAUDE_BIN`/`DG_AUTHOR_BRIDGE_PATH` inline. If you ever see
   `pgrep -fl dossier-builder.system.md` during the gate, this guard regressed.
-- **KNOWN-RED (2026-06-02): the `conformance` tier fails on BC-35 INT/HUP**, so a full
-  `run-tests.sh` currently exits non-zero on `TIER conformance`. It is a PRE-EXISTING
-  runner signal-handling bug (the runner traps SIGTERM fine — TERM PASSes — but SIGINT/
-  SIGHUP mid-task don't complete teardown, so the harness SIGKILLs the runner after its
-  20s grace: `harness.sh: line 183 … Killed: 9`). Deterministic, autowire-independent,
-  in `runner.sh`/`run-beads-tasks.sh` (NOT a dossier-author/bmfj issue) — it was MASKED
-  for weeks because the claude-in-claude wedge kept the gate from running at all, and
-  surfaced the moment bmfj un-wedged it. Tracked in **claude-tools-54ei**. Until that
-  lands, a green `lib`+`top` (and the other tiers) with conformance RED on BC-35 only is
-  the expected state; don't read it as your regression.
+- **BC-35 INT/HUP and the inherited-`SIG_IGN` harness scar (claude-tools-54ei, FIXED).**
+  Symptom (was): `conformance` RED on BC-35 INT (v1+v2) and HUP (v2) — TERM PASSed, the
+  runner only died to SIGKILL after the 20s grace (`harness.sh: line 18x … Killed: 9`).
+  Root cause was NOT the runner: POSIX says **a signal that is `SIG_IGN` on entry to a
+  shell cannot be trapped or reset from within bash**, so the runner's `trap cleanup INT`
+  / `trap _on_signal … HUP` was a SILENT no-op. A worker-driven gate runs inside a
+  *detached* runner (launch-detached.sh: `nohup … &` ⇒ HUP ignored; an async list ⇒
+  INT/QUIT ignored), and that disposition is inherited all the way down to the
+  runner-under-test — so bc-35 passed from a clean shell but failed inside the gate. The
+  bug was masked for weeks (the claude-in-claude wedge kept the gate from running) and
+  surfaced when bmfj un-wedged it. **Fix:** `conformance/lib/harness.sh:_spawn_runner`
+  resets INT/HUP/QUIT to `SIG_DFL` via an external exec helper (perl→python3→plain-exec)
+  before exec'ing the runner — modeling a real foreground/interactive Ctrl-C, the scenario
+  BC-35 describes. `set -m` does NOT rescue an *inherited* ignore (only bash's own
+  async-list setting). Regression-locked by top-tier `test-conformance-signal-disposition.sh`
+  (reproduces the SIG_IGN gate context and asserts the reset holds — invisible to bc-35
+  from a clean shell). No runner/contract change; the production runner's detached
+  HUP/INT-ignore is intentional (it must outlive its launcher) and unaffected.
 - **`conformance` and `cf`/`jsdom` count as ONE unit each.** They fan out internally;
   on failure the gate prints their full output. Bash `test-*.sh` files are one unit
   apiece (pass == exit 0).

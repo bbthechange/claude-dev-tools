@@ -113,16 +113,19 @@ echo " concurrency: $JOBS job(s) over ${#parallel_rigs[@]} parallel + ${#serial_
 # count completed rigs by their .done markers (0 when none match).
 _done_count() { ls "$RIGOUT"/*.done 2>/dev/null | wc -l | tr -d ' '; }
 
-# JOB CONTROL (`set -m`) for the parallel lane: a command backgrounded with `&`
-# from a shell WITHOUT job control is an "asynchronous list" — POSIX requires its
-# SIGINT/SIGQUIT to be set to IGNORED, and a signal ignored at shell entry CANNOT
-# be trapped or reset. Enabling job control puts each `( … ) &` in its own process
-# group and exempts it from that rule, so any runner a parallel rig spawns inherits
-# a DEFAULT (trappable) SIGINT. The rigs that actually depend on this (BC-35/36's
-# `kill -INT` interrupt-cleanup) are quarantined to the serial lane, where they run
-# as foreground commands and get the same trappable disposition for free — so this
-# is now defensive for the parallel lane, kept so a future signal-sensitive rig
-# isn't silently broken by the async-list ignore rule.
+# JOB CONTROL (`set -m`) for the parallel lane is for PROCESS-GROUP reaping, NOT
+# for signal-trappability. A command backgrounded with `&` from a shell WITHOUT
+# job control is an "asynchronous list" — POSIX requires its SIGINT/SIGQUIT to be
+# IGNORED, and a signal ignored at shell entry CANNOT be trapped or reset. `set -m`
+# exempts bash's OWN async-list ignore-setting, but it does NOT un-ignore a signal
+# that an ANCESTOR already ignored (e.g. the detached/nohup worker the gate runs
+# inside) — that inherited disposition propagates straight through to any runner a
+# rig spawns (verified, claude-tools-54ei). The trappable-SIGINT guarantee the
+# BC-35/36 `kill -INT/-HUP` rigs depend on is therefore NOT provided here; it is
+# provided at the single chokepoint where the runner-under-test is born —
+# harness.sh:_spawn_runner resets INT/HUP/QUIT to SIG_DFL via an external exec
+# helper before exec'ing the runner. `set -m` below stays purely for the
+# per-rig process-group reaping the parallel lane needs.
 set -m
 launched=0
 _nparallel=${#parallel_rigs[@]}
@@ -155,11 +158,16 @@ set +m                          # job control no longer needed (parallel launch 
 # ── SERIAL LANE (claude-tools-91pi) ──────────────────────────────────────────
 # The timing-fragile rigs run ONE AT A TIME on the now-drained machine — no CPU
 # contention, so their signal-teardown wall-clock behaves exactly as it does when
-# the rig is run standalone (where it is green). Plain foreground execution is the
-# faithful reproduction of a standalone `bash rig` run: it inherits the gate's
-# normal INT/HUP disposition, so the runner's interrupt trap is trappable just as
-# in a real (worker-driven) gate invocation. Captured to the same per-rig files so
-# the deterministic replay below treats parallel and serial rigs alike.
+# the rig is run standalone (where it is green). Plain foreground execution does
+# NOT by itself give the runner a trappable INT/HUP: a worker-driven gate runs
+# with INT/HUP already SIG_IGN (detached/nohup), and foreground execution
+# faithfully inherits THAT ignore — which is exactly what made BC-35 RED in the
+# gate but green from an interactive shell (claude-tools-54ei). The trappable
+# disposition the BC-35/36 interrupt rigs need is restored at spawn time by
+# harness.sh:_spawn_runner (SIG_DFL reset via an external exec helper), so it
+# holds in BOTH lanes regardless of what the gate inherited. Captured to the same
+# per-rig files so the deterministic replay below treats parallel and serial
+# rigs alike.
 for rig in "${serial_rigs[@]+"${serial_rigs[@]}"}"; do
   base="$(basename "$rig" .sh)"
   printf '   … serial   %-34s (serial lane, %d rig(s))\n' "$base" "${#serial_rigs[@]}" >&2

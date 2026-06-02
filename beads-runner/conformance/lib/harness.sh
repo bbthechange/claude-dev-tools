@@ -143,10 +143,40 @@ claude_plan() { printf '%s\n' "$@" > "$HARNESS_CLAUDE_PLAN"; }
 # `set -m` (job control) makes the `&` job its own process group with
 # PGID == RUNNER_PID, so _reap_runner_pg can SIGKILL the whole tree (runner +
 # its leaked tail -f/parser/watchdog) via `kill -- -RUNNER_PID`. `exec` so
-# RUNNER_PID is the runner itself (its own INT/TERM trap must fire — BC-35).
+# RUNNER_PID is the runner itself (its own INT/TERM/HUP trap must fire — BC-35).
+#
+# claude-tools-54ei — RESET INT/HUP/QUIT to SIG_DFL before the runner starts.
+# POSIX rule: a signal that is SIG_IGN on entry to a shell CANNOT be trapped or
+# reset from within bash, so `trap cleanup INT` becomes a SILENT no-op and the
+# runner ignores `kill -INT/-HUP` entirely (until the harness SIGKILLs it).
+# When the gate runs inside a detached worker the runner inherits exactly those
+# ignores: launch-detached.sh uses `nohup … &` (⇒ SIGHUP ignored) and an async
+# list (⇒ SIGINT/SIGQUIT ignored per POSIX), and the disposition propagates down
+# every exec to the runner-under-test. That made BC-35's INT (v1+v2) and HUP
+# (v2) RED in the gate while green from a clean interactive shell — a launch
+# artifact, NOT the scenario BC-35 models (an interactive Ctrl-C, where SIGINT
+# is at its DEFAULT, trappable disposition). `set -m` does NOT rescue this — it
+# only exempts bash's OWN async-list ignore-setting, never an *inherited* ignore
+# (verified). bash cannot un-ignore the signals, but an external exec helper
+# (perl/python3 — not bound by bash's rule) can sigaction(SIG_DFL) then execvp,
+# giving the runner the trappable disposition a real foreground/interactive
+# runner has. `exec`-ing the helper keeps RUNNER_PID == the runner. Degrades to
+# a plain `exec bash` when no helper exists (correct whenever the signals are
+# already at their default — e.g. a standalone gate run, which always was green).
 _spawn_runner() {
   set -m
-  ( cd "$WORKDIR" && exec bash "$RUNNER" "$@" ) > "$HARNESS_OUT/runner.out" 2>&1 &
+  (
+    cd "$WORKDIR" || exit 127
+    if command -v perl >/dev/null 2>&1; then
+      exec perl -e 'foreach(qw(INT HUP QUIT)){$SIG{$_}="DEFAULT"} exec @ARGV or die "exec: $!"' \
+        bash "$RUNNER" "$@"
+    elif command -v python3 >/dev/null 2>&1; then
+      exec python3 -c 'import signal,sys,os; [signal.signal(s,signal.SIG_DFL) for s in (signal.SIGINT,signal.SIGHUP,signal.SIGQUIT)]; os.execvp(sys.argv[1],sys.argv[1:])' \
+        bash "$RUNNER" "$@"
+    else
+      exec bash "$RUNNER" "$@"
+    fi
+  ) > "$HARNESS_OUT/runner.out" 2>&1 &
   RUNNER_PID=$!
   set +m
 }
