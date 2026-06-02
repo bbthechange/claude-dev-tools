@@ -30,7 +30,16 @@ not the builder), the answer's two outcomes (**answer** → return + relay-log v
 `relay_log_append` / `relay_log_tail` bridge sub-commands (K2's CF-only ops). If
 you change the builder spawn, the poll loop, or the `isError` contract HERE,
 check whether the fork needs the same change. Design of record:
-`beads-runner/design/cross-ws.md`.
+`beads-runner/design/cross-ws.md`. **Live status (claude-tools-qaid):** the
+server is REGISTERED at user scope (`claude mcp add ask-workspace …`, mirrors
+askbrian; see `docs/runbooks/register-mcp-tool.md`) and the §8 live round-trip is
+verified — a real `claude -p` worker in `thirsty` (FE) asks `thirsty-backend`
+(BE), a real read-only responder answers, the answer returns as `tool_result`
+(`isError` absent), and the answer-path `relay-log-append` lands LIVE on the
+engine (K2 is deployed, so it is no longer the tolerated-warn no-op the bead was
+filed against). To let runner-spawned workers (not just hand-driven ones) call
+it, the tool must also be in each workspace's `.beads/runner.sh` `--allowedTools`
+(per `docs/runbooks/add-tool-to-runner-allowlist.md`) — not yet wired.
 
 **Not here (go to the right doc):**
 - The dossier-builder PROMPT this server dispatches (`agents/dossier-builder.system.md`)

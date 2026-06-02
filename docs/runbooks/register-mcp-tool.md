@@ -31,6 +31,32 @@ claude mcp add askbrian --scope user \
   -- node /Users/brianbutler/code/claude-tools/mcp-askbrian/server.mjs
 ```
 
+## Example: `ask-workspace` MCP server (cross-WS sibling)
+
+The cross-workspace relay (DESIGN K / `claude-tools-uxvk1`) is a sibling fork of
+`askbrian`. Register it the same way — same `COORDINATOR_URL` + keychain token
+(it shares the engine for the relay-append and escalation legs), pointed at
+`mcp-ask-workspace/server.mjs`:
+
+```bash
+TOK=$(security find-generic-password -s "claude-beads-runner.coordinator-token" -w)
+claude mcp add ask-workspace --scope user \
+  -e COORDINATOR_URL=https://coordinator-cf.bbthechange.workers.dev \
+  -e COORDINATOR_TOKEN="$TOK" \
+  -- node /Users/brianbutler/code/claude-tools/mcp-ask-workspace/server.mjs
+```
+
+The tool name as seen by claude is `mcp__ask-workspace__ask-workspace`. The
+token-in-config wart (below) applies identically.
+
+**Routing prerequisite (not optional for this server).** Unlike `askbrian`,
+`ask-workspace` routes `to_ws` → the target workspace's local dir via the daemon
+workspace registry (`~/.config/claude-tools/workspaces.json`). The registry must
+contain a row whose `project_ref` equals the `to_ws` the caller passes, and that
+row's `dir` must exist on this machine — otherwise the tool returns a terse
+route-miss error (never a fabricated answer). For the FE↔BE setup the rows are
+`thirsty` (FE) and `thirsty-backend` (BE).
+
 ## Verify registration
 
 ```bash
