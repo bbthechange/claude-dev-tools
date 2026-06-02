@@ -19,10 +19,24 @@ token-in-config security wart.
 - `mcp-askbrian/package.json` — the stdio server package (one dep: the MCP SDK).
 - `mcp-askbrian/test-engine-bridge.sh`, `test-mcp-protocol.sh` — the offline smokes.
 
+**Sibling fork — `mcp-ask-workspace/`** (K1, claude-tools-uxvk1; DESIGN K). This
+server's whole shape is forked sideways into `mcp-ask-workspace/server.mjs` +
+`helpers/engine-bridge.sh` for **cross-workspace** asks (`ask-workspace`): an
+agent in workspace A asks a sibling workspace B. It KEEPS the `claude -p`-child /
+blocking-poll / `isError`-unset machinery verbatim; it CHANGES what gets spawned
+(a **read-only responder** via `specialist.sh --kind=xws-responder` at `cwd=B`,
+not the builder), the answer's two outcomes (**answer** → return + relay-log vs
+**escalate** → the inherited dossier-publish-and-block path), and adds the
+`relay_log_append` / `relay_log_tail` bridge sub-commands (K2's CF-only ops). If
+you change the builder spawn, the poll loop, or the `isError` contract HERE,
+check whether the fork needs the same change. Design of record:
+`beads-runner/design/cross-ws.md`.
+
 **Not here (go to the right doc):**
 - The dossier-builder PROMPT this server dispatches (`agents/dossier-builder.system.md`)
   and the specialist-hat dispatch policy → `docs/context/worker-agents.md`. This
   server only *spawns* the builder with `claude -p`; the persona lives there.
+  (The `xws-responder` hat the sibling fork spawns also lives there.)
 - The engine the dossier is written to + the §4.1 dossier record / §4.3
   notification shapes → `docs/context/engine-cloudflare.md`.
 - The Inbox that renders the dossier on the phone and where Brian taps the

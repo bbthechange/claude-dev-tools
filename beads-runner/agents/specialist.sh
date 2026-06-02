@@ -32,6 +32,12 @@
 #                     (M6 surface; the bd subprocess is the .beads writer).
 #   enricher        : reads + Bash for `bd`, no file writes outside .beads
 #                     (I3 surface).
+#   xws-responder   : reads + Bash for `bd`, no file writes outside .beads
+#                     (K1 surface, claude-tools-uxvk1; the read-only cross-WS
+#                     responder — same NO_CODE_EDITS posture as reconciler/
+#                     enricher PLUS a no-recursion guard that disallows the
+#                     ask-workspace / ask-brian MCP tools so a responder can
+#                     never trigger another responder — DESIGN K §2.2 item 3).
 #   ux/design/impl/docs/tests : reads + Bash + file writes — these are
 #     doing real work during stage transitions or as worker bodies.
 #
@@ -68,6 +74,7 @@ Usage:
 Required:
   --kind KIND          one of: ux | design | impl | docs | tests
                                 | reconciler | enricher | dossier-builder
+                                | xws-responder
   --workspace PATH     the workspace the hat runs inside (cwd + --add-dir)
 
 Optional:
@@ -102,8 +109,8 @@ done
 [[ -d "$WORKSPACE" ]] || { echo "specialist.sh: reject — --workspace '$WORKSPACE' is not a directory" >&2; exit 2; }
 
 case "$KIND" in
-  ux|design|impl|docs|tests|reconciler|enricher|dossier-builder) : ;;
-  *) echo "specialist.sh: reject — --kind '$KIND' not in the closed enum (ux|design|impl|docs|tests|reconciler|enricher|dossier-builder)" >&2; exit 2 ;;
+  ux|design|impl|docs|tests|reconciler|enricher|dossier-builder|xws-responder) : ;;
+  *) echo "specialist.sh: reject — --kind '$KIND' not in the closed enum (ux|design|impl|docs|tests|reconciler|enricher|dossier-builder|xws-responder)" >&2; exit 2 ;;
 esac
 
 SYS_PROMPT_FILE="$SCRIPT_DIR/$KIND.system.md"
@@ -135,6 +142,14 @@ GUARDRAIL=(AskUserQuestion EnterPlanMode ExitPlanMode)
 # files outside .beads". Real-work hats (ux/design/impl/docs/tests) do NOT
 # disallow these; they need them.
 NO_CODE_EDITS=(Write Edit MultiEdit NotebookEdit BashWriteEdits)
+# No-recursion guard for the xws-responder hat (K1, claude-tools-uxvk1; DESIGN K
+# §2.2 item 3 / r0m item 5). The cross-WS responder is spawned by the
+# ask-workspace MCP server, which is registered at USER scope — so without an
+# explicit disallow the responder's `claude -p` would inherit the very tool that
+# spawned it and could relay onward, making cross-WS cycles possible. Disallow
+# both human/peer ask tools by name so recursion is impossible at the harness
+# layer, not merely discouraged by the prompt. (A no-op for every other hat.)
+NO_XWS_RECURSION=(mcp__ask-workspace__ask-workspace mcp__askbrian__ask-brian)
 
 # Common allowlist every hat needs (claude-tools-e5aq): without --allowedTools,
 # `--permission-mode default` (and acceptEdits, for Bash) sends every tool call
@@ -202,6 +217,20 @@ case "$KIND" in
     # .beads/ contract).
     ALLOWED=("${COMMON_ALLOWED[@]}")
     DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}")
+    PERMISSION_MODE=(--permission-mode default)
+    ;;
+  xws-responder)
+    # K1 (claude-tools-uxvk1; DESIGN K §2.1): the cross-WS read-only responder.
+    # EXACTLY the reconciler/enricher read-only posture (COMMON_ALLOWED, the
+    # full NO_CODE_EDITS set disallowed, --permission-mode default) — must-
+    # protect #11 (aux read-only BY CONSTRUCTION): it can Read/Grep/Glob, run
+    # read-only `bd`/`git`, and nothing else; it physically cannot edit B's
+    # tree, run a build, or commit. PLUS the no-recursion guard: a responder
+    # must never be able to call the ask-workspace (or ask-brian) MCP tool, or a
+    # responder could trigger another responder and cycle (§2.2 item 3). The
+    # answer/escalate split is the prompt's job; the lockdown is enforced here.
+    ALLOWED=("${COMMON_ALLOWED[@]}")
+    DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}" "${NO_XWS_RECURSION[@]}")
     PERMISSION_MODE=(--permission-mode default)
     ;;
   ux|design|impl|docs|tests)

@@ -1,0 +1,13 @@
+{
+  "name": "mcp-ask-workspace",
+  "version": "0.1.0",
+  "description": "MCP stdio server exposing mcp__ask-workspace__ask-workspace — the cross-workspace sibling of ask-brian (DESIGN K / claude-tools-uxvk1)",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "mcp-ask-workspace": "./server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "*"
+  }
+}

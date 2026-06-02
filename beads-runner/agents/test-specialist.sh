@@ -63,7 +63,7 @@ mkdir -p "$WS/.beads"
 # test so a missing-prompt environment (e.g. before S2 lands) still passes.
 PROMPT_BACKUP="$WORK/prompts-backup"
 mkdir -p "$PROMPT_BACKUP"
-for k in ux design impl docs tests reconciler enricher dossier-builder; do
+for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder; do
   pf="$SCRIPT_DIR/$k.system.md"
   if [[ -f "$pf" ]]; then
     cp "$pf" "$PROMPT_BACKUP/$k.system.md"
@@ -71,7 +71,7 @@ for k in ux design impl docs tests reconciler enricher dossier-builder; do
   printf 'SHIM PLACEHOLDER for %s — test fixture (claude-tools-bk6)\n' "$k" > "$pf"
 done
 restore_prompts() {
-  for k in ux design impl docs tests reconciler enricher dossier-builder; do
+  for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder; do
     pf="$SCRIPT_DIR/$k.system.md"
     bf="$PROMPT_BACKUP/$k.system.md"
     if [[ -f "$bf" ]]; then mv "$bf" "$pf"; else rm -f "$pf"; fi
@@ -126,7 +126,7 @@ run() {
     || fail "$kind: §7.6 guardrail not at start of --disallowedTools"
   pass "$kind: dispatched, flags wired, output extracted"
 }
-for k in ux design impl docs tests reconciler enricher dossier-builder; do
+for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder; do
   run "$k"
 done
 
@@ -193,6 +193,46 @@ grep -q -- "--allowedTools .* Bash(bd:\\*)" <<<"$ENR" \
 grep -q -- "--allowedTools .* Bash(git:\\*)" <<<"$ENR" \
   && pass "enricher: --allowedTools includes Bash(git:*) (read-only git for dedup pass)" \
   || fail "enricher: --allowedTools missing Bash(git:*)"
+
+# ── K1 (claude-tools-uxvk1) — the cross-WS read-only responder lockdown ──────
+# The bead's testing invariant (s6/s4): "responder capability lockdown:
+# Read/Grep/Glob/bd-read ONLY. Assert a Write/Edit/mutating-Bash attempt is
+# REFUSED (not merely unused)." We assert the harness-level refusal directly:
+# the full NO_CODE_EDITS set (Write Edit MultiEdit NotebookEdit BashWriteEdits)
+# is on --disallowedTools, bare Bash is kept (for read-only bd/git), the mode is
+# `default` (no auto-accept of edits), and the no-recursion guard disallows BOTH
+# cross-WS/human ask MCP tools so a responder cannot trigger another responder.
+XWS=$(stream_for xws-responder)
+if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteEdits" <<<"$XWS" \
+   && ! grep -qE -- "--disallowedTools .* Bash([[:space:]]|$)" <<<"$XWS"; then
+  pass "xws-responder: Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits REFUSED, bare Bash kept (read-only by construction — must-protect #11)"
+else
+  fail "xws-responder: expected Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits forbidden AND bare Bash kept"
+fi
+grep -q -- "--permission-mode default" <<<"$XWS" \
+  && pass "xws-responder: --permission-mode default (no auto-accept of edits)" \
+  || fail "xws-responder: expected --permission-mode default"
+grep -q -- "--allowedTools .* Bash(bd:\\*)" <<<"$XWS" \
+  && pass "xws-responder: --allowedTools includes Bash(bd:*) (read-only bd for answering)" \
+  || fail "xws-responder: --allowedTools missing Bash(bd:*)"
+# "Not merely unused": Write is actively DISALLOWED (asserted above) AND it is
+# not quietly in the allowlist either. Isolate the allow segment (between
+# --allowedTools and --permission-mode) so the greedy match can't reach the
+# Write token that legitimately lives in the --disallowedTools segment.
+XWS_ALLOW_SEG=$(grep -oE -- "--allowedTools .*--permission-mode" <<<"$XWS" | head -1)
+if grep -qE -- "(^| )Write( |$)" <<<"$XWS_ALLOW_SEG"; then
+  fail "xws-responder: Write must NOT be on --allowedTools (read-only hat)"
+else
+  pass "xws-responder: Write absent from --allowedTools (read-only hat — refused, not merely unused)"
+fi
+# The no-recursion guard (DESIGN K §2.2 item 3 / r0m item 5): both ask MCP tools
+# are disallowed so a responder can never relay onward and cycle.
+grep -q -- "--disallowedTools .* mcp__ask-workspace__ask-workspace" <<<"$XWS" \
+  && pass "xws-responder: ask-workspace MCP tool disallowed (no recursion — DESIGN K §2.2)" \
+  || fail "xws-responder: ask-workspace MCP tool NOT disallowed — a responder could cycle"
+grep -q -- "--disallowedTools .* mcp__askbrian__ask-brian" <<<"$XWS" \
+  && pass "xws-responder: ask-brian MCP tool disallowed (the responder escalates via verdict, never directly)" \
+  || fail "xws-responder: ask-brian MCP tool NOT disallowed"
 
 IMPL=$(stream_for impl)
 grep -q -- "--permission-mode acceptEdits" <<<"$IMPL" \
