@@ -72,9 +72,11 @@ seam_unset_present() {  # $1=file → 0 iff an `unset … DG_AUTHOR_AUTOWIRE …
   # statement naming DG_AUTHOR_AUTOWIRE — so the continuation form is not missed
   # and a mere comment mentioning the var does not false-pass.
   awk '
-    { cur = $0; sub(/#.*/, "", cur); buf = buf cur }
-    /\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, "", buf); next }
     {
+      cur = $0; sub(/#.*/, "", cur); buf = buf cur
+      # Detect the continuation on the COMMENT-STRIPPED line: a trailing `\`
+      # inside a comment is a statement terminator in bash, not a line-join.
+      if (cur ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", buf); next }
       if (buf ~ /(^|[;&|[:space:]])unset([[:space:]]|$)/ && buf ~ /DG_AUTHOR_AUTOWIRE/) found = 1
       buf = ""
     }
