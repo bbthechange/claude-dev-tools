@@ -120,6 +120,14 @@ proxies. If you also changed the Worker, deploy the Worker FIRST (Pages depend o
 Worker ops, not vice-versa). Auth: `wrangler login` interactively, or a Keychain
 `CLOUDFLARE_API_TOKEN` (Pages:Edit) for the headless runner.
 
+> **Headless gotcha (claude-tools-uxvq1):** `wrangler pages deploy` auto-derives
+> the deployment's commit message from `git log` HEAD. This repo's commit
+> messages routinely contain `§`/`−`/em-dashes, and the Cloudflare Pages API
+> rejects them with `Invalid commit message, it must be a valid UTF-8 string
+> [code: 8000111]` — the file upload SUCCEEDS, only the final create-deployment
+> call 422s, so it reads like a flaky deploy. Fix: pass an explicit ASCII message
+> and branch: `npx wrangler pages deploy . --project-name claude-wrangler --branch main --commit-dirty true --commit-message "deploy <bead> …"`. Re-run is cheap (uploaded files are cached).
+
 **Add a new op to the UI:** add the engine op (see `engine-cloudflare.md` — that
 includes the pages-dev adapter layer), then add the proxy here. Read = copy
 `functions/api/board/index.js`; write = copy `functions/api/board/set-desired.js`
