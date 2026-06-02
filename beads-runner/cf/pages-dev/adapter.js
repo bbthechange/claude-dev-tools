@@ -86,6 +86,13 @@ function argsForGet(op, url) {
   // project_ref means "the global cross-WS log" (DESIGN K §3.3) — the adapter
   // stays dumb plumbing and the engine owns the read shape (B.3).
   if (op === "relay-log-tail") return [q.get("project_ref") || "", q.get("n") || ""];
+  // J1 (claude-tools-uxvj1) — DESIGN J §2 gate metadata read. The facet read
+  // proxy (web/functions/api/ws/gate-meta.js) carries an optional `gate_id`
+  // scope; here it unwraps to gateMetaGet's positional [gateId] (gate-meta.js
+  // handleGateMetaOp). An empty gate_id means "all gates" (the J2 projection
+  // bulk path) — the adapter stays dumb plumbing and the engine owns the read
+  // shape ({gate:…} for one, {gates:[…]} for all).
+  if (op === "gate-meta-get") return [q.get("gate_id") || ""];
   return null; // unmapped read op — caller emits 400 (never a guess)
 }
 function argsForPost(op, body) {
@@ -146,6 +153,18 @@ function argsForPost(op, body) {
   if (op === "relay-log-append") {
     const ex = b.exchange && typeof b.exchange === "object" ? b.exchange : null;
     return [ex === null ? "" : JSON.stringify(ex)];
+  }
+  // J1 (claude-tools-uxvj1) — DESIGN J §2 gate metadata upsert. The facet write
+  // proxy (web/functions/api/ws/gate-meta.js) sends the named body {gate:{...}}
+  // (id/why/unblock_condition/owner/scope); here it unwraps to gateMetaSet's
+  // positional [<meta_json>] (gate-meta.js handleGateMetaOp). The adapter
+  // re-stringifies it because the op's arg is a JSON STRING the engine parses
+  // inside (the `put` / relay-log-append precedent). The proxy hard-codes the
+  // op + owner:"you"; the adapter stays dumb plumbing and the engine owns the
+  // gate (id shape, required why, the closed scope enum).
+  if (op === "gate-meta-set") {
+    const g = b.gate && typeof b.gate === "object" ? b.gate : null;
+    return [g === null ? "" : JSON.stringify(g)];
   }
   return null; // unmapped write op — caller emits 400
 }

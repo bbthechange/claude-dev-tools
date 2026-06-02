@@ -154,6 +154,21 @@ import { LEASE_OPS, handleLeaseOp } from "./lease.js";
 // rejected 401 at the Worker BEFORE this guard, so it writes NOTHING.
 import { RELAY_OPS, handleRelayOp } from "./relay.js";
 import { ACTIVITY_OPS, handleActivityOp } from "./activity.js";
+// J1 (claude-tools-uxvj1) — DESIGN J §2 gate_metadata transient + gate-meta
+// ops, layered ON this substrate (a SEPARATE module, the machine-state.js/
+// relay.js shape). It adds NO §4 record type: gate_metadata ANNOTATES a beads
+// `gate:<id>` label — `gate_metadata` is the module's OWN sibling D1 namespace
+// (lazy + idempotent DDL there), the capacity_reports / machine_state_reports /
+// relay_log "annotation/telemetry, not a §4 record" precedent (Contract A.2) —
+// so `gate_metadata` stays ABSENT from the schema.js §4 registry and is
+// structurally never in the §4.5 projection's record path / a §4.3 Notification
+// body (a gate NEVER pages by itself; the agent-gate FYI is Track N/K3's batched
+// job). The J2 projection LEFT-joins it into each project's `holds[]`. Its ops
+// are dispatched in a dedicated guard so this substrate stays untouched. The
+// §9.1 chokepoint (the Worker) has ALREADY authenticated + threaded `principal`
+// — no second auth path (C4); a no/invalid-token gate-meta op is rejected 401
+// at the Worker BEFORE this guard, so it writes NOTHING.
+import { GATE_META_OPS, handleGateMetaOp } from "./gate-meta.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -425,6 +440,21 @@ export class Coordinator {
     // the Worker BEFORE this guard, so it writes NOTHING.
     if (ACTIVITY_OPS.has(op)) {
       return await handleActivityOp(this, op, args, principal);
+    }
+
+    // ── J1 (claude-tools-uxvj1) DESIGN J §2 gate_metadata op guard ───────────
+    // The gate-meta-set/-get ops over the transient `gate_metadata` annotation
+    // table, dispatched by their dedicated module so the CF.1 substrate switch
+    // below stays byte-identical. NOT a §4 record / NO §4 DDL: gate_metadata
+    // annotates a `gate:<id>` beads label — the module owns its OWN
+    // `gate_metadata` namespace (lazy + idempotent DDL there), so it stays
+    // ABSENT from the §4 registry/projection (the capacity_reports / relay_log
+    // "annotation, not a §4 record" precedent — Contract A.2). The §9.1
+    // chokepoint (the Worker) has ALREADY authenticated + threaded `principal`
+    // — no second auth path (C4); a no/invalid-token gate-meta op is rejected
+    // 401 at the Worker BEFORE this guard, so it writes NOTHING.
+    if (GATE_META_OPS.has(op)) {
+      return await handleGateMetaOp(this, op, args, principal);
     }
 
     try {

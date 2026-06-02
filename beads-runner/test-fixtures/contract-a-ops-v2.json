@@ -54,9 +54,14 @@
       "proxy": "web/functions/api/ws/blueprint.js", "adapter": true, "migration": "cf/migrations/0007_blueprint.sql"
     },
     {
-      "_planned_note": "Track J (Gates/Hold) — J1. gate_metadata transient table + gate-meta ops (why/unblock/owner). Transient per A.2 (annotates a beads label, no §4 lifecycle).",
-      "op": "gate-meta-set", "track": "J", "status": "planned",
-      "module": "cf/src/gate.js", "ops_set": "GATE_OPS", "guard": "GATE_OPS",
+      "_landed_note": "Track J (Gates/Hold) — J1 (claude-tools-uxvj1) LANDED. gate_metadata transient table (annotates a `gate:<id>` beads label, no §4 lifecycle / Contract A.2; machine_state_reports + relay_log precedent) + gate-meta-set/-get ops (id/why/unblock_condition/owner/scope; why REQUIRED; id = ^[a-z0-9][a-z0-9-]*$ gate-defer.sh shape; scope = closed D.2 enum {task,cohort}; owner is an INPUT not the principal, §2.3). Module cf/src/gate-meta.js (GATE_META_OPS), guard in coordinator.js, read+write proxy web/functions/api/ws/gate-meta.js (onRequestGet gate-meta-get + onRequestPost gate-meta-set), adapter-mapped, migration 0008_gate_metadata.sql, vitest differential cf/test/gate-meta.spec.js. A.4: shipped as gate-meta.js/GATE_META_OPS (clearer than the placeholder gate.js/GATE_OPS — avoids the gate-defer/gate-policy `gate` collision).",
+      "op": "gate-meta-set", "track": "J", "status": "wired",
+      "module": "cf/src/gate-meta.js", "ops_set": "GATE_META_OPS", "guard": "GATE_META_OPS",
+      "proxy": "web/functions/api/ws/gate-meta.js", "adapter": true, "migration": "cf/migrations/0008_gate_metadata.sql"
+    },
+    {
+      "op": "gate-meta-get", "track": "J", "status": "wired",
+      "module": "cf/src/gate-meta.js", "ops_set": "GATE_META_OPS", "guard": "GATE_META_OPS",
       "proxy": "web/functions/api/ws/gate-meta.js", "adapter": true, "migration": "cf/migrations/0008_gate_metadata.sql"
     },
     {
