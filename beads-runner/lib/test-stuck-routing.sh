@@ -54,7 +54,17 @@ export CO_STORE="$WORK/store"
 # doesn't pollute the real $HOME/.cache production telemetry (the gate sets it
 # itself; honor that). See run-tests.sh / conformance/lib/harness.sh.
 export DG_AUDIT_LOG="${DG_AUDIT_LOG:-$WORK/.dossier-author-audit.jsonl}"
-unset CO_EXPECTED_TOKEN PRINCIPAL_V1 2>/dev/null || true
+# claude-tools-bmfj: this harness drives sr_route_stuck → dg_from_worker_ask →
+# dg_generate → dg__author, which has an AUTOWIRE chokepoint. A STANDALONE
+# `bash lib/test-stuck-routing.sh` inside a worker session inherits
+# DG_AUTHOR_AUTOWIRE=1 with real `claude` on PATH + the executable
+# lib/dg-author-bridge.sh present, so the chokepoint would wire the real bridge
+# and fire claude-in-claude (the run-tests.sh wedge, from a sibling file). This
+# test EXPECTS the deterministic jq fallback (it asserts no_DG_AUTHOR_CMD), so
+# drop the whole authoring seam at startup. (The gate also forces
+# DG_AUTHOR_AUTOWIRE=0; this is the belt-and-suspenders for a hand-run.)
+unset CO_EXPECTED_TOKEN PRINCIPAL_V1 \
+      DG_AUTHOR_CMD DG_AUTHOR_AUTOWIRE CLAUDE_BIN DG_AUTHOR_BRIDGE_PATH 2>/dev/null || true
 
 # ── work-plane `bd` fake on PATH — STATEFUL status + human log ───────────────
 # Tracks per-id status under $BDST/<id> so a blocked→open clobber (the

@@ -57,6 +57,16 @@ set -u
 # doesn't pollute the real $HOME/.cache production telemetry (the gate sets it
 # itself; honor that). See run-tests.sh / conformance/lib/harness.sh.
 export DG_AUDIT_LOG="${DG_AUDIT_LOG:-${TMPDIR:-/tmp}/dg-audit-test-i3.$$.jsonl}"
+# claude-tools-bmfj: PARTs B/C drive sr_route_stuck → dg_from_worker_ask →
+# dg_generate → dg__author, which has an AUTOWIRE chokepoint. A STANDALONE
+# `bash lib/test-i3-stuck-dossier.sh` inside a worker session inherits
+# DG_AUTHOR_AUTOWIRE=1 with real `claude` on PATH + the executable
+# lib/dg-author-bridge.sh present, so the chokepoint would wire the real bridge
+# and fire claude-in-claude (the run-tests.sh wedge, from a sibling file). This
+# test never sets the authoring seam itself — it relies on the deterministic jq
+# author — so drop the inherited seam at startup. (The gate also forces
+# DG_AUTHOR_AUTOWIRE=0; this is the belt-and-suspenders for a hand-run.)
+unset DG_AUTHOR_CMD DG_AUTHOR_AUTOWIRE CLAUDE_BIN DG_AUTHOR_BRIDGE_PATH 2>/dev/null || true
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CF_DIR="$(cd "$HERE/../cf" && pwd)"

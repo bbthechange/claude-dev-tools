@@ -61,6 +61,25 @@ BR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DG_AUDIT_LOG="${DG_AUDIT_LOG:-$BR_DIR/../.beads/runner-logs/.test-dossier-author-audit.jsonl}"
 mkdir -p "$(dirname "$DG_AUDIT_LOG")" 2>/dev/null || true
 
+# ── claude-tools-bmfj: force the deterministic jq dossier-author for the WHOLE
+# gate — the offline gate must NEVER spawn a real `claude`. Both runners export
+# DG_AUTHOR_AUTOWIRE=1 at startup (run-beads-tasks.sh:253, runner.sh:421), and the
+# gate itself runs inside a `claude -p` worker that INHERITS that 1. Without this,
+# every tier that exercises dg__author (test-dossier-gen, the stuck/flow-g/
+# notification libs, the conformance harness's run-beads-tasks.sh) would — with
+# real `claude` on PATH and the executable lib/dg-author-bridge.sh present —
+# resolve the real bridge as DG_AUTHOR_CMD at dossier-gen.sh's autowire chokepoint
+# and fire claude-in-claude: a 300s-timeout opus call relaunched once per
+# dg_generate. That is the exact orphan that wedged run-tests.sh for ~1h and held
+# the single global gate lock for the whole swarm. 0 is the documented kill-switch
+# (dossier-gen.sh §69u8 autowire gate; runner.sh:421) and the offline assertions
+# already expect the jq fallback path. Set HERE — before the singleton lock and
+# the SELFTEST exit — so every child tier inherits it and the lock SELFTEST can
+# observe it. Tests that deliberately exercise the autowire branch (test-dossier-
+# gen §9) override it INLINE with a stubbed CLAUDE_BIN/DG_AUTHOR_BRIDGE_PATH, so
+# they stay hermetic and green.
+export DG_AUTHOR_AUTOWIRE=0
+
 # ── gate-invocation log (claude-tools-d315) ──────────────────────────────────
 # Append ONE record per gate ENTRY — before arg-parsing and the singleton lock —
 # so EVERY invocation self-identifies its caller: a full run, a --tier/--changed
@@ -332,6 +351,10 @@ acquire_gate_lock
 # sibling invocation can observe contention. (See the Test hooks note above.)
 if [[ -n "${RUN_TESTS_GATE_SELFTEST:-}" ]]; then
   printf 'LOCK-ACQUIRED pid=%s\n' "$$"
+  # claude-tools-bmfj: surface the offline-author neutralization so a regression
+  # test (test-gate-offline-author.sh) can assert the gate forced autowire OFF
+  # even when launched with DG_AUTHOR_AUTOWIRE=1 inherited from a worker session.
+  printf 'OFFLINE-DG-AUTHOR-AUTOWIRE=%s\n' "${DG_AUTHOR_AUTOWIRE:-unset}"
   case "$RUN_TESTS_GATE_SELFTEST" in
     hold:*) sleep "${RUN_TESTS_GATE_SELFTEST#hold:}" ;;
   esac

@@ -61,7 +61,7 @@ both run inside the gate (tiers `lib` and `cf`). `lib/test-<x>.sh` tests `lib/<x
 
 | File | Role |
 |---|---|
-| `run-tests.sh` | THE offline gate. Globs tiers, runs each, tallies, single exit. Singleton mkdir-lock (exit 75 = busy). Neutralizes the coordinator token + shims `security` so live probes SKIP. Sweeps stale fixtures up front. |
+| `run-tests.sh` | THE offline gate. Globs tiers, runs each, tallies, single exit. Singleton mkdir-lock (exit 75 = busy). Neutralizes the coordinator token + shims `security` so live probes SKIP; forces `DG_AUTHOR_AUTOWIRE=0` so no tier spawns claude-in-claude (bmfj). Sweeps stale fixtures up front. |
 | `TESTING-STRATEGY.md` | The canon: §2 tier table, §3 R-anchors (named regression scars), §5 acceptance bar, §7.x infra, §8 anti-flaky rules. The acceptance lens every test checks against. |
 | `conformance/run-conformance.sh` | The runner BC harness driver (tier `conformance`). Runs `run-beads-tasks.sh` under stubbed `bd`/`claude`/`security`/`curl`, asserts each BC scar black-box. Exit 0 = HARNESS GREEN. |
 | `conformance/assertions/bc-*.sh` | The ~69 BC scar rigs (`RESULT\|PASS\|bc-NN\|…` protocol), each citing a frozen INTERFACE §-clause. Add a rig here for a runner scar; it auto-enrolls. |
@@ -151,6 +151,33 @@ against the live host — not local-green + committed — is acceptance.
   `security`, so even on a machine that HAS a prod token the gate never reaches the
   network. On CI (no token, no `security`) the same code is a no-op. Don't "fix" a
   SKIP'd live section by feeding it a token inside the gate.
+- **The gate must NEVER spawn `claude` (no claude-in-claude).** Both runners
+  `export DG_AUTHOR_AUTOWIRE=1` at startup, and the gate runs inside a `claude -p`
+  worker that inherits it. dossier-gen.sh's `dg__author` has an autowire chokepoint:
+  `DG_AUTHOR_AUTOWIRE=1` + real `claude` on PATH + the executable
+  `lib/dg-author-bridge.sh` ⇒ it wires the real bridge as `DG_AUTHOR_CMD` and fires a
+  300s-timeout opus call **once per `dg_generate`** — which an orphaned run looped on,
+  wedging the gate ~1h and holding the single global lock for the whole swarm
+  (claude-tools-bmfj). The gate now `export DG_AUTHOR_AUTOWIRE=0` at the TOP (next to
+  the `DG_AUDIT_LOG` isolation, before the lock/SELFTEST), forcing the deterministic
+  jq author for every tier. EVERY chokepoint-reaching lib test also `unset`s the seam
+  at startup so a standalone hand-run inside a worker session can't wedge either:
+  `test-dossier-gen.sh`, `test-stuck-routing.sh`, `test-i3-stuck-dossier.sh` (the last
+  two route via `sr_route_stuck`→`dg_from_worker_ask`→`dg_generate`→`dg__author`).
+  `test-gate-offline-author.sh` (top tier) pins both halves — the gate's forced 0 AND
+  the per-test unset across all three. The §9 autowire subtests stay green because they
+  stub `CLAUDE_BIN`/`DG_AUTHOR_BRIDGE_PATH` inline. If you ever see
+  `pgrep -fl dossier-builder.system.md` during the gate, this guard regressed.
+- **KNOWN-RED (2026-06-02): the `conformance` tier fails on BC-35 INT/HUP**, so a full
+  `run-tests.sh` currently exits non-zero on `TIER conformance`. It is a PRE-EXISTING
+  runner signal-handling bug (the runner traps SIGTERM fine — TERM PASSes — but SIGINT/
+  SIGHUP mid-task don't complete teardown, so the harness SIGKILLs the runner after its
+  20s grace: `harness.sh: line 183 … Killed: 9`). Deterministic, autowire-independent,
+  in `runner.sh`/`run-beads-tasks.sh` (NOT a dossier-author/bmfj issue) — it was MASKED
+  for weeks because the claude-in-claude wedge kept the gate from running at all, and
+  surfaced the moment bmfj un-wedged it. Tracked in **claude-tools-54ei**. Until that
+  lands, a green `lib`+`top` (and the other tiers) with conformance RED on BC-35 only is
+  the expected state; don't read it as your regression.
 - **`conformance` and `cf`/`jsdom` count as ONE unit each.** They fan out internally;
   on failure the gate prints their full output. Bash `test-*.sh` files are one unit
   apiece (pass == exit 0).
@@ -173,4 +200,4 @@ When you finish a task in this area, append anything a future agent will need an
 didn't find here: a new tier, a moved harness file, a new known-artifact fail, a
 changed exit code, a new anti-flaky rule. **Keep it concise — this doc earns its
 keep only if agents read all of it.** Delete lines that have gone stale; don't let
-it grow into a second copy of TESTING-STRATEGY.md. Last substantive update: 2026-05-31.
+it grow into a second copy of TESTING-STRATEGY.md. Last substantive update: 2026-06-01.

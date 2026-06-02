@@ -54,7 +54,17 @@ export CO_STORE="$WORK/store"
 # fixture rows into the user's REAL $HOME/.cache audit log. The B3 section
 # re-`rm`s this same path to assert on fresh lines.
 export DG_AUDIT_LOG="$WORK/dossier-author-audit.jsonl"
-unset CO_EXPECTED_TOKEN PRINCIPAL_V1 DG_AUTHOR_CMD 2>/dev/null || true
+# claude-tools-bmfj: also drop the dossier-author AUTOWIRE seam (and its claude/
+# bridge knobs) so a STANDALONE `bash lib/test-dossier-gen.sh` inside a worker
+# session — where the runner exported DG_AUTHOR_AUTOWIRE=1 and real `claude` is
+# on PATH — can NEVER resolve the real lib/dg-author-bridge.sh + real claude
+# (claude-in-claude). The early sections below rely on the deterministic jq
+# fallback; the §9 autowire subtests set their OWN stubbed CLAUDE_BIN/
+# DG_AUTHOR_BRIDGE_PATH inline, so this only kills inheritance, never their
+# explicit cases. (The run-tests.sh gate also forces DG_AUTHOR_AUTOWIRE=0 for
+# every tier; this is the belt-and-suspenders for a standalone invocation.)
+unset CO_EXPECTED_TOKEN PRINCIPAL_V1 DG_AUTHOR_CMD \
+      DG_AUTHOR_AUTOWIRE CLAUDE_BIN DG_AUTHOR_BRIDGE_PATH 2>/dev/null || true
 
 # shellcheck source=/dev/null
 source "$LIB"          # sources dossier.sh → coordinator.sh (consumer binding)
