@@ -334,6 +334,25 @@ it("CF.1 substrate is behaviour-identical to coordinator.sh + test-coordinator.s
     enricher_bd_id: "thirsty-001",
   });
   await call(GOOD, "put", ["intake-request", "intake-2026-05-20T07-02-00Z-ghi", irBodyDone]);
+  // L3 follow-up (claude-tools-t956): a terminal gave_up:true record. It stays
+  // processed=false forever, so the OLD filter re-returned it every ~30s cadence
+  // (monotonic queue growth). intake-pending MUST exclude it now — mirrors the
+  // bash twin co__intake_pending. (gave-up records still surface on the phone via
+  // the separate readIntake projection; this op is ONLY the daemon's work queue.)
+  const irBodyGaveUp = JSON.stringify({
+    schema_version: 1,
+    id: "intake-2026-05-20T07-03-00Z-jkl",
+    idea_text: "tap that gave up",
+    project_ref: "thirsty",
+    preset: "autonomous-until-stuck",
+    processed: false,
+    gave_up: true,
+    gave_up_at: "2026-05-20T07:30:00Z",
+    dispatch_attempts: 3,
+    dispatch_state: "gave_up",
+    submitted_at: "2026-05-20T07:03:00Z",
+  });
+  await call(GOOD, "put", ["intake-request", "intake-2026-05-20T07-03-00Z-jkl", irBodyGaveUp]);
 
   const irPending = await call(GOOD, "intake-pending", []);
   ck("intake-pending returns 200", irPending.status === 200);
@@ -344,10 +363,14 @@ it("CF.1 substrate is behaviour-identical to coordinator.sh + test-coordinator.s
     irList = null;
   }
   ck("intake-pending returns a JSON array", Array.isArray(irList));
-  ck("intake-pending returns exactly the 2 processed=false records", Array.isArray(irList) && irList.length === 2);
+  ck("intake-pending returns exactly the 2 processed=false records (skips processed=true AND gave_up)", Array.isArray(irList) && irList.length === 2);
   ck(
     "intake-pending skips the processed=true record (ghi)",
     Array.isArray(irList) && !irList.some(r => r && r.id === "intake-2026-05-20T07-02-00Z-ghi")
+  );
+  ck(
+    "intake-pending excludes the terminal gave_up record (jkl) — claude-tools-t956",
+    Array.isArray(irList) && !irList.some(r => r && r.id === "intake-2026-05-20T07-03-00Z-jkl")
   );
   ck(
     "intake-pending is ordered by id ASC (abc before def — FIFO)",

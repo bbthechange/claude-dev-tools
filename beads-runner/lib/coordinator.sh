@@ -382,10 +382,18 @@ co__store_get() {
 # to `intake-request` and the filter is hard-coded to `processed:false`, so an
 # accidental call cannot exfiltrate other §4 record bodies.
 #
+# L3 follow-up (claude-tools-t956): ALSO exclude `gave_up == true`. A gave-up
+# record stays processed=false forever (terminal failure, never marked done), so
+# without this it is re-fetched + re-iterated every ~30s cadence and the daemon's
+# pending batch grows monotonically on a busy machine. Only a literal boolean
+# true excludes (mirrors the JS twin's `gave_up !== true`) — gave-up records
+# still surface on the phone via the separate readIntake projection; this op is
+# ONLY the daemon's work queue. JS twin: opIntakePending in cf/src/coordinator.js.
+#
 # Order: lexicographic by id (intake_id starts with an ISO-ish timestamp, so
 # this gives the daemon roughly-monotonic FIFO order across taps).
 co__intake_pending() {
-  local d records=() f rec processed
+  local d records=() f rec processed gave_up
   d="$(co__ensure_store)/records"
   [[ -d "$d" ]] || { printf '[]\n'; return 0; }
   for f in "$d"/intake-request.*.json; do
@@ -398,6 +406,12 @@ co__intake_pending() {
     # record than re-dispatch every malformed record forever.
     processed="$(printf '%s' "$rec" | jq -r 'if type=="object" and (.processed|type)=="boolean" then (.processed|tostring) else "true" end' 2>/dev/null)" || processed="true"
     [[ "$processed" == "false" ]] || continue
+    # L3 follow-up (claude-tools-t956): drop terminal gave_up records from the
+    # daemon's work queue (else the per-machine batch grows without bound — a
+    # gave-up record stays processed=false forever). Only a literal boolean true
+    # excludes — a missing/false/string flag does NOT (mirrors JS `gave_up !== true`).
+    gave_up="$(printf '%s' "$rec" | jq -r 'if type=="object" and (.gave_up==true) then "true" else "false" end' 2>/dev/null)" || gave_up="false"
+    [[ "$gave_up" == "true" ]] && continue
     records+=("$rec")
   done
   if [[ "${#records[@]}" -eq 0 ]]; then

@@ -268,6 +268,60 @@ ck "bravo blueprint updated_ago null (honest absence)"  eq "$(jq -r '.cards[]|se
 ck "bravo blueprint active_count 0"                     eq "$(jq -r '.cards[]|select(.project_ref=="bravo").blueprint.active_count' <<<"$V")" "0"
 ck "bravo blueprint active_domains empty []"            eq "$(jq -c '.cards[]|select(.project_ref=="bravo").blueprint.active_domains' <<<"$V")" "[]"
 
+echo "── K: stale-enriching attention flip (claude-tools-t956) ──"
+# A focused fixture (separate from FIX so the Section-I totals are undisturbed):
+# two LIVE workspaces whose baseline health is 'ok'. `delta` has an enriching
+# intake whose last_attempt_at is 30m before NOW (> the 15m window) — the daemon
+# died mid-enrich, so it must flip to attention. `echo` has a FRESH enriching
+# (5m, < window) AND a NO-timestamp enriching (cannot prove staleness) — both
+# must stay non-attention. NOW_MS = 2026-05-19T00:00:00Z (the file-level fixed now).
+FIX_SE="$(jq -cn '{
+  schema_version: 1, read_only: true, principal: "PRINCIPAL_V1",
+  projects: [
+    { project_ref: "delta",
+      runner_state: { liveness:"live", actual:"running", desired:"running",
+        desired_actual_mismatch:false, last_heartbeat_at:"2026-05-18T23:59:00Z",
+        current_task_ref:"delta-1", current_task_title:"Working" } },
+    { project_ref: "echo",
+      runner_state: { liveness:"live", actual:"running", desired:"running",
+        desired_actual_mismatch:false, last_heartbeat_at:"2026-05-18T23:59:00Z",
+        current_task_ref:"echo-1", current_task_title:"Working" } }
+  ],
+  waiting_on_you: [], lifecycle_columns: {}, machines: [],
+  intake: [
+    { intake_id:"intake-d-stale", project_ref:"delta", preset:"autonomous-until-stuck",
+      state:"enriching", attempts:1, idea_excerpt:"a stuck enrich",
+      last_attempt_at:"2026-05-18T23:30:00Z", submitted_at:"2026-05-18T23:25:00Z" },
+    { intake_id:"intake-e-fresh", project_ref:"echo", preset:"autonomous-until-stuck",
+      state:"enriching", attempts:1, idea_excerpt:"a fresh enrich",
+      last_attempt_at:"2026-05-18T23:55:00Z", submitted_at:"2026-05-18T23:50:00Z" },
+    { intake_id:"intake-e-notime", project_ref:"echo", preset:"autonomous-until-stuck",
+      state:"enriching", attempts:0, idea_excerpt:"no timestamps at all" }
+  ]
+}')"
+VSE="$(render "$FIX_SE")"
+DSE="$(jq -c '.cards[]|select(.project_ref=="delta").intake' <<<"$VSE")"
+ESE="$(jq -c '.cards[]|select(.project_ref=="echo").intake' <<<"$VSE")"
+# delta — the stale enriching flips to attention WITHOUT lying about the state.
+ck "delta enriching state kept honest (counts.enriching=1)"  eq "$(jq -r '.counts.enriching' <<<"$DSE")" "1"
+ck "delta stale item still state='enriching'"               eq "$(jq -r '.items[0].state' <<<"$DSE")" "enriching"
+ck "delta stale item marked stale:true"                     eq "$(jq -r '.items[0].stale' <<<"$DSE")" "true"
+ck "delta stale item marked attention:true"                 eq "$(jq -r '.items[0].attention' <<<"$DSE")" "true"
+ck "delta intake attention_count=1 (stale-enriching counts)" eq "$(jq -r '.attention_count' <<<"$DSE")" "1"
+ck "delta card health flips to 'attention'"                 eq "$(jq -r '.cards[]|select(.project_ref=="delta").health' <<<"$VSE")" "attention"
+# echo — a fresh enriching (5m) and a no-timestamp enriching both stay quiet.
+FRESH="$(jq -c '.items[]|select(.intake_id=="intake-e-fresh")' <<<"$ESE")"
+NOTIME="$(jq -c '.items[]|select(.intake_id=="intake-e-notime")' <<<"$ESE")"
+ck "echo fresh enriching NOT stale"                         eq "$(jq -r '.stale' <<<"$FRESH")" "false"
+ck "echo fresh enriching NOT attention"                     eq "$(jq -r '.attention' <<<"$FRESH")" "false"
+ck "echo no-timestamp enriching NOT stale (can't prove)"    eq "$(jq -r '.stale' <<<"$NOTIME")" "false"
+ck "echo no-timestamp enriching NOT attention"              eq "$(jq -r '.attention' <<<"$NOTIME")" "false"
+ck "echo intake attention_count=0 (no stale/fail)"          eq "$(jq -r '.attention_count' <<<"$ESE")" "0"
+ck "echo card health stays 'ok'"                            eq "$(jq -r '.cards[]|select(.project_ref=="echo").health' <<<"$VSE")" "ok"
+# Global leak counter + sort both reflect the single stale-enriching attention.
+ck "intake_attention_total=1 (delta stale-enriching only)"  eq "$(jq -r '.intake_attention_total' <<<"$VSE")" "1"
+ck "delta (attention) sorts before echo (live ok)"          eq "$(jq -r '[.cards[].project_ref]|join(",")' <<<"$VSE")" "delta,echo"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-workspaces-view (workspaces-hub):  PASS=$PASS  FAIL=$FAIL"

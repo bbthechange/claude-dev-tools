@@ -614,6 +614,16 @@ export class Coordinator {
   // into a generic listing surface. A record whose `processed` flag is missing
   // or non-boolean is treated as ALREADY PROCESSED (conservative: better to
   // leak one stuck record than re-dispatch every malformed record forever).
+  //
+  // L3 follow-up (claude-tools-t956): ALSO exclude `gave_up === true`. A
+  // gave-up record stays processed=false forever (terminal failure, never
+  // marked done), so without this it is re-fetched + re-iterated by the daemon
+  // every ~30s cadence and the per-machine pending batch grows monotonically on
+  // a busy machine. The dispatch loop already SKIPS gave_up records, but they
+  // must leave the QUEUE entirely. Only a literal boolean true excludes (a
+  // missing/false/"true"-string flag does NOT) — gave-up records still surface
+  // on the phone via the separate readIntake() projection; this op is ONLY the
+  // daemon's work queue. Bash twin: co__intake_pending in lib/coordinator.sh.
   async opIntakePending() {
     const rows = await this.db
       .prepare("SELECT json FROM records WHERE type = ? ORDER BY id ASC")
@@ -624,7 +634,7 @@ export class Coordinator {
     for (const row of list) {
       try {
         const r = JSON.parse(row.json);
-        if (r && typeof r === "object" && r.processed === false) out.push(r);
+        if (r && typeof r === "object" && r.processed === false && r.gave_up !== true) out.push(r);
       } catch {
         // skip corrupt row
       }

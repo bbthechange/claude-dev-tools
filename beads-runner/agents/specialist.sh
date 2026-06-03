@@ -136,6 +136,39 @@ fi
 SYS_PROMPT="$(cat "$SYS_PROMPT_FILE")"
 [[ -n "$SYS_PROMPT" ]] || { echo "specialist.sh: reject — system prompt file '$SYS_PROMPT_FILE' is empty" >&2; exit 2; }
 
+# ── enricher: embed the intake-preset catalog into the system prompt ─────────
+# inbox-lifecycle §9.5 #3 (claude-tools-t956). The enricher's prompt tells it to
+# consult the catalog (agents/intake-presets.json) before applying stage/preset
+# labels, but the enricher runs with cwd=<workspace> + --add-dir <workspace>
+# ONLY — that file lives HERE in the claude-tools repo (beside this launcher),
+# unreachable from inside e.g. rhythmGame. Rather than widen the read sandbox to
+# the whole tools repo (the enricher is read-only-BY-construction — must-protect
+# #11), EMBED the catalog verbatim into the appended system prompt at launch:
+# deterministic + self-contained, so a third preset shipping in the JSON is seen
+# with no --add-dir and no file read. A missing/unreadable catalog is NON-fatal
+# (the prompt keeps its inline fallback resolution table) — we skip + warn.
+# SPECIALIST_PRESETS_CATALOG overrides the path (test seam / prod swap).
+if [[ "$KIND" == "enricher" ]]; then
+  PRESETS_CATALOG_FILE="${SPECIALIST_PRESETS_CATALOG:-$SCRIPT_DIR/intake-presets.json}"
+  _catalog=""
+  if [[ -f "$PRESETS_CATALOG_FILE" ]]; then _catalog="$(cat "$PRESETS_CATALOG_FILE" 2>/dev/null || true)"; fi
+  if [[ -n "$_catalog" ]]; then
+    SYS_PROMPT="$SYS_PROMPT
+
+---
+
+# Intake preset catalog (embedded — agents/intake-presets.json)
+
+This is the live \`agents/intake-presets.json\` catalog, embedded verbatim at launch because you run inside the target workspace and **cannot \`Read\` the tools-repo copy**. Treat THIS block as the single source of truth for the preset → (entry_stage, gate_aggressiveness) mapping; do not attempt to \`Read\` a catalog file (it is not on your path).
+
+\`\`\`json
+$_catalog
+\`\`\`"
+  else
+    echo "specialist.sh: warn — enricher preset catalog not embedded (missing/unreadable: $PRESETS_CATALOG_FILE); enricher falls back to its inline resolution table" >&2
+  fi
+fi
+
 # Context: --context-file wins; otherwise stdin (which must not be a tty).
 if [[ -n "$CONTEXT_FILE" ]]; then
   [[ -f "$CONTEXT_FILE" ]] || { echo "specialist.sh: reject — --context-file '$CONTEXT_FILE' not found" >&2; exit 2; }

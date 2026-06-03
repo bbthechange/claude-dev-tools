@@ -293,7 +293,13 @@ daemon_intake_parse_bd_id() {
   esac
 }
 
-# daemon_intake_outcome <stdout> → echo a short outcome tag (created|augmented|refused|unknown)
+# daemon_intake_outcome <stdout> → echo a short outcome tag
+#   (created|augmented|refused|error|unknown)
+#   `error` (claude-tools-t956 / inbox-lifecycle §9.5 #2) is the enricher's CLEAN
+#   self-reported terminal error — `enricher: error → <reason>` — distinct from
+#   `unknown` (a summary we simply could not parse). Both are failed dispatches
+#   (no bd id), but `error` lets the daemon surface the enricher's STATED reason
+#   on the phone instead of a generic "unparseable".
 daemon_intake_outcome() {
   local stdout="${1:-}" line
   line="$(printf '%s' "$stdout" | awk 'NF{last=$0} END{print last}')"
@@ -301,7 +307,37 @@ daemon_intake_outcome() {
     *"enricher: created "*)                        printf 'created' ;;
     *"enricher: dedup"*"augmented "*)              printf 'augmented' ;;
     *"enricher: refuse"*"filed Inbox question "*)  printf 'refused' ;;
+    *"enricher: error"*)                           printf 'error' ;;
     *)                                             printf 'unknown' ;;
+  esac
+}
+
+# daemon_intake_parse_error_reason <stdout> → echo the <reason> from a clean
+#   `enricher: error → <reason>` (or ASCII `enricher: error -> <reason>`) line,
+#   or empty for any non-error line. The enricher (enricher.system.md Output)
+#   emits this when it can neither enrich NOR even file an Inbox question (e.g. a
+#   tool/permission denial, a bd subprocess failure) — a self-reported terminal
+#   error. Pure parameter-expansion (no sed/awk) so the multibyte → arrow is
+#   matched byte-wise without a locale dependency. Liberal: the reason is free
+#   text. Still a failed dispatch ⇒ counts toward INTAKE_MAX_ATTEMPTS / gave-up.
+daemon_intake_parse_error_reason() {
+  local stdout="${1:-}" line rest
+  line="$(printf '%s' "$stdout" | awk 'NF{last=$0} END{print last}')"
+  case "$line" in
+    *"enricher: error"*)
+      rest="${line#*enricher: error}"
+      # strip leading whitespace
+      rest="${rest#"${rest%%[![:space:]]*}"}"
+      # strip a leading arrow token (unicode → or ASCII ->), if present
+      case "$rest" in
+        "→"*)  rest="${rest#→}" ;;
+        "->"*) rest="${rest#->}" ;;
+      esac
+      # strip leading whitespace again, then emit the remaining free-text reason
+      rest="${rest#"${rest%%[![:space:]]*}"}"
+      printf '%s' "$rest"
+      ;;
+    *) printf '' ;;
   esac
 }
 
@@ -450,8 +486,15 @@ daemon_intake_dispatch_one() {
   if [[ "$rc" -ne 0 ]] || [[ -z "$bd_id" ]]; then
     # L3 — record the failure on the intake so the phone shows failing(n) /
     # gave-up. `n` is the attempt count written by the enriching marker above.
+    # claude-tools-t956 / §9.5 #2 — a clean `enricher: error → <reason>` summary
+    # surfaces the enricher's STATED reason (honest) instead of a generic
+    # "unparseable"; it is still a failed dispatch (no bd id ⇒ counts to the cap).
+    local err_reason
     if [[ "$rc" -ne 0 ]]; then
       reason="specialist exit=$rc"
+    elif [[ "$outcome" == "error" ]]; then
+      err_reason="$(daemon_intake_parse_error_reason "$stdout")"
+      reason="enricher error: ${err_reason:-<no reason given>}"
     else
       reason="unparseable enricher summary (outcome=$outcome)"
     fi
@@ -460,6 +503,9 @@ daemon_intake_dispatch_one() {
     if [[ "$rc" -ne 0 ]]; then
       declare -F log >/dev/null 2>&1 && \
         log "I3 dispatch: FAIL — specialist exit=$rc workspace=$ws intake_id=$intake_id idea_hash=$hash attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (record left unprocessed; next cadence retries unless gave_up)"
+    elif [[ "$outcome" == "error" ]]; then
+      declare -F log >/dev/null 2>&1 && \
+        log "I3 dispatch: FAIL — enricher self-reported error workspace=$ws intake_id=$intake_id idea_hash=$hash reason='${err_reason:-<no reason given>}' attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (record left unprocessed; next cadence retries unless gave_up)"
     else
       declare -F log >/dev/null 2>&1 && \
         log "I3 dispatch: FAIL — could not parse bd id from enricher summary workspace=$ws intake_id=$intake_id idea_hash=$hash outcome=$outcome attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (record left unprocessed; next cadence retries unless gave_up)"

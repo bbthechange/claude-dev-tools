@@ -63,6 +63,20 @@
   // off the hub (the record persists in the engine; the hub is not its grave).
   var INTAKE_CREATED_RECENT_MS = 6 * 60 * 60 * 1000; // 6h
 
+  // Stale-enriching honesty (claude-tools-t956). `enriching` is set from the
+  // daemon's in-flight marker (intake-dispatch-poll.sh writes it right before
+  // each SYNCHRONOUS enricher spawn). If the daemon dies mid-enrich the marker
+  // freezes — never re-dispatched, never moved to a terminal state — so the
+  // phone would show a confident "enriching" forever. The engine projection
+  // stays honest about the marker; THIS view applies a freshness heuristic (the
+  // S-1 "liveness derived at read time" posture): an enriching record whose
+  // last_attempt_at is older than this window has almost certainly lost its
+  // daemon (a healthy synchronous enrich is minutes, never this long), so we
+  // flip it to attention without lying about the state. 15m is comfortably past
+  // any normal enrich + the 30s INTAKE_POLL_INTERVAL, yet surfaces a dead daemon
+  // promptly. A fresh enriching record (seconds–minutes old) is untouched.
+  var INTAKE_ENRICHING_STALE_MS = 15 * 60 * 1000; // 15m
+
   /* formatAgo(fromIso, nowMs?) → "Ns" | "Nm" | "Nh" | "Nd" | "unknown" — a
    * PRESENTATION formatting of the §4.2 `last_heartbeat_at` datum (NOT a
    * liveness decision — that is the Coordinator's, consumed verbatim). Honest
@@ -106,12 +120,18 @@
    *     intake (received/enriching/failing/gave-up) ALWAYS, plus a `created` one
    *     only while it is recent (a brief "→ became <bead>" confirmation that ages
    *     out). Sorted by INTAKE_STATE_ORDER (gave-up first — surface the leak).
-   *   • attention_count — failing + gave-up (drives card health + the global total).
+   *   • attention_count — failing + gave-up + STALE-enriching (claude-tools-t956:
+   *     an enriching record whose last_attempt_at is older than
+   *     INTAKE_ENRICHING_STALE_MS has lost its daemon mid-enrich). Drives card
+   *     health + the global total.
    * Honest: an unknown/missing state buckets as `received` (never silently a
-   * success); a record with no project_ref is dropped from every workspace. */
+   * success); a record with no project_ref is dropped from every workspace. A
+   * stale enriching item keeps its honest `state:'enriching'` but carries
+   * `stale:true` + `attention:true`. */
   function deriveIntakeForWorkspace(rawIntake, ref, now) {
     var counts = { received: 0, enriching: 0, created: 0, failing: 0, 'gave-up': 0 };
     var items = [];
+    var staleEnriching = 0;
     rawIntake.forEach(function (i) {
       if (!i || typeof i !== 'object') return;
       if (typeof i.project_ref !== 'string' || i.project_ref !== ref) return;
@@ -126,6 +146,16 @@
         show = !isNaN(pat) && (now - pat) <= INTAKE_CREATED_RECENT_MS;
       }
       if (!show) return;
+      // Stale-enriching flip (claude-tools-t956): an `enriching` record older
+      // than the window has almost certainly lost its daemon. Measure against
+      // the same age datum the chip shows (last_attempt_at, then submitted_at).
+      // Honest: if neither timestamp parses we CANNOT prove staleness ⇒ not stale.
+      var stale = false;
+      if (st === 'enriching') {
+        var eat = Date.parse(i.last_attempt_at || i.submitted_at || '');
+        stale = !isNaN(eat) && (now - eat) > INTAKE_ENRICHING_STALE_MS;
+        if (stale) staleEnriching += 1;
+      }
       items.push({
         intake_id: typeof i.intake_id === 'string' ? i.intake_id : '',
         state: st,
@@ -135,7 +165,8 @@
         last_error: typeof i.last_error === 'string' ? i.last_error : '',
         bd_ref: typeof i.bd_ref === 'string' ? i.bd_ref : '',
         ago: formatAgo(ts, now),
-        attention: !!INTAKE_ATTENTION[st]
+        stale: stale,
+        attention: !!INTAKE_ATTENTION[st] || stale
       });
     });
     items.sort(function (a, b) {
@@ -147,7 +178,7 @@
     return {
       counts: counts,
       items: items,
-      attention_count: counts.failing + counts['gave-up'],
+      attention_count: counts.failing + counts['gave-up'] + staleEnriching,
       total: counts.received + counts.enriching + counts.created + counts.failing + counts['gave-up']
     };
   }

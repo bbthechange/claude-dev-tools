@@ -165,6 +165,14 @@ A web task is done when the deployed bytes match committed bytes, not at commit.
   matches it EXACTLY, not by prefix. A terminal-success (`created`) intake ages
   off the hub after 6h (`INTAKE_CREATED_RECENT_MS`) — the bead is the artifact,
   the hub is not its grave; `failing`/`gave-up` never age out (they're the leak).
+  **t956 also flips a STALE `enriching` to attention:** `enriching` comes from
+  the daemon's in-flight marker, so a daemon that died mid-enrich would read a
+  confident "enriching" forever. `deriveIntakeForWorkspace` derives staleness at
+  read time — an enriching item whose `last_attempt_at` is older than
+  `INTAKE_ENRICHING_STALE_MS` (15m) keeps its honest `state:'enriching'` but
+  gains `stale:true`/`attention:true` (and bumps `attention_count` + card health).
+  The engine projection stays honest about the marker; the freshness call is the
+  view's (the S-1 liveness-at-read-time posture).
 - **Don't make Cross-WS pretend.** It deliberately makes no `/api` call and invents
   no exchanges — it states what track K will answer. Keep that honesty until the
   K2/K5 projections actually exist; do not add a phantom data read.
@@ -190,7 +198,9 @@ a facet that graduated from placeholder to live (update the maturity table!), a 
 view-model field, a moved/renamed module, a fresh scar. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete stale lines; don't let
 it grow into a re-spec of Contract C. Last substantive update: 2026-06-03
-(wmmc — Workspace-card §8.5 LIVE mini-MAP thumbnail: `deriveBlueprintThumb` +
+(t956 — stale-`enriching`→attention flip in `deriveIntakeForWorkspace`
+[`INTAKE_ENRICHING_STALE_MS` 15m]; on top of wmmc — Workspace-card §8.5 LIVE
+mini-MAP thumbnail: `deriveBlueprintThumb` +
 lazy per-card `/api/ws/blueprint` fetch on the hub, the H3 meta chip stays the
 fallback; on top of Blueprint facet H3 — narrative + `?focus` deep-link +
 `blueprint_meta` projection + overlay wiring + Workspace-card Blueprint chip,

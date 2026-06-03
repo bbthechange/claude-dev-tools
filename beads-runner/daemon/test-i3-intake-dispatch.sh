@@ -64,6 +64,7 @@ bash -n "$COORD_LIB" 2>/dev/null && ok "lib/coordinator.sh parses with intake-pe
 for fn in daemon_intake_idea_hash daemon_intake_workspace_for \
           daemon_intake_fetch_pending daemon_intake_mark_processed \
           daemon_intake_parse_bd_id daemon_intake_outcome \
+          daemon_intake_parse_error_reason \
           daemon_intake_dispatch_one daemon_intake_poll_once; do
   grep -q "^$fn()" "$I3_LIB" && ok "intake-dispatch-poll.sh defines $fn" || bad "intake-dispatch-poll.sh defines $fn"
 done
@@ -82,22 +83,33 @@ trap 'rm -rf "$STORE_A" "${WB:-}" "${WC:-}" "${WD:-}" "${WE:-}" "${WF:-}" 2>/dev
 export CO_STORE="$STORE_A"
 mkdir -p "$STORE_A/records"
 
-# Seed 4 intake-request records: 2 pending, 1 processed, 1 with bogus flag.
+# Seed 5 intake-request records: 2 pending, 1 processed, 1 with bogus flag, 1
+# terminal gave_up (processed=false but excluded — claude-tools-t956).
 jq -cn '{schema_version:1,id:"intake-2026-05-20T07-00-00Z-aaa",idea_text:"first idea",project_ref:"alpha",preset:"autonomous-until-stuck",processed:false,submitted_at:"2026-05-20T07:00:00Z"}' > "$STORE_A/records/intake-request.intake-2026-05-20T07-00-00Z-aaa.json"
 jq -cn '{schema_version:1,id:"intake-2026-05-20T07-01-00Z-bbb",idea_text:"second idea",project_ref:"beta",preset:"collaborative-stage",processed:false,submitted_at:"2026-05-20T07:01:00Z"}' > "$STORE_A/records/intake-request.intake-2026-05-20T07-01-00Z-bbb.json"
 jq -cn '{schema_version:1,id:"intake-2026-05-20T07-02-00Z-ccc",idea_text:"already done",project_ref:"alpha",preset:"autonomous-until-stuck",processed:true,submitted_at:"2026-05-20T07:02:00Z",enricher_bd_id:"alpha-001"}' > "$STORE_A/records/intake-request.intake-2026-05-20T07-02-00Z-ccc.json"
 # Bogus flag (string "false") ⇒ treated as ALREADY processed (conservative).
 jq -cn '{schema_version:1,id:"intake-2026-05-20T07-03-00Z-ddd",idea_text:"bogus",project_ref:"alpha",preset:"autonomous-until-stuck",processed:"false",submitted_at:"2026-05-20T07:03:00Z"}' > "$STORE_A/records/intake-request.intake-2026-05-20T07-03-00Z-ddd.json"
+# L3 follow-up (claude-tools-t956): terminal gave_up:true record. It stays
+# processed=false forever, so the OLD filter kept re-returning it every cadence
+# (monotonic queue growth). It MUST be excluded from the pending queue now.
+jq -cn '{schema_version:1,id:"intake-2026-05-20T07-04-00Z-eee",idea_text:"gave up",project_ref:"alpha",preset:"autonomous-until-stuck",processed:false,gave_up:true,gave_up_at:"2026-05-20T07:30:00Z",dispatch_attempts:3,dispatch_state:"gave_up",submitted_at:"2026-05-20T07:04:00Z"}' > "$STORE_A/records/intake-request.intake-2026-05-20T07-04-00Z-eee.json"
 
 # shellcheck source=/dev/null
 . "$COORD_LIB" 2>/dev/null || { bad "could not source coordinator.sh"; exit 1; }
 
 out_a="$(co__intake_pending)"
 count_a="$(printf '%s' "$out_a" | jq 'length' 2>/dev/null)"
-eq "$count_a" "2" "A1: exactly 2 pending records (skipped processed=true AND bogus processed=\"false\")"
+eq "$count_a" "2" "A1: exactly 2 pending records (skipped processed=true, bogus processed=\"false\", AND gave_up:true)"
 
 ids_a="$(printf '%s' "$out_a" | jq -r '.[].id' | tr '\n' ',' | sed 's/,$//')"
 eq "$ids_a" "intake-2026-05-20T07-00-00Z-aaa,intake-2026-05-20T07-01-00Z-bbb" "A2: pending records returned in lexicographic id order (FIFO across taps)"
+
+# A2b — the terminal gave_up record is dropped from the queue (claude-tools-t956).
+case "$out_a" in
+  *"intake-2026-05-20T07-04-00Z-eee"*) bad "A2b: gave_up:true record still returned by co__intake_pending" ;;
+  *) ok "A2b: gave_up:true record excluded from co__intake_pending (no monotonic queue growth)" ;;
+esac
 
 # A3 — empty store ⇒ []
 # (NB: `VAR=value out=$(...)` would set BOTH as outer-shell assignments —
@@ -158,6 +170,9 @@ s_create="enricher: created alpha-042 (intake intake-2026-05-20T07-00-00Z-aaa, p
 s_dedup="enricher: dedup → augmented alpha-007 (intake intake-2026-05-20T07-01-00Z-bbb, preset=autonomous-until-stuck)"
 s_refuse="enricher: refuse → filed Inbox question alpha-099 (intake intake-2026-05-20T07-02-00Z-ccc): ambiguous between alpha-007 and alpha-008"
 s_garbage="something else entirely on stdout"
+# claude-tools-t956 / §9.5 #2 — the clean self-reported terminal error line.
+s_error="enricher: error → permissions denied: bd create blocked by tool guardrail"
+s_error_ascii="enricher: error -> mktemp failed in workspace"
 
 eq "$(daemon_intake_parse_bd_id "$s_create")"   "alpha-042"  "C1: created  ⇒ bd id alpha-042"
 eq "$(daemon_intake_parse_bd_id "$s_dedup")"    "alpha-007"  "C2: augmented ⇒ bd id alpha-007"
@@ -168,6 +183,14 @@ eq "$(daemon_intake_outcome "$s_create")"   "created"   "C5: outcome=created"
 eq "$(daemon_intake_outcome "$s_dedup")"    "augmented" "C6: outcome=augmented"
 eq "$(daemon_intake_outcome "$s_refuse")"   "refused"   "C7: outcome=refused"
 eq "$(daemon_intake_outcome "$s_garbage")"  "unknown"   "C8: outcome=unknown for unmatched summary"
+
+# §9.5 #2 — `enricher: error → <reason>` recognized as a CLEAN terminal error
+# (distinct from unknown), no bd id, and the reason parsed honestly (both arrows).
+eq "$(daemon_intake_outcome "$s_error")"            "error"  "C9: outcome=error for an enricher: error line"
+eq "$(daemon_intake_parse_bd_id "$s_error")"        ""       "C10: error line ⇒ no bd id (still a failed dispatch)"
+eq "$(daemon_intake_parse_error_reason "$s_error")"      "permissions denied: bd create blocked by tool guardrail" "C11: error reason parsed (unicode → arrow)"
+eq "$(daemon_intake_parse_error_reason "$s_error_ascii")" "mktemp failed in workspace"                             "C12: error reason parsed (ascii -> arrow)"
+eq "$(daemon_intake_parse_error_reason "$s_create")"     ""                                                        "C13: non-error line ⇒ empty reason"
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART D — end-to-end dispatch via the override stub
@@ -359,6 +382,35 @@ logs="$(cat "$I3_LOGS")"
 has "$logs" "missing id/idea_text/project_ref" "E4a: malformed record logged as refused"
 rec_e4="$(cat "$WS_ALPHA_E4/.beads/runner-logs/.co-store/records/intake-request.intake-broken.json")"
 eq "$(printf '%s' "$rec_e4" | jq -r '.processed')" "false" "E4b: malformed record stays processed=false"
+
+# e5 — clean `enricher: error → <reason>` ⇒ not marked processed; the STATED
+# reason is recorded as last_error (not the generic "unparseable") — §9.5 #2 /
+# claude-tools-t956. Still a failed dispatch (no bd id) ⇒ dispatch_state=failing.
+WE5="$(mktemp -d)"
+WS_ALPHA_E5="$WE5/alpha-ws"
+mkdir -p "$WS_ALPHA_E5/.beads/runner-logs/.co-store/records"
+jq -cn '{schema_version:1,id:"intake-enr-error",idea_text:"erroring idea",project_ref:"alpha",preset:"autonomous-until-stuck",processed:false,submitted_at:"2026-05-20T08:04:00Z"}' \
+  > "$WS_ALPHA_E5/.beads/runner-logs/.co-store/records/intake-request.intake-enr-error.json"
+
+STUB_ERROR="$WE5/stub-error.sh"
+cat > "$STUB_ERROR" <<'EOF'
+#!/bin/bash
+echo "enricher: error → permissions denied: bd create blocked by tool guardrail"
+exit 0
+EOF
+chmod +x "$STUB_ERROR"
+
+REGISTRY_DIRS=("$WS_ALPHA_E5")
+export DAEMON_INTAKE_SPECIALIST_OVERRIDE="$STUB_ERROR"
+: > "$I3_LOGS"
+daemon_intake_poll_once
+logs="$(cat "$I3_LOGS")"
+has "$logs" "enricher self-reported error" "E5a: clean enricher error logged distinctly (not 'could not parse bd id')"
+rec_e5="$(cat "$WS_ALPHA_E5/.beads/runner-logs/.co-store/records/intake-request.intake-enr-error.json")"
+eq "$(printf '%s' "$rec_e5" | jq -r '.processed')"      "false"   "E5b: enricher-error record stays processed=false (failed dispatch)"
+eq "$(printf '%s' "$rec_e5" | jq -r '.dispatch_state')" "failing" "E5c: enricher-error ⇒ dispatch_state=failing (under the cap)"
+has "$(printf '%s' "$rec_e5" | jq -r '.last_error')" "permissions denied" "E5d: last_error carries the enricher's STATED reason (not 'unparseable')"
+unset DAEMON_INTAKE_SPECIALIST_OVERRIDE
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART F — DAEMON_INTAKE_DISABLED=1 canary: exercise wiring without tokens

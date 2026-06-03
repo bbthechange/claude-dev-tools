@@ -194,6 +194,21 @@ grep -q -- "--allowedTools .* Bash(git:\\*)" <<<"$ENR" \
   && pass "enricher: --allowedTools includes Bash(git:*) (read-only git for dedup pass)" \
   || fail "enricher: --allowedTools missing Bash(git:*)"
 
+# §9.5 #3 (claude-tools-t956) — the enricher's appended system prompt EMBEDS the
+# intake-preset catalog at launch (it can't Read the tools-repo copy from inside
+# the workspace). The fake claude echoes its argv to the stream; the embed adds
+# the catalog JSON to --append-system-prompt, so a catalog-only field surfaces.
+grep -q -- "Intake preset catalog (embedded" <<<"$ENR" \
+  && pass "enricher: intake-preset catalog embedded in the system prompt (§9.5 #3)" \
+  || fail "enricher: preset catalog NOT embedded — enricher cannot resolve a newly-shipped preset"
+grep -q -- "gate_aggressiveness" <<<"$ENR" \
+  && pass "enricher: embedded catalog carries the (entry_stage, gate_aggressiveness) rows" \
+  || fail "enricher: embedded catalog body missing (no gate_aggressiveness field)"
+# The embed is enricher-SPECIFIC — a sibling read-only hat must NOT get it.
+grep -q -- "Intake preset catalog (embedded" <<<"$REC" \
+  && fail "reconciler: catalog wrongly embedded (the embed must be enricher-only)" \
+  || pass "reconciler: no catalog embed (enricher-only, as intended)"
+
 # ── H5 (claude-tools-uxvh5) — the read-only Blueprint updater hat ─────────────
 # The bead's testing invariant (s6/s4): the dispatched aux carries the
 # read-only hat (no Write/Edit/mutating-Bash) — "assert the capability SET, not
