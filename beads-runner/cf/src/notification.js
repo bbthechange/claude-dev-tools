@@ -393,8 +393,12 @@ const TIERS = ["blocking", "timed-fyi", "digest"];
 // a literal here, so it may be ABSENT at validate-time, before the write).
 // ANY key outside this set is REJECTED: a Notification structurally CANNOT
 // carry a body/content field — the §5 dossier body carries the content
-// (principle 2).
-const CLOSED_43 = [
+// (principle 2). EXPORTED so the cross-producer triage-only guard
+// (cf/src/notif-triage.js / cf/test/notif-triage.spec.js — claude-tools-n49j)
+// can cross-check that the §4.3 record set has not silently widened to admit a
+// content field (every CLOSED_43 field MUST be in the independent triage
+// vocabulary — a divergence is a loud content-leak red flag).
+export const CLOSED_43 = [
   "id",
   "schema_version",
   "principal",

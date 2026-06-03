@@ -104,7 +104,15 @@ Trace it in two halves:
   installed PWA + `verify-pages-deploy.sh mismatches=0` is.
 - **The payload is TRIAGE ONLY** (`{tldr, dossier_ref, tier, url}`). The §5 dossier
   body NEVER crosses the wire (UX principle 2). `sw.js` shows only the TL;DR + a
-  deep link. Do not widen the payload to carry content.
+  deep link. Do not widen the payload to carry content. This is pinned ACROSS every
+  producer by the cross-producer guard `cf/src/notif-triage.js` +
+  `cf/test/notif-triage.spec.js` (claude-tools-n49j): one shared `triageViolations`
+  assertion (an independent, hardcoded triage vocabulary — NOT derived from
+  `CLOSED_43`, so it also red-flags a §4.3 set that widened to admit content) run
+  against EVERY §10.2 trigger's emitted §4.3 record AND both wire payloads
+  (`blockingWirePayload`/`digestWirePayload`, now the single exported builders in
+  push.js). A canary in the §5 body (never the TL;DR) proves no producer copies the
+  body into an allowed field — including a content-bearing `scope`→`channel`.
 - **The subscription store and the delivery ledger are transient (A.2), NOT §4
   records.** They are absent from the §4 registry (`schema.js`) and must stay
   absent — N2 makes **no INTERFACE §4.3 change**. The §4.3 record is untouched by
@@ -133,7 +141,9 @@ Trace it in two halves:
 channel): edit the trigger catalog in `cf/src/notification.js` (`notifTriggers`,
 `notifFire`) AND the bash oracle `lib/notification.sh` in lockstep — they are
 differentially bound (`run-differential.sh`). The tier you map to decides the
-cadence automatically; do not also build a delivery path.
+cadence automatically; do not also build a delivery path. The cross-producer
+triage guard (`cf/test/notif-triage.spec.js`) auto-sweeps the new trigger — keep
+its channel `scope` a SHORT opaque tag, never dossier content, or the guard fails.
 
 **Changing the delivery transport / payload / cadence:** edit `cf/src/push.js`
 (`deliverBlocking`/`deliverDigest`/the crypto). Pin behavior in
@@ -190,6 +200,9 @@ phone buzzes "Beads — a decision needs you" and the tap deep-links.
 - `beads-runner/UX-V2-ARCHITECTURE.md` — contracts D.2 (notification tiers), A.2
   (storage class), must-protect #5 (batching is load-bearing).
 - `cf/test/push.spec.js` + `daemon/test-notif-delivery.sh` — the offline proofs.
+- `cf/test/notif-triage.spec.js` — the cross-producer triage-only guard
+  (claude-tools-n49j): every §10.2 trigger + both wire payloads through one
+  `triageViolations` assertion; the canary method catches a `scope`→`channel` leak.
 
 ## Keeping this doc current
 

@@ -354,8 +354,46 @@ async function ledgerMark(co, notifId, kind) {
     .run();
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// THE WIRE TRIAGE PAYLOAD builders — the SINGLE place each phone-bound payload is
+// constructed (consumed by deliverBlocking/deliverDigest below). Extracted +
+// EXPORTED so the cross-producer triage-only guard (cf/test/notif-triage.spec.js,
+// claude-tools-n49j) pins them: a notification carries ONLY triage (TL;DR + tier
+// + a deep link / a digest fan-in count), NEVER the §5 dossier body (principle 2;
+// the §4.3 closed-set discipline extended to the wire). Adding any content field
+// here trips the guard.
+// ════════════════════════════════════════════════════════════════════════════
+
+// blocking: ONE decision → its §5.1 TL;DR + a deep link to the dossier. `tldr`
+// is the SHORT triage line read off the dossier (dossierTldr — body.tldr only),
+// never the §5 body.
+export function blockingWirePayload(dossierRef, tldr) {
+  return {
+    tldr,
+    dossier_ref: dossierRef,
+    tier: "blocking",
+    url: `/inbox#/d/${dossierRef}`,
+  };
+}
+
+// digest: ONE channel rollup → the K3 summary line (digestCopy — channel + count
+// only, never content) + a link to the Inbox. No per-dossier ref (the group is
+// the unit); the count is the fan-in, not content.
+export function digestWirePayload(group) {
+  return {
+    tldr: digestCopy(group),
+    dossier_ref: null,
+    tier: group.tier,
+    channel: group.channel,
+    count: group.count,
+    url: "/inbox",
+  };
+}
+
 // ── read the dossier §5.1 TL;DR (TRIAGE ONLY — never the §5 body, principle 2).
-async function dossierTldr(co, did) {
+// EXPORTED so the triage guard proves the reader returns ONLY the §5.1 TL;DR (a
+// canary planted in the §5 body must NOT come back).
+export async function dossierTldr(co, did) {
   const row = await co.db
     .prepare("SELECT json FROM records WHERE type = 'dossier' AND id = ?")
     .bind(did)
@@ -478,12 +516,7 @@ async function deliverBlocking(co, vapid) {
     pending++;
     if (subs.length === 0) continue; // nothing to deliver to — leave unledgered
     const tldr = (await dossierTldr(co, n.dossier_ref)) || "A decision needs you.";
-    const payload = {
-      tldr,
-      dossier_ref: n.dossier_ref,
-      tier: "blocking",
-      url: `/inbox#/d/${n.dossier_ref}`,
-    };
+    const payload = blockingWirePayload(n.dossier_ref, tldr);
     const r = await fanOut(co, subs, payload, vapid);
     sent += r.sent;
     pruned += r.pruned;
@@ -518,14 +551,7 @@ async function deliverDigest(co, vapid) {
   let sent = 0;
   let pruned = 0;
   for (const g of digests) {
-    const payload = {
-      tldr: digestCopy(g),
-      dossier_ref: null,
-      tier: g.tier,
-      channel: g.channel,
-      count: g.count,
-      url: "/inbox",
-    };
+    const payload = digestWirePayload(g);
     let delivered = true;
     if (subs.length > 0) {
       const r = await fanOut(co, subs, payload, vapid);
