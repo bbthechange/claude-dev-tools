@@ -173,10 +173,13 @@ should escalate via the L4 overview-dossier path, not be faked as a dossier.
   caching its workspace list would violate the `no-store` "don't add caching"
   invariant above (the SW Cache API ignores `no-store`, so a stale list could
   offer a deleted/renamed `project_ref` that 422s). The YES path is reversible
-  (drop the two `isBypassed()` clauses, add `/shared/sw-register.js` to
-  `intake/index.html`, add `intake` to `PULL_PAGES`) if Brian ever wants the
-  shell to boot offline — but the default is correctly NO. Don't "fix" the
-  bypass by re-adding Intake to the offline path.
+  — the two code edits are: drop the two `isBypassed()` clauses in
+  `web/shared/sw.js` and add `/shared/sw-register.js` to `intake/index.html`
+  (sw.js caches generically via stale-while-revalidate, so there is no
+  per-page precache list to touch); then extend the test's `PULL_PAGES`
+  coverage list in `jsdom/test/sw-offline.test.js` to include `intake`. Do
+  this only if Brian ever wants the shell to boot offline — the default is
+  correctly NO. Don't "fix" the bypass by re-adding Intake to the offline path.
 - **Empty / unreachable degrades honestly, not silently.** `loadWorkspaces()`
   with zero workspaces disables the picker with a "start a runner first" hint;
   a one-workspace deployment pre-selects it (single-tap confirm). `loadPresets()`
