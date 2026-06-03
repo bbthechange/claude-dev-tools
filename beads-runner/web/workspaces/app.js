@@ -126,11 +126,13 @@
     return wrap;
   }
 
-  // H3 (claude-tools-uxvh3) — the Blueprint card chip (§6.6/§8.5): a small
-  // thumbnail + "updated 2h ago" freshness + the §8.2 in-flight count, read from
-  // the §8.1 blueprint_meta projection. The whole card is already an <a> into the
-  // board, so this is an informational strip (no nested link — invalid HTML); the
-  // dedicated map is one nav tab away once inside. Omitted when no map exists yet
+  // H3/§6.6/§8.5 — the Blueprint card chip: a small thumbnail + "updated 2h ago"
+  // freshness + the §8.2 in-flight count, read from the §8.1 blueprint_meta
+  // projection. l75z (claude-tools-l75z) makes the WHOLE chip a DEEP-LINK into the
+  // dedicated map (/ws/<ref>/blueprint, bp.href) — §6.6 wants the card's diagram to
+  // be "a diagram OR a link to the diagram", and the view-model already carries the
+  // href. It is a SIBLING <a> of the board link (renderCard's root is a <div>),
+  // never nested — a link cannot nest a link. Omitted when no map exists yet
   // (honest — the intake-strip pattern).
   //
   // wmmc (claude-tools-wmmc) — the §8.5 LIVE mini-MAP render layered on top: the
@@ -144,7 +146,9 @@
     if (!bp || !bp.present) return null;
     var ref = card.project_ref;
     bpMetaByRef[ref] = bp;                         // active_domains + version for the thumb
-    var wrap = Dom.mk('div', 'ws-blueprint');
+    var wrap = Dom.mk('a', 'ws-blueprint');        // l75z — the §6.6 deep-link
+    wrap.setAttribute('href', bp.href);            // → /ws/<ref>/blueprint
+    wrap.setAttribute('aria-label', 'Open Blueprint for ' + ref);
     // The thumbnail host — starts as the H3 box-grid glyph; upgraded to a live
     // mini-map in place (or painted straight from cache on a re-render).
     var thumb = Dom.mk('span', 'ws-bp-thumb', '▦');
@@ -160,6 +164,7 @@
       wrap.appendChild(Dom.mk('span', 'ws-bp-active',
         '● ' + bp.active_count + ' in flight'));
     }
+    wrap.appendChild(Dom.mk('span', 'ws-bp-go', '→')); // tappable affordance (l75z)
 
     // wmmc — paint from cache if we already hold this map version; otherwise
     // observe the chip and fetch the map body on first view (lazy).
@@ -270,9 +275,13 @@
   }
 
   function renderCard(card) {
-    // Each card is a link into that workspace's Board (the hub is the anchor —
-    // no scavenger hunt; UX-DESIGN-V2 §2).
-    var a = Dom.mk('a', 'ws-card health-' + card.health);
+    // The card is a container; its BODY links into that workspace's Board (the hub
+    // is the anchor — no scavenger hunt; UX-DESIGN-V2 §2). The Blueprint thumbnail
+    // below is a SECOND, distinct deep-link (→ /ws/<ref>/blueprint, §6.6/§8.5,
+    // l75z), so the root is a <div> holding two sibling <a>s — a link cannot nest
+    // a link (invalid HTML), and §6.6 wants the card's diagram to BE that link.
+    var root = Dom.mk('div', 'ws-card health-' + card.health);
+    var a = Dom.mk('a', 'ws-card-main');
     a.setAttribute('href', card.href);
 
     var head = Dom.mk('div', 'ws-head');
@@ -313,10 +322,14 @@
     a.appendChild(renderStageStrip(card));
     var intakeStrip = renderIntakeStrip(card);
     if (intakeStrip) a.appendChild(intakeStrip);
-    var bpChip = renderBlueprintChip(card);
-    if (bpChip) a.appendChild(bpChip);
     a.appendChild(Dom.mk('div', 'ws-go', 'OPEN BOARD →'));
-    return a;
+    root.appendChild(a);
+
+    // The Blueprint thumbnail is its OWN deep-link into /ws/<ref>/blueprint — a
+    // sibling of the board link, never nested inside it (l75z; §6.6/§8.5).
+    var bpChip = renderBlueprintChip(card);
+    if (bpChip) root.appendChild(bpChip);
+    return root;
   }
 
   function render(view) {

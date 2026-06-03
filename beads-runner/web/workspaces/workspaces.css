@@ -48,12 +48,19 @@
 .cards{display:grid;grid-template-columns:1fr;gap:11px;padding:0 14px}
 .cards-empty{padding:24px 22px;color:var(--faint);font-size:13px}
 
-.ws-card{display:block;text-decoration:none;color:inherit;
+.ws-card{display:block;
   border:1px solid var(--line);border-radius:14px;background:var(--panel);
   padding:15px 16px;transition:border-color .2s,transform .12s,box-shadow .2s;
   -webkit-tap-highlight-color:transparent;touch-action:manipulation}
 .ws-card:hover{border-color:var(--line-2);transform:translateY(-1px)}
-.ws-card:focus-visible{outline:2px solid var(--sky);outline-offset:2px}
+/* The card BODY and the Blueprint footer are two sibling links inside the card
+ * div (l75z — a link can't nest a link); both carry the inherit-color + focus
+ * ring the whole-card anchor used to. */
+.ws-card-main,.ws-blueprint{text-decoration:none;color:inherit;
+  -webkit-tap-highlight-color:transparent}
+.ws-card-main{display:block}
+.ws-card-main:focus-visible,.ws-blueprint:focus-visible{
+  outline:2px solid var(--sky);outline-offset:2px;border-radius:8px}
 /* health framing — attention (amber) + stale (coral) get a tinted edge so the
  * "needs me / stuck" cards pull the eye first (they also sort to the top). */
 .ws-card.health-attention{border-color:rgba(255,180,84,.34);
@@ -151,10 +158,15 @@
 
 /* H3 (claude-tools-uxvh3) — the Blueprint card chip (§6.6/§8.5): a thumbnail
  * glyph + "updated 2h ago" freshness + the §8.2 in-flight count, from the §8.1
- * blueprint_meta projection. Informational (the card already links to the board);
- * omitted when no map exists yet. Mirrors the intake-strip framing. */
+ * blueprint_meta projection. l75z makes the whole chip a DEEP-LINK into
+ * /ws/<ref>/blueprint (the §6.6 "link to the diagram"); it is a sibling <a> of the
+ * board link, with a hover/affordance arrow. Omitted when no map exists yet.
+ * Mirrors the intake-strip framing. */
 .ws-blueprint{margin-top:12px;padding-top:11px;border-top:1px solid var(--line);
-  display:flex;align-items:center;gap:9px;font-size:10px}
+  display:flex;align-items:center;gap:9px;font-size:10px;transition:border-color .2s}
+.ws-blueprint:hover{border-top-color:var(--line-2)}
+.ws-blueprint:hover .ws-bp-go{color:var(--text)}
+.ws-bp-go{font-size:13px;line-height:1;color:var(--sky);flex:none;transition:color .2s}
 .ws-bp-thumb{font-size:15px;line-height:1;color:var(--sky);flex:none}
 .ws-bp-meta{display:flex;align-items:baseline;gap:8px;min-width:0;flex:1 1 auto}
 .ws-bp-lbl{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate)}
