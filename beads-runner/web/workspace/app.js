@@ -35,10 +35,13 @@
   var BoardView = window.BoardView;
   var ActivityView = window.ActivityView; // I3 (claude-tools-uxvi3)
   var GatesView = window.GatesView; // J3 (claude-tools-uxvj3)
+  var BlueprintView = window.BlueprintView; // H2 (claude-tools-uxvh2) — pure map read-model
+  var BlueprintCustomize = window.BlueprintCustomize; // H4 (claude-tools-uxvh4) — pure write-side
 
   // Which track ships each STILL-placeholder facet (honest placeholder copy).
-  // 'activity' graduated in I3, 'gates' graduated in J3 — neither is listed here.
-  var FACET_TRACK = { blueprint: 'H3' };
+  // 'activity' graduated in I3, 'gates' in J3, 'blueprint' in H4 — none listed
+  // here; the map stays so an unknown/future facet still gets an honest message.
+  var FACET_TRACK = {};
 
   var host = Dom.el('facet-host');
   var who = Dom.el('who');
@@ -66,6 +69,8 @@
     mountActivityFacet();
   } else if (ctx.facet === 'gates') {
     mountGatesFacet();
+  } else if (ctx.facet === 'blueprint') {
+    mountBlueprintFacet();
   } else {
     mountPlaceholder(ctx.facet);
   }
@@ -1070,5 +1075,455 @@
     var ul = Dom.mk('ul', 'gf-degraded-list');
     degraded.forEach(function (d) { ul.appendChild(Dom.mk('li', null, d)); });
     sec.appendChild(ul);
+  }
+
+  // ── blueprint facet (H4 — the customization map + conflict-FYI keep/drop) ─────
+  // The ONE facet that reads its OWN §4 record (blueprint-get, B.2), NOT the
+  // work-snapshot (§8.1 keeps the map out of the projection, fetched on demand).
+  // It REUSES window.BlueprintView.deriveBlueprintView (H2, the pure read-side map
+  // model) to draw a drill-in node tree, and window.BlueprintCustomize (H4, the
+  // pure write-side) to turn a tap into the next `customization` sub-object it
+  // POSTs through /api/ws/blueprint-put (section:"customization"). The sectioned
+  // engine op (H1) guarantees a concurrent `derived` regen by the updater hat
+  // never eats the edit (§2.3 never-clobber). Conflicts (the §5.3 honesty channel)
+  // render as a small FYI with one-tap keep/drop; KEEP is the §14.2 default (the
+  // customization persists), DROP removes the orphaned override — both re-write
+  // customization, never conflicts[] (that is the updater's append-only log).
+  //
+  // SCOPE LINE (H4 vs H3): H4 owns the customization gestures + the conflict-FYI +
+  // an honest interactive map mount. H3 layers the narrative prose (TL;DR →
+  // headings) ABOVE this map + the ?focus=<id> deep-link contract + the
+  // blueprint_meta projection + the in-flight overlay wiring (G5's renderer
+  // overlay is read here only if a future caller passes activity in). The map
+  // geometry is [free] (§3.5): this mount renders an honest drill-in TREE, not the
+  // spatial grow-to-fit canvas (H3's drawing job) — the customization CONTRACT,
+  // not the geometry, is what H4 ships.
+  var bpOpened = Object.create(null); // node id → true: which boxes are drilled in
+  var bpRecord = null;                // last blueprint-get body (the B.2 record)
+  var bpInFlight = false;             // a customization write is in flight — skip the timer repaint
+
+  function mountBlueprintFacet() {
+    Dom.clear(host);
+    var wrap = Dom.mk('div', 'bp-wrap');
+
+    var loading = Dom.mk('p', 'bp-loading', 'Reading the Blueprint…');
+    loading.id = 'bp-loading';
+    wrap.appendChild(loading);
+
+    var errbox = Dom.mk('section', 'bp-errbox');
+    errbox.id = 'bp-errbox';
+    errbox.hidden = true;
+    errbox.appendChild(Dom.mk('div', 'bp-err-h', 'Cannot render this Blueprint'));
+    var errB = Dom.mk('p', 'bp-err-b');
+    errB.id = 'bp-err-b';
+    errbox.appendChild(errB);
+    wrap.appendChild(errbox);
+
+    var body = Dom.mk('section', 'bp-body');
+    body.id = 'bp-body';
+    body.hidden = true;
+
+    // EMPTY STATE — honest "no Blueprint yet" (B.4); the updater hat (H5) or an
+    // L4 overview-request creates v1 on the first structural close.
+    var empty = Dom.mk('div', 'bp-emptybox');
+    empty.id = 'bp-emptybox';
+    empty.hidden = true;
+    empty.appendChild(Dom.mk('div', 'bp-empty-h', 'No Blueprint yet for ' + ctx.ref));
+    empty.appendChild(Dom.mk('p', 'bp-empty-b',
+      'The living design+map is built on the first structural change (a design / ' +
+      'impl / docs task closing), or when you request an overview. Nothing to ' +
+      'customize until then.'));
+    body.appendChild(empty);
+
+    // CONFLICTS lane — the §5.3 keep/drop FYIs (live conflicts only).
+    var cSec = Dom.mk('div', 'bp-sec bp-conflicts-sec');
+    cSec.id = 'bp-conflicts-sec';
+    cSec.hidden = true;
+    var cHead = Dom.mk('div', 'bp-sl bp-sl-warn');
+    cHead.id = 'bp-conflicts-sl';
+    cHead.textContent = 'YOUR CUSTOMIZATIONS THAT NO LONGER MAP TO CODE';
+    cSec.appendChild(cHead);
+    var cHost = Dom.mk('div', 'bp-conflicts');
+    cHost.id = 'bp-conflicts';
+    cSec.appendChild(cHost);
+    body.appendChild(cSec);
+
+    // MAP — the drill-in node tree (top-level boxes; tap to drill / edit).
+    var mSec = Dom.mk('div', 'bp-sec');
+    var mHead = Dom.mk('div', 'bp-sl');
+    mHead.id = 'bp-map-sl';
+    mHead.textContent = 'MAP · tap a box to drill in; edit to rename / regroup / pin / hide';
+    mSec.appendChild(mHead);
+    var mHost = Dom.mk('div', 'bp-map');
+    mHost.id = 'bp-map';
+    mSec.appendChild(mHost);
+    body.appendChild(mSec);
+
+    // HIDDEN — nodes Brian hid (so a hide is reversible from off the map).
+    var hSec = Dom.mk('div', 'bp-sec bp-hidden-sec');
+    hSec.id = 'bp-hidden-sec';
+    hSec.hidden = true;
+    hSec.appendChild(Dom.mk('div', 'bp-sl', 'HIDDEN (suppressed as noise — tap to bring back)'));
+    var hHost = Dom.mk('div', 'bp-hidden-host');
+    hHost.id = 'bp-hidden-host';
+    hSec.appendChild(hHost);
+    body.appendChild(hSec);
+
+    // A single top-of-map status line for customization writes.
+    var status = Dom.mk('div', 'bp-actions-status');
+    status.id = 'bp-status';
+    status.setAttribute('aria-live', 'polite');
+    body.appendChild(status);
+
+    // Honest degraded[] footnotes (B.4) — every dropped/placeholder field named.
+    var degSec = Dom.mk('div', 'bp-degraded');
+    degSec.id = 'bp-degraded';
+    degSec.hidden = true;
+    body.appendChild(degSec);
+
+    var foot = Dom.mk('div', 'bp-foot');
+    var boardLink = Dom.mk('a', 'facet-link', 'Open this workspace’s board →');
+    boardLink.setAttribute('href', '/ws/' + encodeURIComponent(ctx.ref) + '/board');
+    foot.appendChild(boardLink);
+    var updated = Dom.mk('span', 'bp-updated', '—');
+    updated.id = 'bp-updated';
+    foot.appendChild(updated);
+    body.appendChild(foot);
+
+    wrap.appendChild(body);
+    host.appendChild(wrap);
+
+    refreshBlueprint();
+    window.setInterval(function () { if (!bpInFlight) refreshBlueprint(); }, REFRESH_MS);
+  }
+
+  function showBlueprintError(msg) {
+    var loading = Dom.el('bp-loading');
+    var body = Dom.el('bp-body');
+    var errbox = Dom.el('bp-errbox');
+    if (loading) loading.hidden = true;
+    if (body) body.hidden = true;
+    if (errbox) { errbox.hidden = false; Dom.el('bp-err-b').textContent = msg; }
+    if (healthDot) healthDot.classList.add('bad');
+  }
+
+  // Read THIS workspace's Blueprint record (NOT /api/board) — the §8.1 on-demand
+  // fetch. The engine returns the B.2 body verbatim, or `null` (no Blueprint yet).
+  function refreshBlueprint() {
+    Net.getJSON('/api/ws/blueprint?project_ref=' + encodeURIComponent(ctx.ref))
+      .then(function (record) {
+        bpRecord = record; // may be null (honest empty state)
+        renderBlueprint(record);
+      })
+      .catch(function (e) {
+        showBlueprintError(e && e.message ? e.message : String(e));
+      });
+  }
+
+  function renderBlueprint(record) {
+    var view = BlueprintView.deriveBlueprintView(record, Date.now(), {
+      opened: Object.keys(bpOpened)
+    });
+    // The one hard refusal (unknown-HIGHER schema_version) surfaces as an error.
+    if (!view.ok) { showBlueprintError(view.error); return; }
+
+    var loading = Dom.el('bp-loading');
+    var errbox = Dom.el('bp-errbox');
+    var body = Dom.el('bp-body');
+    if (loading) loading.hidden = true;
+    if (errbox) errbox.hidden = true;
+    if (body) body.hidden = false;
+    if (healthDot) healthDot.classList.remove('bad');
+
+    // Empty state: no record, or a record with zero nodes (honest, B.4).
+    var isEmpty = !view.found || view.empty;
+    Dom.el('bp-emptybox').hidden = !isEmpty;
+    Dom.el('bp-map-sl').hidden = isEmpty;
+
+    renderBlueprintConflicts(record);
+    renderBlueprintMap(view);
+    renderBlueprintHidden(view);
+    renderBlueprintDegraded(view.degraded);
+
+    var updated = Dom.el('bp-updated');
+    if (updated) {
+      var age = view.updated_at_age ? (' · updated ' + view.updated_at_age) : '';
+      updated.textContent = 'read ' + new Date().toLocaleTimeString() + age;
+    }
+  }
+
+  // ── conflict FYIs (§5.3 keep / drop; KEEP is the §14.2 default) ──────────────
+  // deriveLiveConflicts is the honest projection over the append-only conflicts[]
+  // log (dedup + drop-/keep-/reattach-resolved removed). We render only the live
+  // ones; an empty list hides the whole lane.
+  function renderBlueprintConflicts(record) {
+    var sec = Dom.el('bp-conflicts-sec');
+    var hostEl = Dom.el('bp-conflicts');
+    var sl = Dom.el('bp-conflicts-sl');
+    Dom.clear(hostEl);
+    var live = BlueprintCustomize.deriveLiveConflicts(record);
+    if (!live.length) { sec.hidden = true; return; }
+    sec.hidden = false;
+    if (sl) sl.textContent = 'YOUR CUSTOMIZATIONS THAT NO LONGER MAP TO CODE · ' + live.length;
+
+    live.forEach(function (cf) {
+      var card = Dom.mk('div', 'bp-conflict');
+      var msg = Dom.mk('div', 'bp-conflict-msg');
+      var what = cf.custom ? ('“' + cf.custom + '”') : ('your ' + friendlyKind(cf.kind));
+      msg.appendChild(document.createTextNode('Your custom ' + friendlyKind(cf.kind) +
+        ' ' + what + ' for '));
+      msg.appendChild(Dom.mk('code', 'bp-conflict-id', cf.node_id));
+      msg.appendChild(document.createTextNode(' no longer maps to any code.'));
+      card.appendChild(msg);
+      if (cf.note) card.appendChild(Dom.mk('div', 'bp-conflict-note', cf.note));
+
+      var status = Dom.mk('div', 'bp-actions-status');
+      status.setAttribute('aria-live', 'polite');
+      var row = Dom.mk('div', 'bp-actions-row');
+
+      // KEEP (default): persist the ack, keep the override (never a revert).
+      // Both handlers read the FRESHEST customization (cust()) so they compose
+      // with a concurrent refresh rather than re-writing a stale captured copy.
+      bpBtn(row, 'Keep', 'bp-act-keep', function (b) {
+        var next = BlueprintCustomize.keepConflict(cust(), cf);
+        if (!next.ok) { setStatus(status, 'err', next.error); return; }
+        putCustomization(next.customization, b, status, 'keep');
+      });
+      // DROP (only when the kind is resolvable): remove the orphaned override.
+      if (cf.resolvable) {
+        bpBtn(row, 'Drop', 'bp-act-drop', function (b) {
+          if (!window.confirm('Drop your custom ' + friendlyKind(cf.kind) +
+            ' for ' + cf.node_id + '?\n\nThis removes the override. (Keep is the safe default.)')) return;
+          var next = BlueprintCustomize.dropConflict(cust(), cf);
+          if (!next.ok) { setStatus(status, 'err', next.error); return; }
+          putCustomization(next.customization, b, status, 'drop');
+        });
+      }
+      card.appendChild(row);
+      card.appendChild(status);
+      hostEl.appendChild(card);
+    });
+  }
+
+  function friendlyKind(kind) {
+    switch (kind) {
+      case 'rename-orphan': return 'name';
+      case 'regroup-orphan': return 'grouping';
+      case 'pin-orphan': return 'pin';
+      case 'hide-orphan': return 'hide';
+      case 'split-orphan': return 'split';
+      case 'merge-orphan': return 'merge';
+      default: return 'customization';
+    }
+  }
+
+  // ── the drill-in node tree (the [free] geometry; the contract is the gestures) ─
+  // Render visible top-level boxes; descend into a box's visible children only
+  // when it is OPEN (view.open, driven by bpOpened + pins). Each node carries its
+  // edit affordances (rename/regroup/pin/hide + split/merge recorders).
+  function renderBlueprintMap(view) {
+    var mapHost = Dom.el('bp-map');
+    Dom.clear(mapHost);
+    if (!view.nodes.length) return;
+
+    var byId = Object.create(null);
+    view.nodes.forEach(function (n) { byId[n.id] = n; });
+
+    var roots = view.nodes.filter(function (n) { return n.top_level && n.visible; });
+    roots.forEach(function (n) { mapHost.appendChild(renderBlueprintNode(n, byId)); });
+
+    // A compact legend of the live overlay / counts (honest, derived).
+    var legend = Dom.mk('div', 'bp-legend');
+    legend.appendChild(Dom.mk('span', null,
+      view.counts.top_level + ' top-level · ' + view.counts.nodes + ' nodes · ' +
+      view.counts.edges + ' edges'));
+    if (view.counts.hidden) legend.appendChild(Dom.mk('span', 'bp-legend-hidden',
+      view.counts.hidden + ' hidden'));
+    mapHost.appendChild(legend);
+  }
+
+  function renderBlueprintNode(n, byId) {
+    var card = Dom.mk('div', 'bp-node bp-kind-' + (n.kind_known ? n.kind : 'unknown') +
+      (n.dimmed ? ' bp-dim' : '') + (n.active ? ' bp-active' : '') +
+      (n.collision ? ' bp-collision' : ''));
+    card.style.marginLeft = (n.depth * 16) + 'px';
+
+    var head = Dom.mk('div', 'bp-node-head');
+    var kids = (n.children || []).filter(function (id) { return byId[id] && byId[id].visible; });
+    // The drill toggle (only when there are visible children to reveal).
+    if (kids.length) {
+      var caret = Dom.mk('button', 'bp-caret', n.open ? '▾' : '▸');
+      caret.setAttribute('type', 'button');
+      caret.setAttribute('aria-label', (n.open ? 'collapse ' : 'drill into ') + n.label);
+      caret.addEventListener('click', function () { toggleOpen(n.id); });
+      head.appendChild(caret);
+    } else {
+      head.appendChild(Dom.mk('span', 'bp-caret bp-caret-leaf', '·'));
+    }
+
+    head.appendChild(Dom.mk('span', 'bp-kindtag', n.kind_known ? n.kind : (n.kind || '?')));
+    var nameEl = Dom.mk('span', 'bp-name', n.label);
+    if (n.renamed) nameEl.appendChild(Dom.mk('span', 'bp-badge', 'renamed'));
+    if (n.regrouped) nameEl.appendChild(Dom.mk('span', 'bp-badge', 'regrouped'));
+    if (n.pinned) nameEl.appendChild(Dom.mk('span', 'bp-badge bp-badge-pin', '📌 pinned'));
+    head.appendChild(nameEl);
+    if (kids.length) head.appendChild(Dom.mk('span', 'bp-count', String(kids.length)));
+    card.appendChild(head);
+
+    // EDIT row — the four first-class overrides (§5.4) + split/merge recorders.
+    card.appendChild(renderNodeEditRow(n));
+
+    // children (only when open).
+    if (n.open && kids.length) {
+      var kidWrap = Dom.mk('div', 'bp-children');
+      kids.forEach(function (id) { kidWrap.appendChild(renderBlueprintNode(byId[id], byId)); });
+      card.appendChild(kidWrap);
+    }
+    return card;
+  }
+
+  // The per-node edit affordances. Each gesture builds the NEXT customization via
+  // the pure BlueprintCustomize controller and POSTs the WHOLE sub-object (the
+  // sectioned engine op merges it over derived — never-clobber, §2.3). The exact
+  // gesture (prompt vs inline) is [free] (§5.4/§11); a prompt is the honest v1.
+  function renderNodeEditRow(n) {
+    var row = Dom.mk('div', 'bp-edit-row');
+    var status = Dom.mk('div', 'bp-actions-status bp-edit-status');
+    status.setAttribute('aria-live', 'polite');
+
+    bpBtn(row, '✎ rename', 'bp-act-edit', function (b) {
+      var next = window.prompt('Rename “' + n.label + '” (blank to revert to the derived name “' +
+        n.derived_label + '”):', n.renamed ? n.label : '');
+      if (next === null) return; // cancelled
+      var r = BlueprintCustomize.rename(cust(), n.id, next.trim());
+      if (!r.ok) { setStatus(status, 'err', r.error); return; }
+      putCustomization(r.customization, b, status, 'rename');
+    });
+
+    bpBtn(row, '⤳ regroup', 'bp-act-edit', function (b) {
+      var next = window.prompt('Move “' + n.label + '” under which parent? Enter a node id ' +
+        '(e.g. domain:messaging), or blank to clear:', n.parent || '');
+      if (next === null) return;
+      var r = BlueprintCustomize.regroup(cust(), n.id, next.trim());
+      if (!r.ok) { setStatus(status, 'err', r.error); return; }
+      putCustomization(r.customization, b, status, 'regroup');
+    });
+
+    bpBtn(row, n.pinned ? '📌 unpin' : '📌 pin', 'bp-act-toggle', function (b) {
+      var r = BlueprintCustomize.setPinned(cust(), n.id, !n.pinned);
+      if (!r.ok) { setStatus(status, 'err', r.error); return; }
+      putCustomization(r.customization, b, status, n.pinned ? 'unpin' : 'pin');
+    });
+
+    bpBtn(row, '🙈 hide', 'bp-act-toggle', function (b) {
+      if (!window.confirm('Hide “' + n.label + '” (and anything inside it) as noise?\n\n' +
+        'You can bring it back from the HIDDEN list below.')) return;
+      var r = BlueprintCustomize.setHidden(cust(), n.id, true);
+      if (!r.ok) { setStatus(status, 'err', r.error); return; }
+      putCustomization(r.customization, b, status, 'hide');
+    });
+
+    // split / merge — recorded now, RENDERED later (§5.4: the map rides on the
+    // four above; the renderer recognises but does not yet apply split/merge).
+    // Honest: the degraded[] footer notes a recorded split/merge is not yet drawn.
+    bpBtn(row, '✂ split', 'bp-act-more', function (b) {
+      var note = window.prompt('Record a SPLIT of “' + n.label + '” into two domains. ' +
+        'Note what should split out (recorded now; the split RENDER ships later):', '');
+      if (note === null) return;
+      var r = BlueprintCustomize.addSplit(cust(), { id: n.id, note: note.trim() });
+      if (!r.ok) { setStatus(status, 'err', r.error); return; }
+      putCustomization(r.customization, b, status, 'split (recorded)');
+    });
+    bpBtn(row, '⋈ merge', 'bp-act-more', function (b) {
+      var other = window.prompt('Record a MERGE of “' + n.label + '” WITH which node? ' +
+        'Enter a node id (recorded now; the merge RENDER ships later):', '');
+      if (other === null) return;
+      var r = BlueprintCustomize.addMerge(cust(), { from: [n.id, other.trim()], into: n.id });
+      if (!r.ok) { setStatus(status, 'err', r.error); return; }
+      putCustomization(r.customization, b, status, 'merge (recorded)');
+    });
+
+    var box = Dom.mk('div', 'bp-edit-box');
+    box.appendChild(row);
+    box.appendChild(status);
+    return box;
+  }
+
+  // HIDDEN list — every hidden node id with an "unhide" affordance, so a hide is
+  // never a one-way trap (it does not render on the map by construction).
+  function renderBlueprintHidden(view) {
+    var sec = Dom.el('bp-hidden-sec');
+    var hostEl = Dom.el('bp-hidden-host');
+    Dom.clear(hostEl);
+    var hidden = (bpRecord && bpRecord.customization &&
+      Array.isArray(bpRecord.customization.hidden)) ? bpRecord.customization.hidden : [];
+    if (!hidden.length) { sec.hidden = true; return; }
+    sec.hidden = false;
+    hidden.forEach(function (id) {
+      var row = Dom.mk('div', 'bp-hidden-row');
+      row.appendChild(Dom.mk('code', 'bp-hidden-id', id));
+      var status = Dom.mk('div', 'bp-actions-status bp-edit-status');
+      var btnRow = Dom.mk('div', 'bp-actions-row');
+      bpBtn(btnRow, 'unhide', 'bp-act-toggle', function (b) {
+        var r = BlueprintCustomize.setHidden(cust(), id, false);
+        if (!r.ok) { setStatus(status, 'err', r.error); return; }
+        putCustomization(r.customization, b, status, 'unhide');
+      });
+      row.appendChild(btnRow);
+      row.appendChild(status);
+      hostEl.appendChild(row);
+    });
+  }
+
+  function renderBlueprintDegraded(degraded) {
+    var sec = Dom.el('bp-degraded');
+    if (!sec) return;
+    Dom.clear(sec);
+    degraded = Array.isArray(degraded) ? degraded : [];
+    if (degraded.length === 0) { sec.hidden = true; return; }
+    sec.hidden = false;
+    sec.appendChild(Dom.mk('div', 'bp-degraded-h', 'Degraded (honest gaps)'));
+    var ul = Dom.mk('ul', 'bp-degraded-list');
+    degraded.forEach(function (d) { ul.appendChild(Dom.mk('li', null, d)); });
+    sec.appendChild(ul);
+  }
+
+  // The CURRENT customization sub-object (from the last fetched record) — the base
+  // every builder layers onto. Tolerant of a null/garbled record (BlueprintCustomize
+  // normalizes). This is read FRESH each gesture so concurrent refreshes compose.
+  function cust() {
+    return (bpRecord && bpRecord.customization) ? bpRecord.customization : {};
+  }
+
+  function toggleOpen(id) {
+    if (bpOpened[id]) delete bpOpened[id];
+    else bpOpened[id] = true;
+    if (bpRecord !== undefined) renderBlueprint(bpRecord);
+  }
+
+  function bpBtn(row, label, cls, handler) {
+    var b = Dom.mk('button', 'bp-act ' + cls, label);
+    b.setAttribute('type', 'button');
+    b.addEventListener('click', function () { handler(b); });
+    row.appendChild(b);
+    return b;
+  }
+
+  // putCustomization — POST the WHOLE merged customization sub-object as the
+  // `customization` section (the sectioned engine op never clobbers `derived`).
+  // On success: re-fetch the record + re-render (preserving the drill-in state);
+  // on failure: keep the ✗ status (a repaint would wipe it). bpInFlight guards the
+  // 30s timer from repainting mid-write.
+  function putCustomization(customization, btnEl, statusEl, verb) {
+    bpInFlight = true;
+    return runAction(btnEl, statusEl, verb,
+      Net.postJSON('/api/ws/blueprint-put', {
+        project_ref: ctx.ref, section: 'customization', body: customization
+      })
+    ).then(function (ok) {
+      bpInFlight = false;
+      if (ok) refreshBlueprint();
+      return ok;
+    });
   }
 })();

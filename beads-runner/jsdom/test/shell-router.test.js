@@ -36,6 +36,8 @@ const P = {
   boardView:  path.join(WEB, 'board', 'board-view.js'),
   activityView: path.join(WEB, 'workspace', 'activity-view.js'), // I3 (claude-tools-uxvi3)
   gatesView:  path.join(WEB, 'workspace', 'gates-view.js'), // J3 (claude-tools-uxvj3)
+  blueprintView: path.join(WEB, 'workspace', 'blueprint-view.js'), // H2 (claude-tools-uxvh2)
+  blueprintCustomize: path.join(WEB, 'workspace', 'blueprint-customize.js'), // H4 (claude-tools-uxvh4)
   inboxView:  path.join(WEB, 'inbox', 'inbox-view.js'),
   inboxApp:   path.join(WEB, 'inbox', 'app.js'),
   wsIndex:    path.join(WEB, 'workspace', 'index.html'),
@@ -104,6 +106,8 @@ function loadWorkspaceRoute(pathname) {
   loadFileInWindow(window, P.boardView);
   loadFileInWindow(window, P.activityView); // I3 — app.js reads window.ActivityView
   loadFileInWindow(window, P.gatesView); // J3 — app.js reads window.GatesView
+  loadFileInWindow(window, P.blueprintView); // H2 — app.js reads window.BlueprintView
+  loadFileInWindow(window, P.blueprintCustomize); // H4 — app.js reads window.BlueprintCustomize
   loadFileInWindow(window, P.wsApp);
   return window;
 }
@@ -347,9 +351,29 @@ test('F — /ws/<ref>/gates mounts the LIVE Gates facet scaffold (unified Hold l
     assert.equal(nav.querySelector('.shell-tabs a.active').getAttribute('href'), '/ws/projA/gates');
   } finally { window.close(); }
 });
-const PLACEHOLDER_FACETS = [
-  { facet: 'blueprint', label: 'Blueprint', track: 'H3' },
-];
+// H4 (claude-tools-uxvh4): the Blueprint facet GRADUATED from placeholder to live
+// content — it now mounts the .bp-wrap scaffold (the customization map + the §5.3
+// conflict-FYI keep/drop lane), the EXTENSION POINT below anticipated. It is the
+// ONE facet that reads its OWN §4 record (blueprint-get, B.2), not /api/board —
+// so the Net stub's never-settling getJSON leaves the scaffold synchronous, the
+// data paints once the record resolves. H3 layers narrative + ?focus on top.
+test('F — /ws/<ref>/blueprint mounts the LIVE Blueprint facet scaffold (customization map + conflict FYI), not a placeholder', () => {
+  const window = loadWorkspaceRoute('/ws/projA/blueprint');
+  try {
+    const host = window.document.getElementById('facet-host');
+    assert.ok(host.querySelector('.bp-wrap'), 'the blueprint-facet scaffold (.bp-wrap) mounted');
+    assert.ok(host.querySelector('#bp-map'), 'the customization map host mounted');
+    assert.ok(host.querySelector('#bp-conflicts'), 'the §5.3 conflict-FYI lane host mounted');
+    assert.equal(host.querySelector('.facet-placeholder'), null, 'the blueprint route is NOT a placeholder');
+    assert.equal(host.querySelector('.bf-wrap'), null, 'the blueprint route did NOT mount the board scaffold');
+    // Dispatch + nav agree: the blueprint facet tab is the active one.
+    const nav = window.document.getElementById('shell-nav');
+    assert.equal(nav.querySelector('.shell-tabs a.active').getAttribute('href'), '/ws/projA/blueprint');
+  } finally { window.close(); }
+});
+// No workspace facet remains a placeholder (board/activity/gates/blueprint all
+// shipped). The loop is kept (empty) so a future placeholder facet re-enrolls here.
+const PLACEHOLDER_FACETS = [];
 for (const pf of PLACEHOLDER_FACETS) {
   test(`F — /ws/<ref>/${pf.facet} mounts the honest ${pf.label} placeholder (names track ${pf.track})`, () => {
     const window = loadWorkspaceRoute('/ws/projA/' + pf.facet);

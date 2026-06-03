@@ -312,3 +312,99 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   .gf-add-form{padding:0 22px}
   .gf-add-form .gf-field{max-width:520px}
 }
+
+/* ── blueprint facet (H4, claude-tools-uxvh4) — the customization map + conflict
+   FYI. The map geometry is [free] (§3.5); this renders an honest drill-in TREE,
+   not the spatial canvas (H3). Mirrors the gf/af register + token system. ── */
+.bp-wrap{display:flex;flex-direction:column;gap:6px}
+.bp-loading{padding:22px;color:var(--faint);font-size:13px}
+.bp-sec{margin-top:10px}
+.bp-sl{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate);
+  padding:0 18px;margin-bottom:8px}
+.bp-sl-warn{color:var(--coral)}
+
+/* empty state */
+.bp-emptybox{margin:24px 18px;border:1px dashed var(--line-2);border-radius:14px;
+  background:var(--ink-2);padding:20px}
+.bp-empty-h{font-family:var(--font-display);font-size:16px;color:var(--text);margin-bottom:8px}
+.bp-empty-b{color:var(--faint);font-size:13px;line-height:1.6}
+
+/* conflicts lane (§5.3 keep/drop) */
+.bp-conflicts{display:flex;flex-direction:column;gap:10px;padding:0 18px}
+.bp-conflict{border:1px solid rgba(255,107,107,.34);background:rgba(255,107,107,.07);
+  border-radius:12px;padding:12px 14px}
+.bp-conflict-msg{font-size:13px;color:var(--text);line-height:1.5}
+.bp-conflict-id{font-family:var(--mono);font-size:11px;color:var(--amber-soft);
+  background:var(--ink);padding:1px 5px;border-radius:5px}
+.bp-conflict-note{font-size:12px;color:var(--faint);margin-top:5px;line-height:1.5}
+
+/* the map tree */
+.bp-map{padding:0 18px;display:flex;flex-direction:column;gap:7px}
+.bp-node{border:1px solid var(--line);border-radius:11px;background:var(--panel);
+  padding:8px 10px}
+.bp-node.bp-dim{opacity:.5}
+.bp-node.bp-active{border-color:var(--mint)}
+.bp-node.bp-collision{border-color:var(--coral);box-shadow:0 0 0 1px rgba(255,107,107,.3)}
+.bp-kind-domain{border-left:3px solid var(--sky)}
+.bp-kind-client{border-left:3px solid var(--mint)}
+.bp-kind-store{border-left:3px solid var(--amber)}
+.bp-kind-vendor{border-left:3px solid var(--slate)}
+.bp-kind-capability{border-left:3px solid var(--line-2)}
+.bp-node-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bp-caret{font:inherit;font-size:13px;color:var(--amber);background:none;border:none;
+  cursor:pointer;min-width:18px;min-height:var(--tap);padding:0;line-height:1}
+.bp-caret-leaf{color:var(--dim);cursor:default;min-height:auto}
+.bp-kindtag{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--slate);
+  border:1px solid var(--line-2);border-radius:5px;padding:1px 5px}
+.bp-name{font-size:14px;color:var(--text);font-weight:500}
+.bp-badge{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink);
+  background:var(--amber);border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:middle}
+.bp-badge-pin{background:var(--sky)}
+.bp-count{font-size:11px;color:var(--faint);margin-left:auto}
+.bp-children{margin-top:8px;display:flex;flex-direction:column;gap:7px}
+.bp-legend{padding:10px 0 2px;color:var(--faint);font-size:11px;display:flex;gap:14px}
+.bp-legend-hidden{color:var(--slate)}
+
+/* per-node edit affordances */
+.bp-edit-box{margin-top:7px}
+.bp-edit-row,.bp-actions-row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.bp-act{font:inherit;font-size:12px;color:var(--text);background:var(--ink-2);
+  border:1px solid var(--line-2);border-radius:8px;padding:5px 9px;min-height:var(--tap);
+  cursor:pointer}
+.bp-act:hover{border-color:var(--amber)}
+.bp-act:disabled{opacity:.45;cursor:default}
+.bp-act-drop{color:var(--coral);border-color:rgba(255,107,107,.4)}
+.bp-act-keep{color:var(--mint);border-color:rgba(127,224,170,.35)}
+.bp-act-more{color:var(--faint)}
+.bp-actions-status{font-size:11px;color:var(--faint);min-height:14px;margin-top:4px}
+.bp-actions-status.pending{color:var(--amber)}
+.bp-actions-status.ok{color:var(--mint)}
+.bp-actions-status.err{color:var(--coral)}
+.bp-edit-status{padding-left:2px}
+#bp-status{padding:0 18px}
+
+/* hidden list */
+.bp-hidden-host{display:flex;flex-direction:column;gap:6px;padding:0 18px}
+.bp-hidden-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  border:1px solid var(--line);border-radius:9px;background:var(--ink-2);padding:7px 10px}
+.bp-hidden-id{font-family:var(--mono);font-size:11px;color:var(--faint)}
+
+/* degraded + foot + error (mirror gf) */
+.bp-degraded{margin:10px 18px 0;border:1px dashed var(--line-2);border-radius:11px;
+  background:var(--ink-2);padding:11px 13px}
+.bp-degraded-h{font-size:9px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--slate);margin-bottom:7px}
+.bp-degraded-list{margin:0;padding-left:16px;color:var(--faint);font-size:11px;line-height:1.6}
+.bp-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  flex-wrap:wrap;padding:14px 22px max(14px,env(safe-area-inset-bottom));
+  border-top:1px solid var(--line);margin-top:8px}
+.bp-updated{font-size:10px;letter-spacing:.12em;color:var(--faint);text-transform:uppercase}
+.bp-errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
+  background:rgba(255,107,107,.08);border-radius:14px;padding:18px}
+.bp-err-h{color:var(--coral);font-size:13px;letter-spacing:.12em;
+  text-transform:uppercase;margin-bottom:9px}
+.bp-err-b{color:var(--amber-soft);font-size:13px;line-height:1.6}
+
+@media (min-width:880px){
+  .bp-map,.bp-conflicts,.bp-hidden-host{padding:0 22px}
+}

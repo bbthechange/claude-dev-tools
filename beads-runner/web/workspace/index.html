@@ -51,9 +51,14 @@
   <script src="/workspace/gates-view.js"></script>
   <!-- H2 (claude-tools-uxvh2): the Blueprint MAP renderer (window.BlueprintView,
        deriveBlueprintView). Pure view-model over the blueprint-get record body
-       (B.2). Loaded here so it is live on the host; H3 mounts it at the
-       /ws/<ref>/blueprint facet (narrative + real blueprint-get fetch + deep-links). -->
+       (B.2). H4 mounts it at the /ws/<ref>/blueprint facet (the customization
+       map + conflict-FYI); H3 layers the narrative prose + ?focus deep-links. -->
   <script src="/workspace/blueprint-view.js"></script>
+  <!-- H4 (claude-tools-uxvh4): the Blueprint CUSTOMIZATION controller
+       (window.BlueprintCustomize) — the pure write-side: rename/regroup/pin/hide/
+       split/merge builders + conflict keep/drop + deriveLiveConflicts. Loaded
+       AFTER the renderer (the app uses both) and BEFORE app.js. -->
+  <script src="/workspace/blueprint-customize.js"></script>
   <script src="/workspace/app.js"></script>
   <!-- claude-tools-4zrn: shared offline-read service worker (last-known snapshot
        off-network; UX-DESIGN-V2 §2.4). Covers every /ws/<ref>/<facet>. NOT on
