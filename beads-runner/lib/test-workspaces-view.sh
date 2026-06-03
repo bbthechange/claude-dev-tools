@@ -255,11 +255,18 @@ ck "alpha blueprint updated_ago '2h' (from updated_at)" eq "$(jq -r '.cards[]|se
 ck "alpha blueprint active_count = 2 (§8.2 union size)" eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.active_count' <<<"$V")" "2"
 ck "alpha blueprint href → /ws/alpha/blueprint"        eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.href' <<<"$V")" "/ws/alpha/blueprint"
 ck "alpha blueprint thumb_ref carried"                 eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.thumb_ref' <<<"$V")" "alpha"
+# wmmc — the active-domain IDS (not just the count) are exposed so the lazy mini-MAP
+# render (app.js) can light the RIGHT cells via deriveBlueprintThumb. The view-model
+# still adds NO fetch (the one-/api/board-read posture holds); it just surfaces the
+# ids already present in the §8.1 blueprint_meta union.
+ck "alpha blueprint active_domains ids exposed"        eq "$(jq -c '.cards[]|select(.project_ref=="alpha").blueprint.active_domains' <<<"$V")" '["domain:posts-feed","domain:messaging"]'
+ck "alpha blueprint updated_at carried (thumb cache key)" eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.updated_at' <<<"$V")" "2026-05-18T22:00:00Z"
 # A project with NO blueprint_meta ⇒ present:false (older producer / no map yet);
 # the chip is omitted, never a fabricated thumbnail (B.4).
 ck "bravo (no blueprint_meta) ⇒ present:false"          eq "$(jq -r '.cards[]|select(.project_ref=="bravo").blueprint.present' <<<"$V")" "false"
 ck "bravo blueprint updated_ago null (honest absence)"  eq "$(jq -r '.cards[]|select(.project_ref=="bravo").blueprint.updated_ago' <<<"$V")" "null"
 ck "bravo blueprint active_count 0"                     eq "$(jq -r '.cards[]|select(.project_ref=="bravo").blueprint.active_count' <<<"$V")" "0"
+ck "bravo blueprint active_domains empty []"            eq "$(jq -c '.cards[]|select(.project_ref=="bravo").blueprint.active_domains' <<<"$V")" "[]"
 
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"

@@ -484,8 +484,71 @@ ck "garbled narrative ⇒ present:false"           eq "$(jq -r '.narrative.prese
 ck "missing narrative ⇒ present:false"           eq "$(jq -r '.narrative.present' <<<"$(bp '{}' "$(jq -c 'del(.narrative)' <<<"$FIX")")")" "false"
 ck "empty (null) record ⇒ narrative shape parity (present:false)" eq "$(jq -r '.narrative.present' <<<"$(bp '{}' 'null')")" "false"
 
+echo "── O: §8.5 mini-MAP thumbnail (wmmc) — deriveBlueprintThumb reduces to top-level cells ──"
+# The Workspace-card thumbnail (claude-tools-wmmc): render `derived` SMALL through
+# this SAME renderer at thumb scale, reduced to the MACRO view (top-level VISIBLE
+# boxes only), lit where work is in flight. Reuses deriveBlueprintView verbatim, so
+# the overlay / §0.3 refusal / customization transform are NOT re-implemented — the
+# thumbnail just SELECTS the top-level cells the card paints client-side (no image).
+bpt() { printf '%s' "$2" | node -e '
+  let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+    const BV=require(process.argv[1]);
+    let rec; try{rec=JSON.parse(s);}catch(e){rec=null;}
+    let opts; try{opts=JSON.parse(process.argv[3]);}catch(e){opts={};}
+    process.stdout.write(JSON.stringify(BV.deriveBlueprintThumb(rec, Number(process.argv[2]), opts)));
+  });' "$VIEW" "$NOW_MS" "$1"; }
+
+T="$(bpt '{}' "$FIX")"
+ck "thumb: ok:true"                               eq "$(jq -r '.ok' <<<"$T")" "true"
+ck "thumb: found:true (record present)"           eq "$(jq -r '.found' <<<"$T")" "true"
+ck "thumb: scale 'thumb'"                         eq "$(jq -r '.scale' <<<"$T")" "thumb"
+ck "thumb: 6 top-level cells (the macro view)"    eq "$(jq -r '.cells|length' <<<"$T")" "6"
+ck "thumb: counts.top_level 6"                    eq "$(jq -r '.counts.top_level' <<<"$T")" "6"
+ck "thumb: NO buried capability in the cells (macro only)" \
+   eq "$(jq -r '[.cells[]|select(.id|startswith("capability:"))]|length' <<<"$T")" "0"
+ck "thumb: posts-feed cell carries kind=domain + label" \
+   eq "$(jq -r '[.cells[]|select(.id=="domain:posts-feed")][0].kind' <<<"$T")" "domain"
+ck "thumb: posts-feed cell label legible"         eq "$(jq -r '[.cells[]|select(.id=="domain:posts-feed")][0].label' <<<"$T")" "Posts & Feed"
+ck "thumb: updated_at_age carried (4h ago)"       eq "$(jq -r '.updated_at_age' <<<"$T")" "4h ago"
+ck "thumb: nothing lit without an overlay"        eq "$(jq -r '.counts.active' <<<"$T")" "0"
+ck "thumb: no active cell without an overlay"     eq "$(jq -r '[.cells[]|select(.active)]|length' <<<"$T")" "0"
+
+# The §8.2 overlay lights the RIGHT top-level cell (a worked capability resolves up
+# to its visible domain box at macro — the same §3.2 resolution the full map uses).
+TO="$(bpt '{"active_domains":["capability:create-post"]}' "$FIX")"
+ck "thumb(overlay): posts-feed cell active (worked cap resolves up)" \
+   eq "$(jq -r '[.cells[]|select(.id=="domain:posts-feed")][0].active' <<<"$TO")" "true"
+ck "thumb(overlay): counts.active 1"              eq "$(jq -r '.counts.active' <<<"$TO")" "1"
+ck "thumb(overlay): an untouched domain stays dark" \
+   eq "$(jq -r '[.cells[]|select(.id=="domain:messaging")][0].active' <<<"$TO")" "false"
+
+# Two DIFFERENT agents in one domain ⇒ the §6.4 collision rolls up to that cell.
+TC="$(bpt '{"activity":{"writer":{"touching":["capability:create-post"]},"auxiliary":[{"touching":["capability:rank-feed"]}]}}' "$FIX")"
+ck "thumb(collision): posts-feed cell collision" \
+   eq "$(jq -r '[.cells[]|select(.id=="domain:posts-feed")][0].collision' <<<"$TC")" "true"
+ck "thumb(collision): counts.collisions 1"        eq "$(jq -r '.counts.collisions' <<<"$TC")" "1"
+
+# null record ⇒ the honest "no map yet" (found:false, empty, zero cells), NEVER a throw.
+TN="$(bpt '{}' 'null')"
+ck "thumb(null): ok:true (no throw)"              eq "$(jq -r '.ok' <<<"$TN")" "true"
+ck "thumb(null): found:false"                     eq "$(jq -r '.found' <<<"$TN")" "false"
+ck "thumb(null): empty:true"                      eq "$(jq -r '.empty' <<<"$TN")" "true"
+ck "thumb(null): zero cells"                      eq "$(jq -r '.cells|length' <<<"$TN")" "0"
+
+# The §0.3 refusal PROPAGATES — the thumbnail refuses EXACTLY when the full map would.
+THI="$(bpt '{}' "$(jq -c '.schema_version=99' <<<"$FIX")")"
+ck "thumb(sv 99): ok:false (refusal propagates)"  eq "$(jq -r '.ok' <<<"$THI")" "false"
+ck "thumb(sv 99): refusal names the version"      has "schema_version 99" "$(jq -r '.error' <<<"$THI")"
+
+# A hidden top-level box drops from the thumbnail (the §5.2 customization cascade —
+# the thumb honors the same view-transform the full map does; not just raw derived).
+THID="$(bpt '{}' "$(jq -c '.customization.hidden=["domain:messaging"]' <<<"$FIX")")"
+ck "thumb(hidden): messaging cell gone (5 cells)" eq "$(jq -r '.cells|length' <<<"$THID")" "5"
+ck "thumb(hidden): messaging not among the cells" eq "$(jq -r '[.cells[]|select(.id=="domain:messaging")]|length' <<<"$THID")" "0"
+ck "thumb(hidden): counts.hidden ≥1"              eq "$(jq -r '.counts.hidden>=1' <<<"$THID")" "true"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
-echo " test-blueprint-view (blueprint map renderer H2 + overlay G5 + narrative H3):  PASS=$PASS  FAIL=$FAIL"
+echo " test-blueprint-view (blueprint map renderer H2 + overlay G5 + narrative H3 + thumb wmmc):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]

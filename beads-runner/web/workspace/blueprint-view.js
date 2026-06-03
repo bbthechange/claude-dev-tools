@@ -953,8 +953,64 @@
     };
   }
 
+  /* ── deriveBlueprintThumb(record, nowMs, opts) → the MINI-MAP thumbnail model ──
+   * The §8.5 `[free]` refinement (claude-tools-wmmc): render `derived` SMALL through
+   * this SAME H2 renderer at thumbnail scale — NO server-side image pipeline (§8.5),
+   * consistent with the client-side layout choice (§3.5). It does NOT re-implement
+   * any map logic: it calls deriveBlueprintView with opts.scale forced to 'thumb'
+   * (the overlay/customization/§0.3 refusal all stay the map's) and then REDUCES the
+   * full model to the macro view a Workspace card needs — the TOP-LEVEL VISIBLE boxes
+   * only (a thumbnail is the coarsest density, §3.2), lit where work is in flight.
+   *   record = the blueprint-get body (B.2); null ⇒ found:false (honest "no map yet").
+   *   opts.active_domains / opts.activity → the §6.4/§8.2 in-flight overlay so the
+   *     right cells light up (the §8.1 blueprint_meta.active_domains union, or the
+   *     identity-bearing activity sub-object — same shapes deriveBlueprintView folds).
+   * Returns { ok, found, empty, scale, cells:[{id,label,kind,kind_known,active,
+   *   collision}], counts:{top_level,nodes,hidden,active,collisions}, updated_at_age }.
+   * The ONE hard refusal (unknown-HIGHER schema_version, §0.3) PROPAGATES verbatim as
+   * { ok:false, error } — the thumbnail refuses exactly when the full map would. */
+  function deriveBlueprintThumb(record, nowMs, opts) {
+    opts = (opts && typeof opts === 'object') ? opts : {};
+    var view = deriveBlueprintView(record, nowMs, {
+      scale: 'thumb',
+      active_domains: opts.active_domains,
+      activity: opts.activity
+      // No focus / no opened: a thumbnail is the MACRO view (top-level only) — the
+      // drill-in state is the dedicated facet's, one nav tap away.
+    });
+    if (!view.ok) return { ok: false, error: view.error };
+    var cells = view.nodes
+      .filter(function (n) { return n.top_level && n.visible; })
+      .map(function (n) {
+        return {
+          id: n.id,
+          label: n.label,
+          kind: n.kind,
+          kind_known: n.kind_known,
+          active: n.active,        // a worked node resolved up to this top-level box
+          collision: n.collision   // ≥2 distinct agents under this box (§6.4)
+        };
+      });
+    return {
+      ok: true,
+      found: !!view.found,                       // null record ⇒ found:false
+      empty: view.empty || cells.length === 0,
+      scale: 'thumb',
+      cells: cells,
+      counts: {
+        top_level: view.counts.top_level,
+        nodes: view.counts.nodes,
+        hidden: view.counts.hidden,
+        active: view.counts.active,
+        collisions: view.counts.collisions
+      },
+      updated_at_age: view.updated_at_age || null
+    };
+  }
+
   return {
     deriveBlueprintView: deriveBlueprintView,
+    deriveBlueprintThumb: deriveBlueprintThumb,
     makeNodeId: makeNodeId,
     relAge: relAge,
     bundleKey: bundleKey,

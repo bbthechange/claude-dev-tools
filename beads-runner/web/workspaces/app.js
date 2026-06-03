@@ -20,6 +20,7 @@
 
   var REFRESH_MS = 30000; // re-poll so a workspace going stale surfaces (§4.2/S-1)
   var WV = window.WorkspacesView;
+  var BV = window.BlueprintView; // wmmc — the H2 map renderer, reused at thumb scale
   var Net = window.Net;
   var Dom = window.Dom;
 
@@ -123,18 +124,29 @@
   }
 
   // H3 (claude-tools-uxvh3) — the Blueprint card chip (§6.6/§8.5): a small
-  // thumbnail glyph + "updated 2h ago" freshness + the §8.2 in-flight count, read
-  // from the §8.1 blueprint_meta projection. The whole card is already an <a> into
-  // the board, so this is an informational strip (no nested link — invalid HTML);
-  // the dedicated map is one nav tab away once inside. Omitted when no map exists
-  // yet (honest — the intake-strip pattern). The literal mini-MAP thumbnail is the
-  // deferred [free] refinement (it needs the map body the hub doesn't fetch).
+  // thumbnail + "updated 2h ago" freshness + the §8.2 in-flight count, read from
+  // the §8.1 blueprint_meta projection. The whole card is already an <a> into the
+  // board, so this is an informational strip (no nested link — invalid HTML); the
+  // dedicated map is one nav tab away once inside. Omitted when no map exists yet
+  // (honest — the intake-strip pattern).
+  //
+  // wmmc (claude-tools-wmmc) — the §8.5 LIVE mini-MAP render layered on top: the
+  // glyph upgrades, in place, to a real thumbnail of `derived` (top-level boxes,
+  // lit where work is in flight) once the map body is LAZILY fetched. See the
+  // bp* lazy-thumb machinery below. The chip renders meta-only first (one
+  // /api/board read — the hub's posture is untouched); the map body is fetched
+  // per card only when its chip scrolls into view.
   function renderBlueprintChip(card) {
     var bp = card.blueprint;
     if (!bp || !bp.present) return null;
+    var ref = card.project_ref;
+    bpMetaByRef[ref] = bp;                         // active_domains + version for the thumb
     var wrap = Dom.mk('div', 'ws-blueprint');
-    // The thumbnail placeholder — a tiny box-grid glyph standing in for the map.
-    wrap.appendChild(Dom.mk('span', 'ws-bp-thumb', '▦'));
+    // The thumbnail host — starts as the H3 box-grid glyph; upgraded to a live
+    // mini-map in place (or painted straight from cache on a re-render).
+    var thumb = Dom.mk('span', 'ws-bp-thumb', '▦');
+    bpThumbEls[ref] = thumb;
+    wrap.appendChild(thumb);
     var meta = Dom.mk('span', 'ws-bp-meta');
     meta.appendChild(Dom.mk('span', 'ws-bp-lbl', 'Blueprint'));
     if (bp.updated_ago && bp.updated_ago !== 'unknown') {
@@ -145,7 +157,113 @@
       wrap.appendChild(Dom.mk('span', 'ws-bp-active',
         '● ' + bp.active_count + ' in flight'));
     }
+
+    // wmmc — paint from cache if we already hold this map version; otherwise
+    // observe the chip and fetch the map body on first view (lazy).
+    var cached = bpThumbCache[ref];
+    var version = bp.updated_at || null;
+    if (cached && cached.state === 'loaded') {
+      paintBpThumb(ref);                                 // from cache — no glyph flash
+      if (cached.updated_at !== version) fetchBpThumb(ref); // the map changed ⇒ refresh
+    } else if (cached && cached.updated_at === version &&
+               (cached.state === 'absent' || cached.state === 'error' ||
+                cached.state === 'pending')) {
+      /* terminal/in-flight for this version — keep the glyph (honest fallback) */
+    } else {
+      thumb.setAttribute('data-bp-ref', ref);
+      if (bpObserver) bpObserver.observe(thumb);
+      else bpIdle(function () { fetchBpThumb(ref); });   // no IO ⇒ deferred, post-paint
+    }
     return wrap;
+  }
+
+  // ── wmmc: the §8.5 live mini-MAP thumbnail (LAZY per-card blueprint-get) ───────
+  // The hub's FIRST paint still makes exactly ONE /api/board read (the meta chip,
+  // H3). The mini-map is a post-paint ENHANCEMENT: when a card's Blueprint chip
+  // scrolls into view we fetch THAT workspace's map body once (/api/ws/blueprint —
+  // the same on-demand B.2 read the facet uses) and render it at thumb scale via
+  // BlueprintView.deriveBlueprintThumb. A null/empty/errored fetch leaves the H3
+  // meta glyph untouched (the honest fallback — never an error on the hub). Results
+  // cache by ref keyed on blueprint_meta.updated_at, so a CHANGED map re-fetches and
+  // the 30s re-render repaints an UNCHANGED one from cache without re-hitting the
+  // engine. This is why the "one /api/board read" invariant is not violated — the
+  // map fetch is lazy, per-visible-card, and additive, exactly as §8.5/§11 allow.
+  var bpThumbCache = Object.create(null); // ref -> { state, record, updated_at }
+  var bpThumbEls   = Object.create(null); // ref -> the CURRENT thumb element (per render)
+  var bpMetaByRef  = Object.create(null); // ref -> card.blueprint (active_domains, updated_at)
+  var bpObserver = (typeof window.IntersectionObserver === 'function')
+    ? new window.IntersectionObserver(onBpVisible, { rootMargin: '160px' })
+    : null;
+
+  function onBpVisible(entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      var ref = en.target.getAttribute('data-bp-ref');
+      if (bpObserver) bpObserver.unobserve(en.target);
+      if (ref) fetchBpThumb(ref);
+    });
+  }
+
+  // No-IntersectionObserver fallback: defer to idle so first paint is never blocked
+  // (still post-paint; just not viewport-gated).
+  function bpIdle(fn) {
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(fn);
+    else setTimeout(fn, 250);
+  }
+
+  function fetchBpThumb(ref) {
+    var meta = bpMetaByRef[ref];
+    if (!meta || !BV) return;
+    var version = meta.updated_at || null;
+    var cached = bpThumbCache[ref];
+    // Already terminal / in-flight for THIS map version ⇒ nothing to do.
+    if (cached && cached.updated_at === version &&
+        (cached.state === 'loaded' || cached.state === 'absent' ||
+         cached.state === 'error' || cached.state === 'pending')) return;
+    bpThumbCache[ref] = { state: 'pending', record: null, updated_at: version };
+    Net.getJSON('/api/ws/blueprint?project_ref=' + encodeURIComponent(ref))
+      .then(function (record) {
+        bpThumbCache[ref] = {
+          state: record == null ? 'absent' : 'loaded',
+          record: record,
+          updated_at: version
+        };
+        paintBpThumb(ref);
+      })
+      .catch(function () {
+        // Best-effort (B.4): a failed map read leaves the meta glyph — the board
+        // read already succeeded, so the hub never degrades over a thumbnail miss.
+        bpThumbCache[ref] = { state: 'error', record: null, updated_at: version };
+      });
+  }
+
+  // Render the mini-map cells INTO the chip's thumb element, replacing the ▦ glyph.
+  // Leaves the glyph untouched on a refusal / empty / no-cell render (honest — the
+  // tolerance lives in deriveBlueprintThumb, mirrored here as "keep the fallback").
+  var BP_THUMB_MAX_CELLS = 12; // a thumbnail stays a thumbnail; the overflow is counted
+  function paintBpThumb(ref) {
+    var host = bpThumbEls[ref];
+    var cached = bpThumbCache[ref];
+    var meta = bpMetaByRef[ref];
+    if (!host || !cached || cached.state !== 'loaded' || !BV) return;
+    var thumb = BV.deriveBlueprintThumb(cached.record, Date.now(), {
+      active_domains: meta ? meta.active_domains : undefined
+    });
+    if (!thumb.ok || !thumb.found || !thumb.cells.length) return; // keep the glyph
+    Dom.clear(host);
+    host.classList.add('is-map');
+    host.removeAttribute('data-bp-ref');
+    thumb.cells.slice(0, BP_THUMB_MAX_CELLS).forEach(function (c) {
+      var cell = Dom.mk('span', 'ws-bp-cell kind-' + (c.kind_known ? c.kind : 'unknown') +
+        (c.active ? ' active' : '') + (c.collision ? ' collision' : ''));
+      cell.setAttribute('title', c.label +
+        (c.collision ? ' — collision' : (c.active ? ' — in flight' : '')));
+      host.appendChild(cell);
+    });
+    if (thumb.cells.length > BP_THUMB_MAX_CELLS) {
+      host.appendChild(Dom.mk('span', 'ws-bp-cell more',
+        '+' + (thumb.cells.length - BP_THUMB_MAX_CELLS)));
+    }
   }
 
   function renderCard(card) {
@@ -227,6 +345,11 @@
     el.headDot.classList.toggle('bad',
       view.cards.some(function (c) { return c.health !== 'ok'; }));
 
+    // wmmc — drop any Blueprint-chip observations from the previous render: those
+    // thumb elements are about to be discarded, and renderCard re-observes the fresh
+    // ones. (Keeps the IntersectionObserver from accumulating detached targets across
+    // the 30s refresh. The bpThumbCache survives — it's keyed by ref, not element.)
+    if (bpObserver) bpObserver.disconnect();
     Dom.clear(el.cards);
     el.cardsEmpty.hidden = view.cards.length !== 0;
     view.cards.forEach(function (c) { el.cards.appendChild(renderCard(c)); });

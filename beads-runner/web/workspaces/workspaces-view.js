@@ -268,14 +268,17 @@
       var intake = deriveIntakeForWorkspace(rawIntake, ref, now);
 
       // H3 (claude-tools-uxvh3) — the §6.6/§8.5 Blueprint card chip, read from the
-      // §8.1 `blueprint_meta` projection (thumbnail-sized — NO per-card blueprint
-      // fetch; the hub keeps its "one /api/board read" discipline). present is
-      // honest (a map exists iff updated_at or thumb_ref is set); updated_ago is
-      // the "updated 2h ago" freshness; active_count is the §8.2 in-flight overlay
-      // size. Absent block ⇒ present:false (an older producer / no map yet — the
-      // chip is simply omitted). The full mini-MAP render (thumb_ref → render
-      // `derived` at thumb scale, §8.5) is [free] and deferred — it needs the map
-      // body the hub deliberately doesn't fetch.
+      // §8.1 `blueprint_meta` projection (thumbnail-sized — this VIEW-MODEL adds NO
+      // per-card blueprint fetch; the hub keeps its "one /api/board read" discipline
+      // in the pure core). present is honest (a map exists iff updated_at or thumb_ref
+      // is set); updated_ago is the "updated 2h ago" freshness; active_count is the
+      // §8.2 in-flight overlay size. Absent block ⇒ present:false (an older producer /
+      // no map yet — the chip is simply omitted). wmmc (claude-tools-wmmc) layers the
+      // §8.5 live mini-MAP render ON TOP of this chip: app.js LAZILY (IntersectionObserver,
+      // after first paint) fetches /api/ws/blueprint per visible card and renders the
+      // map body at thumb scale via deriveBlueprintThumb — the meta chip here stays the
+      // honest first-paint + fallback. The one-read posture is preserved (the lazy fetch
+      // is a post-paint enhancement, never part of the hub's first render).
       var bm = (p && p.blueprint_meta && typeof p.blueprint_meta === 'object' &&
         !Array.isArray(p.blueprint_meta)) ? p.blueprint_meta : {};
       var bpUpdatedAt = (typeof bm.updated_at === 'string' && bm.updated_at) ? bm.updated_at : null;
@@ -287,6 +290,11 @@
         updated_at: bpUpdatedAt,
         updated_ago: bpUpdatedAt ? formatAgo(bpUpdatedAt, now) : null,
         active_count: bpActive.length,
+        // The §8.2 active-domain ids (NOT just the count) — wmmc's lazy mini-MAP
+        // render passes these to deriveBlueprintThumb so the RIGHT cells light up.
+        // The hub still carries only the thumbnail-sized meta from /api/board; the
+        // map BODY for the thumb is fetched lazily per card (app.js), never inlined.
+        active_domains: bpActive,
         href: '/ws/' + encodeURIComponent(ref) + '/blueprint'
       };
 

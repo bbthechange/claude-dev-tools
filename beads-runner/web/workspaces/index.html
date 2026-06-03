@@ -78,6 +78,11 @@
   <script src="/shared/dom.js"></script>
   <script src="/shared/shell.js"></script>
   <script src="/workspaces/workspaces-view.js"></script>
+  <!-- wmmc (claude-tools-wmmc): the §8.5 live mini-MAP thumbnail reuses the H2 map
+       renderer at thumb scale. Loaded verbatim from /workspace/ (absolute, q6z7) —
+       the same pure module the Blueprint facet uses; app.js calls its
+       deriveBlueprintThumb on the LAZILY-fetched per-card blueprint-get body. -->
+  <script src="/workspace/blueprint-view.js"></script>
   <script src="/workspaces/app.js"></script>
   <!-- claude-tools-4zrn: shared offline-read service worker (last-known snapshot
        off-network; UX-DESIGN-V2 §2.4). NOT on the Inbox (S-1). -->
