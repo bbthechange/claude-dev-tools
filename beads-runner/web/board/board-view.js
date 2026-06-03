@@ -130,6 +130,20 @@
     var threshold = (opts && typeof opts.net_velocity_threshold === 'number' && isFinite(opts.net_velocity_threshold))
       ? opts.net_velocity_threshold : NET_VELOCITY_ALARM_THRESHOLD;
     var velocityAlarm = netV > threshold; // positive trend = runaway (§9)
+    // claude-tools-t5ud (§9 row 4) — audit coverage (read/total), OPTIONAL.
+    // Present ONLY when an agent audit has reported N items for this workspace
+    // (null = no audit ⇒ the strip shows nothing). coverage_complete answers the
+    // §9 trust question "did the audit read everything?" — read>=total = yes.
+    // Tolerant-by-construction: a malformed block degrades to null (no chip).
+    var rawAc = (q.audit_coverage && typeof q.audit_coverage === 'object' && !Array.isArray(q.audit_coverage))
+      ? q.audit_coverage : null;
+    var ac = (rawAc &&
+      typeof rawAc.total === 'number' && isFinite(rawAc.total) && rawAc.total > 0 &&
+      typeof rawAc.read === 'number' && isFinite(rawAc.read))
+      ? { read: Math.max(0, Math.min(rawAc.read, rawAc.total)), total: rawAc.total }
+      : null;
+    var coverageComplete = ac ? ac.read >= ac.total : true;
+    var coverageText = ac ? (ac.read + '/' + ac.total + ' read') : '';
     // The empty-queue explainer fires only when there is NO ready work AND a
     // REASON to explain it (held/hidden/blocked-by-epic work) — "why is bd ready
     // empty / only epics?" An all-zero queue (no work at all) is NOT an alarm.
@@ -149,7 +163,13 @@
       epics_with_zero_ready_children: epics,
       epics_zero_ready_count: epics.length,
       empty_queue: emptyQueue,
-      explainer: explainer
+      explainer: explainer,
+      // claude-tools-t5ud (§9 row 4) — audit coverage. `audit_coverage` is
+      // null unless an audit reported; coverage_complete/coverage_text are the
+      // derived presentation of the read/total ratio.
+      audit_coverage: ac,
+      coverage_complete: coverageComplete,
+      coverage_text: coverageText
     };
   }
 
@@ -641,6 +661,10 @@
     // net-velocity alarm + empty-queue explainer (the §9 highest-value items)
     // surface as health-strip chips below.
     var qhEpicSet = [];
+    // claude-tools-t5ud (§9 row 4) — board-level audit coverage = the SUM of
+    // per-project read/total (only projects whose audit reported contribute). If
+    // no project has reported, the aggregate stays null ⇒ no strip chip.
+    var qhAcRead = 0, qhAcTotal = 0;
     var qhTotals = projects.reduce(function (acc, p) {
       var d = deriveQueueHealth(p && p.queue_health);
       acc.ready += d.ready;
@@ -652,6 +676,7 @@
       d.epics_with_zero_ready_children.forEach(function (e) {
         if (qhEpicSet.indexOf(e) === -1) qhEpicSet.push(e);
       });
+      if (d.audit_coverage) { qhAcRead += d.audit_coverage.read; qhAcTotal += d.audit_coverage.total; }
       return acc;
     }, {
       ready: 0,
@@ -660,6 +685,7 @@
       net_velocity_7d: 0
     });
     qhTotals.epics_with_zero_ready_children = qhEpicSet;
+    qhTotals.audit_coverage = qhAcTotal > 0 ? { read: qhAcRead, total: qhAcTotal } : null;
     var queueHealth = deriveQueueHealth(qhTotals);
 
     var healthy =
@@ -728,6 +754,15 @@
         queueHealth.epics_zero_ready_count
           ? { kind: 'warn', text: '⚠ ' + queueHealth.epics_zero_ready_count +
               (queueHealth.epics_zero_ready_count === 1 ? ' epic' : ' epics') + ' 0-ready' }
+          : null,
+        // claude-tools-t5ud (§9 row 4) — audit-coverage chip. Surfaced ONLY when
+        // an audit has reported (null otherwise). `warn` weight when the audit did
+        // NOT read everything (read<total — the §9 "did the audit read everything?"
+        // signal); `runners` (neutral mint) when complete — a positive confirmation
+        // that the conclusion is backed by full coverage, "not just the conclusion".
+        queueHealth.audit_coverage
+          ? { kind: (queueHealth.coverage_complete ? 'runners' : 'warn'),
+              text: (queueHealth.coverage_complete ? '' : '⚠ ') + 'audit ' + queueHealth.coverage_text }
           : null
       ].filter(Boolean)
     };

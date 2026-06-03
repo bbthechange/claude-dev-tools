@@ -168,6 +168,19 @@ bash beads-runner/verify-pages-deploy.sh board   # must print mismatches=0
   alarm cutoff is the named, tunable `NET_VELOCITY_ALARM_THRESHOLD` (default
   `> 0`) — never a magic number; queue health is deliberately NOT folded into
   `health.ok` (machine health ≠ backlog trend).
+- **Audit coverage (§9 row 4, Q9-4 claude-tools-t5ud) is the ONE queue_health
+  field NOT derived from `bd`.** `queue_health.audit_coverage` is OPTIONAL
+  `{read,total}|null` — present only when an **agent audit** has reported N items
+  (null = no audit ⇒ no chip, never a phantom `0/0`). Audit coverage is a signal an
+  audit EMITS, not a standing queue fact, so the runner READS it from a tolerant
+  per-workspace marker file (default `.beads/runner-logs/audit-coverage.json` — the
+  gitignored ephemeral dir, never committed; env `LA_AUDIT_COVERAGE_FILE`) — NOT
+  from a bd query. The WRITER (an audit hat emitting the marker) is a follow-up
+  (claude-tools-mhcp.2); until it lands the field is null in prod (in-contract).
+  `deriveQueueHealth` derives
+  `coverage_complete`(`read>=total`)/`coverage_text`; the strip chip is NEUTRAL
+  (`kind:'runners'`) when complete ("audit read everything") and WARN when not.
+  Aggregate sums read/total across the projects whose audit reported.
 - **`g2s` soft "thinking" is presentation-only.** Between 90s–180s heartbeat age
   on a `running` runner the pill softens to `thinking`, but wire `liveness`
   stays binary and control-button gating still keys off `liveness === 'live'`,
@@ -196,4 +209,5 @@ honest-state invariant, a fresh scar, a changed control set. Keep new
 honest-state logic in `board-view.js` (not `app.js`) so the Node test covers it.
 **Keep it concise — this doc earns its keep only if agents read all of it.**
 Delete stale lines; don't let it grow into a copy of the README or INTERFACE.md.
-Last substantive update: 2026-06-01 (Q1 queue_health strip, claude-tools-uxvq1).
+Last substantive update: 2026-06-03 (Q9-4 audit_coverage on the §9 strip,
+claude-tools-t5ud — the one queue_health field sourced from a marker file, not bd).

@@ -303,12 +303,20 @@ it("CF workspace-inventory-put (claude-tools-8dfb) — schema validation + write
         hidden_under_deferred_parent: 5,
         net_velocity_7d: 2,
         epics_with_zero_ready_children: ["rhythmGame-aaa"],
+        audit_coverage: { read: 8, total: 12 },
       },
     })
   );
   ck("queue_health-carrying payload ⇒ 200", rQh.status === 200);
   const storedQh = await getRecord("workspace_inventory", "case9-qh");
   ck("queue_health.ready round-trips", storedQh && storedQh.queue_health && storedQh.queue_health.ready === 4);
+  // claude-tools-t5ud (§9 row 4) — audit_coverage round-trips.
+  ck(
+    "queue_health.audit_coverage {read,total} round-trips (t5ud §9 row 4)",
+    storedQh && storedQh.queue_health.audit_coverage &&
+      storedQh.queue_health.audit_coverage.read === 8 &&
+      storedQh.queue_health.audit_coverage.total === 12
+  );
   ck(
     "queue_health.held breakdown round-trips (gate/dependency/scheduled)",
     storedQh && storedQh.queue_health.held.gate === 3 &&
@@ -333,6 +341,8 @@ it("CF workspace-inventory-put (claude-tools-8dfb) — schema validation + write
       Array.isArray(storedNoQh.queue_health.epics_with_zero_ready_children) &&
       storedNoQh.queue_health.epics_with_zero_ready_children.length === 0
   );
+  // claude-tools-t5ud (§9 row 4) — absent ⇒ audit_coverage null (no audit reported).
+  ck("absent queue_health ⇒ audit_coverage null (uniform)", storedNoQh && storedNoQh.queue_health.audit_coverage === null);
   // Malformed block ⇒ tolerated (coerced to the safe zeroed block), NOT 422.
   const rBadQh = await put(
     line({
@@ -354,6 +364,24 @@ it("CF workspace-inventory-put (claude-tools-8dfb) — schema validation + write
   ck("negative net_velocity_7d preserved (draining queue, not floored)", rNegQh.status === 200);
   const storedNegQh = await getRecord("workspace_inventory", "case9-negqh");
   ck("queue_health.net_velocity_7d === -3 round-trips", storedNegQh && storedNegQh.queue_health.net_velocity_7d === -3);
+
+  // claude-tools-t5ud (§9 row 4) — audit_coverage tolerance: read clamped to
+  // [0,total]; total<=0 or a malformed block ⇒ null (no phantom ratio), never 422.
+  const rAcClamp = await put(line({ project_ref: "case9-acclamp", queue_health: { audit_coverage: { read: 99, total: 12 } } }));
+  ck("audit_coverage over-report ⇒ 200", rAcClamp.status === 200);
+  const storedAcClamp = await getRecord("workspace_inventory", "case9-acclamp");
+  ck("audit_coverage read clamped to total (99/12 ⇒ 12/12)",
+    storedAcClamp && storedAcClamp.queue_health.audit_coverage &&
+      storedAcClamp.queue_health.audit_coverage.read === 12 &&
+      storedAcClamp.queue_health.audit_coverage.total === 12);
+  const rAcBad = await put(line({ project_ref: "case9-acbad", queue_health: { audit_coverage: { read: 1, total: 0 } } }));
+  ck("audit_coverage total<=0 ⇒ still 200 (tolerant)", rAcBad.status === 200);
+  const storedAcBad = await getRecord("workspace_inventory", "case9-acbad");
+  ck("audit_coverage total<=0 ⇒ coerced to null", storedAcBad && storedAcBad.queue_health.audit_coverage === null);
+  const rAcGarbage = await put(line({ project_ref: "case9-acgarbage", queue_health: { audit_coverage: "lots" } }));
+  ck("audit_coverage non-object ⇒ still 200 (tolerant, not 422)", rAcGarbage.status === 200);
+  const storedAcGarbage = await getRecord("workspace_inventory", "case9-acgarbage");
+  ck("audit_coverage non-object ⇒ coerced to null", storedAcGarbage && storedAcGarbage.queue_health.audit_coverage === null);
 
   // ── ANTI-DRIFT: schema registry carries workspace_inventory at v1 ─────────
   ck("workspace_inventory IS in the §4 schema registry at v1", schemaVersion("workspace_inventory") === 1);

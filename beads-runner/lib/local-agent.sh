@@ -570,6 +570,57 @@ la_publish_workspace_inventory() {
      ' 2>/dev/null) || queue_health=""
   [[ -n "$queue_health" ]] || queue_health='{"ready":0,"held":{"gate":0,"dependency":0,"scheduled":0},"hidden_under_deferred_parent":0,"net_velocity_7d":0,"epics_with_zero_ready_children":[]}'
 
+  # ── audit_coverage (claude-tools-t5ud, UX-DESIGN-V2 §9 row 4) ─────────────────
+  # "Did the audit actually read everything?" — when an agent audit reports N
+  # items, surface the coverage ratio (read/total) on the Queue-Health strip, not
+  # just the conclusion ([thirsty]: distrust of an audit that may have only
+  # sampled). UNLIKE the five bd-derived fields above, this is NOT a standing
+  # queue fact the runner can compute from `bd` — it is a signal an AUDIT emits
+  # when it runs. The decoupled, tolerant channel: an OPTIONAL per-workspace
+  # marker file an audit writes, shaped `{"read":R,"total":T}`. Absent / malformed
+  # / total<=0 ⇒ the field is OMITTED here (the hosted normalize defaults it to
+  # null ⇒ the Board strip shows nothing) — so "no audit has reported" is the
+  # honest common case, NOT a phantom 0/0. `read` is clamped to [0,total]. Path is
+  # env-overridable for tests; default `.beads/runner-logs/audit-coverage.json` —
+  # the runner-owned per-machine EPHEMERAL log dir that `.gitignore` already
+  # excludes (the `.beads/runner-logs/` entry), so this machine-specific signal is
+  # never committed/synced across clones (the runner-logs/backup posture; a marker
+  # under the bare `.beads/` root WOULD be tracked-by-default — claude-tools-t5ud
+  # review). Best-effort like every
+  # queue_health field: any read/parse hiccup degrades to "absent", never aborts
+  # the inventory write. NOTE (tradeoff, t5ud review): the marker is read VERBATIM
+  # with no freshness/TTL gate (unlike the capacity/lease caches above, which gate
+  # SAFETY decisions a stale read would corrupt). audit_coverage gates NOTHING —
+  # it paints one read-only chip — so a stale marker is a presentation nit, not a
+  # harmful action; the audit writer is expected to overwrite-or-remove its marker.
+  # READER HALF ONLY: this code consumes the marker; the WRITER (an audit hat that
+  # emits it) is a follow-up — until one lands the field is null in prod, which is
+  # in-contract ("null unless an audit reported"). REVERSIBLE: the contract-test
+  # invariant is "read/total computed AND surfaced when an audit reports", not this
+  # specific channel (Open-Q#3 latitude; one named sub-object, never a second).
+  local ac_file ac_raw audit_coverage qh_merged
+  ac_file="${LA_AUDIT_COVERAGE_FILE:-.beads/runner-logs/audit-coverage.json}"
+  audit_coverage="null"
+  if [[ -f "$ac_file" ]]; then
+    ac_raw="$(cat "$ac_file" 2>/dev/null)" || ac_raw=""
+    if [[ -n "$ac_raw" ]]; then
+      audit_coverage="$(printf '%s' "$ac_raw" | jq -c '
+        if type=="object"
+           and (.total|type)=="number" and (.total|floor)==.total and .total > 0
+           and (.read|type)=="number"  and (.read|floor)==.read  and .read >= 0
+        then { read: ([.read, .total] | min), total: .total }
+        else null end' 2>/dev/null)" || audit_coverage="null"
+      [[ -n "$audit_coverage" ]] || audit_coverage="null"
+    fi
+  fi
+  # Merge ONLY when an audit actually reported — when null, leave queue_health
+  # byte-identical to the bd-only block (the hosted normalize fills null). A merge
+  # hiccup is non-destructive: the pre-merge bd block is already valid.
+  if [[ "$audit_coverage" != "null" ]]; then
+    qh_merged="$(printf '%s' "$queue_health" | jq -c --argjson ac "$audit_coverage" '. + {audit_coverage:$ac}' 2>/dev/null)"
+    [[ -n "$qh_merged" ]] && queue_health="$qh_merged"
+  fi
+
   # ── held_beads (claude-tools-uxvj2, DESIGN J §3.3) — the holds[] SOURCE ───────
   # The hosted holds[] unifier (reconcile.js buildHolds) needs the per-bead
   # labels/blocked_on/deferred_until to derive the three hold types, but the

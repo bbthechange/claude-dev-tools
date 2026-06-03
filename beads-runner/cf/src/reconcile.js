@@ -218,6 +218,24 @@ function jqStr(v) {
 function intOr0(v) {
   return typeof v === "number" && Number.isFinite(v) && Math.floor(v) === v ? v : 0;
 }
+// claude-tools-t5ud (UX-DESIGN-V2 §9 row 4) — audit_coverage {read,total} | null.
+// OPTIONAL: present ONLY when an agent audit has reported N items for this
+// workspace (the runner reads it from a tolerant marker the audit writes); a
+// missing / malformed block, or one with total<=0, is null — the Board strip
+// then shows nothing (the honest "no audit has reported" common case, never a
+// phantom 0/0). `read` is clamped to [0,total]; both must be non-negative
+// integers and total>0 (a coverage ratio over total<=0 is meaningless).
+// Tolerant like every queue_health field — never 422s the inventory write.
+function auditCoverageOrNull(ac) {
+  if (!ac || typeof ac !== "object" || Array.isArray(ac)) return null;
+  const total = ac.total;
+  const read = ac.read;
+  if (typeof total !== "number" || !Number.isFinite(total) || Math.floor(total) !== total || total <= 0)
+    return null;
+  if (typeof read !== "number" || !Number.isFinite(read) || Math.floor(read) !== read || read < 0)
+    return null;
+  return { read: Math.min(read, total), total };
+}
 function normalizeQueueHealth(qh) {
   const o = qh && typeof qh === "object" && !Array.isArray(qh) ? qh : {};
   const held = o.held && typeof o.held === "object" && !Array.isArray(o.held) ? o.held : {};
@@ -242,6 +260,9 @@ function normalizeQueueHealth(qh) {
     hidden_under_deferred_parent: intOr0(o.hidden_under_deferred_parent),
     net_velocity_7d: nv,
     epics_with_zero_ready_children: epics,
+    // claude-tools-t5ud (§9 row 4) — optional audit-coverage ratio; null unless
+    // an agent audit has reported N items for this workspace.
+    audit_coverage: auditCoverageOrNull(o.audit_coverage),
   };
 }
 

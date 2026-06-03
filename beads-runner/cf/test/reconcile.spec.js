@@ -1425,11 +1425,16 @@ it("CF.3 workSnapshot surfaces projects[].queue_health (§9 / B.1, claude-tools-
       hidden_under_deferred_parent: 5,
       net_velocity_7d: 2,
       epics_with_zero_ready_children: ["rg-aaa"],
+      audit_coverage: { read: 8, total: 12 },
     }),
   ]);
   const A = await pick("projQA");
   pck("Case A — project carries a queue_health block", A && !!A.queue_health);
   pck("Case A — ready surfaced", A && A.queue_health.ready === 4);
+  // claude-tools-t5ud (§9 row 4) — audit_coverage surfaces through the projection.
+  pck("Case A — audit_coverage {read,total} surfaced (t5ud §9 row 4)",
+    A && A.queue_health.audit_coverage &&
+      A.queue_health.audit_coverage.read === 8 && A.queue_health.audit_coverage.total === 12);
   pck(
     "Case A — held breakdown surfaced (gate/dependency/scheduled)",
     A && A.queue_health.held.gate === 3 && A.queue_health.held.dependency === 1 &&
@@ -1469,8 +1474,18 @@ it("CF.3 workSnapshot surfaces projects[].queue_health (§9 / B.1, claude-tools-
   const D = await pick("projQD");
   pck("Case D — negative net_velocity_7d preserved (draining queue)", D && D.queue_health.net_velocity_7d === -4);
 
+  // ── Case E (t5ud §9 row 4): no audit reported ⇒ audit_coverage null (uniform) ─
+  pck("Case B — no block ⇒ audit_coverage null", B && B.queue_health.audit_coverage === null);
+  pck("Case C — no record ⇒ audit_coverage null", C && C.queue_health.audit_coverage === null);
+  await seed("projQE");
+  await call(GOOD, "workspace-inventory-put", [wsiWithQh("projQE", { audit_coverage: { read: 20, total: 12 } })]);
+  const E = await pick("projQE");
+  pck("Case E — audit_coverage read clamped to total through projection (20/12 ⇒ 12/12)",
+    E && E.queue_health.audit_coverage && E.queue_health.audit_coverage.read === 12 &&
+      E.queue_health.audit_coverage.total === 12);
+
   // eslint-disable-next-line no-console
-  console.log(`\n══ CF.3 queue_health projection (claude-tools-uxvq1): PASS=${pPASS} FAIL=${pFAIL} ══`);
+  console.log(`\n══ CF.3 queue_health projection (uxvq1 + t5ud §9 row 4): PASS=${pPASS} FAIL=${pFAIL} ══`);
   if (pFAIL > 0) {
     // eslint-disable-next-line no-console
     console.log("FAILED:\n  - " + pfails.join("\n  - "));

@@ -205,6 +205,16 @@
         qh.epics_with_zero_ready_children.join(', ')));
       el.qh.appendChild(prow);
     }
+    // Audit coverage (claude-tools-t5ud, §9 row 4) — only when an agent audit
+    // has reported N items. `.incomplete` flags read<total (the audit did NOT
+    // read everything — the "not just the conclusion" trust signal).
+    if (qh.audit_coverage) {
+      var crow = mk('div', 'qh-row');
+      crow.appendChild(mk('span', 'qh-lbl', 'AUDIT · COVERAGE'));
+      crow.appendChild(mk('span', 'qh-cov' + (qh.coverage_complete ? '' : ' incomplete'),
+        qh.coverage_text + (qh.coverage_complete ? ' ✓' : ' · incomplete')));
+      el.qh.appendChild(crow);
+    }
   }
 
   function postSetDesired(projectRef, state, btn) {
@@ -331,9 +341,15 @@
       // when this workspace's net-velocity is runaway (positive).
       if (r.queue_health) {
         var qhLine = mk('div', 'rqh' + (r.queue_health.velocity_alarm ? ' alarm' : ''));
-        qhLine.textContent = r.queue_health.explainer + ' · ' +
+        var qhTxt = r.queue_health.explainer + ' · ' +
           r.queue_health.velocity_text +
           (r.queue_health.velocity_alarm ? ' ⚠ runaway' : '');
+        // claude-tools-t5ud (§9 row 4) — append audit coverage when reported.
+        if (r.queue_health.audit_coverage) {
+          qhTxt += ' · audit ' + r.queue_health.coverage_text +
+            (r.queue_health.coverage_complete ? '' : ' ⚠');
+        }
+        qhLine.textContent = qhTxt;
         box.appendChild(qhLine);
       }
       // The per-runner "capacity: <verdict>" pill was REMOVED in

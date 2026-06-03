@@ -189,7 +189,8 @@ may not change meaning without an explicit amend.
         "ready": 4, "held": { "gate": 3, "dependency": 1, "scheduled": 2 },
         "hidden_under_deferred_parent": 5,
         "net_velocity_7d": 2,       // created − closed/day; positive = runaway alarm
-        "epics_with_zero_ready_children": ["rhythmGame-aaa"]
+        "epics_with_zero_ready_children": ["rhythmGame-aaa"],
+        "audit_coverage": { "read": 8, "total": 12 }   // §9 row 4 — OPTIONAL, null unless an audit reported
       },
       "blueprint_meta": {           // NEW (Flow H) — card thumbnail + freshness
         "updated_at": "…", "thumb_ref": "…", "active_domains": ["Gameplay"]
@@ -246,6 +247,29 @@ may not change meaning without an explicit amend.
 > `holds[]` producer lands. The net-velocity alarm threshold is a named tunable
 > (`NET_VELOCITY_ALARM_THRESHOLD`, default `> 0`) in `web/board/board-view.js`;
 > moving it needs NO producer/projection change. schema_version stays 1.
+
+> **Amendment (Q9-4 claude-tools-t5ud, 2026-06-03):** `queue_health.audit_coverage`
+> (§9 row 4 — "Did the audit actually read everything?") is added to the frozen
+> shape as an OPTIONAL `{ read, total } | null` sub-field — surfaced ONLY when an
+> **agent audit** has reported N items for the workspace; `null` (the common case)
+> ⇒ the Board strip shows nothing (never a phantom `0/0`). UNLIKE the five bd-derived
+> queue_health fields, audit coverage is NOT a standing queue fact — it is a signal
+> an audit EMITS when it runs, so the SOURCE is a decoupled, tolerant per-workspace
+> marker file (`{"read":R,"total":T}`, default path
+> `.beads/runner-logs/audit-coverage.json` — the runner's `.gitignore`-excluded
+> ephemeral per-machine dir, so the marker is never committed/synced; env-overridable
+> via `LA_AUDIT_COVERAGE_FILE`). The runner READS the marker and folds it into the
+> §4.6 `workspace_inventory` block (`la_publish_workspace_inventory`); the hosted
+> `normalizeQueueHealth` coerces it (`auditCoverageOrNull`: `total` must be a positive
+> integer, `read` is clamped to `[0,total]`, else `null`) — tolerant, never 422s.
+> Surface: the Board Queue-Health strip — `coverage_complete` (`read>=total`) drives a
+> NEUTRAL chip ("audit R/T read", a positive "read everything" confirmation, "not just
+> the conclusion") vs a WARN chip when the audit did NOT read everything.
+> **This ships the READER + surface half; the WRITER — an audit hat that emits the
+> marker when it runs — is a follow-up (claude-tools-mhcp.2).** Until a writer lands the
+> field is `null` in prod, which is in-contract. REVERSIBLE: the contract-test invariant
+> is "read/total computed AND surfaced when an audit reports", not the specific marker
+> channel (Open-Q#3 latitude). schema_version stays 1.
 
 ### B.2 `blueprint-get(project_ref)` → the `blueprint` §4 record body
 

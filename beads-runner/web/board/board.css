@@ -55,6 +55,10 @@
 .qh-row.empty .qh-explain{color:var(--amber-soft)}
 .qh-epics{color:var(--amber-soft);font-family:var(--font-mono);font-size:12px;
   word-break:break-word}
+/* audit coverage (§9 row 4 · claude-tools-t5ud) — read/total; mint when the
+   audit read everything, amber when it did not ("not just the conclusion"). */
+.qh-cov{color:var(--mint);font-family:var(--font-mono);font-size:12px}
+.qh-cov.incomplete{color:var(--amber-soft);font-weight:600}
 /* per-runner compact queue line */
 .rqh{margin-top:7px;font-size:11px;color:var(--dim);
   font-family:var(--font-mono);line-height:1.35}

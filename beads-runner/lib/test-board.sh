@@ -602,16 +602,16 @@ ck "app.js calls renderMachines with view.machines + machines_empty" has "view.m
 ck "board.css declares the .machines container"                    has ".machines{" "$(cat "$CSS")"
 ck "board.css declares per-band classes (green/amber/red)"         has ".band-red" "$(cat "$CSS")"
 
-echo "── EXIT-9: Q1 (claude-tools-uxvq1) — §9 queue_health strip (empty-queue + net-velocity) ──"
+echo "── EXIT-9: Q1 (uxvq1) + Q9-4 (t5ud) — §9 queue_health strip (empty-queue + net-velocity + audit coverage) ──"
 # queue_health is per-project (B.1); deriveBoardView aggregates the projects
 # into the board-level view.queue_health strip + health-strip chips. The bash
 # twin emits a ZEROED queue_health (no workspace_inventory store — CF fills the
 # real values), so — like the machine-state EXIT-8 strip — we craft snapshots
 # directly to exercise real queue_health values through the renderer.
-qh_snap() {  # <ready> <gate> <dep> <sched> <hidden> <net> <epics-json-array>
+qh_snap() {  # <ready> <gate> <dep> <sched> <hidden> <net> <epics-json-array> [audit_coverage-json|""]
   jq -cn --argjson ready "$1" --argjson gate "$2" --argjson dep "$3" \
          --argjson sched "$4" --argjson hidden "$5" --argjson net "$6" \
-         --argjson epics "$7" \
+         --argjson epics "$7" --argjson ac "${8:-null}" \
     '{schema_version:1,principal:"PRINCIPAL_V1",read_only:true,
       lifecycle_columns:{},waiting_on_you:[],machines:[],
       projects:[{project_ref:"projQ",
@@ -619,9 +619,10 @@ qh_snap() {  # <ready> <gate> <dep> <sched> <hidden> <net> <epics-json-array>
                       last_heartbeat_at:(now|todateiso8601),
                       current_task_ref:null,current_task_title:null,
                       desired_actual_mismatch:false},
-        queue_health:{ready:$ready,held:{gate:$gate,dependency:$dep,scheduled:$sched},
+        queue_health:({ready:$ready,held:{gate:$gate,dependency:$dep,scheduled:$sched},
                       hidden_under_deferred_parent:$hidden,net_velocity_7d:$net,
-                      epics_with_zero_ready_children:$epics},
+                      epics_with_zero_ready_children:$epics}
+                      + (if $ac==null then {} else {audit_coverage:$ac} end)),
         lease:null}]}'
 }
 
@@ -678,6 +679,56 @@ VN="$(render_snap "$NOQH")"
 ck "queue_health: absent block ⇒ tolerant zeroed view (ok:true)" eq "$(jq -r '.ok' <<<"$VN")" "true"
 ck "queue_health: absent block ⇒ per-project row still has block" eq "$(jq -r '.runners[0].queue_health.ready' <<<"$VN")" "0"
 
+# ── claude-tools-t5ud (§9 row 4) — audit coverage (read/total) ────────────────
+# Surfaced ONLY when an agent audit has reported N items; warn weight when the
+# audit did NOT read everything (read<total), neutral (mint) when complete.
+# ─ Incomplete audit (8/12 read) ⇒ coverage_complete false + a 'warn' chip ─
+ACINC="$(qh_snap 4 0 0 0 0 0 '[]' '{"read":8,"total":12}')"
+VAI="$(render_snap "$ACINC")"
+ck "audit_coverage: surfaced on the board strip (read/total)"    eq "$(jq -r '.queue_health.audit_coverage.read' <<<"$VAI")" "8"
+ck "audit_coverage: total surfaced"                              eq "$(jq -r '.queue_health.audit_coverage.total' <<<"$VAI")" "12"
+ck "audit_coverage: read<total ⇒ coverage_complete false (§9 trust)" eq "$(jq -r '.queue_health.coverage_complete' <<<"$VAI")" "false"
+ck "audit_coverage: coverage_text is 'R/T read'"                 has "8/12 read" "$(jq -r '.queue_health.coverage_text' <<<"$VAI")"
+ck "audit_coverage: incomplete audit ⇒ a 'warn' health chip"     has "audit 8/12 read" "$(jq -r '[.health.tags[]|select(.kind=="warn").text]|join(" ")' <<<"$VAI")"
+# per-project (B.1) — the runner row carries its own audit coverage.
+RAI="$(jq -c '.runners[]|select(.project_ref=="projQ")' <<<"$VAI")"
+ck "audit_coverage: per-project row carries audit_coverage (B.1)" eq "$(jq -r '.queue_health.audit_coverage.read' <<<"$RAI")" "8"
+
+# ─ Complete audit (12/12 read) ⇒ coverage_complete true + a neutral chip ─
+ACOK="$(qh_snap 4 0 0 0 0 0 '[]' '{"read":12,"total":12}')"
+VAO="$(render_snap "$ACOK")"
+ck "audit_coverage: read>=total ⇒ coverage_complete true"        eq "$(jq -r '.queue_health.coverage_complete' <<<"$VAO")" "true"
+ck "audit_coverage: complete audit ⇒ a NEUTRAL ('runners') chip, NOT warn" has "audit 12/12 read" "$(jq -r '[.health.tags[]|select(.kind=="runners").text]|join(" ")' <<<"$VAO")"
+ck "audit_coverage: complete audit ⇒ NO warn chip for audit"     eq "$(jq -r '[.health.tags[]|select(.kind=="warn" and (.text|test("audit")))]|length' <<<"$VAO")" "0"
+# read clamped to [0,total] — an over-report (15/12) reads as 12/12.
+ACCLAMP="$(qh_snap 4 0 0 0 0 0 '[]' '{"read":15,"total":12}')"
+VAC="$(render_snap "$ACCLAMP")"
+ck "audit_coverage: read clamped to total (15/12 ⇒ 12/12)"       eq "$(jq -r '.queue_health.audit_coverage.read' <<<"$VAC")" "12"
+
+# ─ No audit reported ⇒ audit_coverage null, NO chip (the common case) ─
+NOAC="$(qh_snap 4 1 0 0 0 0 '[]')"
+VNA="$(render_snap "$NOAC")"
+ck "audit_coverage: no audit ⇒ audit_coverage null"             eq "$(jq -r '.queue_health.audit_coverage' <<<"$VNA")" "null"
+ck "audit_coverage: no audit ⇒ NO audit chip"                   eq "$(jq -r '[.health.tags[]|select(.text|test("audit"))]|length' <<<"$VNA")" "0"
+# total<=0 ⇒ meaningless ratio ⇒ null (tolerant, no chip).
+BADAC="$(qh_snap 4 0 0 0 0 0 '[]' '{"read":0,"total":0}')"
+VBA="$(render_snap "$BADAC")"
+ck "audit_coverage: total<=0 ⇒ null (no phantom 0/0 chip)"       eq "$(jq -r '.queue_health.audit_coverage' <<<"$VBA")" "null"
+
+# ─ Aggregate across TWO projects: read/total SUM across the audits that reported ─
+TWOAC="$(jq -cn '{schema_version:1,principal:"PRINCIPAL_V1",read_only:true,
+  lifecycle_columns:{},waiting_on_you:[],machines:[],
+  projects:[
+    {project_ref:"pA",runner_state:{desired:"running",actual:"running",liveness:"live",last_heartbeat_at:(now|todateiso8601),current_task_ref:null,current_task_title:null,desired_actual_mismatch:false},
+     queue_health:{ready:1,held:{gate:0,dependency:0,scheduled:0},hidden_under_deferred_parent:0,net_velocity_7d:0,epics_with_zero_ready_children:[],audit_coverage:{read:3,total:5}},lease:null},
+    {project_ref:"pB",runner_state:{desired:"running",actual:"running",liveness:"live",last_heartbeat_at:(now|todateiso8601),current_task_ref:null,current_task_title:null,desired_actual_mismatch:false},
+     queue_health:{ready:2,held:{gate:0,dependency:0,scheduled:0},hidden_under_deferred_parent:0,net_velocity_7d:0,epics_with_zero_ready_children:[],audit_coverage:{read:4,total:4}},lease:null}
+  ]}')"
+VTA="$(render_snap "$TWOAC")"
+ck "audit_coverage: aggregate read sums (3+4=7)"                 eq "$(jq -r '.queue_health.audit_coverage.read' <<<"$VTA")" "7"
+ck "audit_coverage: aggregate total sums (5+4=9)"               eq "$(jq -r '.queue_health.audit_coverage.total' <<<"$VTA")" "9"
+ck "audit_coverage: aggregate 7/9 ⇒ coverage_complete false"    eq "$(jq -r '.queue_health.coverage_complete' <<<"$VTA")" "false"
+
 # ─ STRUCTURAL — app.js + index.html + css wire the §9 strip ─
 ck "index.html declares the #qh queue-health container"          has 'id="qh"' "$(cat "$SHELL_HTML")"
 ck "app.js exposes a renderQueueHealth() painter"                has "renderQueueHealth" "$(cat "$APP")"
@@ -685,9 +736,11 @@ ck "app.js paints the board-level view.queue_health"             has "view.queue
 ck "app.js renders the per-runner r.queue_health line"           has "r.queue_health" "$(cat "$APP")"
 ck "board.css declares the .qh strip container"                  has ".qh{" "$(cat "$CSS")"
 ck "board.css declares the runaway .qh-vel.alarm style"          has ".qh-vel.alarm" "$(cat "$CSS")"
+ck "app.js paints the audit-coverage row (t5ud §9 row 4)"        has "qh.audit_coverage" "$(cat "$APP")"
+ck "board.css declares the .qh-cov audit-coverage style"         has ".qh-cov" "$(cat "$CSS")"
 
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
-echo " test-board (T6a + F2 8fh + C4 zdxd.5 + Q1 uxvq1):  PASS=$PASS  FAIL=$FAIL"
+echo " test-board (T6a + F2 8fh + C4 zdxd.5 + Q1 uxvq1 + Q9-4 t5ud):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]

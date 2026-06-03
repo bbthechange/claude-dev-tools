@@ -77,6 +77,11 @@ export LOG_DIR="$WORK/.beads/runner-logs"
 export RUNNER_ID="wip-test-runner"
 export PROJECT_REF="wip-test-project"
 export BEADS_DAEMON_CACHE_DIR="$WORK/empty-daemon-cache"
+# claude-tools-t5ud (§9 row 4) — pin the audit-coverage marker path to a
+# non-existent file by default so earlier cases never read the developer's real
+# workspace marker (default `.beads/runner-logs/audit-coverage.json`); Case 12
+# plants its own dataset here.
+export LA_AUDIT_COVERAGE_FILE="$WORK/audit-coverage.json"
 mkdir -p "$LOG_DIR" "$BEADS_DAEMON_CACHE_DIR"
 # shellcheck source=/dev/null
 source "$LIB"
@@ -374,6 +379,38 @@ ck "queue_health.net_velocity_7d == 8 (created−closed/7d)" test "$(jq_field '.
 ck "epics_with_zero_ready_children flags ONLY E2"        test "$(jq_field '.queue_health.epics_with_zero_ready_children | join(",")')" = "E2"
 ck "queue_health counts are integers (never null/strings)" \
    test "$(jq_field '[.queue_health.ready, .queue_health.held.gate, .queue_health.held.dependency, .queue_health.held.scheduled, .queue_health.hidden_under_deferred_parent, .queue_health.net_velocity_7d] | map(type) | unique | join(",")')" = "number"
+
+# ── Case 12: audit_coverage from the marker file (claude-tools-t5ud, §9 row 4) ─
+# "Did the audit actually read everything?" — the runner reads an OPTIONAL
+# per-workspace marker the audit writes ({read,total}) and folds it into the
+# §9 queue_health block. Absent / malformed / total<=0 ⇒ the field is OMITTED
+# (the hosted normalize defaults it to null ⇒ the Board strip shows nothing).
+# Reuses Case 11's bd fixtures so the surrounding queue_health block stays real.
+echo "── Case 12: audit_coverage marker → queue_health.audit_coverage (t5ud §9 row 4) ──"
+# (a) no marker file ⇒ field omitted (the common case); queue_health still valid.
+: > "$OUTBOX"; rm -f "$LA_AUDIT_COVERAGE_FILE"
+la_publish_workspace_inventory
+ck "no marker ⇒ audit_coverage absent (null)"            test "$(jq_field '.queue_health.audit_coverage')" = "null"
+ck "no marker ⇒ queue_health block otherwise intact"     test "$(jq_field '.queue_health.ready')" = "1"
+# (b) valid marker ⇒ read/total surface verbatim.
+: > "$OUTBOX"; printf '{"read":8,"total":12}' > "$LA_AUDIT_COVERAGE_FILE"
+la_publish_workspace_inventory
+ck "valid marker ⇒ audit_coverage.read == 8"             test "$(jq_field '.queue_health.audit_coverage.read')" = "8"
+ck "valid marker ⇒ audit_coverage.total == 12"          test "$(jq_field '.queue_health.audit_coverage.total')" = "12"
+# (c) over-report (read>total) ⇒ read clamped to total.
+: > "$OUTBOX"; printf '{"read":20,"total":12}' > "$LA_AUDIT_COVERAGE_FILE"
+la_publish_workspace_inventory
+ck "over-report ⇒ read clamped to total (20/12 ⇒ 12)"    test "$(jq_field '.queue_health.audit_coverage.read')" = "12"
+# (d) total<=0 ⇒ meaningless ratio ⇒ omitted (no phantom 0/0).
+: > "$OUTBOX"; printf '{"read":0,"total":0}' > "$LA_AUDIT_COVERAGE_FILE"
+la_publish_workspace_inventory
+ck "total<=0 ⇒ audit_coverage omitted (null)"            test "$(jq_field '.queue_health.audit_coverage')" = "null"
+# (e) malformed marker ⇒ omitted, AND the record still writes (best-effort).
+: > "$OUTBOX"; printf 'not json at all' > "$LA_AUDIT_COVERAGE_FILE"
+la_publish_workspace_inventory
+ck "malformed marker ⇒ exactly one line still written"   test "$(wc -l < "$OUTBOX" | tr -d ' ')" = "1"
+ck "malformed marker ⇒ audit_coverage omitted (null)"    test "$(jq_field '.queue_health.audit_coverage')" = "null"
+rm -f "$LA_AUDIT_COVERAGE_FILE"
 
 echo ""
 echo "── Summary ──"
