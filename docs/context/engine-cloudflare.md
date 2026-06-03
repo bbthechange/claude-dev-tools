@@ -150,6 +150,12 @@ never committed.
   match). An unknown *higher* version is refused, never best-effort-parsed (§0.3).
 - **Capacity/machine-state absence degrades to a value, not an error** — an absent
   aggregation surfaces as `"unknown"` / `machines: []`, matching the bash oracle.
+- **cf vitest runs with a 30s `testTimeout`, not vitest's 5s default** (set in
+  `cf/vitest.config.js`, claude-tools-mqh4). These specs drive the real engine
+  through workerd+miniflare; the cold/loaded pool import can take tens of seconds
+  and the heavy specs need ~6.9s in-test, so 5s intermittently false-RED'd
+  CF.2/CF.6/CF.7 with "Test timed out in 5000ms" (environmental, not assertion).
+  Don't drop it back to the default.
 - **`projects[].queue_health` (§9 / B.1, Q1 claude-tools-uxvq1) is runner-sourced,
   read-back per project.** The runner computes the block (`la_publish_workspace_inventory`)
   and ships it ADDITIVELY in its §4.6 `workspace_inventory`; `workspaceInventoryPut`
