@@ -11,8 +11,8 @@ the gate policy, claim-eligibility / capacity / defer rules, or the intake prese
 catalog — anything under `beads-runner/agents/`.
 
 **Owns / scope (the files this doc covers):**
-- `agents/{ux,design,impl,docs,tests,reconciler,enricher}.system.md` — the seven
-  hat personas. Each is short (1 paragraph) and is the *only* thing that differs
+- `agents/{ux,design,impl,docs,tests,reconciler,enricher,xws-responder,blueprint-update}.system.md`
+  — the hat personas. Each is short and is the *only* thing that differs
   between hats; same shim, same lifecycle, same permission discipline.
 - `agents/dossier-builder.system.md` — the escalation-authoring agent (~28k).
   **Its prompt lives here; it is dispatched by the MCP server, not the runner.**
@@ -79,6 +79,7 @@ Three facts explain almost everything here:
 | `reconciler.system.md` | Reconciler hat: a Flow B dossier came back with freeform text/an edit; emit the `bd create/update/dep/label` calls that answer implies. **No code, no project tree** — bd is the only side effect. Conservative: file a follow-up dossier rather than guess. |
 | `enricher.system.md` | Enricher hat (Flow A intake): turn a phone-captured idea sentence into a structured bd task. **Dedup is the load-bearing job** — augment an existing bead before assuming new. Sets the entry stage from the tapped preset. Reads input JSON `{intake_id, idea_text, project_ref, preset, …}`. |
 | `dossier-builder.system.md` | The escalation author. Reads worker context-dump JSON on stdin, emits ONE dossier JSON on stdout (or `{"refuse":true,…}`). Server-validated minimums: ≥3 bespoke sections, ≥1 Mermaid diagram, ≥500-char `full_detail`, ≥1 item. Output contract is the first 60 lines — read it. |
+| `blueprint-update.system.md` | **Read-only Blueprint updater hat** (H5, claude-tools-uxvh5; DESIGN H `design/blueprint.md §7`). On a structural close it re-derives the workspace map (`derived` nodes/edges/apis, §3) from source+bd, diffs vs the current Blueprint, reattaches customization by **stable node id** (§4), and emits ONE stdout JSON `{material_change, derived, narrative, conflicts_append, focus_id, overview}` (or `{material_change:false}` / `{refuse:true}`). **Idempotent**: a cosmetic close that finds no structural delta no-ops (the real redraw gate). Tier = **read-only** (reconciler/enricher posture: NO_CODE_EDITS, bare Bash for read-only bd/git). It does **not** call the engine — the **daemon** transports the `blueprint-put` + emits the single `timed-fyi` (the dossier-builder author-on-stdout precedent). The change ping **is** the Flow F overview (§6.5 unify) — not a 2nd mechanism. |
 | `lifecycle.md` | L1: the closed stage spine `idea→ux→design→impl→docs→tests→done`, realized as `stage:<value>` bd labels via the one chokepoint `bd-stage.sh set`. |
 | `gate-policy.md` | L2: the constant `(stage,transition)→{auto-advance, gate-human}` table the runner consults via `gate-policy.sh decide <id>`. |
 | `claim-eligibility.md` | Empirical contract for `bd ready` ordering (priority-asc, deterministic, created-at-desc tiebreak) — what `next_task()` relies on. |

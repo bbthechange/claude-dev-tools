@@ -32,6 +32,21 @@
 #                     (M6 surface; the bd subprocess is the .beads writer).
 #   enricher        : reads + Bash for `bd`, no file writes outside .beads
 #                     (I3 surface).
+#   blueprint-update: reads + Bash for read-only `bd`/`git`, NO file writes
+#                     ANYWHERE (H5 surface, claude-tools-uxvh5; DESIGN H
+#                     design/blueprint.md §7 — the read-only Blueprint updater
+#                     hat). Same read-only-tree posture as reconciler/enricher
+#                     (must-protect #11, aux read-only BY CONSTRUCTION). It does
+#                     NOT call the engine itself — it emits its regenerated
+#                     {derived,narrative,conflicts[],overview} on STDOUT and the
+#                     daemon that spawned it transports the blueprint-put +
+#                     timed-fyi (the dossier-builder precedent: the hat authors,
+#                     the daemon is the engine writer). So it needs no curl/token
+#                     and physically cannot mutate the tree OR the engine — a
+#                     strictly tighter posture than §2.4's "engine-POST is a
+#                     legitimate aux action" allows (chosen for must-protect #11
+#                     + keeping the bearer out of agent context; reversible —
+#                     the seam is the daemon's, not the hat's).
 #   xws-responder   : reads + Bash for `bd`, no file writes outside .beads
 #                     (K1 surface, claude-tools-uxvk1; the read-only cross-WS
 #                     responder — same NO_CODE_EDITS posture as reconciler/
@@ -74,7 +89,7 @@ Usage:
 Required:
   --kind KIND          one of: ux | design | impl | docs | tests
                                 | reconciler | enricher | dossier-builder
-                                | xws-responder
+                                | xws-responder | blueprint-update
   --workspace PATH     the workspace the hat runs inside (cwd + --add-dir)
 
 Optional:
@@ -109,8 +124,8 @@ done
 [[ -d "$WORKSPACE" ]] || { echo "specialist.sh: reject — --workspace '$WORKSPACE' is not a directory" >&2; exit 2; }
 
 case "$KIND" in
-  ux|design|impl|docs|tests|reconciler|enricher|dossier-builder|xws-responder) : ;;
-  *) echo "specialist.sh: reject — --kind '$KIND' not in the closed enum (ux|design|impl|docs|tests|reconciler|enricher|dossier-builder|xws-responder)" >&2; exit 2 ;;
+  ux|design|impl|docs|tests|reconciler|enricher|dossier-builder|xws-responder|blueprint-update) : ;;
+  *) echo "specialist.sh: reject — --kind '$KIND' not in the closed enum (ux|design|impl|docs|tests|reconciler|enricher|dossier-builder|xws-responder|blueprint-update)" >&2; exit 2 ;;
 esac
 
 SYS_PROMPT_FILE="$SCRIPT_DIR/$KIND.system.md"
@@ -208,13 +223,21 @@ case "$KIND" in
     DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}")
     PERMISSION_MODE=(--permission-mode default)
     ;;
-  reconciler|enricher)
+  reconciler|enricher|blueprint-update)
     # M6/I3: bd subprocess via Bash + read-only git status/log/diff allowed;
     # NO file writes outside .beads (the bd CLI writes to .beads on its own).
     # Disallowed list explicitly covers Write/Edit/MultiEdit/NotebookEdit AND
     # BashWriteEdits — the M6 spec is precise about this so the bd-surgery
     # agent physically cannot edit code or commit (AD8 read-only-outside-
     # .beads/ contract).
+    #
+    # blueprint-update (H5, claude-tools-uxvh5) rides the IDENTICAL read-only
+    # posture: it reads the tree + read-only bd/git and emits its regenerated
+    # Blueprint (derived/narrative/conflicts) + overview on stdout; the daemon
+    # is the engine writer (blueprint-put + timed-fyi). It uses bd READ-only
+    # (no .beads writes), so the same COMMON_ALLOWED + full NO_CODE_EDITS set
+    # disallowed gives it exactly the capabilities its prompt needs and nothing
+    # more (must-protect #11 — aux read-only by construction).
     ALLOWED=("${COMMON_ALLOWED[@]}")
     DISALLOWED=("${GUARDRAIL[@]}" "${NO_CODE_EDITS[@]}")
     PERMISSION_MODE=(--permission-mode default)

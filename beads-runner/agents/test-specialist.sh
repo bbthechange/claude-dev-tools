@@ -63,7 +63,7 @@ mkdir -p "$WS/.beads"
 # test so a missing-prompt environment (e.g. before S2 lands) still passes.
 PROMPT_BACKUP="$WORK/prompts-backup"
 mkdir -p "$PROMPT_BACKUP"
-for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder; do
+for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder blueprint-update; do
   pf="$SCRIPT_DIR/$k.system.md"
   if [[ -f "$pf" ]]; then
     cp "$pf" "$PROMPT_BACKUP/$k.system.md"
@@ -71,7 +71,7 @@ for k in ux design impl docs tests reconciler enricher dossier-builder xws-respo
   printf 'SHIM PLACEHOLDER for %s — test fixture (claude-tools-bk6)\n' "$k" > "$pf"
 done
 restore_prompts() {
-  for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder; do
+  for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder blueprint-update; do
     pf="$SCRIPT_DIR/$k.system.md"
     bf="$PROMPT_BACKUP/$k.system.md"
     if [[ -f "$bf" ]]; then mv "$bf" "$pf"; else rm -f "$pf"; fi
@@ -126,7 +126,7 @@ run() {
     || fail "$kind: §7.6 guardrail not at start of --disallowedTools"
   pass "$kind: dispatched, flags wired, output extracted"
 }
-for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder; do
+for k in ux design impl docs tests reconciler enricher dossier-builder xws-responder blueprint-update; do
   run "$k"
 done
 
@@ -193,6 +193,38 @@ grep -q -- "--allowedTools .* Bash(bd:\\*)" <<<"$ENR" \
 grep -q -- "--allowedTools .* Bash(git:\\*)" <<<"$ENR" \
   && pass "enricher: --allowedTools includes Bash(git:*) (read-only git for dedup pass)" \
   || fail "enricher: --allowedTools missing Bash(git:*)"
+
+# ── H5 (claude-tools-uxvh5) — the read-only Blueprint updater hat ─────────────
+# The bead's testing invariant (s6/s4): the dispatched aux carries the
+# read-only hat (no Write/Edit/mutating-Bash) — "assert the capability SET, not
+# intent." blueprint-update is must-protect #11 (aux read-only BY
+# CONSTRUCTION): it reads the tree + read-only bd/git and emits its regenerated
+# Blueprint on stdout; the daemon is the engine writer (so no curl/token in the
+# hat, and physically no tree mutation). EXACTLY the reconciler/enricher
+# posture: full NO_CODE_EDITS set disallowed, bare Bash kept (read-only bd/git),
+# --permission-mode default, Bash(bd:*) on the allowlist.
+BPU=$(stream_for blueprint-update)
+if grep -q -- "--disallowedTools .* Write Edit MultiEdit NotebookEdit BashWriteEdits" <<<"$BPU" \
+   && ! grep -qE -- "--disallowedTools .* Bash([[:space:]]|$)" <<<"$BPU"; then
+  pass "blueprint-update: Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits REFUSED, bare Bash kept (read-only by construction — must-protect #11)"
+else
+  fail "blueprint-update: expected Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits forbidden AND bare Bash kept"
+fi
+grep -q -- "--permission-mode default" <<<"$BPU" \
+  && pass "blueprint-update: --permission-mode default (no auto-accept of edits)" \
+  || fail "blueprint-update: expected --permission-mode default"
+grep -q -- "--allowedTools .* Bash(bd:\\*)" <<<"$BPU" \
+  && pass "blueprint-update: --allowedTools includes Bash(bd:*) (read-only bd for Step 1)" \
+  || fail "blueprint-update: --allowedTools missing Bash(bd:*)"
+# "Not merely unused": Write is actively DISALLOWED (asserted above) AND it is
+# not quietly in the allowlist either. Isolate the allow segment so the greedy
+# match can't reach the Write token that lives in the --disallowedTools segment.
+BPU_ALLOW_SEG=$(grep -oE -- "--allowedTools .*--permission-mode" <<<"$BPU" | head -1)
+if grep -qE -- "(^| )Write( |$)" <<<"$BPU_ALLOW_SEG"; then
+  fail "blueprint-update: Write must NOT be on --allowedTools (read-only hat)"
+else
+  pass "blueprint-update: Write absent from --allowedTools (read-only hat — refused, not merely unused)"
+fi
 
 # ── K1 (claude-tools-uxvk1) — the cross-WS read-only responder lockdown ──────
 # The bead's testing invariant (s6/s4): "responder capability lockdown:

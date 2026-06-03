@@ -503,3 +503,324 @@ daemon_flow_f_poll_once() {
   fi
   return 0
 }
+
+# ════════════════════════════════════════════════════════════════════════════
+# H5 (claude-tools-uxvh5) — the blueprint-update trigger path
+# (DESIGN H, design/blueprint.md §7). This is the NEW path §7.3 says H5 "wires
+# into that same poll" — it SHARES the Flow-F stage-completion signal (a
+# structural bd close) rather than adding a second watcher, which is exactly
+# why the Blueprint-changed ping UNIFIES with the Flow F overview (§6.5/§7.4):
+# both are the SAME kind=overview tier=timed-fyi notification.
+#
+# WHAT H5 OWNS here (§7.2 split): the structure-change TRIGGER PREDICATE
+# (stage-coarse), the hat I/O contract, and the change→ONE-timed-fyi SEMANTICS
+# (the §7.4 unification). The PARALLEL/detached/capacity-gated SPAWN + per-bead
+# dedup scheduling is I5's (claude-tools-uxvi5, deferred) — it wraps the
+# SYNCHRONOUS unit `daemon_blueprint_update_dispatch_one` below in the
+# m6-dispatch nohup/disown + aux-dispatch-gate machinery. Until I5, the hat is
+# runnable synchronously (the design's "runnable synchronously pre-I5"), and
+# `daemon_blueprint_update_dispatch_one` is canary-disabled by default
+# (DAEMON_BLUEPRINT_UPDATE_DISABLED=1) so nothing fires in prod until I5 turns
+# it on. None of these functions are called from daemon.sh's main loop yet —
+# defining them is "adds the path"; I5 makes it live + parallel.
+# ════════════════════════════════════════════════════════════════════════════
+
+# The structural stage set (§6.2/§7.3): a close carrying any of these labels is
+# a CANDIDATE for a Blueprint redraw. Deliberately GENEROUS — the hat's own
+# idempotent regen (Step 3.4) is the real gate that suppresses a cosmetic close.
+# Space-separated, env-overridable (a project may extend it without forking).
+DAEMON_BLUEPRINT_STRUCTURAL_STAGES="${DAEMON_BLUEPRINT_STRUCTURAL_STAGES:-stage:design stage:impl stage:docs}"
+
+# Canary: 1 (default) ⇒ dispatch_one logs "would dispatch" and does NOT spawn a
+# real hat (I5 flips this to 0 when it wires the parallel poll). A test/override
+# spawner (DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE) takes precedence — the override
+# IS the dispatch path (mirrors DAEMON_FLOW_F_BUILDER_OVERRIDE > _DISABLED).
+DAEMON_BLUEPRINT_UPDATE_DISABLED="${DAEMON_BLUEPRINT_UPDATE_DISABLED:-1}"
+
+# Test overrides (parallel to the Flow-F override hooks):
+#   _HAT_OVERRIDE     — replaces specialist.sh for the --kind=blueprint-update spawn
+#   _GET_OVERRIDE     — replaces the current-blueprint fetch; echoes the current
+#                       blueprint JSON on stdout (or empty / "null" for none)
+#   _BP_WRITE_OVERRIDE— replaces the blueprint-put transport; called as
+#                       "<override> <ws> <payload.json>" (payload = the hat's
+#                       {derived,narrative,conflicts_append}); rc 0 ⇒ written
+# The timed-fyi EMIT reuses _daemon_flow_f_engine_write (the literal §7.4
+# unification — same machinery), so DAEMON_FLOW_F_ENGINE_OVERRIDE governs it too.
+DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE="${DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE:-}"
+DAEMON_BLUEPRINT_UPDATE_GET_OVERRIDE="${DAEMON_BLUEPRINT_UPDATE_GET_OVERRIDE:-}"
+DAEMON_BLUEPRINT_UPDATE_BP_WRITE_OVERRIDE="${DAEMON_BLUEPRINT_UPDATE_BP_WRITE_OVERRIDE:-}"
+
+# daemon_blueprint_update_should_trigger <stage_label>
+#   THE structure-change coarse predicate (§7.3). True (0) iff <stage_label> is
+#   in the structural set; false (1) otherwise — a trivial close (stage:idea,
+#   stage:ux, stage:tests, no stage at all) does NOT trigger a redraw. Accepts
+#   either the bare value ("impl") or the full label ("stage:impl"). This is the
+#   ONE-label check the bead's testing note says to "drive directly."
+daemon_blueprint_update_should_trigger() {
+  local stage="${1:-}"
+  [[ -n "$stage" ]] || return 1
+  # normalise: accept "impl" as "stage:impl"
+  case "$stage" in stage:*) : ;; *) stage="stage:$stage" ;; esac
+  local s
+  for s in $DAEMON_BLUEPRINT_STRUCTURAL_STAGES; do
+    [[ "$stage" == "$s" ]] && return 0
+  done
+  return 1
+}
+
+# daemon_blueprint_update__list_structural_closes <workspace>
+#   List bd IDs at <workspace> that are CLOSED and carry ANY structural stage
+#   label, one per line, de-duplicated (a bead with two stage labels is illegal
+#   per the one-stage spine, but we uniq defensively). Subshell-isolated so a
+#   workspace's local .beads env never leaks back. Mirrors
+#   daemon_flow_f__list_closed_at_stage, unioned over the structural set.
+daemon_blueprint_update__list_structural_closes() {
+  local ws="${1:-}"
+  [[ -n "$ws" && -d "$ws" ]] || return 0
+  (
+    cd "$ws" 2>/dev/null || exit 0
+    local s
+    for s in $DAEMON_BLUEPRINT_STRUCTURAL_STAGES; do
+      bd list --label "$s" --status closed --all --flat --no-pager --json 2>/dev/null \
+        | jq -r 'if type=="array" then .[] | .id else empty end' 2>/dev/null
+    done
+  ) | awk 'NF && !seen[$0]++'
+}
+
+# daemon_blueprint_update__build_hat_input <project_ref> <bead_ref> <trigger_stage> <current_blueprint_json>
+#   Build the blueprint-update hat's stdin JSON (the §7.1 input contract). The
+#   current Blueprint is passed IN (so the hat diffs in-memory and needs no
+#   engine read of its own — keeping the bearer out of agent context). A
+#   missing/empty current_blueprint becomes JSON null (the first-creation case).
+daemon_blueprint_update__build_hat_input() {
+  local pref="${1:-}" bref="${2:-}" stage="${3:-}" cur="${4:-}"
+  [[ -n "$cur" ]] || cur="null"
+  # Guard: if cur is not valid JSON, fall back to null rather than emit a broken
+  # context object (the hat treats null as "first creation").
+  printf '%s' "$cur" | jq -e . >/dev/null 2>&1 || cur="null"
+  jq -cn \
+    --arg pr "$pref" \
+    --arg b  "$bref" \
+    --arg st "$stage" \
+    --argjson cb "$cur" \
+    '{project_ref:$pr, bead_ref:$b, trigger_stage:$st, current_blueprint:$cb}'
+}
+
+# daemon_blueprint_update__shape_timed_fyi <dossier_id> <bead_ref> <hat_stdout_json>
+#   THE §7.4 unification, made concrete: shape the hat's material-change
+#   `overview` (+ focus_id + summary) into the SAME §4.1 generation_input the
+#   Flow-F overview uses — kind=overview, tier=timed-fyi, trigger=stage_gate —
+#   so the Blueprint-changed ping IS the Flow F overview dossier, NOT a second
+#   notification mechanism (§6.5). `focus_id` is threaded into the source so the
+#   FYI deep-links `?focus=<id>` into the Blueprint (§8.4). items[] is empty (a
+#   pure FYI; silence auto-proceeds in 24h). authored_by=agent +
+#   authored_by_reason=blueprint_update_overview so dg__author treats it as the
+#   already-authored body (the claude-tools-69u8 no-fallback-badge fix), with the
+#   reason naming THIS producer in the audit log. Echoes "" if the hat output is
+#   not a material change (caller must not emit an FYI then).
+daemon_blueprint_update__shape_timed_fyi() {
+  local did="${1:-}" bref="${2:-}" out="${3:-}"
+  printf '%s' "$out" | jq -c \
+    --arg did "$did" \
+    --arg b   "$bref" '
+      if (type=="object" and (.material_change==true)) then
+        (.overview // {}) as $ov
+      | { id: $did,
+          kind: "overview",
+          trigger: "stage_gate",
+          bead_ref: $b,
+          tier: "timed-fyi",
+          timer_fire_at: null,
+          source: {
+            tldr:        ($ov.tldr // (.summary // "")),
+            sections:    ($ov.sections // []),
+            diagrams:    ($ov.diagrams // []),
+            full_detail: ($ov.full_detail // ""),
+            focus_id:    (.focus_id // ""),
+            authored_by:        "agent",
+            authored_by_reason: "blueprint_update_overview"
+          },
+          items: [] }
+      else empty end
+  ' 2>/dev/null
+}
+
+# _daemon_blueprint_update_write_blueprint <ws> <pref> <curl> <tk_item> <payload_json>
+#   Transport the hat's regenerated Blueprint into the engine via blueprint-put
+#   (§2.2 sectioned read-merge-write): one put for `derived`, one for `narrative`,
+#   and a `conflicts-append` per entry — all stamped updated_by="agent:blueprint-
+#   update" (so the never-clobber owner split holds, §2.3). <payload_json> is the
+#   hat's {derived, narrative, conflicts_append}. Subshell-isolated; sources the
+#   coordinator + HTTP transport (the same per-workspace env wiring
+#   _daemon_flow_f_engine_write uses). The _BP_WRITE_OVERRIDE hook short-circuits
+#   this for tests. Returns 0 iff every put landed.
+_daemon_blueprint_update_write_blueprint() {
+  local ws="$1" pref="$2" curl="$3" tk_item="$4" payload="$5"
+  if [[ -n "$DAEMON_BLUEPRINT_UPDATE_BP_WRITE_OVERRIDE" && -x "$DAEMON_BLUEPRINT_UPDATE_BP_WRITE_OVERRIDE" ]]; then
+    local tmp; tmp="$(mktemp 2>/dev/null)" || return 1
+    printf '%s' "$payload" > "$tmp" 2>/dev/null
+    "$DAEMON_BLUEPRINT_UPDATE_BP_WRITE_OVERRIDE" "$ws" "$tmp"
+    local rc=$?; rm -f "$tmp" 2>/dev/null; return "$rc"
+  fi
+  (
+    set +e
+    cd "$ws" 2>/dev/null || exit 1
+    export PROJECT_REF="$pref"
+    : "${CO_STORE:=$ws/.beads/runner-logs/.co-store}"; export CO_STORE
+    if [[ -n "$curl" ]]; then export COORDINATOR_URL="$curl"; fi
+    if [[ -n "$tk_item" ]] && command -v security >/dev/null 2>&1; then
+      local _tk; _tk="$(security find-generic-password -s "$tk_item" -w 2>/dev/null || true)"
+      [[ -n "$_tk" ]] && export COORDINATOR_TOKEN="$_tk"
+    fi
+    # shellcheck source=/dev/null
+    . "$DAEMON_REPO_LIB_DIR/coordinator.sh"        2>/dev/null || exit 1
+    # shellcheck source=/dev/null
+    . "$DAEMON_REPO_LIB_DIR/co-http-transport.sh"  2>/dev/null || true
+    command -v co_request >/dev/null 2>&1 || exit 1
+    local bearer; bearer="${COORDINATOR_TOKEN:-bearer-daemon-blueprint-update}"
+    local derived narrative env
+    derived="$(printf '%s' "$payload"   | jq -c '.derived   // empty' 2>/dev/null)"
+    narrative="$(printf '%s' "$payload" | jq -c '.narrative // empty' 2>/dev/null)"
+    # derived is mandatory for a material write; narrative + conflicts optional.
+    [[ -n "$derived" ]] || exit 2
+    env="$(jq -cn --arg pr "$pref" --argjson body "$derived" \
+            '{project_ref:$pr, section:"derived", body:$body, updated_by:"agent:blueprint-update"}')" || exit 2
+    co_request "$bearer" blueprint-put "$env" >/dev/null 2>&1 || exit 3
+    if [[ -n "$narrative" ]]; then
+      env="$(jq -cn --arg pr "$pref" --argjson body "$narrative" \
+              '{project_ref:$pr, section:"narrative", body:$body, updated_by:"agent:blueprint-update"}')" || exit 2
+      co_request "$bearer" blueprint-put "$env" >/dev/null 2>&1 || exit 3
+    fi
+    # conflicts-append: one put per entry (the §2.3 push-don't-replace mode).
+    local n j entry
+    n="$(printf '%s' "$payload" | jq -r '(.conflicts_append // []) | length' 2>/dev/null)" || n=0
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    j=0
+    while [[ "$j" -lt "$n" ]]; do
+      entry="$(printf '%s' "$payload" | jq -c ".conflicts_append[$j]" 2>/dev/null)"
+      if [[ -n "$entry" && "$entry" != "null" ]]; then
+        env="$(jq -cn --arg pr "$pref" --argjson body "$entry" \
+                '{project_ref:$pr, section:"conflicts-append", body:$body, updated_by:"agent:blueprint-update"}')" || exit 2
+        co_request "$bearer" blueprint-put "$env" >/dev/null 2>&1 || exit 3
+      fi
+      j=$((j + 1))
+    done
+    exit 0
+  )
+}
+
+# daemon_blueprint_update_dispatch_one <ws> <pref> <curl> <tk_item> <bead_ref> <trigger_stage>
+#   The SYNCHRONOUS H5 orchestration unit (I5 wraps it in the parallel/capacity-
+#   gated scheduler). Assumes the caller already passed the §7.3 coarse predicate
+#   (daemon_blueprint_update_should_trigger). It:
+#     1. fetches the current Blueprint (blueprint-get; override-able),
+#     2. spawns the read-only blueprint-update hat with {project_ref, bead_ref,
+#        trigger_stage, current_blueprint},
+#     3. parses the hat's single stdout JSON,
+#     4. material_change=false / refuse ⇒ writes NOTHING, emits NO FYI (the
+#        idempotent gate — a cosmetic close no-ops),
+#     5. material_change=true ⇒ blueprint-put(derived/narrative/conflicts) THEN
+#        emits exactly ONE timed-fyi overview (the §7.4 unification, via the
+#        shared _daemon_flow_f_engine_write).
+#   Reports a one-word OUTCOME via the GLOBAL `DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME`
+#   (no-change|refused|dispatched|disabled|spawn-failed|parse-failed|
+#   write-failed|fyi-failed) for the caller / test — NOT stdout, because the
+#   daemon `log` helper writes to stdout and would otherwise pollute a captured
+#   outcome. ALWAYS returns 0 (a per-bead failure must never abort a loop).
+DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME=""
+daemon_blueprint_update_dispatch_one() {
+  local ws="${1:-}" pref="${2:-}" curl="${3:-}" tk_item="${4:-}" bref="${5:-}" stage="${6:-}"
+  DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME=""
+  [[ -n "$bref" && -n "$ws" && -d "$ws" ]] || { DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='spawn-failed'; return 0; }
+
+  local did; did="overview-$(daemon_flow_f__safe_key "$bref")"
+
+  declare -F log >/dev/null 2>&1 && \
+    log "blueprint-update dispatch: workspace=$ws bead_ref=$bref trigger=$stage dossier_id=$did"
+
+  # ── resolve the spawner: override > canary-disabled > real specialist.sh ────
+  local spawner=()
+  if [[ -n "$DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE" ]]; then
+    [[ -x "$DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE" ]] || { DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='spawn-failed'; return 0; }
+    spawner=("$DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE")
+  elif [[ "$DAEMON_BLUEPRINT_UPDATE_DISABLED" == "1" ]]; then
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update dispatch: DAEMON_BLUEPRINT_UPDATE_DISABLED=1 ⇒ would invoke $DAEMON_SPECIALIST_SH --kind=blueprint-update --workspace=$ws (bead_ref=$bref); I5 turns this live + parallel"
+    DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='disabled'; return 0
+  else
+    [[ -x "$DAEMON_SPECIALIST_SH" ]] || { DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='spawn-failed'; return 0; }
+    spawner=("$DAEMON_SPECIALIST_SH")
+  fi
+
+  # ── 1. fetch the current Blueprint ─────────────────────────────────────────
+  local cur=""
+  if [[ -n "$DAEMON_BLUEPRINT_UPDATE_GET_OVERRIDE" && -x "$DAEMON_BLUEPRINT_UPDATE_GET_OVERRIDE" ]]; then
+    cur="$("$DAEMON_BLUEPRINT_UPDATE_GET_OVERRIDE" "$ws" "$pref" 2>/dev/null)"
+  else
+    cur="$(
+      set +e
+      cd "$ws" 2>/dev/null || exit 0
+      export PROJECT_REF="$pref"
+      : "${CO_STORE:=$ws/.beads/runner-logs/.co-store}"; export CO_STORE
+      [[ -n "$curl" ]] && export COORDINATOR_URL="$curl"
+      if [[ -n "$tk_item" ]] && command -v security >/dev/null 2>&1; then
+        _tk="$(security find-generic-password -s "$tk_item" -w 2>/dev/null || true)"
+        [[ -n "$_tk" ]] && export COORDINATOR_TOKEN="$_tk"
+      fi
+      # shellcheck source=/dev/null
+      . "$DAEMON_REPO_LIB_DIR/coordinator.sh"       2>/dev/null || exit 0
+      # shellcheck source=/dev/null
+      . "$DAEMON_REPO_LIB_DIR/co-http-transport.sh" 2>/dev/null || true
+      command -v co_request >/dev/null 2>&1 || exit 0
+      co_request "${COORDINATOR_TOKEN:-bearer-daemon-blueprint-update}" blueprint-get "$pref" 2>/dev/null
+    )"
+  fi
+
+  # ── 2. spawn the hat ───────────────────────────────────────────────────────
+  local ctx_file hat_out rc
+  ctx_file="$(mktemp 2>/dev/null)" || { DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='spawn-failed'; return 0; }
+  daemon_blueprint_update__build_hat_input "$pref" "$bref" "$stage" "$cur" > "$ctx_file" 2>/dev/null
+  hat_out="$("${spawner[@]}" --kind=blueprint-update --workspace="$ws" --context-file="$ctx_file" 2>/dev/null)"
+  rc=$?
+  rm -f "$ctx_file" 2>/dev/null
+  if [[ "$rc" -ne 0 ]]; then
+    declare -F log >/dev/null 2>&1 && log "blueprint-update dispatch: hat exit=$rc bead_ref=$bref (no write, no FYI)"
+    DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='spawn-failed'; return 0
+  fi
+
+  # ── 3. parse the single stdout JSON ────────────────────────────────────────
+  local parsed material refuse
+  parsed="$(printf '%s' "$hat_out" | jq -c 'if type=="object" then . else empty end' 2>/dev/null)"
+  if [[ -z "$parsed" ]]; then DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='parse-failed'; return 0; fi
+  refuse="$(printf '%s' "$parsed" | jq -r '.refuse // false' 2>/dev/null)"
+  material="$(printf '%s' "$parsed" | jq -r '.material_change // false' 2>/dev/null)"
+
+  # ── 4. idempotent gate: no material change (or honest refuse) ⇒ no-op ───────
+  if [[ "$material" != "true" || "$refuse" == "true" ]]; then
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update dispatch: no material change for bead_ref=$bref (idempotent no-op — no write, no FYI)"
+    [[ "$refuse" == "true" ]] && { DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='refused'; return 0; }
+    DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='no-change'; return 0
+  fi
+
+  # ── 5a. write the regenerated Blueprint (derived/narrative/conflicts) ───────
+  if ! _daemon_blueprint_update_write_blueprint "$ws" "$pref" "$curl" "$tk_item" "$parsed"; then
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update dispatch: blueprint-put FAILED bead_ref=$bref (NO FYI emitted — the map write is the precondition for the ping)"
+    DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='write-failed'; return 0
+  fi
+
+  # ── 5b. emit exactly ONE timed-fyi overview (the §7.4 unification) ──────────
+  local gi written
+  gi="$(daemon_blueprint_update__shape_timed_fyi "$did" "$bref" "$parsed")"
+  if [[ -z "$gi" ]]; then DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='fyi-failed'; return 0; fi
+  written="$(_daemon_flow_f_engine_write "$ws" "$pref" "$curl" "$tk_item" "$gi" 2>/dev/null)"
+  if [[ -z "$written" ]]; then
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update dispatch: timed-fyi emit returned no id bead_ref=$bref (map written; FYI retried by I5 next poll)"
+    DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='fyi-failed'; return 0
+  fi
+  declare -F log >/dev/null 2>&1 && \
+    log "blueprint-update dispatch: OK — bead_ref=$bref dossier_id=$written tier=timed-fyi (Blueprint redrawn; ONE overview ping = the Flow F overview, §6.5)"
+  DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='dispatched'; return 0
+}
