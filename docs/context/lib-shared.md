@@ -169,6 +169,14 @@ the oracle/conformance runs deterministic and offline. The live-Worker probe
   conformance `harness.sh` + `test-dossier-gen.sh` now pin `DG_AUDIT_LOG` to a
   scratch path. Any NEW test that drives `dg__author` must set `DG_AUDIT_LOG`
   (run-tests.sh covers it when run via the gate).
+- **A new CF data-returning op MUST be added to `co_http__op_is_data`** (the
+  DATA-200 allowlist in `co-http-transport.sh`) or its 200 JSON body is SUPPRESSED
+  to empty stdout over the HTTP transport (it falls to the ACK-200 arm: rc 0 but
+  nothing to read). Recurring footgun — bit `intake-pending` (I3),
+  `agent-action-pending` (I4), and `relay-log-tail`/`notif-digest` (K2/K3,
+  claude-tools-u1pt). Offline tests pass (they use the in-process oracle, not this
+  transport); only live-verify / a local-engine clause catches it. Write-side ops
+  (e.g. `relay-log-append`) correctly stay ACK.
 - **Loop-hygiene libs guard recurring footguns:** the runner never branches, so
   `git-pin-main.sh` re-pins HEAD to trunk each iteration; a daemon-stripped PATH
   resolves `claude` to Node v25 which crashes it (`node25-prime.sh`); SIGKILL'd
@@ -190,4 +198,4 @@ When you finish a task in this area, append anything a future agent will need an
 didn't find here: a renamed/moved lib, a new env override, a fresh oracle clause,
 a new MUST-NOT boundary, a scar. **Keep it concise — this doc earns its keep only
 if agents read all of it.** Delete stale lines; never let it grow into a copy of
-INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-02 (J1 gate-meta-set/-get added to the oracle — claude-tools-pkgt).
+INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-03 (co_http__op_is_data DATA-200 allowlist scar + relay-log-tail/notif-digest passthrough — claude-tools-u1pt).

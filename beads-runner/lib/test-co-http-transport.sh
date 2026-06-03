@@ -307,6 +307,22 @@ else
       co_request x report-capacity "$capj" >/dev/null 2>&1; echo "C_REP rc=$?"
       av="$(co_request x ask-capacity standard 2>/dev/null)"; echo "C_ASK rc=$? tok=$av"
       co_request x report-capacity '{"report":"capacity","schema_version":99}' >/dev/null 2>&1; echo "C_REJ rc=$?"
+
+      # K2/K3 (claude-tools-u1pt) DATA-200 passthrough over the transport: both
+      # relay-log-tail ({exchanges:[…]}) and notif-digest ({digests:[…]}) are
+      # JSON-200 pure reads. They were NOT in co_http__op_is_data, so they hit the
+      # ACK-200 arm and SUPPRESSED their body to empty stdout (rc 0 but nothing to
+      # read) — the cmd_relay_log_tail-returns-empty bug. Seed one relay row, tail
+      # it: the body MUST reach stdout verbatim (the in-process bare-stdout
+      # contract), with the seeded exchange present and rc 0 (no rc-precedence
+      # change — pure read ⇒ 0 on 200). relay-log-append stays an ACK op (rc 0,
+      # body suppressed) — only the read side is DATA.
+      rex='{"exchange_id":"ctRELAY1","outcome":"resolved","from_ws":"wsa","project_ref":"wsa","to_ws":"wsb","question":"q?","answer":"a."}'
+      co_request x relay-log-append "$rex" >/dev/null 2>&1; echo "R_APP rc=$?"
+      rt="$(co_request x relay-log-tail wsa 2>/dev/null)"; rtrc=$?
+      echo "R_TAIL rc=$rtrc ne=$([[ -n "$rt" ]] && echo yes || echo no) has=$(printf '%s' "$rt" | jq -e '(.exchanges|map(.id)|index("ctRELAY1"))!=null' >/dev/null 2>&1 && echo yes || echo no)"
+      nd="$(co_request x notif-digest 2>/dev/null)"; ndrc=$?
+      echo "N_DIG rc=$ndrc ne=$([[ -n "$nd" ]] && echo yes || echo no) isarr=$(printf '%s' "$nd" | jq -e '(.digests|type)=="array"' >/dev/null 2>&1 && echo yes || echo no)"
       rm -rf "$W"
     ) > "$STATE_DIR/ops.txt" 2>/dev/null
     O="$STATE_DIR/ops.txt"
@@ -322,6 +338,21 @@ else
     eq "$(grep -o 'C_ASK rc=[0-9]* tok=[a-z]*' "$O" | grep -o 'tok=[a-z]*' | cut -d= -f2)" "over" \
        "ask-capacity body passes through verbatim ('over' on stdout, bash-identical)"
     eq "$(og 'C_REJ rc')"   "3"   "report-capacity reject (bad schema_version) ⇒ rc 3 (bash co__capacity_report precedence ≡)"
+
+    # K2/K3 (claude-tools-u1pt): the DATA-200 passthrough fix. Before the fix
+    # both ops fell to the ACK-200 arm ⇒ rc 0 but EMPTY stdout (the suppressed
+    # body the engine-bridge cmd_relay_log_tail surfaced as empty).
+    eq "$(og 'R_APP rc')"  "0"   "relay-log-append over HTTP ⇒ rc 0 (ack suppressed — write side stays ACK)"
+    eq "$(og 'R_TAIL rc')" "0"   "relay-log-tail over HTTP ⇒ rc 0 (pure read, no rc-precedence change)"
+    eq "$(grep -o 'R_TAIL rc=[0-9]* ne=[a-z]*' "$O" | grep -o 'ne=[a-z]*' | cut -d= -f2)" "yes" \
+       "relay-log-tail 200 body is NOT suppressed — {exchanges:[…]} reaches stdout (the cmd_relay_log_tail-empty bug CLOSED)"
+    eq "$(grep -o 'R_TAIL rc=[0-9]* ne=[a-z]* has=[a-z]*' "$O" | grep -o 'has=[a-z]*' | cut -d= -f2)" "yes" \
+       "relay-log-tail body passes through VERBATIM — the seeded exchange (ctRELAY1) is present in .exchanges"
+    eq "$(og 'N_DIG rc')"  "0"   "notif-digest over HTTP ⇒ rc 0 (pure read, no rc-precedence change)"
+    eq "$(grep -o 'N_DIG rc=[0-9]* ne=[a-z]*' "$O" | grep -o 'ne=[a-z]*' | cut -d= -f2)" "yes" \
+       "notif-digest 200 body is NOT suppressed — {digests:[…]} reaches stdout (was empty under the ACK-200 arm)"
+    eq "$(grep -o 'N_DIG rc=[0-9]* ne=[a-z]* isarr=[a-z]*' "$O" | grep -o 'isarr=[a-z]*' | cut -d= -f2)" "yes" \
+       "notif-digest body passes through VERBATIM — .digests is the K3 array projection"
   fi
 fi
 
@@ -440,6 +471,40 @@ else
     bad "LIVE notif-digest entry shape ($(printf '%s' "$dbody" | head -c 160))"
   fi
 fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART E — OFFLINE unit of the co_http__op_is_data DATA-200 allowlist
+#          (claude-tools-u1pt). No network, no engine, no token — runs ALWAYS,
+#          so the K2/K3 passthrough fix is regression-guarded even on a checkout
+#          where wrangler is absent and PART B SKIPs. Sources the transport with
+#          a dummy COORDINATOR_URL (the activation gate) purely to define the
+#          predicate; nothing here issues HTTP.
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART E — OFFLINE co_http__op_is_data DATA-200 allowlist (no network) ──"
+PARTE_OUT="$(mktemp)"   # PART E owns its file — STATE_DIR may be unset (PART B SKIP)
+(
+  set +u
+  export COORDINATOR_URL="https://unit.invalid"   # gate only — no request is made
+  source "$HERE/co-http-transport.sh"
+  # The two ops this bead adds: their JSON-200 body MUST pass through (predicate
+  # true), NOT be suppressed by the ACK-200 arm.
+  co_http__op_is_data relay-log-tail && echo "E_RLT=data" || echo "E_RLT=ack"
+  co_http__op_is_data notif-digest   && echo "E_ND=data"  || echo "E_ND=ack"
+  # Regression guards: a known DATA op stays DATA; the relay/notif WRITE-side and
+  # a canonical ACK op stay ACK (the body-suppression contract is unchanged for
+  # everything else — no over-broadening).
+  co_http__op_is_data work-snapshot  && echo "E_WS=data"  || echo "E_WS=ack"
+  co_http__op_is_data relay-log-append && echo "E_RLA=data" || echo "E_RLA=ack"
+  co_http__op_is_data put            && echo "E_PUT=data" || echo "E_PUT=ack"
+) > "$PARTE_OUT" 2>/dev/null || true
+peg(){ grep -o "$1=[a-z]*" "$PARTE_OUT" 2>/dev/null | head -1 | cut -d= -f2; }
+eq "$(peg E_RLT)" "data" "co_http__op_is_data relay-log-tail ⇒ DATA (body passes through, not suppressed)"
+eq "$(peg E_ND)"  "data" "co_http__op_is_data notif-digest ⇒ DATA (body passes through, not suppressed)"
+eq "$(peg E_WS)"  "data" "co_http__op_is_data work-snapshot ⇒ DATA (existing allowlist intact)"
+eq "$(peg E_RLA)" "ack"  "co_http__op_is_data relay-log-append ⇒ ACK (write side stays suppressed — no over-broadening)"
+eq "$(peg E_PUT)" "ack"  "co_http__op_is_data put ⇒ ACK (canonical ack op unaffected)"
+rm -f "$PARTE_OUT" 2>/dev/null || true
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"

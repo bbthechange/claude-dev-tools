@@ -116,7 +116,14 @@ co_http__op_is_data() {
     # not this transport — caught by live-verify). `agent-action`/`-ack` stay ACK
     # ops: nothing reads their body via co_request (the web enqueues through the
     # Pages proxy direct-to-Worker; the daemon's ack is fire-and-forget).
-    get|timer-due|poll|reconcile|work-snapshot|capabilities|forensic-fetch|forensic-audit|intake-pending|agent-action-pending) return 0 ;;
+    # K2/K3 (claude-tools-u1pt) — `relay-log-tail` returns {exchanges:[…]} (B.3)
+    # and `notif-digest` returns {digests:[…]} (K3), both ALWAYS a JSON-200 pure
+    # read (CF-engine-only ops — the bash oracle never dispatched them). WITHOUT
+    # this they hit the ACK-200 arm and SUPPRESS their body to empty stdout, so a
+    # bash consumer (the engine-bridge cmd_relay_log_tail, documented to echo the
+    # JSON projection) gets EMPTY against the live engine. `relay-log-append` stays
+    # an ACK op (rc 0 ⇒ text("",200); nothing reads its body via co_request).
+    get|timer-due|poll|reconcile|work-snapshot|capabilities|forensic-fetch|forensic-audit|intake-pending|agent-action-pending|relay-log-tail|notif-digest) return 0 ;;
     *) return 1 ;;
   esac
 }
