@@ -602,8 +602,14 @@ ck "explicit DG_AUTHOR_CMD overrides autowire (uses the explicit author body)" \
    eq "$(JF b3aw4 '.body.tldr')" "agent-authored tldr"
 unset DG_AUTHOR_CMD DG_AUTHOR_AUTOWIRE CLAUDE_BIN DG_AUTHOR_BRIDGE_PATH
 
-# Clean up so later test runs / metric scripts don't see this run's noise.
-unset DG_AUTHOR_CMD DG_AUDIT_LOG
+# Clean up DG_AUTHOR_CMD so the readability section below exercises the
+# DG_AUTHOR_CMD-unset (deterministic jq-fallback) path. Do NOT unset
+# DG_AUDIT_LOG here (claude-tools-j30y): the `dg_from_worker_ask … b3lint
+# readability-bead` call below still audits, and dropping the isolation
+# re-exposes the REAL ~/.cache log — that leak (b3lint / readability-bead
+# no_DG_AUTHOR_CMD rows, observed polluting the live signal post-69u8) is
+# exactly what the 69u8 isolation was meant to stop. Keep it pinned to $WORK.
+unset DG_AUTHOR_CMD
 
 # ── claude-tools-uxvl5 (inbox-lifecycle §4.4): the READABILITY LINT, and the
 #    deterministic fallback template held to it (the residual no_DG_AUTHOR_CMD

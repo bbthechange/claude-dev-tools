@@ -167,8 +167,19 @@ the oracle/conformance runs deterministic and offline. The live-Worker probe
   the REAL production telemetry until ~95% of the lifetime fire counts were test
   fixtures (`analysis-T1`, `swap`, `stuck-stuck-*`). `run-tests.sh` + the
   conformance `harness.sh` + `test-dossier-gen.sh` now pin `DG_AUDIT_LOG` to a
-  scratch path. Any NEW test that drives `dg__author` must set `DG_AUDIT_LOG`
-  (run-tests.sh covers it when run via the gate).
+  scratch path. Any NEW test that drives `dg__author` must set `DG_AUDIT_LOG`.
+  The gate (`run-tests.sh:61`) exports it, but that is NOT sufficient on its own:
+  claude-tools-j30y re-measured the clean log and found 69u8 left two leaks —
+  (a) `test-dossier-gen.sh` did `unset DG_AUTHOR_CMD DG_AUDIT_LOG` mid-script,
+  re-exposing the REAL log for the `b3lint`/readability section below it (a
+  recurring leak even *through the gate*), and (b) the manual, non-gate
+  `mcp-ask-workspace/test-{mcp-protocol,escalate-conformance}.sh` had no
+  isolation at all (the `XWS_SMOKE_ESCALATE=1` leg spawns the real bridge →
+  `thirsty-fe-77e` fixture rows). Both fixed in j30y. RULES: never `unset
+  DG_AUDIT_LOG` mid-script, and non-gate tests must isolate it themselves.
+  PRODUCTION SIGNAL (j30y, clean window post-69u8): genuine `agent_unavailable`
+  is ~0 — every residual row is a fixture; the agent path (opus-4-7) is healthy
+  and the only non-fixture "failures" are honest `{refuse:true}` of thin input.
 - **A new CF data-returning op MUST be added to `co_http__op_is_data`** (the
   DATA-200 allowlist in `co-http-transport.sh`) or its 200 JSON body is SUPPRESSED
   to empty stdout over the HTTP transport (it falls to the ACK-200 arm: rc 0 but

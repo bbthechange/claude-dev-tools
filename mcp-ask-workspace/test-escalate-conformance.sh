@@ -141,6 +141,12 @@ export XWS_STUB_CALLS="$SCRATCH/bridge-calls.log"
 export XWS_STUB_WORKER_ASK="$SCRATCH/worker-ask.json"
 export XWS_STUB_RELAY="$SCRATCH/relay-appends.jsonl"
 export XWS_STUB_FYI="$SCRATCH/fyi-emits.tsv"          # (from_ws \t ref) per emit_fyi
+# Isolate the dg__author audit log to $SCRATCH (claude-tools-j30y) so the
+# escalate→dossier-publish leg never writes fixture rows into the REAL ~/.cache
+# telemetry, matching 69u8's isolation of the lib test suite. Belt-and-suspenders:
+# this test stubs XWS_BRIDGE_BIN so it should not reach the real author path, but
+# pinning DG_AUDIT_LOG keeps the live signal clean if that ever changes.
+export DG_AUDIT_LOG="$SCRATCH/dossier-author-audit.jsonl"
 
 [[ -d "$ME_DIR/node_modules/@modelcontextprotocol" ]] || {
   echo "node_modules missing — run 'npm install' in mcp-ask-workspace/ first" >&2

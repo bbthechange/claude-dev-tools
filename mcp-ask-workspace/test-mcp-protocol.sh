@@ -56,6 +56,13 @@ export XWS_SPECIALIST_BIN="$SCRATCH/stub-responder.sh"
 export PROJECT_REF="FE"                       # from_ws resolved server-side
 export POLL_INTERVAL_MS=200
 export POLL_MAX_MS=3000                        # short ceiling: escalate returns the durable-dossier message fast
+# Isolate the dg__author audit log to $SCRATCH (claude-tools-j30y): the
+# XWS_SMOKE_ESCALATE=1 leg spawns the real dossier-builder bridge, which audits
+# via dg__author. Without this it writes thirsty-fe-77e fixture rows (the agent
+# correctly REFUSES the synthetic bead → logged agent_unavailable) into the REAL
+# ~/.cache telemetry — the exact signal j30y had to re-measure. Mirrors the
+# 69u8 isolation applied across the lib test suite.
+export DG_AUDIT_LOG="$SCRATCH/dossier-author-audit.jsonl"
 
 [[ -d "$ME_DIR/node_modules/@modelcontextprotocol" ]] || {
   echo "node_modules missing — run 'npm install' in mcp-ask-workspace/ first" >&2
