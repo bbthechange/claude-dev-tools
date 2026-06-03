@@ -163,6 +163,20 @@ should escalate via the L4 overview-dossier path, not be faked as a dossier.
   now also the phone: the Workspaces hub shows the intake's state thread (L3).
 - **Workspace list is intentionally `no-store`.** A cached list can offer a
   deleted/renamed `project_ref` that then 422s at submit. Don't add caching.
+- **Intake is deliberately NOT offline-cached (decided: claude-tools-bnbb).**
+  The shared offline-read worker (`web/shared/sw.js`) hard-bypasses `/intake` +
+  `/api/intake`; Intake stays network-only. §2.4's "every surface reachable
+  off-network" scopes to the §2.1 **read-model** view map (Board / Blueprint /
+  Activity / Gates / Workspaces / Capacity / Cross-WS + the live Inbox) — Intake
+  is the Flow-A **write** channel, not a read surface. It has no offline write
+  path (a booted shell would only invite a Submit that can't complete), and
+  caching its workspace list would violate the `no-store` "don't add caching"
+  invariant above (the SW Cache API ignores `no-store`, so a stale list could
+  offer a deleted/renamed `project_ref` that 422s). The YES path is reversible
+  (drop the two `isBypassed()` clauses, add `/shared/sw-register.js` to
+  `intake/index.html`, add `intake` to `PULL_PAGES`) if Brian ever wants the
+  shell to boot offline — but the default is correctly NO. Don't "fix" the
+  bypass by re-adding Intake to the offline path.
 - **Empty / unreachable degrades honestly, not silently.** `loadWorkspaces()`
   with zero workspaces disables the picker with a "start a runner first" hint;
   a one-workspace deployment pre-selects it (single-tap confirm). `loadPresets()`

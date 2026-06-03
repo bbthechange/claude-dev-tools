@@ -202,7 +202,10 @@ for (const p of ['/inbox', '/inbox/', '/inbox/sw.js', '/api/inbox/list', '/api/p
   });
 }
 
-// ── Intake is the Flow-A WRITE surface — outside the read-only scope, bypassed ─
+// ── Intake is the Flow-A WRITE surface — DECIDED network-only (claude-tools-bnbb):
+//    not in the §2.1 read-model view map, has no offline write path, and caching
+//    its workspace list would violate Intake's `no-store` "don't add caching"
+//    invariant (a stale list 422s at submit). So it stays bypassed. ─────────────
 for (const p of ['/intake', '/intake/', '/api/intake/presets', '/api/intake/workspaces']) {
   test(`scope: ${p} is bypassed (Intake is a write surface, network-only — no stale presets while filing)`, () => {
     const env = newEnv();
