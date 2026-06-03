@@ -109,7 +109,11 @@ patch live v1. See HANDOFF-UX-V2 §2.
   fails CLOSED — no new unsynchronised claim, no BC-04 regression.
 - **`LOG_DIR` is a self-gitignoring SECURITY boundary** (BC-27): raw model
   output / stream files must never reach git. The dirty-tree close audit excludes
-  `.beads/issues.jsonl` (bd writes it as a side-effect — BC-56/u4ms).
+  `.beads/issues.jsonl` (bd writes it as a side-effect — BC-56/u4ms). All per-task
+  artifacts in `st_run_task` (STREAM/SIGNAL/PROC, POST_TERMINAL/HOOK_SETTINGS)
+  derive their dir from `"${LOG_DIR:-.beads/runner-logs}"`, NOT a second hardcoded
+  literal, so they stay symmetric with the `$LOG_DIR/current-task` pointer + teardown
+  `rm` under a non-default `LOG_DIR` (claude-tools-62xc).
 - **SCAR vs SCAFFOLDING when porting to v2.** Before "faithfully porting" any v1
   mechanism, read its BC class: a SCAFFOLDING entry (e.g. the `read -ra` empty-array
   quirk BC-03, the `--exclude-type=epic` belt-and-suspenders BC-52) is a bash

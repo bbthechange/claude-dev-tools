@@ -2471,7 +2471,14 @@ st_run_task() {
   # git) — the full LOG_DIR lifecycle/retention policy is T2.2/BC-28's seam.
   local iter_ts log_dir base
   iter_ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  log_dir=".beads/runner-logs"
+  # claude-tools-62xc: derive the per-task log_dir from the env-overridable global
+  # $LOG_DIR (default .beads/runner-logs, set at line ~194) — NOT a second hardcoded
+  # literal. The claim-time current-task pointer (st_run_task ~line 2434) and every
+  # teardown `rm` target $LOG_DIR/current-task; if someone exports LOG_DIR=/custom
+  # the per-task STREAM/SIGNAL/PROC/POST_TERMINAL/HOOK_SETTINGS artifacts must land
+  # there too or teardown's current-task rm and these artifacts disagree. They MATCH
+  # by default, so this is a latent non-default-LOG_DIR symmetry fix, not a live bug.
+  log_dir="${LOG_DIR:-.beads/runner-logs}"
   mkdir -p "$log_dir" 2>/dev/null || true
   [[ -f "$log_dir/.gitignore" ]] || printf '*\n!.gitignore\n' > "$log_dir/.gitignore" 2>/dev/null || true
   # BC-29 (T2.4, claude-tools-7hx): per-iteration timestamped basenames
