@@ -27,6 +27,27 @@ the silent defer turns out to be a stale release-gate stamp; pair it with
 plain `bd update <epic> --defer ""` when it's an ad-hoc/auto-defer that
 should never have cascaded.
 
+## Audit-coverage marker (§9 row 4, claude-tools-mhcp.2)
+
+`audit` additionally emits the **audit-coverage marker** the inventory producer
+surfaces on the Queue-Health Board strip (UX-DESIGN-V2 §9 row 4: *"did the audit
+actually read everything, or only sample?"*). Each run overwrites-or-removes the
+per-workspace marker (`la_publish_audit_coverage` / `la_audit_coverage_file` in
+`lib/local-agent.sh` — the SAME lib + path as the reader, so the two can never
+drift):
+
+- **total** = open epics with a future `defer_until` this run had to examine.
+- **read**  = how many of those it successfully walked (`bd show --children` ok).
+- `read < total` ⇒ a per-epic `bd` call failed ⇒ the suppressed-children count
+  may under-report ⇒ the strip paints a **warn** chip ("audit R/T read").
+- `total == 0` (nothing to audit) ⇒ the marker is **removed** ⇒ no chip (the
+  honest "no audit reported" common case, never a phantom 0/0).
+
+Only a full `audit` run touches the marker; `explain`/`list` are query helpers
+and leave it alone. The write is best-effort — a marker hiccup never changes the
+audit's exit code or its diagnosis. The marker lives in the gitignored ephemeral
+`.beads/runner-logs/` dir (override with `LA_AUDIT_COVERAGE_FILE`).
+
 ## What this is NOT
 
 This is a **diagnostic**, not a mutator. It never calls `bd update`. The
@@ -95,10 +116,13 @@ ready may look healthy but it isn't — N open children are hidden."
 
 `beads-runner/test-defer-cascade-audit.sh` drives the helper against a
 stateful fake `bd` (same pattern as `test-gate-defer.sh` /
-`test-bd-stage.sh`). 10 assertions cover: clean state; cascade detected;
+`test-bd-stage.sh`). 14 assertions cover: clean state; cascade detected;
 self-deferred child excluded; closed child excluded; past-defer parent
 excluded; `explain` SUPPRESSED + NO_SUPPRESSION cases; `list` shape;
-bare invocation + missing-arg invocation both exit 2.
+bare invocation + missing-arg invocation both exit 2; and the §9
+audit-coverage marker (claude-tools-mhcp.2): written on a scan with
+future-defer epics (`read==total` when all walked), **removed** when none
+(overwrite-or-remove), and `read<total` when a per-epic `bd` walk fails.
 
 ## Cross-references
 

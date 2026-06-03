@@ -175,8 +175,13 @@ bash beads-runner/verify-pages-deploy.sh board   # must print mismatches=0
   audit EMITS, not a standing queue fact, so the runner READS it from a tolerant
   per-workspace marker file (default `.beads/runner-logs/audit-coverage.json` — the
   gitignored ephemeral dir, never committed; env `LA_AUDIT_COVERAGE_FILE`) — NOT
-  from a bd query. The WRITER (an audit hat emitting the marker) is a follow-up
-  (claude-tools-mhcp.2); until it lands the field is null in prod (in-contract).
+  from a bd query. The WRITER now exists (claude-tools-mhcp.2): `defer-cascade-audit.sh
+  audit` emits the marker via `la_publish_audit_coverage` (`lib/local-agent.sh`, the
+  SAME lib + path accessor `la_audit_coverage_file` as the reader, so they can't
+  drift) — `total` = future-defer epics it had to examine, `read` = those it walked
+  ok (`read<total` ⇒ a `bd` call failed ⇒ the audit may under-report ⇒ warn chip);
+  it overwrites-or-removes each run so the marker never goes stale. Until a runner
+  actually runs that audit in a workspace the field stays null (in-contract).
   `deriveQueueHealth` derives
   `coverage_complete`(`read>=total`)/`coverage_text`; the strip chip is NEUTRAL
   (`kind:'runners'`) when complete ("audit read everything") and WARN when not.
@@ -210,4 +215,6 @@ honest-state logic in `board-view.js` (not `app.js`) so the Node test covers it.
 **Keep it concise — this doc earns its keep only if agents read all of it.**
 Delete stale lines; don't let it grow into a copy of the README or INTERFACE.md.
 Last substantive update: 2026-06-03 (Q9-4 audit_coverage on the §9 strip,
-claude-tools-t5ud — the one queue_health field sourced from a marker file, not bd).
+claude-tools-t5ud reader+surface; claude-tools-mhcp.2 added the writer —
+`defer-cascade-audit.sh audit` now emits the marker — the one queue_health field
+sourced from a marker file, not bd).

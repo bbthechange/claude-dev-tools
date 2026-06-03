@@ -63,8 +63,30 @@
 #     --commit` (R3 / claude-tools-vb7).
 #
 # Safe under `set -uo pipefail`; every bd call is guarded.
+#
+# AUDIT-COVERAGE MARKER (claude-tools-mhcp.2, UX-DESIGN-V2 §9 row 4): `audit`
+# emits the §9 audit-coverage marker the inventory producer surfaces on the
+# Queue-Health strip — total = the open future-defer epics this run had to
+# examine, read = how many it successfully walked. read<total only when a
+# per-epic `bd show --children` failed: that is precisely "the audit did NOT
+# read everything, so its suppressed-children count may under-report" — the
+# distrust §9 row 4 exists to surface. The writer + path live in the same lib as
+# the reader (la_publish_audit_coverage / la_audit_coverage_file in
+# lib/local-agent.sh) so the two can never drift; this script just sources it and
+# calls it. Best-effort: a missing/unsourceable lib ⇒ no marker (chip stays null,
+# in-contract) and never affects the diagnosis. `explain`/`list` are query
+# helpers and do NOT touch the marker; only a full `audit` run does.
 
 set -uo pipefail
+
+# Source the writer helper (best-effort — the marker is a side report, never a
+# precondition for the diagnosis). lib/local-agent.sh is source-safe under
+# `set -uo pipefail` (only function defs + one constant assignment at top level).
+_DCA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+if [[ -r "$_DCA_DIR/lib/local-agent.sh" ]]; then
+  # shellcheck source=lib/local-agent.sh
+  source "$_DCA_DIR/lib/local-agent.sh" 2>/dev/null || true
+fi
 
 usage() {
   cat <<'EOF'
@@ -131,7 +153,11 @@ _open_epics_with_future_defer() {
 # Uses `bd show --children --json` — same shape next_task() uses.
 _open_children_of() {
   local parent="$1" out
-  out=$(bd show "$parent" --children --json 2>/dev/null) || return 0
+  # bd failure → return 4 (NOT 0): the suppression scan still treats it as "no
+  # children" (tolerant — never aborts the audit), but the distinct code lets the
+  # coverage counter mark this epic UNREAD (read<total). Empty-but-successful and
+  # has-children both return 0 (the trailing jq's status).
+  out=$(bd show "$parent" --children --json 2>/dev/null) || return 4
   # bd v1.x returns {<parent-id>: [children]}; flatten defensively, drop
   # self, keep open only.
   printf '%s' "$out" | jq -r --arg id "$parent" --arg us "$US" '
@@ -169,7 +195,10 @@ _collect_suppression() {
   local mode="$1"
   _SUPPRESSED=""
   _EPIC_COUNT=0
-  local epics line epic_id epic_defer
+  # _WALK_OK — future-defer epics this run successfully read children for (the
+  # numerator of the §9 audit-coverage ratio; _EPIC_COUNT is the denominator).
+  _WALK_OK=0
+  local epics line epic_id epic_defer walk_rc
   epics=$(_open_epics_with_future_defer) || return 3
   [[ -z "$epics" ]] && return 0
   while IFS="$US" read -r epic_id epic_defer; do
@@ -177,7 +206,9 @@ _collect_suppression() {
     _is_future "$epic_defer" || continue
     _EPIC_COUNT=$((_EPIC_COUNT + 1))
     local children cline cid cdefer ctitle
-    children=$(_open_children_of "$epic_id") || true
+    children=$(_open_children_of "$epic_id"); walk_rc=$?
+    # Count a successful walk (rc 0) toward coverage; rc 4 = bd failed = UNREAD.
+    [[ "$walk_rc" -eq 0 ]] && _WALK_OK=$((_WALK_OK + 1))
     [[ -z "$children" ]] && continue
     while IFS="$US" read -r cid cdefer ctitle; do
       [[ -z "$cid" ]] && continue
@@ -199,7 +230,7 @@ _collect_suppression() {
 }
 
 cmd_audit() {
-  local _SUPPRESSED _EPIC_COUNT
+  local _SUPPRESSED _EPIC_COUNT _WALK_OK
   _collect_suppression audit || exit 3
   local n=0
   [[ -n "$_SUPPRESSED" ]] && n=$(printf '%s\n' "$_SUPPRESSED" | grep -c .)
@@ -208,11 +239,18 @@ cmd_audit() {
   fi
   printf 'defer-cascade-audit: epics_with_future_defer=%d suppressed_open_children=%d\n' \
     "$_EPIC_COUNT" "$n" >&2
+  # §9 row-4 marker (claude-tools-mhcp.2): this audit examined _EPIC_COUNT
+  # future-defer epics and read _WALK_OK of them. Overwrite-or-remove (the writer
+  # removes the marker when _EPIC_COUNT==0 ⇒ "no audit reported" ⇒ no chip).
+  # Best-effort: never let a marker hiccup change the audit's exit semantics.
+  if declare -F la_publish_audit_coverage >/dev/null 2>&1; then
+    la_publish_audit_coverage "$_WALK_OK" "$_EPIC_COUNT" || true
+  fi
   [[ "$n" -eq 0 ]] || exit 1
 }
 
 cmd_list() {
-  local _SUPPRESSED _EPIC_COUNT
+  local _SUPPRESSED _EPIC_COUNT _WALK_OK   # _WALK_OK set by _collect_suppression; declared for hygiene
   _collect_suppression list || exit 3
   [[ -n "$_SUPPRESSED" ]] && printf '%s\n' "$_SUPPRESSED"
 }

@@ -34,6 +34,11 @@ fail() { printf '  FAIL  %s\n' "$*"; FAILED=1; }
 WORK="$(mktemp -d 2>/dev/null)" || { echo "mktemp failed"; exit 70; }
 trap 'rm -rf "$WORK"' EXIT
 
+# claude-tools-mhcp.2 (§9 row 4) — pin the audit-coverage marker path to a tmp
+# file so the `audit` command's marker writes/removes NEVER touch the real
+# repo's .beads/runner-logs/audit-coverage.json. Cases 11-14 assert against it.
+export LA_AUDIT_COVERAGE_FILE="$WORK/audit-coverage.json"
+
 # ── stateful fake bd ─────────────────────────────────────────────────────────
 # State per bead in $BDST:
 #   $BDST/<bead>.json — a single-record JSON object with id/issue_type/status/
@@ -96,6 +101,11 @@ case "$cmd" in
         *)          shift;;
       esac
     done
+    # claude-tools-mhcp.2: simulate a bd subprocess failure on a specific epic's
+    # children walk so the coverage counter can be exercised (read<total).
+    if [[ $children_mode -eq 1 && -n "${BD_FAIL_CHILDREN_FOR:-}" && "$bead" == "$BD_FAIL_CHILDREN_FOR" ]]; then
+      echo "bd: simulated children failure for $bead" >&2; exit 3
+    fi
     f="$BDST/$bead.json"
     [[ -f "$f" ]] || { echo "[]"; exit 0; }
     if [[ $children_mode -eq 1 ]]; then
@@ -265,6 +275,71 @@ if [[ "$rc" == "2" ]]; then
   pass "explain without bead-id exits 2 (usage)"
 else
   fail "explain no-arg: rc=$rc (expected 2)"
+fi
+
+# ── case 11: audit emits the §9 audit-coverage marker (read==total all-walked) ─
+# (claude-tools-mhcp.2) One future-defer epic with a readable child ⇒ the audit
+# examined 1 epic and read 1 ⇒ marker {"read":1,"total":1} (complete coverage).
+_reset
+rm -f "$LA_AUDIT_COVERAGE_FILE"
+_seed epic-11 epic open "2099-01-01" "" "Deferred epic"
+_seed task-11 task open ""           epic-11 "Hidden child"
+bash "$HELPER" audit >/dev/null 2>&1
+marker=$(cat "$LA_AUDIT_COVERAGE_FILE" 2>/dev/null)
+if [[ -f "$LA_AUDIT_COVERAGE_FILE" ]] \
+   && [[ "$(printf '%s' "$marker" | jq -r '.read')"  == "1" ]] \
+   && [[ "$(printf '%s' "$marker" | jq -r '.total')" == "1" ]]; then
+  pass "audit writes the §9 marker (read==total when every epic walked) [$marker]"
+else
+  fail "audit marker (complete) case: marker='$marker'"
+fi
+
+# ── case 12: a clean audit (no future-defer epic) REMOVES the marker ─────────
+# Overwrite-or-remove: "nothing to report" must read as absent ⇒ engine null ⇒
+# no chip — never a phantom 0/0, and a prior run's marker must not survive.
+_reset
+printf '{"read":3,"total":5}' > "$LA_AUDIT_COVERAGE_FILE"   # a STALE marker from a prior run
+_seed epic-12 epic open ""  "" "No-defer epic"
+_seed task-12 task open ""  epic-12 "Plain child"
+bash "$HELPER" audit >/dev/null 2>&1
+if [[ ! -f "$LA_AUDIT_COVERAGE_FILE" ]]; then
+  pass "clean audit removes a stale marker (no future-defer epic ⇒ absent)"
+else
+  fail "clean audit removal case: marker still present = '$(cat "$LA_AUDIT_COVERAGE_FILE" 2>/dev/null)'"
+fi
+
+# ── case 13: marker total counts ALL future-defer epics (denominator) ────────
+# Two future-defer epics, both readable ⇒ read==total==2.
+_reset
+rm -f "$LA_AUDIT_COVERAGE_FILE"
+_seed epic-13a epic open "2099-01-01" "" "Deferred epic A"
+_seed epic-13b epic open "2099-02-02" "" "Deferred epic B"
+_seed task-13a task open ""           epic-13a "Hidden under A"
+bash "$HELPER" audit >/dev/null 2>&1
+marker=$(cat "$LA_AUDIT_COVERAGE_FILE" 2>/dev/null)
+if [[ "$(printf '%s' "$marker" | jq -r '.read')"  == "2" ]] \
+   && [[ "$(printf '%s' "$marker" | jq -r '.total')" == "2" ]]; then
+  pass "marker total = every future-defer epic examined (2/2) [$marker]"
+else
+  fail "marker denominator case: marker='$marker'"
+fi
+
+# ── case 14: a bd-failed children walk ⇒ read<total (the §9 distrust signal) ──
+# Two future-defer epics; bd fails on epic-14b's children walk ⇒ the audit read
+# 1 of 2 ⇒ marker {"read":1,"total":2}, the "did NOT read everything" case the
+# Board strip paints as a WARN chip. Tolerant: the audit still exits cleanly.
+_reset
+rm -f "$LA_AUDIT_COVERAGE_FILE"
+_seed epic-14a epic open "2099-01-01" "" "Deferred epic A (readable)"
+_seed epic-14b epic open "2099-02-02" "" "Deferred epic B (bd will fail)"
+_seed task-14a task open ""           epic-14a "Hidden under A"
+BD_FAIL_CHILDREN_FOR=epic-14b bash "$HELPER" audit >/dev/null 2>&1
+marker=$(cat "$LA_AUDIT_COVERAGE_FILE" 2>/dev/null)
+if [[ "$(printf '%s' "$marker" | jq -r '.read')"  == "1" ]] \
+   && [[ "$(printf '%s' "$marker" | jq -r '.total')" == "2" ]]; then
+  pass "bd-failed walk ⇒ read<total (1/2, the audit-didn't-read-everything signal) [$marker]"
+else
+  fail "marker partial-coverage case: marker='$marker'"
 fi
 
 if [[ "$FAILED" == "0" ]]; then

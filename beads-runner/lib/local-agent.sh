@@ -411,6 +411,53 @@ la_report_heartbeat() {
      >> "$(la__outbox)" 2>/dev/null || true
 }
 
+# ── audit_coverage marker: the §9 row-4 path contract (single source of truth) ─
+# la_audit_coverage_file — the per-workspace audit-coverage marker path. Used by
+# BOTH the READER (la_publish_workspace_inventory, below) and the WRITER
+# (la_publish_audit_coverage) so the two can NEVER drift: if the reader and an
+# audit writer disagreed on this path the chip would silently never render.
+# Default is the gitignored ephemeral per-machine `.beads/runner-logs/` dir (a
+# marker under the bare `.beads/` root would be tracked-by-default — t5ud review);
+# LA_AUDIT_COVERAGE_FILE overrides it (tests; a non-default workspace layout).
+la_audit_coverage_file() {
+  printf '%s' "${LA_AUDIT_COVERAGE_FILE:-.beads/runner-logs/audit-coverage.json}"
+}
+
+# la_publish_audit_coverage <read> <total> — the WRITER half of §9 row 4
+# (claude-tools-mhcp.2; reader = la_publish_workspace_inventory). An agent audit
+# that reports N items (examined <total>, successfully read <read>) calls this to
+# emit the OPTIONAL marker the inventory producer surfaces on the Queue-Health
+# strip ([thirsty]: surface coverage, "not just the conclusion" of an audit that
+# may have only sampled). OVERWRITE-OR-REMOVE so the marker NEVER goes stale (the
+# reader is gate-free / presentation-only — it reads the marker VERBATIM with no
+# TTL, so a writer that left a stale marker would paint a lie):
+#   total > 0  ⇒ overwrite with {"read":R,"total":T} (R clamped to [0,total]).
+#   total <= 0 ⇒ REMOVE any prior marker — "no audit reported anything to cover"
+#               must read as absent (⇒ engine null ⇒ no chip), never a phantom
+#               0/0, and a previous run's marker must not outlive its condition.
+# Same path contract as the reader via la_audit_coverage_file (they MUST agree).
+# Best-effort like the reader: a non-integer arg or a write/mkdir hiccup degrades
+# to "no marker written" and returns non-zero, but the CALLER must never let that
+# abort the audit (the audit's job is diagnosis; the marker is a side report).
+la_publish_audit_coverage() {
+  local read="${1:-}" total="${2:-}" file dir
+  file="$(la_audit_coverage_file)"
+  # total must be a positive integer; anything else ⇒ nothing to report ⇒ remove.
+  if ! [[ "$total" =~ ^-?[0-9]+$ ]] || (( total <= 0 )); then
+    rm -f "$file" 2>/dev/null || true
+    return 0
+  fi
+  # read: non-negative integer, clamped to [0,total] (the reader/engine clamp
+  # too, but emit a clean value so the marker is honest on its own).
+  [[ "$read" =~ ^-?[0-9]+$ ]] || read=0
+  (( read < 0 )) && read=0
+  (( read > total )) && read="$total"
+  dir="$(dirname "$file")"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  printf '{"read":%d,"total":%d}\n' "$read" "$total" > "$file" 2>/dev/null || return 1
+  return 0
+}
+
 # la_publish_workspace_inventory — workspace_inventory record (epic
 # claude-tools-vvgy, producer Phase A redo claude-tools-gk17). One UP report
 # describing this workspace's bd queue: counts by status, the full
@@ -599,7 +646,7 @@ la_publish_workspace_inventory() {
   # invariant is "read/total computed AND surfaced when an audit reports", not this
   # specific channel (Open-Q#3 latitude; one named sub-object, never a second).
   local ac_file ac_raw audit_coverage qh_merged
-  ac_file="${LA_AUDIT_COVERAGE_FILE:-.beads/runner-logs/audit-coverage.json}"
+  ac_file="$(la_audit_coverage_file)"   # shared path accessor (writer = la_publish_audit_coverage)
   audit_coverage="null"
   if [[ -f "$ac_file" ]]; then
     ac_raw="$(cat "$ac_file" 2>/dev/null)" || ac_raw=""
