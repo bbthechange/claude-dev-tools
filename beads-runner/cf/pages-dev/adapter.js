@@ -93,6 +93,13 @@ function argsForGet(op, url) {
   // bulk path) — the adapter stays dumb plumbing and the engine owns the read
   // shape ({gate:…} for one, {gates:[…]} for all).
   if (op === "gate-meta-get") return [q.get("gate_id") || ""];
+  // H1 (claude-tools-uxvh1) — DESIGN H blueprint read. The facet read proxy
+  // (web/functions/api/ws/blueprint.js) carries the required `project_ref`; here
+  // it unwraps to blueprintGet's positional [projectRef] (blueprint.js
+  // handleBlueprintOp). A missing/unknown project_ref reads as null (the §2.2
+  // "missing ⇒ null" empty-state contract, B.4) — the adapter stays dumb
+  // plumbing and the engine owns the read shape (the body verbatim, or null).
+  if (op === "blueprint-get") return [q.get("project_ref") || ""];
   return null; // unmapped read op — caller emits 400 (never a guess)
 }
 function argsForPost(op, body) {
@@ -179,6 +186,24 @@ function argsForPost(op, body) {
   if (op === "agent-action") {
     const ac = b.action && typeof b.action === "object" ? b.action : null;
     return [ac === null ? "" : JSON.stringify(ac)];
+  }
+  // H1 (claude-tools-uxvh1) — DESIGN H blueprint sectioned write. The facet
+  // write proxy (web/functions/api/ws/blueprint-put.js) sends the named body
+  // {project_ref, section, body, updated_by}; here it unwraps to blueprintPut's
+  // positional [<envelope_json>] (blueprint.js handleBlueprintOp). The adapter
+  // re-stringifies the WHOLE envelope because the op's single arg is a JSON
+  // STRING the engine parses inside (the gate-meta-set / agent-action / put
+  // precedent). The proxy hard-codes the op; the adapter stays dumb plumbing
+  // and the engine owns the gate (safe project_ref, the closed section set, the
+  // body shape, the §0.3 schema gate inside _writeRecord).
+  if (op === "blueprint-put") {
+    const env = {
+      project_ref: b.project_ref,
+      section: b.section,
+      body: b.body,
+      updated_by: b.updated_by,
+    };
+    return [JSON.stringify(env)];
   }
   // I4 (claude-tools-uxvi4) — the Activity facet's "Escalate to decision" stuck
   // action (DESIGN I §4): a PURE engine write that converts a stuck task into a

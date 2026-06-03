@@ -130,6 +130,7 @@ co__schema_version() {
     lease)         echo 1 ;;   # §4.4 Lease (arbitration = T4.2)
     work_snapshot) echo 1 ;;   # §4.5 work-snapshot (projection render = T6a)
     intake-request) echo 1 ;;  # I2 (claude-tools-x9u) — Flow A intake queue record (daemon I3 polls; the record IS the queue marker)
+    blueprint)     echo 1 ;;   # H1 (claude-tools-uxvh1) — DESIGN H the per-workspace Blueprint (§4 record, id=project_ref, reuses the shared store; sectioned read-merge-write is the never-clobber seam — see co__blueprint_put)
     *)             echo "" ;;  # unknown type
   esac
 }
@@ -408,6 +409,134 @@ co__intake_pending() {
     printf '[]\n'
     return 0
   }
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# H1 (claude-tools-uxvh1) — DESIGN H blueprint §4 record + the sectioned ops
+# ════════════════════════════════════════════════════════════════════════════
+# THE BASH ORACLE TWIN of cf/src/blueprint.js (DESIGN H / design/blueprint.md
+# §2). UNLIKE the transient namespaces below (gate_metadata / agent_actions),
+# `blueprint` IS a §4 record: it is REGISTERED in co__schema_version (=1) and
+# reuses the shared §4 store (co__store_put / co__store_get), so a `blueprint`
+# row is a normal records/ entry and the §0.3 schema gate + §9.1 principal stamp
+# apply automatically. ONE row per workspace, id = project_ref.
+#
+# THE LOAD-BEARING SEAM — sectioned read-merge-write (§2.3, principle 9,
+# must-protect #3): a §4 put is whole-record, so two writers (the updater hat
+# writes `derived`; the GUI writes `customization`) would clobber each other if
+# either POSTed a whole record. So `blueprint-put` is SECTIONED — it takes a
+# section + body and, inside ONE critical section, READs the current record,
+# replaces ONLY that one section (or PUSHES onto conflicts[]), and writes the
+# whole merged record back. The bash analogue of cf/src/blueprint.js running
+# inside co._serialize is co__with_lock — but on a DISTINCT key
+# (`blueprint-merge.$pr`) because co__store_put takes the `blueprint.$pr` key
+# ITSELF (the per-key mkdir lock is not re-entrant). Held byte-equal to
+# blueprint.js by lib/test-coordinator-blueprint.sh.
+
+# A fresh, schema-valid empty Blueprint skeleton (blueprint.js freshEmptyBlueprint):
+# the first section-only write for a workspace has no prior record to merge over,
+# so seed a v1 skeleton with empty layers (schema_version:1 is MANDATORY — the
+# §0.3 gate rejects a record without it).
+co__blueprint_fresh() {
+  jq -cn --arg pr "$1" '{
+    schema_version: 1,
+    project_ref: $pr,
+    derived: {nodes: [], edges: [], apis: []},
+    customization: {renames: {}, regroups: {}, pins: [], hidden: [], splits: [], merges: []},
+    narrative: {tldr: "", sections: []},
+    conflicts: [],
+    updated_at: null,
+    updated_by: null
+  }' 2>/dev/null
+}
+
+# co__blueprint_put <principal> <envelope_json> — §2.2 sectioned read-merge-write.
+# The envelope is {project_ref, section, body, updated_by}. The write gate (the
+# single refusal point — conformance at WRITE, B.4), 1:1 with blueprint.js
+# blueprintPut:
+#   1. missing arg                                          ⇒ rc 2
+#   2. invalid JSON / not an object                         ⇒ rc 3
+#   3. project_ref missing / not a safe §4 id               ⇒ rc 3
+#   4. section ∉ {derived,customization,narrative,conflicts-append} ⇒ rc 3
+#   5. body not a JSON object                               ⇒ rc 3
+#   6. otherwise ⇒ read-merge-write the whole record, rc 0
+co__blueprint_put() {
+  local principal="$1" json="${2:-}" meta pr section now
+  if [[ -z "$json" ]]; then
+    echo "co: blueprint-put needs <envelope_json>" >&2; return 2
+  fi
+  # Parse + validate the envelope in ONE jq pass. Emit "<project_ref>\t<section>"
+  # on success, or NOTHING on any validation failure (caller persists NOTHING).
+  # project_ref must be the §4 safe-key shape ([A-Za-z0-9._-], no ".."); section
+  # must be one of the four; body must be a JSON object (array/scalar/null reject).
+  meta=$(printf '%s' "$json" | jq -r '
+    if type != "object" then empty
+    else
+      (.project_ref) as $pr | (.section) as $s
+      | if ($pr|type) != "string" or ($pr|length) == 0 then empty
+        elif (($pr|test("^[A-Za-z0-9._-]+$"))|not) then empty
+        elif ($pr|test("\\.\\.")) then empty
+        elif ($s|type) != "string" then empty
+        elif (($s=="derived" or $s=="customization" or $s=="narrative" or $s=="conflicts-append")|not) then empty
+        elif (.body|type) != "object" then empty
+        else ($pr + "\t" + $s) end
+    end' 2>/dev/null) || meta=""
+  if [[ -z "$meta" ]]; then
+    echo "co: blueprint-put reject — bad/missing project_ref (unsafe id), unknown section, or non-object body (nothing written; the agent gets a hard failure, never a false-success the facet would wall)" >&2
+    return 3
+  fi
+  pr="${meta%%$'\t'*}"
+  section="${meta##*$'\t'}"
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  # The read-merge-write is one critical section (AD1: the read + the write never
+  # interleave — the never-clobber guarantee). Locked on a DISTINCT key from
+  # co__store_put's own `blueprint.$pr` to avoid the non-re-entrant mkdir clash.
+  co__with_lock "blueprint-merge.$pr" co__blueprint_commit "$principal" "$pr" "$section" "$json" "$now"
+}
+
+# The locked read-modify-write body: read the prior record (or a fresh skeleton),
+# replace ONLY the target section (or PUSH onto conflicts[]), re-assert the §4
+# invariants, then persist through co__store_put (the ONE gated §4 write path —
+# §0.3 + §9.1 stamp). A propagated store reject is the put's reject.
+co__blueprint_commit() {
+  local principal="$1" pr="$2" section="$3" envelope="$4" now="$5" cur merged
+  cur=$(co__store_get blueprint "$pr" 2>/dev/null) || cur=""
+  # corrupt / absent prior ⇒ a fresh skeleton (graceful degrade, B.4)
+  if [[ -z "$cur" ]] || ! printf '%s' "$cur" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    cur=$(co__blueprint_fresh "$pr")
+  fi
+  if [[ "$section" == "conflicts-append" ]]; then
+    # conflicts-append PUSHES (does not replace) — record a fresh orphan without
+    # dropping prior un-acknowledged FYIs (§2.3).
+    merged=$(jq -cn --argjson cur "$cur" --argjson env "$envelope" --arg pr "$pr" --arg now "$now" '
+      $cur
+      | .conflicts = ((.conflicts // []) + [$env.body])
+      | .schema_version = 1 | .project_ref = $pr | .updated_at = $now
+      | .updated_by = (if ($env.updated_by|type) == "string" then $env.updated_by else null end)
+    ' 2>/dev/null) || return 3
+  else
+    merged=$(jq -cn --argjson cur "$cur" --argjson env "$envelope" --arg sec "$section" --arg pr "$pr" --arg now "$now" '
+      $cur
+      | .[$sec] = $env.body
+      | .schema_version = 1 | .project_ref = $pr | .updated_at = $now
+      | .updated_by = (if ($env.updated_by|type) == "string" then $env.updated_by else null end)
+    ' 2>/dev/null) || return 3
+  fi
+  [[ -n "$merged" ]] || return 3
+  co__store_put "$principal" blueprint "$pr" "$merged"
+}
+
+# co__blueprint_get <project_ref> — §2.2 read. Pure read ⇒ NO lock. Echoes the
+# stored §4 record body VERBATIM, or the JSON literal `null` when there is no
+# Blueprint yet (the honest empty state — NEVER an error; 1:1 with blueprint.js
+# blueprintGet returning 200 null). An absent / empty project_ref is identically
+# "reachable, just empty" ⇒ null.
+co__blueprint_get() {
+  local pr="${1:-}" body
+  if [[ -z "$pr" ]]; then printf 'null\n'; return 0; fi
+  body=$(co__store_get blueprint "$pr" 2>/dev/null) || { printf 'null\n'; return 0; }
+  [[ -n "$body" ]] || { printf 'null\n'; return 0; }
+  printf '%s\n' "$body"
 }
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -883,7 +1012,9 @@ co_request() {
     agent-action)         co__agent_action_enqueue "$principal" "${1:-}" ;;  # I4 (claude-tools-uxvi4) — enqueue a host-effecting intent (transient queue, NOT a §4 record)
     agent-action-pending) co__agent_action_pending "${1:-}" ;;                # I4 — daemon read: pending rows, optionally one workspace
     agent-action-ack)     co__agent_action_ack "${1:-}" "${2:-}" "${3:-}" ;;  # I4 — daemon write: terminal status (done|failed)
-    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot; I3: intake-pending; J1: gate-meta-set|gate-meta-get; I4: agent-action|agent-action-pending|agent-action-ack)" >&2; return 2 ;;
+    blueprint-put)    co__blueprint_put "$principal" "${1:-}" ;;  # H1 (claude-tools-uxvh1) — DESIGN H sectioned read-merge-write of the blueprint §4 record (never-clobber: derived vs customization)
+    blueprint-get)    co__blueprint_get "${1:-}" ;;              # H1 — read the (blueprint, project_ref) body, or `null` (the honest empty state)
+    *)           echo "co: unknown op '$op' (§2 surfaces: put|get|set-desired|poll|timer-arm|timer-due|timer-ack; §6.1/§4.4: lease-acquire|lease-renew|lease-release; §10.3: forensic-put|forensic-fetch|forensic-dismiss|forensic-sweep|forensic-audit; §6.3: report-capacity|ask-capacity; §4.2/§2.4/§4.5: heartbeat|reconcile|work-snapshot; I3: intake-pending; J1: gate-meta-set|gate-meta-get; I4: agent-action|agent-action-pending|agent-action-ack; H1: blueprint-put|blueprint-get)" >&2; return 2 ;;
   esac
 }
 

@@ -41,6 +41,19 @@ const SCHEMA_VERSIONS = {
   // workspace runner (separate child of vvgy). Consumer: projection join +
   // renderer (separate child). v1.
   workspace_inventory: 1,
+  // H1 (claude-tools-uxvh1, DESIGN H / blueprint.md §2.1, UX-V2-ARCHITECTURE
+  // A.2/B.2) — the per-workspace Blueprint (the living design+map). A NEW §4
+  // type (not a bump): owned, addressable by (type,id), versioned, and it
+  // appears in the projection (blueprint_meta, H3) + the Flow-F FYI body (H5),
+  // so A.2 classifies it a §4 record, NOT a transient sibling. ONE row per
+  // workspace, id = `project_ref`, reusing the shared `records` table (no new
+  // table — unlike the transient tracks J/I/K). Body = B.2:
+  // {derived, customization, narrative, conflicts[]} + updated_at/updated_by.
+  // The §2.3 never-clobber guarantee (a `derived` write and a `customization`
+  // write must not erase each other) is the SECTIONED read-merge-write in
+  // cf/src/blueprint.js — the substrate stays the same whole-record
+  // INSERT-OR-REPLACE; the merge happens above it inside `_serialize`. v1.
+  blueprint: 1,
 };
 
 export function schemaVersion(type) {

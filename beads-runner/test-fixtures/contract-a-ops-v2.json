@@ -43,15 +43,15 @@
     },
 
     {
-      "_planned_note": "Track H (Blueprint) — H1. blueprint §4 record + get/put. Flip to 'wired' and confirm the proxy/migration paths when H1 lands (A.4 names are conventions; correct them to what shipped).",
-      "op": "blueprint-put", "track": "H", "status": "planned",
+      "_landed_note": "Track H (Blueprint) — H1 (claude-tools-uxvh1) LANDED. blueprint §4 record (REGISTERED in schema.js SCHEMA_VERSIONS = 1, reuses the shared `records` table — NO new table, unlike the transient tracks J/I/K) + the SECTIONED read-merge-write ops blueprint-put/-get. blueprint-put takes one envelope {project_ref,section,body,updated_by}; section ∈ {derived,customization,narrative} REPLACE one layer, conflicts-append PUSHES — all inside co._serialize so a racing derived (updater) + customization (GUI) write never clobber each other (§2.3, principle 9). blueprint-get returns the B.2 body verbatim or null (the honest empty state). Module cf/src/blueprint.js (BLUEPRINT_OPS) composes its write through the ONE gated _writeRecord path (lease.js precedent), guard in coordinator.js, read proxy web/functions/api/ws/blueprint.js (onRequestGet blueprint-get) + write proxy web/functions/api/ws/blueprint-put.js (onRequestPost blueprint-put; GUI seam forces updated_by:'you', refuses a GUI derived write), adapter-mapped, migration 0012_blueprint.sql (records-reuse; the design's 0007 predates J/I/K shipping 0008-0011), vitest twin cf/test/blueprint.spec.js. A.4: shipped two separate ws/ proxies (the board read/write split) rather than the design's blueprint/ dir — ws/ is where the per-workspace facet proxies live (gate-meta precedent).",
+      "op": "blueprint-put", "track": "H", "status": "wired",
       "module": "cf/src/blueprint.js", "ops_set": "BLUEPRINT_OPS", "guard": "BLUEPRINT_OPS",
-      "proxy": "web/functions/api/ws/blueprint-put.js", "adapter": true, "migration": "cf/migrations/0007_blueprint.sql"
+      "proxy": "web/functions/api/ws/blueprint-put.js", "adapter": true, "migration": "cf/migrations/0012_blueprint.sql"
     },
     {
-      "op": "blueprint-get", "track": "H", "status": "planned",
+      "op": "blueprint-get", "track": "H", "status": "wired",
       "module": "cf/src/blueprint.js", "ops_set": "BLUEPRINT_OPS", "guard": "BLUEPRINT_OPS",
-      "proxy": "web/functions/api/ws/blueprint.js", "adapter": true, "migration": "cf/migrations/0007_blueprint.sql"
+      "proxy": "web/functions/api/ws/blueprint.js", "adapter": true, "migration": "cf/migrations/0012_blueprint.sql"
     },
     {
       "_landed_note": "Track J (Gates/Hold) — J1 (claude-tools-uxvj1) LANDED. gate_metadata transient table (annotates a `gate:<id>` beads label, no §4 lifecycle / Contract A.2; machine_state_reports + relay_log precedent) + gate-meta-set/-get ops (id/why/unblock_condition/owner/scope; why REQUIRED; id = ^[a-z0-9][a-z0-9-]*$ gate-defer.sh shape; scope = closed D.2 enum {task,cohort}; owner is an INPUT not the principal, §2.3). Module cf/src/gate-meta.js (GATE_META_OPS), guard in coordinator.js, read+write proxy web/functions/api/ws/gate-meta.js (onRequestGet gate-meta-get + onRequestPost gate-meta-set), adapter-mapped, migration 0008_gate_metadata.sql, vitest differential cf/test/gate-meta.spec.js. A.4: shipped as gate-meta.js/GATE_META_OPS (clearer than the placeholder gate.js/GATE_OPS — avoids the gate-defer/gate-policy `gate` collision).",

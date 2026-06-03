@@ -181,6 +181,13 @@ import { GATE_META_OPS, handleGateMetaOp } from "./gate-meta.js";
 // — no second auth path (C4); a no/invalid-token agent-action op is rejected 401
 // at the Worker BEFORE this guard, so it writes NOTHING.
 import { AGENT_ACTION_OPS, handleAgentActionOp } from "./agent-action.js";
+// H1 (claude-tools-uxvh1) — DESIGN H the `blueprint` §4 record + its sectioned
+// read-merge-write ops. UNLIKE the transient siblings above, blueprint IS a §4
+// record (registered in schema.js SCHEMA_VERSIONS, lives in the existing
+// `records` table — NO new DDL); the module composes its write through this
+// DO's ONE gated path `_writeRecord` (lease.js precedent), with the §2.3
+// never-clobber merge running on `_serialize`.
+import { BLUEPRINT_OPS, handleBlueprintOp } from "./blueprint.js";
 
 export class Coordinator {
   constructor(ctx, env) {
@@ -478,6 +485,24 @@ export class Coordinator {
     // this guard, so it writes NOTHING.
     if (AGENT_ACTION_OPS.has(op)) {
       return await handleAgentActionOp(this, op, args, principal);
+    }
+
+    // ── H1 (claude-tools-uxvh1) DESIGN H `blueprint` §4 record op guard ──────
+    // The per-workspace Blueprint (living design+map). UNLIKE the transient
+    // siblings above, blueprint IS a §4 record: it composes its write through
+    // this DO's ONE gated `_writeRecord` path (the lease guard precedent — an
+    // ALREADY-registered §4 type in the existing `records` table, so
+    // ensureSchema above already DDL'd it; H1 adds NO table). The §2.3
+    // never-clobber SECTIONED read-merge-write runs INSIDE `_serialize` so a
+    // racing `derived` (updater) and `customization` (GUI) write each merge
+    // over the other's layer — neither clobbers the other (the AD1 payoff, the
+    // principle-9 engine guarantee). The §9.1 chokepoint (the Worker) has
+    // ALREADY authenticated + threaded `principal` — no second auth path (C4);
+    // a no/invalid-token blueprint op is rejected 401 at the Worker BEFORE this
+    // guard, so it writes NOTHING. Dispatched here so the CF.1 substrate switch
+    // below stays byte-identical.
+    if (BLUEPRINT_OPS.has(op)) {
+      return await handleBlueprintOp(this, op, args, principal);
     }
 
     try {
