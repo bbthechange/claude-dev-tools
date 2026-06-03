@@ -84,6 +84,16 @@ USAGE_POLL_INTERVAL="${BEADS_DAEMON_USAGE_POLL_INTERVAL:-${USAGE_CACHE_SECONDS:-
 # the deliver-once ledger live in the engine (notif-deliver); these only ring it.
 NOTIF_DELIVERY_POLL_INTERVAL="${BEADS_DAEMON_NOTIF_DELIVERY_POLL_INTERVAL:-30}"
 NOTIF_DIGEST_SWEEP_INTERVAL="${BEADS_DAEMON_NOTIF_DIGEST_SWEEP_INTERVAL:-86400}"
+# N10-11 (claude-tools-buoz): the §2.2 timer DAEMON CLOCK (DESIGN N §2.2/§4.3).
+# On this beat the daemon rings the engine's `timed-fyi-poll` driver op, which
+# fires every due §2.2 timer server-side — routing by kind: timed-fyi
+# auto-proceed (S-6 backstop) AND ready-to-pair surface. 60s default — matches
+# the Flow F / M3 fire-and-reconcile cluster: the dominant consumer (timed-fyi
+# auto-proceed) is a deterministic backstop for a best-effort alarm on a 24h
+# window, so sub-minute precision buys nothing; a due ready-to-pair appointment
+# surfaces within ≤this interval, then N2's blocking sweep (~30s) pushes it.
+# [free] to tune tighter if pair-surface latency ever needs it.
+TIMER_DUE_POLL_INTERVAL="${BEADS_DAEMON_TIMER_DUE_POLL_INTERVAL:-60}"
 
 # ─── source the per-machine library (DESIGN §3.2 retraction-of-topology
 # is about TIER, not about the library — the daemon still source's it) ────
@@ -157,6 +167,15 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # registered / no subscription exists).
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/notif-delivery-poll.sh"
+# N10-11 (claude-tools-buoz): the §2.2 timer DAEMON CLOCK — on cadence, ring the
+# engine's `timed-fyi-poll` driver op so every due §2.2 timer fires in
+# production: timed-fyi auto-proceed (S-6 poll-fallback backstop) AND the
+# ready-to-pair surface, both routed server-side by the dossier's §4.1 kind.
+# Closes audit gap wzejgmopj (engine timer.js was live but nothing rang it).
+# Defines daemon_timer_due_poll_once. Strict no-op until the main loop calls
+# into it (and when no workspace is registered).
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/timer-due-poll.sh"
 
 log() {
   # one-line log helper; stdout is redirected to daemon-logs/stdout.log by
@@ -282,7 +301,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s NOTIF_DELIVERY_POLL_INTERVAL=${NOTIF_DELIVERY_POLL_INTERVAL}s NOTIF_DIGEST_SWEEP_INTERVAL=${NOTIF_DIGEST_SWEEP_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s NOTIF_DELIVERY_POLL_INTERVAL=${NOTIF_DELIVERY_POLL_INTERVAL}s NOTIF_DIGEST_SWEEP_INTERVAL=${NOTIF_DIGEST_SWEEP_INTERVAL}s TIMER_DUE_POLL_INTERVAL=${TIMER_DUE_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -308,6 +327,7 @@ main() {
   local _last_usage_poll=0
   local _last_notif_delivery_poll=0
   local _last_notif_digest_sweep=0
+  local _last_timer_due_poll=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
     # M4 (claude-tools-8jb): on cadence, poll every registered workspace for
@@ -411,6 +431,21 @@ main() {
       _last_notif_digest_sweep="$_now"
       if declare -F daemon_notif_digest_sweep_once >/dev/null 2>&1; then
         daemon_notif_digest_sweep_once || true
+      fi
+    fi
+    # N10-11 (claude-tools-buoz): the §2.2 timer CLOCK — on cadence (~60s, and at
+    # boot so a fire window missed while the daemon was down reconciles promptly),
+    # ring the engine's timed-fyi-poll driver so every DUE §2.2 timer fires in
+    # production: timed-fyi auto-proceed (S-6 backstop) AND the ready-to-pair
+    # surface, routed server-side by the dossier's §4.1 kind. Boot-fire is safe —
+    # auto-proceed is idempotent via CF.6's §7.4 per-Item latch and pair-surface
+    # via notif-fire's one-per-dossier emit + N2's deliver-once ledger (no
+    # backlog-dump: N distinct due timers → N distinct fires, never N pings for
+    # one). Strict no-op when nothing is due / no workspace is registered.
+    if [ "$((_now - _last_timer_due_poll))" -ge "$TIMER_DUE_POLL_INTERVAL" ] || [ "$_last_timer_due_poll" -eq 0 ]; then
+      _last_timer_due_poll="$_now"
+      if declare -F daemon_timer_due_poll_once >/dev/null 2>&1; then
+        daemon_timer_due_poll_once || true
       fi
     fi
     # claude-tools-1p0u: drain the daemon's OWN §1.1 outbox to the deployed

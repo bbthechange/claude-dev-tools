@@ -15,7 +15,8 @@ workspace registry, or the M3 spawn/kill reconcile that keeps a runner alive.
 - `daemon/*-poll.sh` — the job family: `usage-poll.sh` (M2), `desired-state-poll.sh`
   (M3), `hosted-resolution-poll.sh` (M4), `intake-dispatch-poll.sh` (I3),
   `flow-f-overview-poll.sh` (P1), `work-control-reconcile-poll.sh` (L2),
-  `notif-delivery-poll.sh` (N2) + `m6-dispatch.sh` (M6 bd-surgery).
+  `notif-delivery-poll.sh` (N2), `timer-due-poll.sh` (N10-11) + `m6-dispatch.sh`
+  (M6 bd-surgery).
 - `daemon/workspace-registry.sh` — load/parse `~/.config/claude-tools/workspaces.json`.
 - `daemon/install.sh` `uninstall.sh` `launchd-plist.template` `render-plist.sh`
   `check-plist-drift.sh` — the LaunchAgent install + drift-detector.
@@ -84,6 +85,7 @@ runner (Flow D), bounded to ≤ one `DESIRED_STATE_POLL_INTERVAL` (60s).
 | `flow-f-overview-poll.sh` | **P1**: walk each workspace for closed beads with `stage:design`; dispatch a dossier-builder and push a `timed-fyi` overview dossier. Seed-flag suppresses the first-run backlog. **Also hosts the H5 (claude-tools-uxvh5) blueprint-update trigger path** — `daemon_blueprint_update_should_trigger` (coarse gate: `stage:design\|impl\|docs`), `daemon_blueprint_update__shape_timed_fyi` (the §6.5 unification: a Blueprint change shapes the SAME `kind=overview`/`timed-fyi` gi as the Flow F overview — NOT a 2nd mechanism), and the synchronous `daemon_blueprint_update_dispatch_one` (spawn the read-only `blueprint-update` hat → on a material change `blueprint-put` + emit ONE timed-fyi via the shared `_daemon_flow_f_engine_write`). **Canary-disabled by default** (`DAEMON_BLUEPRINT_UPDATE_DISABLED=1`) and NOT wired into the main loop — **I5** (`uxvi5`, deferred) owns turning it live + wrapping it in the parallel/detached/capacity-gated scheduler. |
 | `work-control-reconcile-poll.sh` | **L2**: ask engine for BLOCKING dossiers still on the Inbox whose bead resolved outside the tap; publish `bead_status_changed` onto the daemon outbox so the engine expires the stale card. |
 | `notif-delivery-poll.sh` | **N2**: rings the engine `notif-deliver` op — blocking sweep (~30s) + digest sweep (~daily). VAPID private key + ledger stay server-side; this only triggers. See `notifications.md`. |
+| `timer-due-poll.sh` | **N10-11** (claude-tools-buoz): the §2.2 timer CLOCK. Rings the engine's COMPOSITE `timed-fyi-poll` driver op (~60s + boot-fire) — that op (`cf/src/timer.js` `fireDueTimers`) lists every due §2.2 timer and FIRES it server-side, ROUTING by the dossier's §4.1 kind: `kind:"pair"` ⇒ `pairSurface` (ready-to-pair surface + blocking notif), else ⇒ `fireDossier` (timed-fyi S-6 auto-proceed). Rings the COMPOSITE op, NEVER the bare substrate `timer-due` (which only LISTS ids — does not fire). No `now` arg (engine owns the clock). Singleton-DO call (workspace[0] url+bearer, N2 pattern), not per-workspace. There is NO alarm daemon — this poll IS the S-6 backstop. Closed audit gap wzejgmopj (engine timer.js was live but nothing rang it in prod). |
 | `launchd-plist.template` / `render-plist.sh` | The LaunchAgent definition + the ONE token-substitution function (`render_daemon_plist`) shared by install + drift-check. `EnvironmentVariables` (e.g. `USAGE_THRESHOLD=95`) load at bootstrap only. |
 | `install.sh` / `uninstall.sh` | Render plist → `~/Library/LaunchAgents/` → `launchctl bootout` then `bootstrap` (bootout-first is load-bearing for env reload). |
 | `check-plist-drift.sh` | Compares installed + launchd-loaded env against what `install.sh` would render now; prints `mismatches=0` when in sync. |
@@ -175,4 +177,6 @@ didn't find here: a new poll job + its cadence env, a changed liveness oracle, a
 moved/renamed helper, a fresh plist scar, a new invariant. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete lines that have gone
 stale; don't let it grow into a copy of DESIGN.md or the README. Last substantive
-update: 2026-06-03 (H5 added the blueprint-update trigger path inside `flow-f-overview-poll.sh` — canary-disabled, I5 wires it live).
+update: 2026-06-03 (N10-11 added `timer-due-poll.sh` — the §2.2 timer daemon
+clock that rings the engine's `timed-fyi-poll` driver, firing timed-fyi
+auto-proceed + ready-to-pair surface in prod; closed audit gap wzejgmopj).
