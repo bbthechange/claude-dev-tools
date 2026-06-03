@@ -163,7 +163,8 @@
  * board link, with a hover/affordance arrow. Omitted when no map exists yet.
  * Mirrors the intake-strip framing. */
 .ws-blueprint{margin-top:12px;padding-top:11px;border-top:1px solid var(--line);
-  display:flex;align-items:center;gap:9px;font-size:10px;transition:border-color .2s}
+  display:flex;align-items:center;gap:9px;font-size:10px;transition:border-color .2s;
+  min-height:var(--tap)} /* phone-first: the deep-link is a ≥44px tap target (I1) */
 .ws-blueprint:hover{border-top-color:var(--line-2)}
 .ws-blueprint:hover .ws-bp-go{color:var(--text)}
 .ws-bp-go{font-size:13px;line-height:1;color:var(--sky);flex:none;transition:color .2s}
