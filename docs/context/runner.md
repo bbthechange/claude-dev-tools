@@ -231,8 +231,12 @@ was lost).
   RECENT `STUCK_NEEDS_HUMAN@<epoch>` (within `STUCK_NOTE_RECENT_WINDOW`=1800s) or a
   bare note that is NOT the runner's own `Runner: STUCK_NEEDS_HUMAN at …` audit line
   (`(?<!Runner: )` lookbehind). Closes the HANDOFF "Fix-B over-trigger" (a once-stuck
-  bead re-looping forever). v2 has no such predicate — its STUCK path is `$sig`-file
-  based, already window-bounded by construction.
+  bead re-looping forever). **x949 closed the PRODUCER side:** the §7.2 worker-prompt
+  fallback (`build_worker_prompt`) now tells the agent to append
+  `STUCK_NEEDS_HUMAN@$(date +%s)` (was a BARE note that `has_bare` matched FOREVER),
+  so the dominant agent-fallback vector also ages out of the window; the predicate's
+  bare-note path stays only for BC-53 back-compat. v2 has no such predicate — its
+  STUCK path is `$sig`-file based, already window-bounded by construction.
 - **Never gate a lease decision on the transport `rc==4`** — it conflates a
   GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
   AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409

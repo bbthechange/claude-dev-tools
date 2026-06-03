@@ -1831,13 +1831,14 @@ The trigger is intentionally brief (aim for under 200 words). A fresh dossier-bu
   - reversible?: short note on what is / isn't reversible (the builder may revise)
   - context_dump: freeform note of WHAT IS IN YOUR HEAD that the builder cannot find by reading the bead, related code, and docs itself -- an alternative you considered, a subtle constraint you discovered mid-task, why you cannot resolve this yourself. Do NOT re-explain the bead description or code the builder can read for itself.
 
-Fallback path (only if `mcp__askbrian__ask-brian` is not registered in this session -- the MCP server is rolling out alongside this prompt): write the structured ask into the bead so the runner can route it, then stop. The runner auto-flips status=blocked from the `human` label + STUCK_NEEDS_HUMAN note, so you only need:
-  1. bd update BEADS_ID --append-notes="STUCK_NEEDS_HUMAN
+Fallback path (only if `mcp__askbrian__ask-brian` is not registered in this session -- the MCP server is rolling out alongside this prompt): write the structured ask into the bead so the runner can route it, then stop. The runner auto-flips status=blocked from the `human` label + a recent STUCK_NEEDS_HUMAN@<epoch> note, so you only need:
+  1. bd update BEADS_ID --append-notes="STUCK_NEEDS_HUMAN@$(date +%s)
      TL;DR: <one sentence>
      The ask: <the precise decision needed>
      Options: <each option and its blast radius>
      Recommendation: <your pick> -- <why>
      Reversible: <what is / isn't reversible>"
+     (Run that command verbatim -- the `@$(date +%s)` is intentional: it stamps the marker with the current Unix time so the runner's stuck detector recency-bounds it and it ages out once resolved. Do NOT drop the suffix to a bare STUCK_NEEDS_HUMAN -- a bare marker re-trips the auto-flip on every re-pickup, forever.)
   2. bd label add BEADS_ID human
   3. Stop. Do NOT close the issue, do NOT pick an option yourself, do NOT keep working around it. For a real human-decision fork this IS the correct, expected outcome -- not a failure.
 ASKBRIAN_DELIM

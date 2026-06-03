@@ -160,6 +160,14 @@ match — a false green otherwise).
   passes through un-normalised silently no-ops downstream.
 - **CDN caches static assets.** API responses are `no-store`, but static bytes may
   be CDN-cached; use an incognito tab / cache-bust to see an update on the phone.
+- **A proxy that builds a §5 dossier `gi` shares its template (x949).** The
+  escalate control proxy's `worker_stuck` gi lives in `web/shared/stuck-dossier.js`
+  (`buildStuckGi`), imported by BOTH `functions/api/control/escalate.js` AND the cf
+  spec `cf/test/escalate-dossier.spec.js` — so the offline §5 gate validates the
+  REAL builder output through `validateDossier`, not a hand-copied mirror that could
+  drift out of §5 unseen. The cross-dir import (`../../../shared/…` from the function)
+  bundles fine — `wrangler pages functions build` inlines it. Don't re-introduce a
+  mirror; extend the shared builder.
 - **The off-network worker is read-only + Inbox-exempt by design (4zrn).** `sw.js`
   is network-FIRST for `/api/…` (online is always live; cache is the offline
   fallback only) and hard-bypasses the Inbox surfaces (S-1). This does NOT violate

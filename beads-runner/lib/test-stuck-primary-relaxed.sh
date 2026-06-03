@@ -262,6 +262,30 @@ out="$(
   && ok "a 30s-old marker with a 10s window ⇒ NO fire (window is honored)" \
   || bad "tunable window not honored (got '$out')"
 
+# ── claude-tools-x949 (PRODUCER side of the over-trigger fix) ─────────────────
+# The recency gate above is the CONSUMER. The DOMINANT remaining bare-note vector
+# was the §7.2 worker-prompt fallback (build_worker_prompt), which instructed the
+# agent to append a BARE `STUCK_NEEDS_HUMAN` note — matched by has_bare FOREVER,
+# re-tripping the relaxed auto-flip on every re-pickup even after the stuck is
+# resolved. x949 timestamps it: the fallback now emits `STUCK_NEEDS_HUMAN@$(date
+# +%s)`, which the recent_ts recognizer recency-bounds (and has_bare's
+# `(?!@[0-9])` lookahead deliberately SKIPS). Pin the producer so a future prompt
+# edit can't silently revert to the permanently-firing bare form.
+echo ""
+echo "── x949 (producer): the worker-prompt fallback emits a TIMESTAMPED marker ──"
+if grep -qF 'append-notes="STUCK_NEEDS_HUMAN@$(date +%s)' "$RUNNER"; then
+  ok "build_worker_prompt fallback appends STUCK_NEEDS_HUMAN@\$(date +%s) (recency-bounded, ages out)"
+else
+  bad "fallback note is not the timestamped STUCK_NEEDS_HUMAN@\$(date +%s) form (x949 regression)"
+fi
+# And it must NOT have reverted to the bare `--append-notes="STUCK_NEEDS_HUMAN<newline>`
+# form (the permanent has_bare re-trip the timestamp exists to kill).
+if grep -qE 'append-notes="STUCK_NEEDS_HUMAN$' "$RUNNER"; then
+  bad "a BARE --append-notes=\"STUCK_NEEDS_HUMAN form is back in the runner (x949 over-trigger regression)"
+else
+  ok "no bare --append-notes=\"STUCK_NEEDS_HUMAN fallback remains (over-trigger stays closed)"
+fi
+
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"
 printf '  RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
