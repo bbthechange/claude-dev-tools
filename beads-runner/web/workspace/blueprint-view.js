@@ -146,6 +146,88 @@
     return x.filter(function (s) { return typeof s === 'string' && s; });
   }
 
+  /* ── normalizeOverlay(opts) — the §6.4/§8.2 in-flight overlay INPUT, tolerant ───
+   * The overlay "lights up the domains currently being worked, so Brian can see
+   * where the swarm is" (§6.4) and flags the two-agents-one-domain collision-risk
+   * signal (the reason auxiliaries are read-only). The renderer reads its own §4
+   * blueprint record; the live work is a CROSS-TRACK READ of Track I's activity
+   * (§8.2), passed in via opts — this fn folds whatever the caller has into:
+   *   activeIds      : id → true   — every reported active node id (ANY form);
+   *                                  drives the lit-up (resolved to a visible box).
+   *   touchersByNode : id → int    — how many agents touch THIS exact node.
+   *   agentsByNode   : id → {key}  — the DISTINCT agent identities touching it;
+   *                                  the ONLY honest basis for a domain-level
+   *                                  collision (≥2 DIFFERENT agents resolving into
+   *                                  one visible box — NOT one writer touching two).
+   *
+   * THREE accepted shapes for opts.active_domains (+ an opts.activity alias):
+   *   1. ["domain:posts-feed", …]                         the FROZEN B.1 union
+   *      (blueprint_meta.active_domains, §8.1). A union lists a domain ONCE and
+   *      cannot say how many agents touch it, so it LIGHTS the box but asserts NO
+   *      collision (identity unknown — inferring one would be a fabrication, B.4).
+   *   2. [{ id|domain|node_id, agents|count|touchers }]    explicit per-node count
+   *      (forward-compat / testable): agents≥2 ⇒ that node self-collides.
+   *   3. { writer:{…touching[]}, auxiliary:[{…touching[]}] } the B.1 activity
+   *      sub-object (§8.2 — what the facet has in hand; the one form carrying agent
+   *      IDENTITY, so the one form that can honestly tell two-agents-one-domain
+   *      from one-writer-two-domains).
+   * Absent/garbled ⇒ an empty overlay (the map is simply dark — never an exception). */
+  function normalizeOverlay(opts) {
+    var activeIds = Object.create(null);      // null-proto: a hostile "__proto__" id is an honest miss
+    var touchersByNode = Object.create(null);
+    var agentsByNode = Object.create(null);
+    function markActive(id) {
+      if (typeof id !== 'string' || !id) return;
+      activeIds[id] = true;
+      if (!(touchersByNode[id] > 0)) touchersByNode[id] = touchersByNode[id] || 1;
+    }
+    function setCount(id, n) {
+      if (typeof id !== 'string' || !id) return;
+      activeIds[id] = true;
+      if (n > (touchersByNode[id] || 0)) touchersByNode[id] = n;
+    }
+    function addAgent(id, key) {            // identity-bearing touch (activity form)
+      if (typeof id !== 'string' || !id) return;
+      activeIds[id] = true;
+      if (!agentsByNode[id]) agentsByNode[id] = Object.create(null);
+      agentsByNode[id][key] = true;
+      var n = Object.keys(agentsByNode[id]).length;
+      if (n > (touchersByNode[id] || 0)) touchersByNode[id] = n;
+    }
+    function ingestAgent(agent, key) {
+      if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return;
+      asStrArray(agent.touching).forEach(function (id) { addAgent(id, key); });
+    }
+    function ingestActivity(act) {           // the {writer, auxiliary} sub-object
+      if (!act || typeof act !== 'object' || Array.isArray(act)) return;
+      if (act.writer) ingestAgent(act.writer, 'writer');
+      if (Array.isArray(act.auxiliary)) {
+        act.auxiliary.forEach(function (a, i) { ingestAgent(a, 'aux#' + i); });
+      }
+    }
+    function ingestList(list) {
+      list.forEach(function (entry) {
+        if (typeof entry === 'string') { markActive(entry); return; }
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+        var id = (typeof entry.id === 'string' && entry.id) ? entry.id
+          : (typeof entry.domain === 'string' && entry.domain) ? entry.domain
+          : (typeof entry.node_id === 'string' && entry.node_id) ? entry.node_id : null;
+        if (!id) return;
+        var n = entry.agents;
+        if (typeof n !== 'number') n = entry.count;
+        if (typeof n !== 'number') n = entry.touchers;
+        n = (typeof n === 'number' && isFinite(n) && n >= 1) ? Math.floor(n) : 1;
+        setCount(id, n);
+      });
+    }
+    var o = (opts && typeof opts === 'object') ? opts : {};
+    var ad = o.active_domains;
+    if (Array.isArray(ad)) ingestList(ad);
+    else ingestActivity(ad);                 // active_domains given AS the activity object
+    ingestActivity(o.activity);              // explicit alias, folded in
+    return { activeIds: activeIds, touchersByNode: touchersByNode, agentsByNode: agentsByNode };
+  }
+
   /* ── parseNodes — derived.nodes → a tolerant id→node index (§3.1) ──────────────
    * Skips a null / id-less / malformed node with a degraded note (never throws,
    * never fabricates). An out-of-set kind is KEPT but flagged (B.4). The node's
@@ -552,8 +634,11 @@
   /* ── deriveBlueprintView(record, nowMs, opts) → the whole map view model ───────
    * record = the blueprint-get body (B.2); null ⇒ the honest "no Blueprint yet"
    * empty state (found:false, ok:true — never a refusal). opts = {focus, opened[],
-   * scale}. An unknown-HIGHER (or missing/non-integer) schema_version is the ONE
-   * hard refusal (§0.3). */
+   * scale, active_domains, activity}. active_domains / activity drive the §6.4/§8.2
+   * IN-FLIGHT OVERLAY (light up worked domains + the two-agents-one-domain
+   * collision signal) — see normalizeOverlay; absent ⇒ the overlay is simply dark.
+   * An unknown-HIGHER (or missing/non-integer) schema_version is the ONE hard
+   * refusal (§0.3). */
   function deriveBlueprintView(record, nowMs, opts) {
     opts = (opts && typeof opts === 'object') ? opts : {};
     var now = (typeof nowMs === 'number' && isFinite(nowMs)) ? nowMs : NaN;
@@ -567,7 +652,8 @@
         updated_at: null, updated_at_age: null,
         nodes: [], edges: [], apis: [], conflicts: [],
         focus: null,
-        counts: { nodes: 0, top_level: 0, edges: 0, apis: 0, hidden: 0, conflicts: 0 },
+        overlay: { active_ids: [], lit: [], collisions: [], touchers_by_node: {}, unmapped: [] },
+        counts: { nodes: 0, top_level: 0, edges: 0, apis: 0, hidden: 0, conflicts: 0, active: 0, collisions: 0 },
         degraded: ['no Blueprint yet for this workspace — request one']
       };
     }
@@ -637,6 +723,44 @@
       }
     }
 
+    // ── in-flight overlay (§6.4/§8.2): light up worked domains + collision flag ──
+    // Each reported active node resolves to its deepest VISIBLE ancestor (the same
+    // §3.2 edge-IP: at macro a worked capability lights its domain box; drilled in
+    // it lights itself). A visible box is a COLLISION when ≥2 DISTINCT agents'
+    // touching resolve into it (two-agents-one-domain) OR a single node it rolls up
+    // is itself touched by ≥2 agents — honest only where agent IDENTITY (or an
+    // explicit count) is present, so one writer touching two domains never trips it.
+    // An active id absent from the (post-customization) map is honestly UNMAPPED —
+    // never lit, never fabricated (B.4).
+    var overlayIn = normalizeOverlay(opts);
+    var litBox = Object.create(null);         // visible box id → true (lit)
+    var boxAgents = Object.create(null);      // visible box id → {agentKey: true}
+    var boxMaxTouchers = Object.create(null); // visible box id → max per-node touchers rolled up
+    var unmapped = [];
+    Object.keys(overlayIn.activeIds).forEach(function (id) {
+      if (!idx.byId[id]) { unmapped.push(id); return; }   // reported but not a current node
+      var box = dva(id);                                  // deepest VISIBLE ancestor
+      if (!box) { unmapped.push(id); return; }            // its whole chain is collapsed/hidden away
+      litBox[box] = true;
+      var ag = overlayIn.agentsByNode[id];
+      if (ag) {
+        if (!boxAgents[box]) boxAgents[box] = Object.create(null);
+        Object.keys(ag).forEach(function (k) { boxAgents[box][k] = true; });
+      }
+      var t = overlayIn.touchersByNode[id] || 0;
+      if (t > (boxMaxTouchers[box] || 0)) boxMaxTouchers[box] = t;
+    });
+    if (unmapped.length) {
+      degraded.push('in-flight overlay: ' + unmapped.length +
+        ' active domain id(s) not in the current map (stale or hidden) — not lit (' +
+        unmapped.slice(0, 6).join(', ') + ')');
+    }
+    var collisionBox = Object.create(null);
+    Object.keys(litBox).forEach(function (box) {
+      var nAgents = boxAgents[box] ? Object.keys(boxAgents[box]).length : 0;
+      if (nAgents >= 2 || (boxMaxTouchers[box] || 0) >= 2) collisionBox[box] = true;
+    });
+
     // emit the node list in producer order, visible nodes carrying render state.
     var nodes = idx.order.map(function (id) {
       var n = idx.byId[id];
@@ -644,6 +768,8 @@
       var src = openSource[id] || null;
       var focused = focusSet ? !!focusSet[id] : false;
       var dimmed = (focusSet && vis) ? !connected[id] : false;
+      var activeSelf = !!overlayIn.activeIds[id];        // this exact node is being worked
+      var selfTouchers = overlayIn.touchersByNode[id] || (activeSelf ? 1 : 0);
       return {
         id: n.id,
         label: n.label,
@@ -665,6 +791,15 @@
         auto_opened: n.auto_opened,
         focused: focused,
         dimmed: dimmed,
+        // §6.4/§8.2 in-flight overlay. `active`/`collision` are the RENDER flags on
+        // a visible box (active resolved to the deepest visible ancestor); `*_self`
+        // is the raw truth about THIS exact node id (visibility-independent) so the
+        // model is honest about direct-vs-rolled-up work.
+        active: !!litBox[id],              // a worked node resolves up to this visible box
+        active_self: activeSelf,           // this exact node id is in the active set
+        collision: !!collisionBox[id],     // ≥2 distinct agents (or a ≥2-toucher node) here
+        collision_self: selfTouchers >= 2, // this exact node is touched by ≥2 agents
+        touchers: selfTouchers,            // distinct agents touching this exact node (1 if union-only)
         layout: place[id] || null          // [free] geometry; present only when visible
       };
     });
@@ -678,6 +813,27 @@
     var conflicts = Array.isArray(rec.conflicts)
       ? rec.conflicts.filter(function (c) { return c && typeof c === 'object'; })
       : [];
+
+    // overlay summary (deterministic producer order): the active ids that exist in
+    // the map, the visible boxes lit, the collision boxes, per-active-node touchers,
+    // and the honest unmapped[] (reported-active ids the map doesn't know).
+    var activeMapped = idx.order.filter(function (id) { return overlayIn.activeIds[id]; });
+    var litList = idx.order.filter(function (id) { return litBox[id]; });
+    var collisionList = idx.order.filter(function (id) { return collisionBox[id]; });
+    var touchersByNodeOut = {};
+    activeMapped.forEach(function (id) {
+      // toucher count per active node — a MEASURED distinct-agent count from the
+      // identity-bearing activity form, but only a FLOOR-of-1 from the flat union
+      // (a union loses identity), so this is named "touchers", never "agents".
+      touchersByNodeOut[id] = overlayIn.touchersByNode[id] || 1;
+    });
+    var overlay = {
+      active_ids: activeMapped,     // reported active node ids present in the map (self)
+      lit: litList,                 // visible boxes currently lit (active resolved up)
+      collisions: collisionList,    // visible boxes flagged two-agents-one-domain
+      touchers_by_node: touchersByNodeOut,
+      unmapped: unmapped            // reported active ids absent from the map — honestly NOT lit
+    };
 
     return {
       ok: true,
@@ -694,13 +850,16 @@
       edges: edges,
       apis: apis,
       conflicts: conflicts,
+      overlay: overlay,
       counts: {
         nodes: idx.order.length,
         top_level: topLevel,
         edges: edges.length,
         apis: apis.length,
         hidden: hiddenCount,
-        conflicts: conflicts.length
+        conflicts: conflicts.length,
+        active: litList.length,        // visible boxes lit by in-flight work
+        collisions: collisionList.length
       },
       degraded: degraded
     };

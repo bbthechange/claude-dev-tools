@@ -371,8 +371,94 @@ ck "parent cycle ⇒ all 3 nodes counted"                 eq "$(jq -r '.counts.n
 ck "parent cycle ⇒ a degraded 'parent cycle' note"      has "parent cycle" "$(jq -r '.degraded|join("|")' <<<"$VCY")"
 ck "parent cycle ⇒ the good sibling stays visible"      eq "$(jq -r '.nodes[]|select(.id=="domain:c")|.visible' <<<"$VCY")" "true"
 
+echo "── N: §6.4/§8.2 in-flight overlay (G5) — light up worked domains + collision ──"
+# The overlay reads Track I's activity (passed via opts; the renderer reads its own
+# §4 record). A worked node lights its deepest VISIBLE ancestor box (the §3.2
+# resolution IP, like edges); two DIFFERENT agents in one domain is the §6.4
+# collision-risk signal; honesty (B.4): a union can't assert collision, an unmapped
+# active id is never fabricated, no overlay ⇒ the map is dark.
+
+# Flat union (the FROZEN blueprint_meta.active_domains shape §8.1): a worked
+# capability lights its ancestor box at macro; the box is active, the buried node
+# is active_self but not itself lit; a union asserts NO collision (identity unknown).
+VO1="$(bp '{"active_domains":["capability:create-post"]}' "$FIX")"
+ndo1() { jq -c --arg id "$1" '.nodes[]|select(.id==$id)' <<<"$VO1"; }
+ck "overlay(union): posts-feed box lit (active)"        eq "$(ndo1 domain:posts-feed | jq -r '.active')" "true"
+ck "overlay(union): buried create-post active_self"     eq "$(ndo1 capability:create-post | jq -r '.active_self')" "true"
+ck "overlay(union): buried create-post NOT lit (collapsed, lights its ancestor)" \
+   eq "$(ndo1 capability:create-post | jq -r '.active')" "false"
+ck "overlay(union): lit = [domain:posts-feed]"          eq "$(jq -c '.overlay.lit' <<<"$VO1")" '["domain:posts-feed"]'
+ck "overlay(union): counts.active 1"                    eq "$(jq -r '.counts.active' <<<"$VO1")" "1"
+ck "overlay(union): NO collision (a union can't assert it)" eq "$(jq -r '.counts.collisions' <<<"$VO1")" "0"
+
+# Activity sub-object (§8.2, identity-bearing): ONE writer touching TWO capabilities
+# in one domain is NOT a collision (one agent, not two).
+VO2="$(bp '{"activity":{"writer":{"touching":["capability:create-post","capability:rank-feed"]},"auxiliary":[]}}' "$FIX")"
+ck "overlay(1 writer/2 caps): posts-feed lit"           eq "$(jq -r '.nodes[]|select(.id=="domain:posts-feed")|.active' <<<"$VO2")" "true"
+ck "overlay(1 writer/2 caps): NO collision (honest — one agent)" eq "$(jq -r '.counts.collisions' <<<"$VO2")" "0"
+
+# TWO DIFFERENT agents (writer + an aux) touching the SAME domain ⇒ the §6.4
+# two-agents-one-domain collision, rolled up to the visible domain box at macro.
+VO3="$(bp '{"activity":{"writer":{"touching":["capability:create-post"]},"auxiliary":[{"touching":["capability:rank-feed"]}]}}' "$FIX")"
+ndo3() { jq -c --arg id "$1" '.nodes[]|select(.id==$id)' <<<"$VO3"; }
+ck "overlay(2 agents/1 domain): posts-feed collision"   eq "$(ndo3 domain:posts-feed | jq -r '.collision')" "true"
+ck "overlay(2 agents/1 domain): collisions=[posts-feed]" eq "$(jq -c '.overlay.collisions' <<<"$VO3")" '["domain:posts-feed"]'
+ck "overlay(2 agents/1 domain): counts.collisions 1"    eq "$(jq -r '.counts.collisions' <<<"$VO3")" "1"
+ck "overlay: an untouched domain is neither lit nor collided" eq "$(ndo3 domain:messaging | jq -r '.active')" "false"
+
+# active_domains given AS the activity object (shape 3 via the active_domains slot).
+VO3b="$(bp '{"active_domains":{"writer":{"touching":["capability:create-post"]},"auxiliary":[{"touching":["capability:rank-feed"]}]}}' "$FIX")"
+ck "overlay: active_domains-as-activity also collides"  eq "$(jq -r '.counts.collisions' <<<"$VO3b")" "1"
+
+# Explicit per-node count form: agents≥2 ⇒ that node self-collides + its domain box
+# rolls it up at macro.
+VO4="$(bp '{"active_domains":[{"id":"capability:send-dm","agents":2}]}' "$FIX")"
+ndo4() { jq -c --arg id "$1" '.nodes[]|select(.id==$id)' <<<"$VO4"; }
+ck "overlay(count form): send-dm touchers 2"            eq "$(ndo4 capability:send-dm | jq -r '.touchers')" "2"
+ck "overlay(count form): send-dm collision_self"        eq "$(ndo4 capability:send-dm | jq -r '.collision_self')" "true"
+ck "overlay(count form): messaging box collision (rollup)" eq "$(ndo4 domain:messaging | jq -r '.collision')" "true"
+# the summary names the per-node count "touchers_by_node" (never "agents_by_node":
+# a flat union is a floor-of-1, not a measured agent count — keep the name honest).
+ck "overlay(count form): touchers_by_node carries the count" eq "$(jq -r '.overlay.touchers_by_node["capability:send-dm"]' <<<"$VO4")" "2"
+
+# Drill-in: opening the domain resolves the overlay onto the finer VISIBLE boxes
+# (the §3.2 resolution IP — active lands on the deepest VISIBLE ancestor, like edges).
+VO5="$(bp '{"opened":["domain:posts-feed"],"activity":{"writer":{"touching":["capability:create-post"]},"auxiliary":[{"touching":["capability:rank-feed"]}]}}' "$FIX")"
+ndo5() { jq -c --arg id "$1" '.nodes[]|select(.id==$id)' <<<"$VO5"; }
+ck "overlay(drill): create-post now lit directly"       eq "$(ndo5 capability:create-post | jq -r '.active')" "true"
+ck "overlay(drill): rank-feed now lit directly"         eq "$(ndo5 capability:rank-feed | jq -r '.active')" "true"
+
+# B.4 honesty: a reported active id absent from the map is UNMAPPED — not lit, never
+# fabricated, an honest degraded note (never a fabricated box).
+VO6="$(bp '{"active_domains":["domain:ghost-svc"]}' "$FIX")"
+ck "overlay(unmapped): ghost not fabricated as a node"  eq "$(jq -r '[.nodes[]|select(.id=="domain:ghost-svc")]|length' <<<"$VO6")" "0"
+ck "overlay(unmapped): listed in overlay.unmapped"      eq "$(jq -c '.overlay.unmapped' <<<"$VO6")" '["domain:ghost-svc"]'
+ck "overlay(unmapped): nothing lit"                     eq "$(jq -r '.counts.active' <<<"$VO6")" "0"
+ck "overlay(unmapped): honest degraded note"            has "not in the current map" "$(jq -r '.degraded|join("|")' <<<"$VO6")"
+
+# No overlay opts ⇒ the map is simply dark (the base render V has none).
+ck "overlay absent: counts.active 0 (base render)"      eq "$(jq -r '.counts.active' <<<"$V")" "0"
+ck "overlay absent: counts.collisions 0"                eq "$(jq -r '.counts.collisions' <<<"$V")" "0"
+ck "overlay absent: no node is active"                  eq "$(jq -r '[.nodes[]|select(.active)]|length' <<<"$V")" "0"
+ck "overlay absent: overlay.lit empty"                  eq "$(jq -c '.overlay.lit' <<<"$V")" '[]'
+
+# A hostile overlay id (__proto__/constructor) must not raise and must degrade
+# honestly (the null-proto map discipline — same as the customization-key hardening).
+VO7="$(bp '{"active_domains":["__proto__","constructor"]}' "$FIX")"
+ck "overlay(proto-key): ok:true (no exception)"         eq "$(jq -r '.ok' <<<"$VO7")" "true"
+ck "overlay(proto-key): both treated as honest unmapped" eq "$(jq -r '.overlay.unmapped|length' <<<"$VO7")" "2"
+ck "overlay(proto-key): all 10 nodes intact"            eq "$(jq -r '.counts.nodes' <<<"$VO7")" "10"
+ck "overlay(proto-key): nothing lit"                    eq "$(jq -r '.counts.active' <<<"$VO7")" "0"
+
+# Overlay composes with the empty (null-record) state — shape parity (counts.active
+# present, overlay present) so the facet shell never reads undefined.
+VON="$(bp '{"active_domains":["x"]}' 'null')"
+ck "overlay(empty record): ok:true honest empty"        eq "$(jq -r '.ok' <<<"$VON")" "true"
+ck "overlay(empty record): counts.active 0 (shape parity)" eq "$(jq -r '.counts.active' <<<"$VON")" "0"
+ck "overlay(empty record): overlay object present"      eq "$(jq -r '.overlay.lit|type' <<<"$VON")" "array"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
-echo " test-blueprint-view (blueprint map renderer H2):  PASS=$PASS  FAIL=$FAIL"
+echo " test-blueprint-view (blueprint map renderer H2 + overlay G5):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]
