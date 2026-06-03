@@ -66,7 +66,7 @@ Four facts explain the page:
 
 | File | Role |
 |---|---|
-| `inbox-view.js` | The pure core. `deriveInboxList` (§4.5 lane + Flow-G glance, ranked newest-first), `deriveDossierView` (the §5 render model — the ONE refusal lives here), `deriveItem` (always answerable, never `{missing}`), `buildItemResponse` (form→§5.2 payload + honest deterministic/reconciler preview), `deriveConfirm` (S-2 no-Dolt-lag ack), `deriveFailureView` (Flow-G tiers 1–2 + §10.3 affordance). `schemaGate`/`unknownHigher` = the §0.3 gate. `looksLikeMermaid` = byte-port of the engine/bash predicate. |
+| `inbox-view.js` | The pure core. `deriveInboxList` (§4.5 lane + Flow-G glance, ranked newest-first), `deriveDossierView` (the §5 render model — the ONE refusal lives here), `deriveItem` (always answerable, never `{missing}`), `buildItemResponse` (form→§5.2 payload + honest deterministic/reconciler preview), `deriveConfirm` (S-2 no-Dolt-lag ack), `deriveFailureView` (Flow-G tiers 1–2 + §10.3 affordance). `schemaGate`/`unknownHigher` = the §0.3 gate. `looksLikeMermaid` = byte-port of the engine/bash predicate. `blueprintFocusLink` = the §6.4 dossier↔Blueprint bridge classifier (claude-tools-uxg3). |
 | `app.js` | Browser glue. Hash routes: `#/`→list, `#/d/<id>`→dossier, `#/f/<bead>`→failure. Renders diagrams (Mermaid→SVG, the authoritative parse), submits the verbs, polls `/api/inbox`. No control logic. |
 | `push.js` | N2 web-push subscribe glue: registers `sw.js`, captures Notification permission + `PushSubscription`, POSTs it to `/api/push/subscribe`. Holds only the PUBLIC VAPID key (private half is a Worker secret). |
 | `sw.js` | The service worker. Does exactly two things: `push`→show a TRIAGE-only notification from `{tldr,dossier_ref,tier,url}` (the §5 body NEVER crosses the wire); `notificationclick`→focus/open the Inbox at the deep link. Deliberately NOT an offline cache (S-1: never serve a stale projection). |
@@ -123,6 +123,20 @@ headless via `bash beads-runner/lib/test-inbox.sh` (81 assertions against the RE
    (`engine-cloudflare.md`'s add-an-op checklist — the 2dk forgotten-layer scar).
 3. Wire the button in `app.js` (`Net.postJSON('/api/inbox/<verb>', …)`); show an
    honest toast on failure.
+
+**Situate a decision on the map (the dossier↔Blueprint bridge, §6.4):** the
+producer puts the Blueprint facet's `?focus=<id>` deep-link
+(`/ws/<ref>/blueprint?focus=<node-id>`) in a §5.2 `context_anchor.link` (an
+existing optional field — **no schema bump**). `inbox-view.js
+blueprintFocusLink` classifies it (and scheme-guards it — only `http(s)`/root-
+relative, so the first content-derived href can't be a `javascript:` foot-gun) →
+`context_anchor.blueprint_focus {href,ref,node_id}`; `app.js renderItem` paints
+it as the `.du-bp` "Where this sits in the Blueprint" affordance (same-app nav;
+H3's `/ws/<ref>/blueprint` route resolves it). The dossier **borrows** a
+focus-view — it never renders the map. A non-blueprint / absent `link` mints no
+bridge and paints nothing extra (the raw `link` stays on the view model but is
+not surfaced — tolerant, no wall). Bridge ref doc: `dossier-builder.system.md`
+context_anchor row.
 
 **Touch the PWA (push/subscribe/notification):** edit `push.js`/`sw.js`, but the
 delivery contract (payload shape `{tldr,dossier_ref,tier,url}`, VAPID pairing,

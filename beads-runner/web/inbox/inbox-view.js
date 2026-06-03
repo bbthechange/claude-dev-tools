@@ -344,6 +344,54 @@
     };
   }
 
+  /* blueprintFocusLink(link) → { href, ref, node_id } | null.
+   *
+   * claude-tools-uxg3 — THE DOSSIER↔BLUEPRINT BRIDGE (UX-DESIGN-V2 §6.4). A §5.2
+   * `context_anchor.link` MAY be the Blueprint facet's `?focus=<id>` deep-link
+   * (`/ws/<ref>/blueprint?focus=<node-id>`). H3 (claude-tools-uxvh3) owns the
+   * ROUTE that RESOLVES it (the facet opens at that node, never 404s); this
+   * function classifies the link so the Inbox can render it as a "see where this
+   * sits on the map" affordance — *the dossier BORROWS a focus-view, it never
+   * duplicates the map* (§6.4). Accepts a relative path or a full URL; only the
+   * path+query are read. Returns the parsed { href (verbatim, as the producer
+   * wrote it), ref, node_id } when the link is a `/ws/<ref>/blueprint?focus=<id>`
+   * deep-link with a non-empty focus id; otherwise null (a non-blueprint or
+   * bare-blueprint link renders as a plain link). TOLERANT (B.4): never throws,
+   * never fabricates — an unparseable link is simply not a focus-slice. */
+  function blueprintFocusLink(link) {
+    if (!nonEmptyStr(link)) return null;
+    var rest = link;
+    // Strip an optional http(s) scheme+authority so a full URL and a relative
+    // path both work. ONLY http(s) is honored — a non-http(s) scheme (e.g. a
+    // `javascript:`/`data:` foot-gun) never classifies as a bridge, so the app
+    // never mints a clickable href from it (this is the FIRST content-derived
+    // href the Inbox paints; keep the scheme allow-list tight).
+    var scheme = rest.match(/^https?:\/\/[^/]*(\/.*)$/i);
+    if (scheme) rest = scheme[1];
+    else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(rest)) return null; // any other scheme ⇒ not a safe bridge
+    // Drop any #fragment (the focus id rides the query, not the hash).
+    var hi = rest.indexOf('#');
+    if (hi >= 0) rest = rest.slice(0, hi);
+    var path = rest, query = '';
+    var qi = rest.indexOf('?');
+    if (qi >= 0) { path = rest.slice(0, qi); query = rest.slice(qi + 1); }
+    var m = path.match(/^\/ws\/([^/]+)\/blueprint\/?$/);
+    if (!m) return null;
+    var ref; try { ref = decodeURIComponent(m[1]); } catch (e) { ref = m[1]; }
+    var nodeId = null;
+    query.split('&').forEach(function (kv) {
+      if (!kv) return;
+      var eq = kv.indexOf('=');
+      var k = eq >= 0 ? kv.slice(0, eq) : kv;
+      if (k !== 'focus') return;
+      var v = eq >= 0 ? kv.slice(eq + 1) : '';
+      try { v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) { /* keep raw */ }
+      if (nonEmptyStr(v)) nodeId = v;
+    });
+    if (!nonEmptyStr(ref) || !nodeId) return null;  // a bare /blueprint link (no focus) is not a slice
+    return { href: link, ref: ref, node_id: nodeId };
+  }
+
   /* deriveItem(it, idx?) → one rendered Item row. The affordance is derived
    * FROM `kind` (§5.2 — the doc IS the form).
    *
@@ -411,6 +459,10 @@
         context_anchor: {
           where: where,
           link: nonEmptyStr(ca.link) ? ca.link : null,
+          // claude-tools-uxg3 (§6.4) — when the anchor link is a Blueprint
+          // ?focus=<id> deep-link, the parsed { href, ref, node_id } so the app
+          // can render the "where this sits on the map" bridge; null otherwise.
+          blueprint_focus: blueprintFocusLink(ca.link),
           expansion: expansion
         },
         options: asArray(src.options).map(function (o) {
@@ -857,6 +909,7 @@
     buildItemResponse: buildItemResponse,
     deriveConfirm: deriveConfirm,
     deriveFailureView: deriveFailureView,
+    blueprintFocusLink: blueprintFocusLink,
     SUPPORTED_SNAPSHOT_SCHEMA: SUPPORTED_SNAPSHOT_SCHEMA,
     SUPPORTED_DOSSIER_SCHEMA: SUPPORTED_DOSSIER_SCHEMA,
     SUPPORTED_BODY_SCHEMA: SUPPORTED_BODY_SCHEMA,

@@ -545,3 +545,46 @@ test('G — dossier→focus slice: inbox-view emits #/d/<id> and the Inbox SPA r
   assert.match(inboxApp, /\/\^\\\/d\\\/\(\.\+\)\$\//, 'Inbox SPA routes the /^\\/d\\/(.+)$/ literal');
   assert.match(inboxApp, /loadDossier\(m\[1\]\)/, 'Inbox SPA routes #/d/<id> → loadDossier');
 });
+
+// claude-tools-uxg3 (§6.4) — the dossier↔Blueprint BRIDGE. A Flow B decision is
+// SITUATED on the map: its §5.2 context_anchor.link carries the Blueprint facet's
+// ?focus=<id> deep-link (/ws/<ref>/blueprint?focus=<node-id>). The REAL inbox-view
+// emits the parsed bridge; the SAME href the app paints must RESOLVE to the
+// Blueprint facet route H3 owns (one string through producer + consumer — not two
+// independent greps; the test-flow-g idiom). The dossier borrows a focus-view; it
+// never duplicates the map.
+test('G — dossier↔Blueprint bridge: a context_anchor.link ?focus=<id> surfaces blueprint_focus AND resolves to the Blueprint facet (claude-tools-uxg3 §6.4)', () => {
+  const HREF = '/ws/projA/blueprint?focus=domain:auth';
+  const item = InboxView.deriveItem({
+    id: 'd1-1', kind: 'approve-reject',
+    framing: { ask: 'Approve the auth boundary?', why: 'unblocks T3' },
+    context_anchor: { where: 'design — the auth domain', expansion: 'where this sits', link: HREF },
+    reversible: 'reversible',
+  }, 0).item;
+  // Producer side — the view model emits the parsed bridge the app paints from.
+  const bp = item.context_anchor.blueprint_focus;
+  assert.ok(bp, 'a Blueprint ?focus link surfaces context_anchor.blueprint_focus');
+  assert.equal(bp.href, HREF, 'the bridge keeps the producer href verbatim (the app navigates it as-is)');
+  assert.equal(bp.ref, 'projA');
+  assert.equal(bp.node_id, 'domain:auth');
+  // A NON-blueprint link does NOT mint a bridge — it renders as a plain link (B.4).
+  const plain = InboxView.deriveItem({
+    id: 'd1-2', kind: 'approve-reject', framing: { ask: 'x', why: 'y' },
+    context_anchor: { where: 'w', expansion: 'e', link: 'https://example.com/spec' },
+    reversible: 'r',
+  }, 1).item;
+  assert.equal(plain.context_anchor.blueprint_focus, null, 'a non-blueprint link is not a bridge');
+  // Consumer side — run the REAL shell route parser + ?focus reader on the SAME
+  // href the app paints → the dossier's deep-link RESOLVES to the Blueprint facet
+  // at the right node (H3's route). Not two greps: the producer string is consumed.
+  const qi = bp.href.indexOf('?');
+  const ws = Shell.parseWorkspacePath(bp.href.slice(0, qi));
+  assert.deepEqual(ws, { ref: 'projA', facet: 'blueprint' }, 'the bridge lands on /ws/<ref>/blueprint (H3 route)');
+  const focus = new URLSearchParams(bp.href.slice(qi + 1)).get('focus');
+  assert.equal(focus, 'domain:auth', 'the ?focus the facet reads IS the bridge node_id (deep-link resolves to the node)');
+  // …and pin that the Inbox app actually PAINTS the bridge from blueprint_focus.href
+  // → the producer (view model) ⇆ consumer (app render) seam cannot silently drift.
+  const inboxApp = read(P.inboxApp);
+  assert.match(inboxApp, /context_anchor\.blueprint_focus/, 'Inbox app reads context_anchor.blueprint_focus');
+  assert.match(inboxApp, /bp\.href/, 'Inbox app opens the bridge via blueprint_focus.href');
+});

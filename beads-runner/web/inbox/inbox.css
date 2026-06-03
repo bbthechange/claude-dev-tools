@@ -162,6 +162,12 @@
   border-left:2px solid rgba(116,168,255,.4);padding:2px 0 2px 11px;margin:0 0 10px}
 .du-anchor .cl{font-size:9px;letter-spacing:.16em;color:var(--sky);flex:none;margin-top:2px}
 .du-anchor .ct{font-family:var(--font-read);font-size:13px;color:var(--dim);line-height:1.5}
+/* claude-tools-uxg3 (§6.4) — the dossier↔Blueprint bridge: a chip-style deep-link
+   into the Blueprint focus-view (opens H3's resolving /ws/<ref>/blueprint?focus). */
+.du-bp{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-read);
+  font-size:12.5px;color:var(--sky);text-decoration:none;border:1px solid rgba(116,168,255,.4);
+  border-radius:9px;padding:6px 11px;margin:0 0 10px;transition:.14s}
+.du-bp:hover{color:#fff;border-color:var(--sky);background:rgba(116,168,255,.08)}
 .du-rec{display:flex;gap:9px;background:var(--ink-2);border:1px solid var(--line);
   border-radius:9px;padding:10px 12px;margin-bottom:9px}
 .du-rec .rl{font-size:9px;letter-spacing:.12em;color:var(--mint);flex:none;margin-top:3px}

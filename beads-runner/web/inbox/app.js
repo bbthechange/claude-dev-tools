@@ -312,6 +312,19 @@
     ca.appendChild(Dom.mk('span', 'cl', 'WHERE'));
     ca.appendChild(Dom.mk('span', 'ct', it.context_anchor.where + ' — ' + it.context_anchor.expansion));
     q.appendChild(ca);
+    // claude-tools-uxg3 (§6.4) — the dossier↔Blueprint bridge. When the anchor
+    // link is a Blueprint ?focus=<id> deep-link (classified + scheme-guarded by
+    // inbox-view.js blueprintFocusLink), render a "see where this sits on the
+    // map" affordance that opens H3's resolving focus-view (a same-app nav within
+    // the unified claude-wrangler Pages project). The dossier BORROWS the
+    // focus-view; it never duplicates the map. No bridge ⇒ nothing extra renders
+    // (tolerant — a non-blueprint/absent link is not surfaced here).
+    var bp = it.context_anchor.blueprint_focus;
+    if (bp && bp.href) {
+      var bpA = Dom.mk('a', 'du-bp', '🗺 Where this sits in the Blueprint →');
+      bpA.setAttribute('href', bp.href);
+      q.appendChild(bpA);
+    }
     if (it.recommendation && it.recommendation.value != null) {
       var rec = Dom.mk('div', 'du-rec');
       rec.appendChild(Dom.mk('span', 'rl', 'REC'));

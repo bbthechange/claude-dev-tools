@@ -397,6 +397,45 @@ ck "a non-pair lane row is pair:false / pair_mode:null (the mode is pair-only)" 
    eq "$(jqr "$LB" '[.items[]|select(.kind!="pair" and ((.pair!=false) or (.pair_mode!=null)))]|length')" "0"
 
 echo ""
+echo "── claude-tools-uxg3: the dossier↔Blueprint bridge — context_anchor.link ?focus=<id> (§6.4) ──"
+# UX-DESIGN-V2 §6.4: a Flow B decision dossier SITUATES its decision on the map
+# by carrying the Blueprint facet's ?focus=<id> deep-link in context_anchor.link.
+# H3 (claude-tools-uxvh3) owns the ROUTE that resolves /ws/<ref>/blueprint?focus=<id>;
+# this bead is the dossier (consumer) side — classify + surface + paint the link.
+BPL="$(iv blueprintFocusLink '"/ws/projA/blueprint?focus=domain:auth"')"
+ck "a /ws/<ref>/blueprint?focus=<id> link classifies as a focus slice" eq "$(jqr "$BPL" '.node_id')" "domain:auth"
+ck "the workspace ref is parsed from the path"                eq "$(jqr "$BPL" '.ref')" "projA"
+ck "href is preserved verbatim (the producer's link, used as-is)" eq "$(jqr "$BPL" '.href')" "/ws/projA/blueprint?focus=domain:auth"
+# a full URL works too (scheme+host stripped); a url-encoded focus id is decoded.
+BPL2="$(iv blueprintFocusLink '"https://claude-wrangler.pages.dev/ws/projA/blueprint?focus=domain%3Aauth"')"
+ck "a full-URL blueprint deep-link also classifies"           eq "$(jqr "$BPL2" '.ref')" "projA"
+ck "a url-encoded focus id is decoded"                        eq "$(jqr "$BPL2" '.node_id')" "domain:auth"
+# NON-blueprint / bare-blueprint / empty links are NOT a focus slice (null) — TOLERANT.
+ck "a bare /ws/<ref>/blueprint (no ?focus) is NOT a slice"    eq "$(iv blueprintFocusLink '"/ws/projA/blueprint"')" "null"
+ck "a non-blueprint link is NOT a slice"                      eq "$(iv blueprintFocusLink '"https://example.com/docs"')" "null"
+ck "an empty focus value is NOT a slice"                      eq "$(iv blueprintFocusLink '"/ws/projA/blueprint?focus="')" "null"
+ck "an empty/absent link is NOT a slice (never throws)"       eq "$(iv blueprintFocusLink '""')" "null"
+# foot-gun guard: a non-http(s) scheme NEVER classifies (no clickable js: href).
+ck "a javascript: scheme over a /blueprint path is NOT a bridge" eq "$(iv blueprintFocusLink '"javascript://x/ws/projA/blueprint?focus=y"')" "null"
+# end-to-end: a dossier item carrying the link surfaces blueprint_focus on its
+# rendered context_anchor (the bridge the app paints) — render stays answerable.
+BP_REC="$(jq -c '.items[0].context_anchor.link="/ws/claude-tools/blueprint?focus=domain:runner"' <<<"$(GET dRT)")"
+BPV="$(iv deriveDossierView "$BP_REC")"
+ck "a dossier item's blueprint ?focus link surfaces blueprint_focus" eq "$(jqr "$BPV" '.items[0].context_anchor.blueprint_focus.node_id')" "domain:runner"
+ck "the bridge carries the workspace ref for the deep-link"   eq "$(jqr "$BPV" '.items[0].context_anchor.blueprint_focus.ref')" "claude-tools"
+ck "the item stays answerable (the bridge is additive, not a gate)" nz "$(jqr "$BPV" '.items[0].affordances[0]')"
+# a NON-blueprint link leaves blueprint_focus null; the raw link is still passed
+# through on the item (the view model preserves it — the app just doesn't paint a
+# bridge for it; the bridge affordance is Blueprint-?focus only).
+PLAIN_REC="$(jq -c '.items[0].context_anchor.link="https://example.com/spec"' <<<"$(GET dRT)")"
+PLV="$(iv deriveDossierView "$PLAIN_REC")"
+ck "a non-blueprint link ⇒ blueprint_focus null (no bridge minted)" eq "$(jqr "$PLV" '.items[0].context_anchor.blueprint_focus')" "null"
+ck "the raw link is still preserved on the item (view model)"  eq "$(jqr "$PLV" '.items[0].context_anchor.link')" "https://example.com/spec"
+# the app PAINTS the bridge (producer ⇆ consumer seam, like the #/d/ route pin).
+ck "app.js renders the blueprint_focus bridge affordance"     has "blueprint_focus" "$(cat "$APP")"
+ck "app.js opens the bridge via its href (the deep-link target)" has "bp.href" "$(cat "$APP")"
+
+echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-inbox (T6b, claude-tools-xre):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
