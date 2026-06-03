@@ -122,6 +122,32 @@
     return wrap;
   }
 
+  // H3 (claude-tools-uxvh3) — the Blueprint card chip (§6.6/§8.5): a small
+  // thumbnail glyph + "updated 2h ago" freshness + the §8.2 in-flight count, read
+  // from the §8.1 blueprint_meta projection. The whole card is already an <a> into
+  // the board, so this is an informational strip (no nested link — invalid HTML);
+  // the dedicated map is one nav tab away once inside. Omitted when no map exists
+  // yet (honest — the intake-strip pattern). The literal mini-MAP thumbnail is the
+  // deferred [free] refinement (it needs the map body the hub doesn't fetch).
+  function renderBlueprintChip(card) {
+    var bp = card.blueprint;
+    if (!bp || !bp.present) return null;
+    var wrap = Dom.mk('div', 'ws-blueprint');
+    // The thumbnail placeholder — a tiny box-grid glyph standing in for the map.
+    wrap.appendChild(Dom.mk('span', 'ws-bp-thumb', '▦'));
+    var meta = Dom.mk('span', 'ws-bp-meta');
+    meta.appendChild(Dom.mk('span', 'ws-bp-lbl', 'Blueprint'));
+    if (bp.updated_ago && bp.updated_ago !== 'unknown') {
+      meta.appendChild(Dom.mk('span', 'ws-bp-ago', 'updated ' + bp.updated_ago + ' ago'));
+    }
+    wrap.appendChild(meta);
+    if (bp.active_count > 0) {
+      wrap.appendChild(Dom.mk('span', 'ws-bp-active',
+        '● ' + bp.active_count + ' in flight'));
+    }
+    return wrap;
+  }
+
   function renderCard(card) {
     // Each card is a link into that workspace's Board (the hub is the anchor —
     // no scavenger hunt; UX-DESIGN-V2 §2).
@@ -166,6 +192,8 @@
     a.appendChild(renderStageStrip(card));
     var intakeStrip = renderIntakeStrip(card);
     if (intakeStrip) a.appendChild(intakeStrip);
+    var bpChip = renderBlueprintChip(card);
+    if (bpChip) a.appendChild(bpChip);
     a.appendChild(Dom.mk('div', 'ws-go', 'OPEN BOARD →'));
     return a;
   }

@@ -1171,6 +1171,35 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     };
     // I2 — runner_health{} (DESIGN I §3): the loop PROCESS, runner_state-derived.
     const runner_health = deriveRunnerHealth(rec);
+    // H3 (claude-tools-uxvh3) — blueprint_meta{} (DESIGN H §8.1, A.3/B.1): the
+    // thumbnail-sized meta the Workspace card reads WITHOUT fetching the whole map
+    // (the map body stays out of the projection, fetched on demand via
+    // blueprint-get — §8.1). DERIVED at read time, never stored (A.3); a NAMED
+    // sub-object so it never collides with activity/holds/queue_health on the
+    // shared workSnapshot seam (ARCH §6). updated_at joins the blueprint record's
+    // freshness; thumb_ref points at "render THIS blueprint at thumb size" (§8.5 —
+    // the project_ref itself; null = no map yet, honest); active_domains is the
+    // §8.2 in-flight overlay union read off `activity`. No blueprint record ⇒ the
+    // honest all-null/empty block (B.4) so projects[].blueprint_meta is UNIFORM.
+    let bpParsed = null;
+    try {
+      const bp = await co.db
+        .prepare("SELECT json FROM records WHERE type = ? AND id = ?")
+        .bind("blueprint", pr)
+        .first();
+      if (bp && typeof bp.json === "string") {
+        const p = JSON.parse(bp.json);
+        if (p && typeof p === "object" && !Array.isArray(p)) bpParsed = p;
+      }
+    } catch {
+      bpParsed = null; // table/row absent or parse error ⇒ honest empty
+    }
+    const blueprint_meta = {
+      updated_at:
+        bpParsed && typeof bpParsed.updated_at === "string" ? bpParsed.updated_at : null,
+      thumb_ref: bpParsed ? pr : null,
+      active_domains: deriveActiveDomains(activity),
+    };
     projects.push({
       project_ref: rec.project_ref,
       runner_state: {
@@ -1186,6 +1215,7 @@ async function workSnapshot(co, principal, proj, beadsStr) {
       activity,
       holds,
       queue_health,
+      blueprint_meta,
       lease: rec.lease,
     });
   }
@@ -1535,6 +1565,34 @@ function projectAuxActivity(body, nowMs) {
     state_confidence: "derived",
     liveness_dot: worseDot(body.liveness_dot, reportAgeDot(body.observed_at, nowMs)),
   };
+}
+
+// ── deriveActiveDomains — §8.2 the in-flight overlay union for blueprint_meta ──
+// H3 (claude-tools-uxvh3): `active_domains` is "light up the domains currently
+// being worked" (§6.4), realized as a CROSS-TRACK READ of Track I's activity
+// (soft coupling, ARCH §6 — H reads what I produces, never a blocking merge). It
+// is the UNION of `touching[]` across this project's active agents: the writer's
+// `touching` (§1.5) plus any auxiliary that carries one (the projected aux shape
+// drops touching today, so this is forward-compatible — it lights from the
+// writer). Absent/garbled ⇒ [] (B.4 — the overlay is simply dark, never a throw).
+// Deterministic order (first-seen) so the projection is stable for the differ.
+function deriveActiveDomains(activity) {
+  const seen = Object.create(null);
+  const out = [];
+  const add = (list) => {
+    if (!Array.isArray(list)) return;
+    for (const d of list) {
+      if (typeof d === "string" && d && !seen[d]) {
+        seen[d] = true;
+        out.push(d);
+      }
+    }
+  };
+  if (activity && activity.writer) add(activity.writer.touching);
+  if (activity && Array.isArray(activity.auxiliary)) {
+    for (const a of activity.auxiliary) if (a) add(a.touching);
+  }
+  return out;
 }
 
 // ── pickWriterRow — the writer is SINGULAR per workspace by construction (one

@@ -267,6 +267,29 @@
       // up next to runner trouble.
       var intake = deriveIntakeForWorkspace(rawIntake, ref, now);
 
+      // H3 (claude-tools-uxvh3) — the §6.6/§8.5 Blueprint card chip, read from the
+      // §8.1 `blueprint_meta` projection (thumbnail-sized — NO per-card blueprint
+      // fetch; the hub keeps its "one /api/board read" discipline). present is
+      // honest (a map exists iff updated_at or thumb_ref is set); updated_ago is
+      // the "updated 2h ago" freshness; active_count is the §8.2 in-flight overlay
+      // size. Absent block ⇒ present:false (an older producer / no map yet — the
+      // chip is simply omitted). The full mini-MAP render (thumb_ref → render
+      // `derived` at thumb scale, §8.5) is [free] and deferred — it needs the map
+      // body the hub deliberately doesn't fetch.
+      var bm = (p && p.blueprint_meta && typeof p.blueprint_meta === 'object' &&
+        !Array.isArray(p.blueprint_meta)) ? p.blueprint_meta : {};
+      var bpUpdatedAt = (typeof bm.updated_at === 'string' && bm.updated_at) ? bm.updated_at : null;
+      var bpActive = Array.isArray(bm.active_domains)
+        ? bm.active_domains.filter(function (x) { return typeof x === 'string' && x; }) : [];
+      var blueprint = {
+        present: !!(bpUpdatedAt || (typeof bm.thumb_ref === 'string' && bm.thumb_ref)),
+        thumb_ref: (typeof bm.thumb_ref === 'string' && bm.thumb_ref) ? bm.thumb_ref : null,
+        updated_at: bpUpdatedAt,
+        updated_ago: bpUpdatedAt ? formatAgo(bpUpdatedAt, now) : null,
+        active_count: bpActive.length,
+        href: '/ws/' + encodeURIComponent(ref) + '/blueprint'
+      };
+
       // health — 'stale' when liveness stale; 'attention' when a live mismatch
       // OR a failing lifecycle card attributable to this workspace by prefix OR
       // a failing/gave-up intake; otherwise 'ok'. Every input is a projection
@@ -299,6 +322,8 @@
         // L3 — the intake-state thread for this workspace (counts + the
         // renderable items + the attention tally).
         intake: intake,
+        // H3 — the Blueprint card chip (thumbnail freshness + in-flight count).
+        blueprint: blueprint,
         // DERIVED — labeled. The UI MUST surface this as "derived from board".
         stage_counts: stageCounts,
         stage_total: stageTotal,

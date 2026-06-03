@@ -64,11 +64,12 @@
  * schema_version (§0.3 — the inbox-view schemaGate pattern).
  *
  * ANTI-DRIFT: presentation derivation ONLY — no write path, no fetch, no DOM, no
- * timers. The map is the MAP; the narrative render, the facet route, the
- * blueprint_meta projection and the ?focus deep-link contract are H3; the
- * in-place rename/regroup/pin/hide GUI + conflict-FYI keep-default are H4. Both
- * share the §4 stable-id contract THIS module encodes (makeNodeId / the
- * reattach-by-id logic).
+ * timers. The map is the MAP; the §8.3 narrative PARSE (TL;DR/headings +
+ * acronym-expand-on-first-use) lives here as pure, testable model (H3) — its DOM
+ * RENDER and the ?focus deep-link WIRING are H3's facet app.js; the blueprint_meta
+ * projection is H3's engine seam; the in-place rename/regroup/pin/hide GUI +
+ * conflict-FYI keep-default are H4. All share the §4 stable-id contract THIS
+ * module encodes (makeNodeId / the reattach-by-id logic).
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -144,6 +145,84 @@
   function asStrArray(x) {
     if (!Array.isArray(x)) return [];
     return x.filter(function (s) { return typeof s === 'string' && s; });
+  }
+
+  /* ── §8.3 narrative — TL;DR → headings prose, acronyms expanded on first use ───
+   * A small CURATED, domain-correct acronym glossary. Expansion is keyed to the
+   * §8.3 "expands acronyms on first use" rule; the glossary is hand-curated (never
+   * guessed) so every expansion is factual — a fabricated expansion would break
+   * B.4 ("never fabricate"). Only WHOLE-WORD, all-uppercase tokens that are keys
+   * here are touched; everything else passes through verbatim. v1 is this built-in
+   * set; a future per-workspace glossary (§5.1) could feed it ([free], §11). */
+  var ACRONYMS = {
+    API: 'Application Programming Interface', UI: 'User Interface',
+    UX: 'User Experience', DB: 'Database', SQL: 'Structured Query Language',
+    PWA: 'Progressive Web App', CDN: 'Content Delivery Network',
+    SDK: 'Software Development Kit', JWT: 'JSON Web Token',
+    SSE: 'Server-Sent Events', MCP: 'Model Context Protocol',
+    CRUD: 'Create, Read, Update, Delete', HTML: 'HyperText Markup Language',
+    CSS: 'Cascading Style Sheets', JSON: 'JavaScript Object Notation',
+    HTTP: 'Hypertext Transfer Protocol', URL: 'Uniform Resource Locator',
+    REST: 'Representational State Transfer', FYI: 'For Your Information'
+  };
+
+  /* expandAcronymsFirstUse(text, seen, expandedOut) → text with each known
+   * acronym's FIRST occurrence (across the whole narrative — `seen` is shared, so
+   * first-use spans TL;DR then every section in order) rewritten "ACR (Expansion)".
+   * WHOLE-WORD + all-uppercase + ≥2 chars (the \b…\b bound keeps "APIs"/substrings
+   * untouched); case-sensitive (the glossary is uppercase). Already-seen acronyms
+   * pass through. Records each expansion in expandedOut for honest transparency. */
+  function expandAcronymsFirstUse(text, seen, expandedOut) {
+    if (typeof text !== 'string' || !text) return text || '';
+    return text.replace(/\b[A-Z][A-Z0-9]{1,9}\b/g, function (tok) {
+      if (!Object.prototype.hasOwnProperty.call(ACRONYMS, tok)) return tok;
+      if (seen[tok]) return tok;
+      seen[tok] = true;
+      expandedOut.push({ acronym: tok, expansion: ACRONYMS[tok] });
+      return tok + ' (' + ACRONYMS[tok] + ')';
+    });
+  }
+
+  /* parseNarrative(raw, degraded) → the §8.3 narrative view model:
+   *   { present, tldr, sections:[{heading,prose}], acronyms_expanded:[…] }
+   * Tolerant (B.4): a null/garbled narrative ⇒ present:false (the facet simply
+   * shows no prose, never an exception); a malformed section is skipped + noted.
+   * The acronym pass runs in document order (TL;DR first) so "first use" is honest. */
+  function parseNarrative(raw, degraded) {
+    var out = { present: false, tldr: null, sections: [], acronyms_expanded: [] };
+    if (raw == null) return out;
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+      degraded.push('narrative block malformed — no design prose shown'); return out;
+    }
+    var seen = Object.create(null);
+    var expanded = out.acronyms_expanded;
+    if (typeof raw.tldr === 'string' && raw.tldr) {
+      out.tldr = expandAcronymsFirstUse(raw.tldr, seen, expanded);
+      out.present = true;
+    } else if (raw.tldr != null) {
+      degraded.push('narrative.tldr malformed — skipped');
+    }
+    var rawSections = Array.isArray(raw.sections) ? raw.sections : [];
+    if (raw.sections != null && !Array.isArray(raw.sections)) {
+      degraded.push('narrative.sections malformed — shown empty');
+    }
+    rawSections.forEach(function (s, i) {
+      if (!s || typeof s !== 'object' || Array.isArray(s)) {
+        degraded.push('narrative.sections[' + i + '] malformed — skipped'); return;
+      }
+      var heading = (typeof s.heading === 'string' && s.heading) ? s.heading : null;
+      var prose = (typeof s.prose === 'string' && s.prose) ? s.prose : null;
+      if (!heading && !prose) {
+        degraded.push('narrative.sections[' + i + '] has neither heading nor prose — skipped');
+        return;
+      }
+      out.sections.push({
+        heading: heading ? expandAcronymsFirstUse(heading, seen, expanded) : null,
+        prose: prose ? expandAcronymsFirstUse(prose, seen, expanded) : null
+      });
+      out.present = true;
+    });
+    return out;
   }
 
   /* ── normalizeOverlay(opts) — the §6.4/§8.2 in-flight overlay INPUT, tolerant ───
@@ -652,6 +731,7 @@
         updated_at: null, updated_at_age: null,
         nodes: [], edges: [], apis: [], conflicts: [],
         focus: null,
+        narrative: { present: false, tldr: null, sections: [], acronyms_expanded: [] },
         overlay: { active_ids: [], lit: [], collisions: [], touchers_by_node: {}, unmapped: [] },
         counts: { nodes: 0, top_level: 0, edges: 0, apis: 0, hidden: 0, conflicts: 0, active: 0, collisions: 0 },
         degraded: ['no Blueprint yet for this workspace — request one']
@@ -766,7 +846,8 @@
       var n = idx.byId[id];
       var vis = isVisible(id);
       var src = openSource[id] || null;
-      var focused = focusSet ? !!focusSet[id] : false;
+      var focused = focusSet ? !!focusSet[id] : false;     // the focused SUBTREE (drives dim-exemption)
+      var focusedSelf = focusId != null && id === focusId;  // ONLY the exact ?focus target (the ring/scroll anchor)
       var dimmed = (focusSet && vis) ? !connected[id] : false;
       var activeSelf = !!overlayIn.activeIds[id];        // this exact node is being worked
       var selfTouchers = overlayIn.touchersByNode[id] || (activeSelf ? 1 : 0);
@@ -789,7 +870,8 @@
         open_source: src,                  // pin | manual | focus | null (drill-out collapses 'focus')
         pinned: n.pinned,
         auto_opened: n.auto_opened,
-        focused: focused,
+        focused: focused,            // in the focused subtree (the §3.4.4 dim-exemption set)
+        focused_self: focusedSelf,   // IS the exact ?focus target (§8.4 — the ring/scroll anchor)
         dimmed: dimmed,
         // §6.4/§8.2 in-flight overlay. `active`/`collision` are the RENDER flags on
         // a visible box (active resolved to the deepest visible ancestor); `*_self`
@@ -813,6 +895,11 @@
     var conflicts = Array.isArray(rec.conflicts)
       ? rec.conflicts.filter(function (c) { return c && typeof c === 'object'; })
       : [];
+
+    // §8.3 narrative (TL;DR → headings → [the map, above] → drill-detail). Parsed
+    // here in the pure model (acronym-expand-on-first-use is testable presentation
+    // logic, not DOM); the facet paints it ABOVE the map.
+    var narrative = parseNarrative(rec.narrative, degraded);
 
     // overlay summary (deterministic producer order): the active ids that exist in
     // the map, the visible boxes lit, the collision boxes, per-active-node touchers,
@@ -846,6 +933,7 @@
       updated_at_age: relAge(rec.updated_at, now),
       focus: (focusId && idx.byId[focusId]) ? focusId : null,
       scale: opts.scale === 'thumb' ? 'thumb' : 'full',
+      narrative: narrative,
       nodes: nodes,
       edges: edges,
       apis: apis,

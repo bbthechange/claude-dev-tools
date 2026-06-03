@@ -891,6 +891,84 @@ it("CF.3 I2 workSnapshot activity{} + runner_health{} — DESIGN I §2/§3 + B.1
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// H3 (claude-tools-uxvh3) — blueprint_meta{} per-project sub-object (DESIGN H
+// §8.1, A.3/B.1). DERIVED at read time (never stored): updated_at JOINS the
+// blueprint §4 record's freshness; thumb_ref points at "render this blueprint at
+// thumb size" (§8.5 — the project_ref, null when no map yet); active_domains is
+// the §8.2 in-flight overlay union read off the activity.writer.touching Track I
+// produces (soft coupling, ARCH §6). A NAMED sub-object so it never collides on
+// the shared workSnapshot seam. No record ⇒ the honest all-null/[] block (B.4),
+// uniform across projects. The map BODY is NOT inlined (fetched on demand).
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 H3 workSnapshot blueprint_meta{} — DESIGN H §8.1 + B.1 (claude-tools-uxvh3)", async () => {
+  let hPASS = 0;
+  let hFAIL = 0;
+  const hfails = [];
+  function hck(name, cond) {
+    if (cond) { hPASS++; console.log(`  ✓ ${name}`); }
+    else { hFAIL++; hfails.push(name); console.log(`  ✗ ${name}`); }
+  }
+  const projOf = (snap, ref) => (snap.projects || []).find((p) => p.project_ref === ref) || {};
+  const bpPut = (env2) => call(GOOD, "blueprint-put", [JSON.stringify(env2)]);
+  const actLine = (o) => JSON.stringify({
+    report: "agent_activity", schema_version: 1, principal: "x",
+    agent_key: "writer:hostBP", workspace: "projBP", lane: "writer", kind: "impl",
+    bead_ref: "projBP-1", title: "t", stage: "impl", state: "writing-code",
+    state_confidence: "derived", liveness_dot: "green",
+    observed_at: ago(2), last_event_ts: ago(2), seconds_in_state: 5,
+    touching: ["domain:posts-feed", "domain:messaging"], ...o,
+  });
+
+  try { await env.DB.prepare("DELETE FROM agent_activity").run(); } catch { /* lazy table */ }
+
+  // projBP: a real runner + a blueprint record + a writer touching two domains.
+  await call(GOOD, "heartbeat", [hbLine("hostBP", "projBP", "running", "projBP-1", ago(5))]);
+  await bpPut({
+    project_ref: "projBP", section: "derived", updated_by: "agent:blueprint-update",
+    body: { nodes: [
+      { id: "domain:posts-feed", label: "Posts & Feed", kind: "domain", parent: null },
+      { id: "domain:messaging", label: "Messaging", kind: "domain", parent: null },
+    ], edges: [], apis: [] },
+  });
+  await call(GOOD, "agent-activity-report", [actLine({})]);
+  // projBare: a runner but NO blueprint record (the honest empty-meta case).
+  await call(GOOD, "heartbeat", [hbLine("hostBare", "projBare", "idle", "", ago(5))]);
+
+  const SNAP = await callJson("work-snapshot", ["", ""]);
+  const BM = (ref) => projOf(SNAP, ref).blueprint_meta || null;
+
+  hck("blueprint_meta is a named sub-object on projects[] (not a flat key)", typeof BM("projBP") === "object" && BM("projBP") !== null);
+  hck(
+    "blueprint_meta field-set is EXACTLY {updated_at,thumb_ref,active_domains} (B.1 §8.1)",
+    JSON.stringify(Object.keys(BM("projBP")).sort()) === JSON.stringify(["active_domains", "thumb_ref", "updated_at"])
+  );
+  hck("updated_at JOINS the blueprint record's freshness (a string)", typeof BM("projBP").updated_at === "string" && BM("projBP").updated_at.length > 0);
+  hck("thumb_ref points at the project_ref (§8.5 — render at thumb size)", BM("projBP").thumb_ref === "projBP");
+  hck("active_domains is the §8.2 union of writer.touching", JSON.stringify(BM("projBP").active_domains) === JSON.stringify(["domain:posts-feed", "domain:messaging"]));
+
+  // The honest empty-meta case: a project with NO blueprint record carries the
+  // block uniformly (B.4) — all null/[] , never absent, never fabricated.
+  hck("no blueprint record ⇒ blueprint_meta present (uniform, never absent)", typeof BM("projBare") === "object" && BM("projBare") !== null);
+  hck("no blueprint record ⇒ updated_at null (honest)", BM("projBare").updated_at === null);
+  hck("no blueprint record ⇒ thumb_ref null (no map to render)", BM("projBare").thumb_ref === null);
+  hck("no blueprint record ⇒ active_domains [] (no writer touching)", Array.isArray(BM("projBare").active_domains) && BM("projBare").active_domains.length === 0);
+
+  // The map BODY is NOT inlined into the projection (§8.1 — fetched on demand via
+  // blueprint-get). blueprint_meta carries only the thumbnail-sized meta.
+  hck("the derived map body is NOT inlined into projects[] (only the meta)", !Object.prototype.hasOwnProperty.call(BM("projBP"), "derived") && !Object.prototype.hasOwnProperty.call(projOf(SNAP, "projBP"), "blueprint"));
+
+  // READ-ONLY: a work-snapshot read never mutates the blueprint record.
+  const before = await env.DB.prepare("SELECT json FROM records WHERE type='blueprint' AND id='projBP'").first();
+  await callJson("work-snapshot", ["", ""]);
+  const after = await env.DB.prepare("SELECT json FROM records WHERE type='blueprint' AND id='projBP'").first();
+  hck("read-only — work-snapshot does NOT mutate the blueprint record", (before && before.json) === (after && after.json));
+
+  console.log(`\n══ CF.3 H3 blueprint_meta{} (vs design/blueprint.md §8.1 + B.1): PASS=${hPASS} FAIL=${hFAIL} ══`);
+  if (hFAIL > 0) console.log("FAILED:\n  - " + hfails.join("\n  - "));
+  expect(hFAIL, `H3 blueprint_meta clauses failed: ${hfails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // J2 (claude-tools-uxvj2) — the holds[] unifier (DESIGN J §3 / B.1). Joins the
 // THREE hold mechanisms into projects[].holds, derived AT READ time (A.3): our
 // editable Gate (gate:<id> label + the J1 gate_metadata LEFT-join), beads-native

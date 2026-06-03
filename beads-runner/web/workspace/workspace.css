@@ -323,6 +323,29 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   padding:0 18px;margin-bottom:8px}
 .bp-sl-warn{color:var(--coral)}
 
+/* §8.4 focus banner — what a ?focus deep-link resolved to (or honestly didn't) */
+.bp-focus-banner{margin:6px 18px 2px;padding:9px 13px;border-radius:10px;
+  border:1px solid var(--line-2);background:var(--ink-2);color:var(--text);
+  font-size:12px;line-height:1.5}
+.bp-focus-banner.bp-focus-miss{border-color:rgba(255,180,84,.34);color:var(--amber-soft)}
+.bp-focus-id{font-family:var(--mono);font-size:11px;color:var(--sky);
+  background:var(--ink);padding:1px 5px;border-radius:5px}
+
+/* §8.3 narrative — the skimmable design prose ABOVE the map (TL;DR → headings) */
+.bp-narrative{margin:8px 18px 4px;padding:14px 16px;border:1px solid var(--line);
+  border-radius:14px;background:var(--ink-2)}
+.bp-tldr{display:flex;gap:9px;align-items:baseline;margin-bottom:10px}
+.bp-tldr-k{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--amber);
+  border:1px solid var(--line-2);border-radius:5px;padding:1px 6px;flex:none}
+.bp-tldr-v{font-size:14px;color:var(--text);line-height:1.55}
+.bp-narr-sec{margin-top:11px}
+.bp-narr-h{font-family:var(--font-display);font-size:13px;color:var(--text);
+  margin:0 0 4px;letter-spacing:.01em}
+.bp-narr-p{font-size:13px;color:var(--faint);line-height:1.6;margin:0}
+
+/* a ?focus target node — a clear ring distinct from the active/collision overlay */
+.bp-node.bp-focus{border-color:var(--sky);box-shadow:0 0 0 2px rgba(110,180,255,.32)}
+
 /* empty state */
 .bp-emptybox{margin:24px 18px;border:1px dashed var(--line-2);border-radius:14px;
   background:var(--ink-2);padding:20px}
@@ -362,8 +385,10 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .bp-badge-pin{background:var(--sky)}
 .bp-count{font-size:11px;color:var(--faint);margin-left:auto}
 .bp-children{margin-top:8px;display:flex;flex-direction:column;gap:7px}
-.bp-legend{padding:10px 0 2px;color:var(--faint);font-size:11px;display:flex;gap:14px}
+.bp-legend{padding:10px 0 2px;color:var(--faint);font-size:11px;display:flex;gap:14px;flex-wrap:wrap}
 .bp-legend-hidden{color:var(--slate)}
+.bp-legend-active{color:var(--mint)}
+.bp-legend-collision{color:var(--coral)}
 
 /* per-node edit affordances */
 .bp-edit-box{margin-top:7px}

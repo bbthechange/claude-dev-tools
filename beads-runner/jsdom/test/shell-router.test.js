@@ -112,6 +112,41 @@ function loadWorkspaceRoute(pathname) {
   return window;
 }
 
+// Like loadWorkspaceRoute, but the Net stub RESOLVES (not never-settling) so the
+// facet's async render actually runs — used to assert the Blueprint facet's H3
+// ?focus deep-link + narrative paint (which happen AFTER the record fetch). The
+// blueprint facet reads its own record (/api/ws/blueprint) AND, best-effort, the
+// work-snapshot (/api/board) for the §8.2 overlay; we resolve both. The query
+// string in `pathname` reaches location.search (where bpFocus reads ?focus).
+function loadBlueprintRouteResolved(pathname, record, snapshot) {
+  const html = read(P.wsIndex).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  const dom = new JSDOM(html, {
+    url: 'https://test.local' + pathname,
+    runScripts: 'dangerously',
+    pretendToBeVisual: true,
+  });
+  const { window } = dom;
+  const stub =
+    'window.Net = { getJSON: function (url) {' +
+    '  if (url.indexOf("/api/ws/blueprint") === 0) return Promise.resolve(' + JSON.stringify(record) + ');' +
+    '  if (url.indexOf("/api/board") === 0) return Promise.resolve(' + JSON.stringify(snapshot) + ');' +
+    '  return Promise.resolve(null);' +
+    '} };';
+  runInWindow(window, stub);
+  loadFileInWindow(window, P.dom);
+  loadFileInWindow(window, P.shell);
+  loadFileInWindow(window, P.boardView);
+  loadFileInWindow(window, P.activityView);
+  loadFileInWindow(window, P.gatesView);
+  loadFileInWindow(window, P.blueprintView);
+  loadFileInWindow(window, P.blueprintCustomize);
+  loadFileInWindow(window, P.wsApp);
+  return window;
+}
+// Let the pre-resolved fetch + the facet's .then render run (microtasks drain
+// before a setTimeout(0) macrotask, so one tick is enough).
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 // DOM query convenience.
 const hrefs = (els) => Array.prototype.map.call(els, (a) => a.getAttribute('href'));
 const text = (el) => (el && el.textContent ? el.textContent : '');
@@ -364,11 +399,78 @@ test('F — /ws/<ref>/blueprint mounts the LIVE Blueprint facet scaffold (custom
     assert.ok(host.querySelector('.bp-wrap'), 'the blueprint-facet scaffold (.bp-wrap) mounted');
     assert.ok(host.querySelector('#bp-map'), 'the customization map host mounted');
     assert.ok(host.querySelector('#bp-conflicts'), 'the §5.3 conflict-FYI lane host mounted');
+    // H3 (claude-tools-uxvh3): the narrative section + the ?focus banner hosts
+    // mount in the scaffold (painted once the record resolves; here we assert the
+    // hosts exist — the synchronous scaffold, like #bp-map).
+    assert.ok(host.querySelector('#bp-narrative'), 'the §8.3 narrative host mounted (H3)');
+    assert.ok(host.querySelector('#bp-focus-banner'), 'the §8.4 ?focus banner host mounted (H3)');
     assert.equal(host.querySelector('.facet-placeholder'), null, 'the blueprint route is NOT a placeholder');
     assert.equal(host.querySelector('.bf-wrap'), null, 'the blueprint route did NOT mount the board scaffold');
     // Dispatch + nav agree: the blueprint facet tab is the active one.
     const nav = window.document.getElementById('shell-nav');
     assert.equal(nav.querySelector('.shell-tabs a.active').getAttribute('href'), '/ws/projA/blueprint');
+  } finally { window.close(); }
+});
+// H3 (claude-tools-uxvh3): the §8.4 ?focus=<id> deep-link RESOLVES — the route
+// opens the Blueprint at that node (full map, never a 404) — AND the §8.3
+// narrative renders ABOVE the map (TL;DR/headings, acronyms expanded on first
+// use). Drives the REAL facet with a RESOLVED record so the async render runs.
+test('F — /ws/<ref>/blueprint?focus=<id> RESOLVES to the node + renders the narrative (H3 deep-link + §8.3)', async () => {
+  const record = {
+    schema_version: 1, project_ref: 'projA',
+    derived: { nodes: [
+      { id: 'domain:messaging', label: 'Messaging', kind: 'domain', parent: null },
+      { id: 'capability:send-dm', label: 'Send a DM', kind: 'capability', parent: 'domain:messaging' },
+    ], edges: [], apis: [] },
+    customization: {},
+    narrative: { tldr: 'The API drives messaging.', sections: [{ heading: 'Flow', prose: 'DMs route to send.' }] },
+    conflicts: [],
+  };
+  const snapshot = { schema_version: 1, projects: [{
+    project_ref: 'projA',
+    blueprint_meta: { updated_at: '2026-06-01T00:00:00Z', thumb_ref: 'projA', active_domains: ['domain:messaging'] },
+    activity: { writer: { touching: ['domain:messaging'] }, auxiliary: [] },
+  }] };
+  const window = loadBlueprintRouteResolved('/ws/projA/blueprint?focus=domain:messaging', record, snapshot);
+  try {
+    await flush();
+    const host = window.document.getElementById('facet-host');
+    // The route resolved to the blueprint facet (not a 404 / placeholder).
+    assert.ok(host.querySelector('.bp-wrap'), 'the blueprint facet mounted for the ?focus deep-link');
+    // The ?focus banner confirms the resolved target (the deep-link CONTRACT).
+    const banner = window.document.getElementById('bp-focus-banner');
+    assert.equal(banner.hidden, false, 'the ?focus banner shows when arrived via a deep-link');
+    assert.match(text(banner), /Focused on/);
+    assert.match(text(banner), /domain:messaging/, 'the banner names the resolved node');
+    // The focused node rendered, carrying the .bp-focus ring.
+    assert.ok(host.querySelector('.bp-node.bp-focus'), 'the focused node carries .bp-focus');
+    // The §8.3 narrative rendered ABOVE the map, acronym-expanded on first use.
+    const narr = window.document.getElementById('bp-narrative');
+    assert.equal(narr.hidden, false, 'the narrative renders above the map');
+    assert.match(text(narr), /TL;DR/, 'the TL;DR label renders');
+    assert.match(text(narr), /API \(Application Programming Interface\)/, 'an acronym is expanded on first use (§8.3)');
+    assert.match(text(narr), /Flow/, 'a section heading renders');
+  } finally { window.close(); }
+});
+// H3: a ?focus id the map does NOT contain still RESOLVES (route never 404s) —
+// the facet shows the whole map + an honest "isn't in this map" banner (B.4).
+test('F — /ws/<ref>/blueprint?focus=<unknown> resolves honestly (full map + honest miss banner, never a 404)', async () => {
+  const record = {
+    schema_version: 1, project_ref: 'projA',
+    derived: { nodes: [{ id: 'domain:messaging', label: 'Messaging', kind: 'domain', parent: null }], edges: [], apis: [] },
+    customization: {}, narrative: { tldr: 'x', sections: [] }, conflicts: [],
+  };
+  const snapshot = { schema_version: 1, projects: [] };
+  const window = loadBlueprintRouteResolved('/ws/projA/blueprint?focus=domain:gone', record, snapshot);
+  try {
+    await flush();
+    const host = window.document.getElementById('facet-host');
+    assert.ok(host.querySelector('.bp-wrap'), 'the route still resolves to the facet (no 404)');
+    assert.ok(host.querySelector('.bp-node'), 'the whole map still renders');
+    assert.equal(host.querySelector('.bp-node.bp-focus'), null, 'no node is falsely marked focused');
+    const banner = window.document.getElementById('bp-focus-banner');
+    assert.equal(banner.hidden, false, 'the banner is shown (a focus param was present)');
+    assert.match(text(banner), /isn’t in this map/, 'honest miss — never a 404, never a fabricated node');
   } finally { window.close(); }
 });
 // No workspace facet remains a placeholder (board/activity/gates/blueprint all

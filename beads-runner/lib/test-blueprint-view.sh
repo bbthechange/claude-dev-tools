@@ -107,7 +107,9 @@ FIX="$(jq -cn '{
     ]
   },
   customization: { renames:{}, regroups:{}, pins:[], hidden:[], splits:[], merges:[] },
-  narrative: { tldr:"how it fits", sections:[] },
+  narrative: { tldr:"The API serves the UI; the API also ranks.",
+               sections:[ {heading:"Storage", prose:"Posts persist to the DB."},
+                          {heading:"", prose:""} ] },
   conflicts: []
 }')"
 
@@ -198,6 +200,10 @@ ck "focus opens the target (zoom-into)"        eq "$(ndf domain:messaging | jq -
 ck "focus open_source 'focus' (auto, drill-out collapses it)" eq "$(ndf domain:messaging | jq -r '.open_source')" "focus"
 ck "the focused node is marked focused"         eq "$(ndf domain:messaging | jq -r '.focused')" "true"
 ck "a focused-subtree child is focused"         eq "$(ndf capability:send-dm | jq -r '.focused')" "true"
+# focused_self (H3, §8.4): the RING/scroll anchor is ONLY the exact ?focus target,
+# not its whole subtree (the subtree drives dim-exemption, not the ring).
+ck "focused_self true ONLY on the exact target"  eq "$(ndf domain:messaging | jq -r '.focused_self')" "true"
+ck "a focused-subtree child is NOT focused_self" eq "$(ndf capability:send-dm | jq -r '.focused_self')" "false"
 # Density: only edges TOUCHING the messaging subtree survive (2 of 6).
 ck "focus: only touching edges show (2)"        eq "$(jq -r '.counts.edges' <<<"$VF")" "2"
 ck "focus: send-dm→twilio kept"                 eq "$(jq -c '[.edges[]|select(.from=="capability:send-dm" and .to=="vendor:twilio")]|length' <<<"$VF")" "1"
@@ -457,8 +463,29 @@ ck "overlay(empty record): ok:true honest empty"        eq "$(jq -r '.ok' <<<"$V
 ck "overlay(empty record): counts.active 0 (shape parity)" eq "$(jq -r '.counts.active' <<<"$VON")" "0"
 ck "overlay(empty record): overlay object present"      eq "$(jq -r '.overlay.lit|type' <<<"$VON")" "array"
 
+echo "── N: §8.3 narrative (H3) — TL;DR/headings + acronym-expand on FIRST use ──"
+ck "narrative present (record carries one)"      eq "$(jq -r '.narrative.present' <<<"$V")" "true"
+ck "TL;DR expands API on first use"              has "API (Application Programming Interface)" "$(jq -r '.narrative.tldr' <<<"$V")"
+ck "TL;DR expands UI on first use"               has "UI (User Interface)" "$(jq -r '.narrative.tldr' <<<"$V")"
+# the SECOND 'API' in the TL;DR is NOT re-expanded (first-use-only): the tail
+# stays the plain "the API also ranks." (expanding it would read "...Interface) also").
+ck "second API stays plain (first-use only)"     has "the API also ranks" "$(jq -r '.narrative.tldr' <<<"$V")"
+ck "one good section kept (the empty one skipped)" eq "$(jq -r '.narrative.sections|length' <<<"$V")" "1"
+ck "section heading carried"                     eq "$(jq -r '.narrative.sections[0].heading' <<<"$V")" "Storage"
+# first-use spans the WHOLE narrative (TL;DR then sections), so DB — unseen in the
+# TL;DR — expands in the section prose; API/UI (already seen) would NOT re-expand.
+ck "DB expands in section prose (first-use across narrative)" has "DB (Database)" "$(jq -r '.narrative.sections[0].prose' <<<"$V")"
+ck "acronyms_expanded records API+UI+DB"         eq "$(jq -r '[.narrative.acronyms_expanded[].acronym]|sort|join(",")' <<<"$V")" "API,DB,UI"
+# tolerance (B.4): a garbled / missing / empty-record narrative degrades to
+# present:false, NEVER a throw — the map still renders.
+VNG="$(bp '{}' "$(jq -c '.narrative="oops not an object"' <<<"$FIX")")"
+ck "garbled narrative ⇒ ok:true (no throw)"      eq "$(jq -r '.ok' <<<"$VNG")" "true"
+ck "garbled narrative ⇒ present:false"           eq "$(jq -r '.narrative.present' <<<"$VNG")" "false"
+ck "missing narrative ⇒ present:false"           eq "$(jq -r '.narrative.present' <<<"$(bp '{}' "$(jq -c 'del(.narrative)' <<<"$FIX")")")" "false"
+ck "empty (null) record ⇒ narrative shape parity (present:false)" eq "$(jq -r '.narrative.present' <<<"$(bp '{}' 'null')")" "false"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
-echo " test-blueprint-view (blueprint map renderer H2 + overlay G5):  PASS=$PASS  FAIL=$FAIL"
+echo " test-blueprint-view (blueprint map renderer H2 + overlay G5 + narrative H3):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]

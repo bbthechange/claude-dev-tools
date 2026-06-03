@@ -1909,6 +1909,13 @@ co__work_snapshot() {
     # transient, the machines[]/queue_health precedent) ⇒ the honest-empty
     # default {writer:null,auxiliary:[]} for SHAPE PARITY; CF fills the real
     # lanes from the agent_activity rows.
+    #
+    # claude-tools-uxvh3 — blueprint_meta{} (DESIGN H §8.1, B.1), the Track-H named
+    # sub-object: {updated_at,thumb_ref,active_domains}. Emitted here as the honest
+    # all-null/[] default for SHAPE PARITY (the activity/queue_health precedent) —
+    # CF joins the real blueprint record's updated_at + the §8.2 active_domains
+    # union off activity. The bash oracle's activity is always the honest-empty
+    # default above, so its active_domains is always [] anyway.
     proj_json=$(printf '%s' "$proj_json" | jq -c \
         --argjson r "$rec" --arg cap "$cap" --argjson holds "$holds" \
         '. + [{project_ref:$r.project_ref,
@@ -1935,6 +1942,7 @@ co__work_snapshot() {
                              hidden_under_deferred_parent:0,
                              net_velocity_7d:0,
                              epics_with_zero_ready_children:[]},
+               blueprint_meta:{updated_at:null, thumb_ref:null, active_domains:[]},
                lease:$r.lease,
                capacity_strip:{cost_class:"standard", verdict:$cap,
                                source:"§6.3 aggregated coarse verdict (T4.4)"}}]' \

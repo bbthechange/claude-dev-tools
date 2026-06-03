@@ -1091,16 +1091,35 @@
   // customization, never conflicts[] (that is the updater's append-only log).
   //
   // SCOPE LINE (H4 vs H3): H4 owns the customization gestures + the conflict-FYI +
-  // an honest interactive map mount. H3 layers the narrative prose (TL;DR →
-  // headings) ABOVE this map + the ?focus=<id> deep-link contract + the
-  // blueprint_meta projection + the in-flight overlay wiring (G5's renderer
-  // overlay is read here only if a future caller passes activity in). The map
-  // geometry is [free] (§3.5): this mount renders an honest drill-in TREE, not the
-  // spatial grow-to-fit canvas (H3's drawing job) — the customization CONTRACT,
-  // not the geometry, is what H4 ships.
+  // an honest interactive map mount. H3 (claude-tools-uxvh3) LANDED the rest: the
+  // §8.3 narrative prose (TL;DR → headings) ABOVE this map (#bp-narrative), the
+  // ?focus=<id> deep-link contract (bpFocus → opts.focus + the focus banner +
+  // scroll-once), the blueprint_meta projection (engine-side, the Workspace card),
+  // and the §6.4/§8.2 in-flight overlay WIRING (a best-effort /api/board read →
+  // extractBlueprintOverlay → opts.active_domains/activity, lighting worked
+  // domains the renderer already supports). The map geometry is [free] (§3.5):
+  // this mount renders an honest drill-in TREE, not the spatial grow-to-fit canvas
+  // — the customization CONTRACT + the narrative/overlay, not the geometry.
   var bpOpened = Object.create(null); // node id → true: which boxes are drilled in
   var bpRecord = null;                // last blueprint-get body (the B.2 record)
+  var bpOverlay = null;               // §8.2 in-flight overlay {active_domains,activity} (best-effort /api/board)
   var bpInFlight = false;             // a customization write is in flight — skip the timer repaint
+  var bpScrolled = false;             // scroll a ?focus target into view ONCE (not on every refresh)
+
+  // ?focus=<node-id> deep-link (§8.4). H3 owns the route+param CONTRACT: a Board
+  // done·verified card, a decision dossier, or the Flow F FYI link
+  // /ws/<ref>/blueprint?focus=<id> and it must RESOLVE (open at that node, full
+  // map) — never 404. The render fidelity (zoom-to-fit + dim) is the renderer's;
+  // here we just read the param and pass it as opts.focus. A focus id the map
+  // doesn't know is honestly surfaced (the view-model notes it + renders the full
+  // map), never an error. Parsed ONCE at mount (the URL doesn't change in-facet).
+  var bpFocus = (function () {
+    try {
+      var q = new URLSearchParams(location.search);
+      var f = q.get('focus');
+      return (typeof f === 'string' && f) ? f : null;
+    } catch (e) { return null; }
+  })();
 
   function mountBlueprintFacet() {
     Dom.clear(host);
@@ -1134,6 +1153,24 @@
       'impl / docs task closing), or when you request an overview. Nothing to ' +
       'customize until then.'));
     body.appendChild(empty);
+
+    // FOCUS banner — when arrived via a ?focus=<id> deep-link (§8.4), say what we
+    // focused (and honestly, if the id isn't in this map, that we're showing the
+    // whole map instead). Hidden when there is no focus param.
+    var focusBanner = Dom.mk('div', 'bp-focus-banner');
+    focusBanner.id = 'bp-focus-banner';
+    focusBanner.hidden = true;
+    body.appendChild(focusBanner);
+
+    // NARRATIVE — the §8.3 skimmable design prose ABOVE the map: TL;DR → section
+    // headings/prose (acronyms expanded on first use by the pure view-model), then
+    // the map below is the diagram, and the map's drill-in is the drill-down
+    // detail (TL;DR → headings → map → detail). Hidden when the record carries no
+    // narrative (B.4 — honest absence, the map still renders).
+    var nSec = Dom.mk('section', 'bp-narrative');
+    nSec.id = 'bp-narrative';
+    nSec.hidden = true;
+    body.appendChild(nSec);
 
     // CONFLICTS lane — the §5.3 keep/drop FYIs (live conflicts only).
     var cSec = Dom.mk('div', 'bp-sec bp-conflicts-sec');
@@ -1207,22 +1244,58 @@
     if (healthDot) healthDot.classList.add('bad');
   }
 
-  // Read THIS workspace's Blueprint record (NOT /api/board) — the §8.1 on-demand
-  // fetch. The engine returns the B.2 body verbatim, or `null` (no Blueprint yet).
+  // Read THIS workspace's Blueprint record (the §8.1 on-demand fetch — the map
+  // body stays out of the work-snapshot). The engine returns the B.2 body
+  // verbatim, or `null` (no Blueprint yet). SEPARATELY, best-effort, read the
+  // work-snapshot (/api/board) for the §8.2 in-flight overlay: this project's
+  // blueprint_meta.active_domains + activity light up worked domains on the map.
+  // The board read is BEST-EFFORT (G5 wiring) — a board failure leaves the
+  // overlay dark (B.4), it NEVER fails the facet; the record read is the one that
+  // gates the facet.
   function refreshBlueprint() {
-    Net.getJSON('/api/ws/blueprint?project_ref=' + encodeURIComponent(ctx.ref))
-      .then(function (record) {
-        bpRecord = record; // may be null (honest empty state)
-        renderBlueprint(record);
+    var pRecord = Net.getJSON('/api/ws/blueprint?project_ref=' + encodeURIComponent(ctx.ref));
+    var pOverlay = Net.getJSON('/api/board').then(
+      function (snap) { return extractBlueprintOverlay(snap, ctx.ref); },
+      function () { return null; } // overlay is best-effort — dark on any board error
+    );
+    Promise.all([pRecord, pOverlay])
+      .then(function (res) {
+        bpRecord = res[0];     // may be null (honest empty state)
+        bpOverlay = res[1];    // may be null (overlay dark)
+        renderBlueprint(res[0]);
       })
       .catch(function (e) {
         showBlueprintError(e && e.message ? e.message : String(e));
       });
   }
 
+  // extractBlueprintOverlay(snapshot, ref) → the §8.2 overlay inputs for `ref`
+  // from the work-snapshot: { active_domains, activity }. The renderer's
+  // normalizeOverlay folds BOTH — active_domains (the §8.1 union — lights boxes)
+  // and activity (the identity-bearing {writer,auxiliary} — the only form that
+  // can honestly assert a two-agents-one-domain collision). Tolerant: a missing
+  // project / block ⇒ null (dark overlay), never a throw.
+  function extractBlueprintOverlay(snapshot, ref) {
+    if (!snapshot || typeof snapshot !== 'object') return null;
+    var projects = Array.isArray(snapshot.projects) ? snapshot.projects : [];
+    var p = null;
+    for (var i = 0; i < projects.length; i++) {
+      if (projects[i] && projects[i].project_ref === ref) { p = projects[i]; break; }
+    }
+    if (!p) return null;
+    var bm = (p.blueprint_meta && typeof p.blueprint_meta === 'object') ? p.blueprint_meta : null;
+    return {
+      active_domains: bm && Array.isArray(bm.active_domains) ? bm.active_domains : [],
+      activity: (p.activity && typeof p.activity === 'object') ? p.activity : null
+    };
+  }
+
   function renderBlueprint(record) {
     var view = BlueprintView.deriveBlueprintView(record, Date.now(), {
-      opened: Object.keys(bpOpened)
+      opened: Object.keys(bpOpened),
+      focus: bpFocus || undefined,
+      active_domains: bpOverlay ? bpOverlay.active_domains : undefined,
+      activity: bpOverlay ? bpOverlay.activity : undefined
     });
     // The one hard refusal (unknown-HIGHER schema_version) surfaces as an error.
     if (!view.ok) { showBlueprintError(view.error); return; }
@@ -1240,16 +1313,83 @@
     Dom.el('bp-emptybox').hidden = !isEmpty;
     Dom.el('bp-map-sl').hidden = isEmpty;
 
+    renderBlueprintFocusBanner(view);
+    renderBlueprintNarrative(view.narrative);
     renderBlueprintConflicts(record);
     renderBlueprintMap(view);
     renderBlueprintHidden(view);
     renderBlueprintDegraded(view.degraded);
+    scrollFocusIntoView(view);
 
     var updated = Dom.el('bp-updated');
     if (updated) {
       var age = view.updated_at_age ? (' · updated ' + view.updated_at_age) : '';
       updated.textContent = 'read ' + new Date().toLocaleTimeString() + age;
     }
+  }
+
+  // ── §8.4 focus banner — say what a ?focus deep-link resolved to (or didn't) ──
+  // The CONTRACT is that the route resolves: a focus id present in the map says
+  // "focused on X"; a focus id the map doesn't know says so honestly and shows the
+  // whole map (never a 404, never a fabricated node). No focus param ⇒ hidden.
+  function renderBlueprintFocusBanner(view) {
+    var el = Dom.el('bp-focus-banner');
+    if (!el) return;
+    Dom.clear(el);
+    if (!bpFocus) { el.hidden = true; return; }
+    el.hidden = false;
+    if (view.focus) {
+      el.className = 'bp-focus-banner';
+      el.appendChild(document.createTextNode('Focused on '));
+      el.appendChild(Dom.mk('code', 'bp-focus-id', view.focus));
+      el.appendChild(document.createTextNode(' — the map is opened to it.'));
+    } else {
+      // Resolved the ROUTE, but the id isn't in this map (stale link / hidden /
+      // renamed-away). Honest, never a throw — show the full map.
+      el.className = 'bp-focus-banner bp-focus-miss';
+      el.appendChild(document.createTextNode('The link pointed at '));
+      el.appendChild(Dom.mk('code', 'bp-focus-id', bpFocus));
+      el.appendChild(document.createTextNode(
+        ', which isn’t in this map (it may be stale or hidden) — showing the whole map.'));
+    }
+  }
+
+  // ── §8.3 narrative render — TL;DR → section headings/prose, ABOVE the map ─────
+  // The pure view-model already expanded acronyms on first use and tolerated a
+  // missing/garbled narrative (present:false). This is paint-only: textContent
+  // (never innerHTML — XSS-safe by construction). Hidden when no narrative.
+  function renderBlueprintNarrative(narrative) {
+    var sec = Dom.el('bp-narrative');
+    if (!sec) return;
+    Dom.clear(sec);
+    var n = narrative || {};
+    if (!n.present) { sec.hidden = true; return; }
+    sec.hidden = false;
+    if (n.tldr) {
+      var tl = Dom.mk('div', 'bp-tldr');
+      tl.appendChild(Dom.mk('span', 'bp-tldr-k', 'TL;DR'));
+      tl.appendChild(Dom.mk('span', 'bp-tldr-v', n.tldr));
+      sec.appendChild(tl);
+    }
+    (Array.isArray(n.sections) ? n.sections : []).forEach(function (s) {
+      var blk = Dom.mk('div', 'bp-narr-sec');
+      if (s.heading) blk.appendChild(Dom.mk('h3', 'bp-narr-h', s.heading));
+      if (s.prose) blk.appendChild(Dom.mk('p', 'bp-narr-p', s.prose));
+      sec.appendChild(blk);
+    });
+  }
+
+  // Bring a ?focus target into view ONCE (the deep-link landed; don't yank the
+  // viewport on every 30s refresh). The focused node carries the .bp-focus class
+  // (renderBlueprintNode); scrollIntoView is a no-op in jsdom (guarded).
+  function scrollFocusIntoView(view) {
+    if (!bpFocus || bpScrolled || !view.focus) return;
+    var host = Dom.el('bp-map');
+    var target = host ? host.querySelector('.bp-focus') : null;
+    if (target && typeof target.scrollIntoView === 'function') {
+      try { target.scrollIntoView({ block: 'center' }); } catch (e) { /* jsdom / older browsers */ }
+    }
+    bpScrolled = true;
   }
 
   // ── conflict FYIs (§5.3 keep / drop; KEEP is the §14.2 default) ──────────────
@@ -1339,13 +1479,19 @@
       view.counts.edges + ' edges'));
     if (view.counts.hidden) legend.appendChild(Dom.mk('span', 'bp-legend-hidden',
       view.counts.hidden + ' hidden'));
+    // §6.4/§8.2 in-flight overlay (G5 wiring): lit/collision counts when the
+    // work-snapshot reported worked domains. Silent (dark) when nothing active.
+    if (view.counts.active) legend.appendChild(Dom.mk('span', 'bp-legend-active',
+      view.counts.active + ' in flight'));
+    if (view.counts.collisions) legend.appendChild(Dom.mk('span', 'bp-legend-collision',
+      view.counts.collisions + ' collision' + (view.counts.collisions === 1 ? '' : 's')));
     mapHost.appendChild(legend);
   }
 
   function renderBlueprintNode(n, byId) {
     var card = Dom.mk('div', 'bp-node bp-kind-' + (n.kind_known ? n.kind : 'unknown') +
       (n.dimmed ? ' bp-dim' : '') + (n.active ? ' bp-active' : '') +
-      (n.collision ? ' bp-collision' : ''));
+      (n.collision ? ' bp-collision' : '') + (n.focused_self ? ' bp-focus' : ''));
     card.style.marginLeft = (n.depth * 16) + 'px';
 
     var head = Dom.mk('div', 'bp-node-head');

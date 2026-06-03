@@ -149,6 +149,20 @@
 .ws-intake-row.attn .ws-intake-meta{color:var(--amber-soft)}
 .ws-intake-ago{color:var(--slate);letter-spacing:.04em;flex:none}
 
+/* H3 (claude-tools-uxvh3) — the Blueprint card chip (§6.6/§8.5): a thumbnail
+ * glyph + "updated 2h ago" freshness + the §8.2 in-flight count, from the §8.1
+ * blueprint_meta projection. Informational (the card already links to the board);
+ * omitted when no map exists yet. Mirrors the intake-strip framing. */
+.ws-blueprint{margin-top:12px;padding-top:11px;border-top:1px solid var(--line);
+  display:flex;align-items:center;gap:9px;font-size:10px}
+.ws-bp-thumb{font-size:15px;line-height:1;color:var(--sky);flex:none}
+.ws-bp-meta{display:flex;align-items:baseline;gap:8px;min-width:0;flex:1 1 auto}
+.ws-bp-lbl{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate)}
+.ws-bp-ago{color:var(--faint);letter-spacing:.02em}
+.ws-bp-active{font-size:9px;letter-spacing:.04em;padding:2px 7px;border-radius:6px;
+  color:var(--mint);border:1px solid rgba(120,220,170,.4);
+  background:rgba(120,220,170,.08);flex:none}
+
 .ws-go{margin-top:12px;font-size:11px;letter-spacing:.16em;color:var(--sky)}
 
 .errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);

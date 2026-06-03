@@ -73,7 +73,9 @@ FIX="$(jq -cn --arg shb "$STALE_HB" '{
     { project_ref: "alpha",
       runner_state: { liveness:"live", actual:"running", desired:"running",
         desired_actual_mismatch:false, last_heartbeat_at:"2026-05-29T00:00:00Z",
-        current_task_ref:"alpha-12", current_task_title:"Wire the thing" } },
+        current_task_ref:"alpha-12", current_task_title:"Wire the thing" },
+      blueprint_meta: { updated_at:"2026-05-18T22:00:00Z", thumb_ref:"alpha",
+        active_domains:["domain:posts-feed","domain:messaging"] } },
     { project_ref: "bravo",
       runner_state: { liveness:"stale", actual:"running", desired:"running",
         desired_actual_mismatch:false, last_heartbeat_at:$shb,
@@ -246,6 +248,18 @@ VE="$(render "$EMPTY")"
 ck "no projects ⇒ ok:true, cards empty"                      eq "$(jq -r '.ok' <<<"$VE")" "true"
 ck "no projects ⇒ cards length 0"                            eq "$(jq -r '.cards|length' <<<"$VE")" "0"
 ck "no waiting ⇒ decisions_total 0"                          eq "$(jq -r '.decisions_total' <<<"$VE")" "0"
+
+echo "── J: H3 Blueprint card chip — read from the §8.1 blueprint_meta projection ──"
+ck "alpha blueprint present (has a map)"               eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.present' <<<"$V")" "true"
+ck "alpha blueprint updated_ago '2h' (from updated_at)" eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.updated_ago' <<<"$V")" "2h"
+ck "alpha blueprint active_count = 2 (§8.2 union size)" eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.active_count' <<<"$V")" "2"
+ck "alpha blueprint href → /ws/alpha/blueprint"        eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.href' <<<"$V")" "/ws/alpha/blueprint"
+ck "alpha blueprint thumb_ref carried"                 eq "$(jq -r '.cards[]|select(.project_ref=="alpha").blueprint.thumb_ref' <<<"$V")" "alpha"
+# A project with NO blueprint_meta ⇒ present:false (older producer / no map yet);
+# the chip is omitted, never a fabricated thumbnail (B.4).
+ck "bravo (no blueprint_meta) ⇒ present:false"          eq "$(jq -r '.cards[]|select(.project_ref=="bravo").blueprint.present' <<<"$V")" "false"
+ck "bravo blueprint updated_ago null (honest absence)"  eq "$(jq -r '.cards[]|select(.project_ref=="bravo").blueprint.updated_ago' <<<"$V")" "null"
+ck "bravo blueprint active_count 0"                     eq "$(jq -r '.cards[]|select(.project_ref=="bravo").blueprint.active_count' <<<"$V")" "0"
 
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
