@@ -13,6 +13,20 @@ import { defineConfig } from "vitest/config";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 
 export default defineConfig({
+  // claude-tools-mqh4 — raise the per-test timeout off vitest's 5s default.
+  // These differential specs exercise the REAL engine through workerd+miniflare;
+  // the cold/loaded workers-pool import can take tens of seconds under concurrent
+  // load (observed ~30s during a parallel close), and the heavier conformance
+  // specs (CF.2 lease, CF.6 dossier, CF.7 timer) legitimately need ~6.9s of
+  // in-test work. At 5s they intermittently fail with "Test timed out in 5000ms"
+  // — an environmental false-RED, NOT an assertion failure — which can red the
+  // offline gate for web-only changes that touch no cf/src. 30s restores headroom
+  // (~4x the real work) while still failing a genuinely wedged test. hookTimeout
+  // is raised in lockstep so any future setup/teardown gets the same headroom.
+  test: {
+    testTimeout: 30000,
+    hookTimeout: 30000,
+  },
   plugins: [
     cloudflareTest({
       main: "./src/index.js",
