@@ -2473,7 +2473,7 @@ st_run_task() {
   iter_ts="$(date -u +%Y%m%dT%H%M%SZ)"
   # claude-tools-62xc: derive the per-task log_dir from the env-overridable global
   # $LOG_DIR (default .beads/runner-logs, set at line ~194) — NOT a second hardcoded
-  # literal. The claim-time current-task pointer (st_run_task ~line 2434) and every
+  # literal. The claim-time current-task pointer (st_claim ~line 2434) and every
   # teardown `rm` target $LOG_DIR/current-task; if someone exports LOG_DIR=/custom
   # the per-task STREAM/SIGNAL/PROC/POST_TERMINAL/HOOK_SETTINGS artifacts must land
   # there too or teardown's current-task rm and these artifacts disagree. They MATCH
