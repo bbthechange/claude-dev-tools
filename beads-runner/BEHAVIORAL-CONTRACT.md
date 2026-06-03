@@ -434,11 +434,12 @@ where `MAX_OUTPUT_TOKENS` matches any of three markers: `MAX_OUTPUT_TOKENS=`, `R
 
 ## 14. Interrupt cleanup, the EXIT trap, and subshell reaping
 
-### BC-35 — `INT`/`TERM` resets the in-flight task to `open` and does not strand it
-**Assertion:** On `SIGINT`/`SIGTERM` the `cleanup()` trap: kills the live `claude` PID (and waits); **if a task is in flight** resets it via `bd update --status=open` ("Interrupted — resetting <id> to open") and `lease_release_seam`s it (§6.1 release ⇒ open); runs `runner_cleanup`; emits the `stopping` heartbeat + `INTERRUPTED 1` terminal-reason (guarded); removes the usage cache + signal/post-terminal/hook-settings files + the `current-task` pointer; prints results; exits 1. `CURRENT_TASK_ID` is set when a task starts (1729) and cleared after it finishes (2595), so the reset fires only for a genuinely-in-flight task.
-**Repro:** `Ctrl-C` mid-task → that task's status is `open` (not stranded `in_progress`), exit code 1.
-**Source:** 426–455, 1729 / 2595.
-**Classification:** **SCAR.** Ctrl-C must not strand the active task as a phantom `in_progress`.
+### BC-35 — `INT`/`TERM`/`HUP` resets the in-flight task to `open` and does not strand it
+**Assertion:** On `SIGINT`/`SIGTERM`/`SIGHUP` the `cleanup()` trap: kills the live `claude` PID (and waits); **if a task is in flight** resets it via `bd update --status=open` ("Interrupted — resetting <id> to open") and `lease_release_seam`s it (§6.1 release ⇒ open); runs `runner_cleanup`; emits the `stopping` heartbeat + `INTERRUPTED 1` terminal-reason (guarded); removes the usage cache + signal/post-terminal/hook-settings files + the `current-task` pointer; prints results; exits 1. `CURRENT_TASK_ID` is set when a task starts (1729) and cleared after it finishes (2595), so the reset fires only for a genuinely-in-flight task.
+**HUP parity (claude-tools-j0r0):** v1's trap is now `trap cleanup INT TERM HUP`, matching v2's `trap _on_signal INT TERM HUP` (HUP = the controlling-process hangup path). This is additive and does **not** alter the FROZEN exit-code semantics — HUP routes through the same teardown and exits 1, exactly as v2 already does. It is a **provable no-op in production**: a detached runner (`launch-detached.sh nohup … &`) inherits HUP at `SIG_IGN`, and POSIX forbids re-trapping an inherited `SIG_IGN`, so the added HUP only takes effect in a foreground/interactive run (the conformance harness resets HUP→`SIG_DFL` to exercise it — claude-tools-54ei).
+**Repro:** `Ctrl-C` (or a foreground `kill -HUP`) mid-task → that task's status is `open` (not stranded `in_progress`), exit code 1.
+**Source:** 426–455, 473 (trap), 1729 / 2595.
+**Classification:** **SCAR.** Ctrl-C / hangup must not strand the active task as a phantom `in_progress`.
 
 ### BC-36 — `runner_cleanup` runs on interrupt and fatal exits but NOT on normal completion (asymmetry persists); the EXIT trap closes the subshell-leak gap
 **Assertion:** `runner_cleanup` (the project hook) is invoked from `cleanup()` (INT/TERM, line 437) and before the three fatal exits (AUTH 2453, BILLING 2471, breaker 2573). It is **not** invoked on the normal/graceful path (queue drained or stop file → `break` → fall off end at 2595–2626), and **not** on an unguarded `set -e` abort.

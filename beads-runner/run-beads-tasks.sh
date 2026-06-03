@@ -470,7 +470,16 @@ cleanup() {
   echo "Results: $COMPLETED completed, $FAILED failed"
   exit 1
 }
-trap cleanup INT TERM
+# claude-tools-j0r0: HUP joins INT/TERM for v1↔v2 parity (v2 runner.sh traps
+# `INT TERM HUP`). In PRODUCTION this is a provable no-op: a detached runner
+# (launch-detached.sh `nohup … &`) inherits HUP at SIG_IGN, and POSIX forbids
+# re-trapping an inherited SIG_IGN — so `trap cleanup … HUP` is silently inert
+# there (the same rule as claude-tools-54ei). It only bites in a FOREGROUND/
+# interactive run, where a controlling-process hangup now routes through the
+# SAME teardown (reset-in-flight-to-open + exit 1) instead of an ungraceful
+# death that strands the task `in_progress`. Regression-locked by the v1 HUP
+# row in conformance/assertions/bc-35-interrupt-cleanup.sh.
+trap cleanup INT TERM HUP
 # claude-tools-yva: EXIT trap runs on every exit path — clean drain, exit 2
 # (circuit breaker), or after cleanup()'s `exit 1` on INT/TERM. Idempotent: a
 # second pkill on already-dead PIDs is a no-op. This is the last line of

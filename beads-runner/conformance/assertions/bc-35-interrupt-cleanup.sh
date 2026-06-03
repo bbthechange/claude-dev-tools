@@ -3,10 +3,15 @@
 #   and asserts teardown within a fixed wall-clock backstop; green alone but flakes
 #   under the parallel lane's CPU load → quarantined to the serial lane. Do NOT
 #   loosen the harness backstop to mask load.)
-# BC-35 — SIGINT/SIGTERM resets the in-flight task to `open` and exits 1
+# BC-35 — SIGINT/SIGTERM/SIGHUP resets the in-flight task to `open` and exits 1
 #         (does not strand it `in_progress`).
 # Binds: INTERFACE.md v1 §8.1 (exit 1 = SIGINT/SIGTERM row) and §6.1 (lease
 #        release maps the bead back to open — same SCAR transition).
+# HUP row added by claude-tools-j0r0: v1's `trap cleanup INT TERM HUP` now matches
+#        v2's `trap _on_signal INT TERM HUP` (the tree assertion already covers v2
+#        HUP). The harness `_spawn_runner` resets HUP→SIG_DFL (claude-tools-54ei),
+#        so HUP is trappable here even though it is SIG_IGN in a detached prod
+#        runner — this regression-locks the foreground/interactive parity fix.
 # SCAR (silent-when-wrong): Ctrl-C stranding the active task as a phantom
 #        `in_progress` later masquerades as a crash orphan / vanishes from
 #        `bd ready`.
@@ -40,5 +45,10 @@ interrupt_case() {
   H_cleanup
 }
 
+# TERM/INT are the BC-35 SCAR signals; HUP is the contract's named parent-death
+# path (a controlling-process hangup) — claude-tools-j0r0 added HUP to v1's trap
+# list so it routes through the SAME cleanup funnel (reset-to-open + exit 1),
+# matching v2. Parity with bc-35-interrupt-cleanup-tree.sh's HUP case.
 interrupt_case TERM
 interrupt_case INT
+interrupt_case HUP
