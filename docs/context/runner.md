@@ -215,6 +215,20 @@ was lost).
   Because v2 has **no `tail -f` parser**, this poll IS the activity seam (not a
   second tail). Guarded-optional (BC-43): absent lib / offline transport ⇒ no-op,
   never blocks or crashes the loop.
+- **§9 audit-coverage marker is refreshed at each inventory publish (v1 only,
+  claude-tools-mhcp.3).** `run-beads-tasks.sh` calls `runner_refresh_audit_coverage`
+  — a guarded subprocess run of `defer-cascade-audit.sh audit` — immediately BEFORE
+  each `la_publish_workspace_inventory` (task pickup + completion). The audit
+  overwrite-or-removes the CWD-relative `.beads/runner-logs/audit-coverage.json`
+  marker the publisher reads, so the §9 row-4 Queue-Health chip (read/total over
+  open future-defer epics) reflects the same queue state the inventory carries.
+  Writer + reader in one process / one CWD on purpose ⇒ they can't drift on the
+  marker path (the silent-no-chip trap t5ud/mhcp.2 guarded). Best-effort (BC-43):
+  the subprocess isolates the audit's exit code (1=cascade, 3=bd hiccup) off the
+  loop; `RUNNER_AUDIT_COVERAGE_DISABLED=1` opts out. **v2 (`runner.sh`) publishes no
+  workspace_inventory** (a stubbed `la_*` seam in `v2-gap.md`), so there is nothing
+  to hook there yet — un-stubbing the v2 inventory publish must port this refresh
+  alongside it.
 - **v2 watchdog honors agent-action control markers (I4, claude-tools-uxvi4).**
   `_watchdog_loop` (the always-alive subshell that OWNS `CLAUDE_PID` + the staged
   kill) calls `_watchdog_scan_agent_action` each `WATCHDOG_POLL` tick, reading

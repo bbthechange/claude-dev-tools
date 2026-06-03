@@ -238,6 +238,30 @@ if [[ -f "$CT_LIB" ]]; then
   source "$CT_LIB"
 fi
 
+# ── §9 row-4 audit-coverage marker refresh (claude-tools-mhcp.3) ──────────────
+# Keep the per-workspace audit-coverage marker fresh immediately BEFORE each
+# workspace_inventory publish. The READER is la_publish_workspace_inventory
+# (sourced via LA_LIB above); the WRITER is the defer-cascade audit
+# (claude-tools-mhcp.2) — a full `audit` run overwrite-or-removes
+# .beads/runner-logs/audit-coverage.json so the §9 Queue-Health chip reflects
+# THIS publish's queue (read/total over the open future-defer epics), never a
+# stale ratio and never a phantom 0/0 (total==0 removes the marker ⇒ engine null
+# ⇒ no chip). Co-locating the refresh with the publish — same process, same CWD
+# (the workspace root) — is what guarantees writer and reader can never drift on
+# the CWD-relative marker path (the silent-no-chip failure mode t5ud/mhcp.2
+# guarded). Fully isolated & best-effort, exactly like the la_*/sr_* producer
+# calls: run as a SUBPROCESS so the audit's own exit code (1 = cascade found,
+# 3 = bd hiccup) NEVER touches the runner's loop; absent/disabled ⇒ strict no-op
+# (the reader then falls to the existing marker, or null). Opt out at runtime
+# with RUNNER_AUDIT_COVERAGE_DISABLED=1.
+DCA_AUDIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/defer-cascade-audit.sh"
+runner_refresh_audit_coverage() {
+  [[ "${RUNNER_AUDIT_COVERAGE_DISABLED:-0}" == "1" ]] && return 0
+  [[ -f "$DCA_AUDIT" ]] || return 0
+  bash "$DCA_AUDIT" audit >/dev/null 2>&1 || true
+  return 0
+}
+
 # ── claude-tools-69u8: wire the dossier-builder bridge ONCE for the whole
 #    runner process, at the dg__author chokepoint — instead of per-call-site.
 # Before this, only two sites (the §7.3 stuck backstop + the Flow G analysis
@@ -1792,6 +1816,7 @@ while true; do
   # Board shows the freshly-claimed bead in this workspace's title rendering.
   # OPTIONAL/guarded (same posture as hb): a missing lib / failed shell-out
   # never blocks task start — the producer is best-effort.
+  runner_refresh_audit_coverage   # claude-tools-mhcp.3: freshen the §9 marker the publish below reads
   command -v la_publish_workspace_inventory >/dev/null 2>&1 \
     && la_publish_workspace_inventory || true
 
@@ -2633,6 +2658,7 @@ $PROMPT"
   # gk17 / epic vvgy: emit a workspace_inventory snapshot at completion so the
   # Board reflects the post-task queue (the just-closed bead leaves
   # in_progress, counts update, the next ready bead becomes visible).
+  runner_refresh_audit_coverage   # claude-tools-mhcp.3: freshen the §9 marker the publish below reads
   command -v la_publish_workspace_inventory >/dev/null 2>&1 \
     && la_publish_workspace_inventory || true
   CLAUDE_PID=""
