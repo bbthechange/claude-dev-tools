@@ -92,6 +92,30 @@ const RECORD = {
 };
 const SNAP = { schema_version: 1, projects: [] };
 
+// A record with an API boundary box (a route on posts-feed targeting an internal
+// capability) + an ASYNC (queue) edge — for the bpmap-2 edge/api anti-regression.
+const RECORD_API = {
+  schema_version: 1, project_ref: 'projA',
+  derived: {
+    nodes: [
+      { id: 'domain:posts-feed', label: 'Posts & Feed', kind: 'domain', parent: null },
+      { id: 'capability:create-post', label: 'Create a post', kind: 'capability', parent: 'domain:posts-feed' },
+      { id: 'domain:messaging', label: 'Messaging', kind: 'domain', parent: null },
+    ],
+    // a queue edge = the ASYNC (dashed) kind; resolves capability→domain under focus.
+    edges: [{ from: 'capability:create-post', to: 'domain:messaging', kind: 'queue', bundle_key: 'cp->msg' }],
+    // a route straddling posts-feed's border, arrowing to the capability it calls.
+    apis: [{ id: 'api:POST-/posts', domain: 'domain:posts-feed', route: 'POST /posts', calls: ['capability:create-post'] }],
+  },
+  customization: {}, narrative: { tldr: 'x', sections: [] }, conflicts: [],
+};
+
+function edgeLayer(window) {
+  const svg = window.document.getElementById('bp-edge-layer');
+  assert.ok(svg, 'the #bp-edge-layer SVG (where bpmap-2 draws edges + api arrows) exists');
+  return svg;
+}
+
 function boxNodeStyles(window) {
   const layer = window.document.getElementById('bp-box-layer');
   assert.ok(layer, 'the #bp-box-layer (the box layer of the transformed world) exists');
@@ -172,5 +196,68 @@ test('bpmap-1 — the focused node still carries .bp-focus (H3 deep-link contrac
     const host = window.document.getElementById('facet-host');
     const focused = host.querySelector('.bp-node.bp-focus');
     assert.ok(focused, 'the ?focus target node keeps the .bp-focus ring on the positioned canvas');
+  } finally { window.close(); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// bpmap-2 (claude-tools-bpmap2) ANTI-REGRESSION: the original shadow rendered
+// view.edges as the integer count in a text legend ("N edges") and never drew a
+// single <path>; APIs were dropped entirely. These assert the DOM actually carries
+// edge PATHS (counts, not a legend string) and API boundary BOXES — so a regression
+// back to "edges are just a number" goes RED.
+test('bpmap-2 (edges) — view.edges render as SVG <path> elements in the edge layer (not a legend count)', async () => {
+  // RECORD carries one cross-domain edge (posts-feed → messaging); at macro both
+  // domains are visible so it resolves domain↔domain and must draw a path.
+  const window = loadBlueprint('/ws/projA/blueprint', RECORD, SNAP);
+  try {
+    await flush();
+    const svg = edgeLayer(window);
+    const paths = svg.querySelectorAll('path.bp-edge, line.bp-edge');
+    assert.ok(paths.length >= 1,
+      'a non-empty view.edges draws at least one edge <path>/<line> in #bp-edge-layer');
+    // …and it is geometry, not text: each carries a path/line definition.
+    paths.forEach((p) => {
+      const def = p.getAttribute('d') || p.getAttribute('x1');
+      assert.ok(def, 'each edge element carries real geometry (a "d" path or line coords)');
+    });
+    // the via/queue label rides the edge (toggleable) — present by default.
+    assert.ok(svg.querySelectorAll('text.bp-edge-label').length >= 1,
+      'each edge carries a toggleable kind/via label');
+  } finally { window.close(); }
+});
+
+test('bpmap-2 (apis) — a domain with apis renders API boundary BOXES + an open-domain target arrow', async () => {
+  // Focus the capability so its domain opens → the api box AND its arrow to the
+  // internal capability it targets both render.
+  const window = loadBlueprint('/ws/projA/blueprint?focus=capability:create-post', RECORD_API, SNAP);
+  try {
+    await flush();
+    const boxLayer = window.document.getElementById('bp-box-layer');
+    assert.ok(boxLayer, 'the box layer exists');
+    const apiBoxes = boxLayer.querySelectorAll('.bp-api');
+    assert.equal(apiBoxes.length, 1,
+      'the one visible api renders exactly one boundary box straddling its domain border');
+    // each box is absolutely placed at its world position (straddling the border).
+    apiBoxes.forEach((b) => {
+      assert.equal(b.style.position, 'absolute', 'an api box is absolutely positioned in the world');
+      assert.match(b.style.left, /-?\d/, 'an api box carries an absolute world left');
+    });
+    // posts-feed is the left-most domain (x=0) so its api straddles into x<0; the
+    // box layer is shifted by a non-negative origin offset so it stays on-canvas
+    // (left + boxLayer.left ≥ 0). A regression that clipped it would leave the box
+    // at a negative world pixel with no compensating offset.
+    const offset = parseFloat(boxLayer.style.left) || 0;
+    assert.ok(offset >= 0, 'the box layer carries a non-negative origin offset');
+    apiBoxes.forEach((b) => {
+      assert.ok(parseFloat(b.style.left) + offset >= 0,
+        'the straddling api box lands at a non-negative world pixel (not clipped off-canvas)');
+    });
+    // domain is open ⇒ an arrow from the box to the capability it targets (§7).
+    const svg = edgeLayer(window);
+    assert.ok(svg.querySelectorAll('path.bp-api-arrow').length >= 1,
+      'an open domain draws the api→target capability arrow');
+    // the queue (async) edge is dashed (its own anti-regression for the async rule).
+    assert.ok(svg.querySelectorAll('path.bp-edge-async').length >= 1,
+      'a queue (async) edge renders dashed (.bp-edge-async)');
   } finally { window.close(); }
 });

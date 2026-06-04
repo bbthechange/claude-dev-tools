@@ -379,6 +379,29 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 #bp-edge-layer{position:absolute;top:0;left:0;overflow:visible;pointer-events:none}
 .bp-box-layer{position:absolute;top:0;left:0}
 
+/* ── edges + API boundary boxes (bpmap-2, claude-tools-bpmap2; §3.2/§3.3) ───────
+ * Resolved/bundled edges and api→target arrows are SVG paths in #bp-edge-layer
+ * (under the boxes); api boundary boxes are positioned divs in the box layer. All
+ * live in the SAME transformed world, so they pan/zoom with — and align to — the
+ * boxes. kind=queue is the ASYNC edge (dashed). The label halo (paint-order:stroke)
+ * keeps the via/queue text legible where it crosses an edge. */
+.bp-edge{fill:none;stroke:var(--slate);stroke-width:2.4;stroke-linecap:round}
+.bp-edge-data{stroke:var(--sky)}
+.bp-edge-depends{stroke:var(--slate);opacity:.8}
+.bp-edge-async{stroke:var(--amber);stroke-dasharray:8 6}      /* queue = async */
+.bp-arrow-head{fill:var(--slate)}
+.bp-arrow-head-api{fill:var(--sky)}
+.bp-edge-label{fill:var(--dim);font-family:var(--mono);font-size:10px;
+  paint-order:stroke;stroke:var(--ink-2);stroke-width:3px;stroke-linejoin:round}
+#bp-edge-layer.bp-hide-labels .bp-edge-label{display:none}
+.bp-api-arrow{fill:none;stroke:var(--sky);stroke-width:1.8;stroke-dasharray:3 3}
+/* a route straddling its domain's left border: out (caller) | in (domain) */
+.bp-api{box-sizing:border-box;display:flex;align-items:center;justify-content:center;
+  border:1px solid var(--sky);border-radius:6px;overflow:hidden;cursor:default;z-index:1;
+  background:linear-gradient(90deg,var(--ink) 0,var(--ink) 50%,rgba(116,168,255,.16) 50%,rgba(116,168,255,.16) 100%)}
+.bp-api-label{font-family:var(--mono);font-size:9px;color:var(--sky);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px;line-height:1}
+
 .bp-node{position:absolute;box-sizing:border-box;border:1px solid var(--line);
   border-radius:11px;background:var(--panel);padding:6px 8px;overflow:hidden;
   display:flex;flex-direction:column}

@@ -1113,9 +1113,12 @@
   // PRESERVED across the 30s refresh + drill — auto-fit runs ONCE (fitted), so a
   // repaint never yanks the viewport. bpSelected = the node whose H4 edit
   // affordances show in the panel below the canvas (the gestures, kept working).
-  var bpView = { panX: 0, panY: 0, zoom: 1, fitted: false, worldW: 1, worldH: 1 };
+  var bpView = { panX: 0, panY: 0, zoom: 1, fitted: false, worldW: 1, worldH: 1,
+    originX: 0, originY: 0, labelsHidden: false };
   var bpSelected = null;            // node id whose edit panel is open (null = none)
   var BP_MIN_ZOOM = 0.15, BP_MAX_ZOOM = 4;
+  var SVG_NS = 'http://www.w3.org/2000/svg';   // bpmap-2 edge/api SVG namespace
+  var BP_API_W = 74, BP_API_H = 20, BP_API_GAP = 5;  // §7 boundary-box size (small, straddles the border)
   // pointer pan/pinch bookkeeping (mouse + touch; jsdom never fires these — the
   // render test asserts the DOM, not the gestures).
   var bpPointers = Object.create(null); // pointerId → {x,y} in viewport coords
@@ -1426,7 +1429,10 @@
       var map = Dom.el('bp-map');
       var vw = (map && map.clientWidth) || 800;
       var vh = (map && map.clientHeight) || 480;
-      var cx = target.x + target.w / 2, cy = target.y + target.h / 2;
+      // + the world origin offset (bpmap-2): the box layer is shifted by originX/Y so
+      // an api box straddling past x=0 stays on-canvas — the node centre moves with it.
+      var ox = bpView.originX || 0, oy = bpView.originY || 0;
+      var cx = target.x + ox + target.w / 2, cy = target.y + oy + target.h / 2;
       bpView.panX = vw / 2 - cx * bpView.zoom;
       bpView.panY = vh / 2 - cy * bpView.zoom;
       applyBpWorldTransform();
@@ -1542,33 +1548,67 @@
     var vis = view.nodes.filter(function (n) { return n.visible && n.layout; });
     vis.sort(function (a, b) { return (a.depth || 0) - (b.depth || 0); });
 
-    // World extent (max x+w, y+h) — what the two layers are sized to + what fit reads.
-    var worldW = 1, worldH = 1;
+    // §7 API box rects — precomputed (pure) so the world-extent below can include a
+    // left-most domain's box straddling into x<0 (out=caller side). bpmap-1 nodes
+    // start at origin (0,0); an api overhang is the only source of a negative coord.
+    var apiRects = bpApiRects(view, byId);
+
+    // World extent over BOTH the boxes AND the api boundary boxes. nodes pack from
+    // (0,0), so minX/minY are 0 unless an api straddles past the origin; maxX/maxY
+    // grow for an api hanging right/below. originX/Y shift everything non-negative so
+    // nothing is clipped or outside the SVG viewBox; worldW/H is what fit reads.
+    var minX = 0, minY = 0, maxX = 1, maxY = 1;
     vis.forEach(function (n) {
       var L = n.layout;
-      if (L.x + L.w > worldW) worldW = L.x + L.w;
-      if (L.y + L.h > worldH) worldH = L.y + L.h;
+      if (L.x + L.w > maxX) maxX = L.x + L.w;
+      if (L.y + L.h > maxY) maxY = L.y + L.h;
     });
+    apiRects.forEach(function (r) {
+      if (r.rect.x < minX) minX = r.rect.x;
+      if (r.rect.y < minY) minY = r.rect.y;
+      if (r.rect.x + r.rect.w > maxX) maxX = r.rect.x + r.rect.w;
+      if (r.rect.y + r.rect.h > maxY) maxY = r.rect.y + r.rect.h;
+    });
+    var worldW = maxX - minX, worldH = maxY - minY;
+    var originX = -minX, originY = -minY;   // ≥0; 0 in the common (no-overhang) case
     bpView.worldW = worldW; bpView.worldH = worldH;
+    bpView.originX = originX; bpView.originY = originY;
 
     // The ONE transformed world (pan+zoom applied here, nowhere else).
     var world = Dom.mk('div', 'bp-world');
     world.id = 'bp-world';
 
-    // Edge layer (bpmap-2 draws here) — UNDER the boxes, same world coords.
-    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    // Edge layer (bpmap-2 draws here) — UNDER the boxes, same world coords. Its
+    // viewBox origin = (minX,minY), so a path drawn at TRUE n.layout coords lands at
+    // the same world pixel as the origin-shifted box layer below (they stay aligned).
+    var svg = document.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('id', 'bp-edge-layer');
     svg.setAttribute('width', String(worldW));
     svg.setAttribute('height', String(worldH));
-    svg.setAttribute('viewBox', '0 0 ' + worldW + ' ' + worldH);
+    svg.setAttribute('viewBox', minX + ' ' + minY + ' ' + worldW + ' ' + worldH);
+    svg.appendChild(bpArrowDefs());           // <defs> arrowheads (edge + api), once
     world.appendChild(svg);
 
-    // Box layer — the positioned node boxes, OVER the edges.
+    // Box layer — the positioned node boxes, OVER the edges. Shifted by the origin
+    // offset so a node's style.left stays PURE world px (n.layout.x, the bpmap-1
+    // contract) while an api box straddling past x=0 still renders on-canvas.
     var boxLayer = Dom.mk('div', 'bp-box-layer');
     boxLayer.id = 'bp-box-layer';
+    boxLayer.style.left = originX + 'px';
+    boxLayer.style.top = originY + 'px';
     boxLayer.style.width = worldW + 'px';
     boxLayer.style.height = worldH + 'px';
     vis.forEach(function (n) { boxLayer.appendChild(renderBlueprintNode(n, byId)); });
+
+    // bpmap-2: draw the model's resolved/bundled edges into the SVG, plus the §7
+    // API boundary boxes straddling each domain's border (+ an open-domain arrow to
+    // the capability the route targets). BOTH consume n.layout in the SAME world, so
+    // they align with the boxes — THE SHARED RENDER CONTRACT, layer (3). The model
+    // already did the deepest-visible resolution + bundling + density: we just DRAW.
+    renderBlueprintEdges(view, svg, byId);
+    renderBlueprintApis(svg, boxLayer, byId, apiRects);
+    applyBpLabelVisibility();
+
     world.appendChild(boxLayer);
 
     mapHost.appendChild(world);
@@ -1650,6 +1690,170 @@
     return card;
   }
 
+  /* ════════════════════════════════════════════════════════════════════════════
+   * bpmap-2 — EDGES + API BOUNDARY BOXES (claude-tools-bpmap2; design §3.2/§3.3, §6/§7)
+   * Drawn into the SHARED transformed world bpmap-1 owns: edges + api-arrows go in
+   * the SVG #bp-edge-layer (under the boxes), api boxes go in the box layer (over).
+   * The H2 model (blueprint-view.js) ALREADY resolved every edge to its deepest
+   * VISIBLE ancestor, bundled duplicates, and applied the density rule (macro =
+   * domain↔domain only; focused = touching-subtree only). We do NOT re-resolve — we
+   * DRAW view.edges / view.apis as given, keyed off each endpoint's n.layout.
+   * ════════════════════════════════════════════════════════════════════════════ */
+  function svgEl(tag, attrs) {
+    var e = document.createElementNS(SVG_NS, tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) { e.setAttribute(k, attrs[k]); });
+    return e;
+  }
+
+  // One <defs> per svg: the two arrowheads (edge = slate, api = sky). markerUnits
+  // defaults to strokeWidth so the head scales with the line (and so with zoom).
+  function bpArrowDefs() {
+    var defs = svgEl('defs');
+    [['bp-arrow', 'bp-arrow-head'], ['bp-arrow-api', 'bp-arrow-head bp-arrow-head-api']]
+      .forEach(function (pair) {
+        var m = svgEl('marker', {
+          id: pair[0], viewBox: '0 0 10 10', refX: '8.5', refY: '5',
+          markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse'
+        });
+        m.appendChild(svgEl('path', { d: 'M0,0 L10,5 L0,10 z', 'class': pair[1] }));
+        defs.appendChild(m);
+      });
+    return defs;
+  }
+
+  // The point on a box's border in the direction of (tx,ty) from its centre — so a
+  // line starts/ends AT the box edge (the segment under a box is hidden, and the
+  // arrowhead lands just outside the target box where it's visible).
+  function bpBorderPoint(L, tx, ty) {
+    var cx = L.x + L.w / 2, cy = L.y + L.h / 2;
+    var dx = tx - cx, dy = ty - cy;
+    if (dx === 0 && dy === 0) return { x: cx, y: cy };
+    var sx = dx !== 0 ? (L.w / 2) / Math.abs(dx) : Infinity;
+    var sy = dy !== 0 ? (L.h / 2) / Math.abs(dy) : Infinity;
+    var s = Math.min(sx, sy);
+    return { x: cx + dx * s, y: cy + dy * s };
+  }
+
+  // A gently-bowed quadratic between two border points: the control point is offset
+  // perpendicular to the segment. Direction-dependent, so a from→to bundle and its
+  // to→from reply (kept distinct by the directional bundle_key) bow apart instead of
+  // overlapping. Returns {d, mid:{x,y}} (mid = the on-curve point for the label).
+  function bpCurve(p1, p2) {
+    var mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+    var dx = p2.x - p1.x, dy = p2.y - p1.y;
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    var bow = Math.min(len * 0.14, 46);
+    var cx = mx + (-dy / len) * bow, cy = my + (dx / len) * bow;
+    // on-curve midpoint of the quadratic at t=0.5: 0.25·p1 + 0.5·ctrl + 0.25·p2
+    var midX = 0.25 * p1.x + 0.5 * cx + 0.25 * p2.x;
+    var midY = 0.25 * p1.y + 0.5 * cy + 0.25 * p2.y;
+    return {
+      d: 'M' + p1.x + ',' + p1.y + ' Q' + cx + ',' + cy + ' ' + p2.x + ',' + p2.y,
+      mid: { x: midX, y: midY }
+    };
+  }
+
+  // Draw view.edges (already resolved/bundled/density-filtered by H2) as curved SVG
+  // paths between the two visible boxes. kind=queue is the ASYNC edge → dashed + a
+  // label (the via/queue mechanism); every edge carries a toggleable kind label,
+  // bundled edges (count>1) annotated ·N. Endpoints come straight from n.layout.
+  function renderBlueprintEdges(view, svg, byId) {
+    (view.edges || []).forEach(function (e) {
+      var fromN = byId[e.from], toN = byId[e.to];
+      if (!fromN || !toN || !fromN.layout || !toN.layout) return;  // resolved to a hidden box — skip
+      var fL = fromN.layout, tL = toN.layout;
+      var fc = { x: fL.x + fL.w / 2, y: fL.y + fL.h / 2 };
+      var tc = { x: tL.x + tL.w / 2, y: tL.y + tL.h / 2 };
+      var p1 = bpBorderPoint(fL, tc.x, tc.y);
+      var p2 = bpBorderPoint(tL, fc.x, fc.y);
+      var curve = bpCurve(p1, p2);
+      var isAsync = (e.kind === 'queue');
+      var cls = 'bp-edge bp-edge-' + (e.kind || 'call') + (isAsync ? ' bp-edge-async' : '');
+      svg.appendChild(svgEl('path', {
+        'class': cls, d: curve.d, 'marker-end': 'url(#bp-arrow)'
+      }));
+      // the via/queue name as label (edge labels toggle). No queue NAME lives in the
+      // §3.2 schema (from/to/kind/bundle_key), so the kind is the via descriptor; a
+      // bundle of N collapsed duplicates is annotated ·N.
+      var lbl = (e.kind || 'call') + (e.count > 1 ? ' ·' + e.count : '');
+      var t = svgEl('text', {
+        'class': 'bp-edge-label', x: curve.mid.x, y: curve.mid.y,
+        'text-anchor': 'middle', dy: '-3'
+      });
+      t.textContent = lbl;
+      svg.appendChild(t);
+    });
+  }
+
+  // §7 API boundary boxes — the world rect each VISIBLE route occupies: a small box
+  // straddling its domain's LEFT border (out = caller side / left of x=L.x, in = the
+  // domain / right of it), boxes for one domain stacked down the border. PURE (no
+  // DOM) so the world-extent pre-pass and the renderer agree: a left-most domain
+  // (x=0) straddles into x<0, and the world must size to include that overhang.
+  function bpApiRects(view, byId) {
+    var perDomain = Object.create(null), out = [];
+    (view.apis || []).forEach(function (api) {
+      if (!api.visible) return;
+      var d = byId[api.domain];
+      if (!d || !d.layout) return;
+      var L = d.layout;
+      var idx = perDomain[api.domain] || 0;
+      perDomain[api.domain] = idx + 1;
+      out.push({
+        api: api, domain: d,
+        rect: {
+          x: L.x - BP_API_W / 2, y: L.y + 8 + idx * (BP_API_H + BP_API_GAP),
+          w: BP_API_W, h: BP_API_H
+        }
+      });
+    });
+    return out;
+  }
+
+  // Draw the §7 boundary boxes (precomputed rects) into the box layer, and — when
+  // the domain is OPEN — an arrow from each box to the visible internal capability
+  // the route targets (api.calls). Boxes → box layer (over the boxes); arrows → SVG.
+  // Box rect coords are in TRUE world px (n.layout space); the box layer's origin
+  // offset (renderBlueprintMap) maps a negative-x straddle back into the world.
+  function renderBlueprintApis(svg, boxLayer, byId, apiRects) {
+    apiRects.forEach(function (r) {
+      var api = r.api, d = r.domain, rect = r.rect;
+      var box = Dom.mk('div', 'bp-api');
+      box.setAttribute('data-id', api.id);
+      box.setAttribute('data-domain', api.domain);
+      box.style.position = 'absolute';
+      box.style.left = rect.x + 'px';
+      box.style.top = rect.y + 'px';
+      box.style.width = rect.w + 'px';
+      box.style.height = rect.h + 'px';
+      box.title = api.route_label + '  →  ' + api.domain;
+      box.appendChild(Dom.mk('span', 'bp-api-label', api.route_label));
+      boxLayer.appendChild(box);
+
+      // open domain ⇒ arrow from the box to each visible target capability (§7).
+      if (!d.open) return;
+      (api.calls || []).forEach(function (cid) {
+        var c = byId[cid];
+        if (!c || !c.visible || !c.layout) return;
+        var cc = { x: c.layout.x + c.layout.w / 2, y: c.layout.y + c.layout.h / 2 };
+        var ar = { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+        var p1 = bpBorderPoint(rect, cc.x, cc.y);
+        var p2 = bpBorderPoint(c.layout, ar.x, ar.y);
+        svg.appendChild(svgEl('path', {
+          'class': 'bp-api-arrow', d: bpCurve(p1, p2).d, 'marker-end': 'url(#bp-arrow-api)'
+        }));
+      });
+    });
+  }
+
+  // Edge labels toggle (bpView.labelsHidden) → a class on the edge layer; CSS hides
+  // .bp-edge-label. Re-applied on every paint so the choice survives refresh + drill.
+  function applyBpLabelVisibility() {
+    var svg = Dom.el('bp-edge-layer');
+    if (!svg) return;
+    svg.classList.toggle('bp-hide-labels', bpView.labelsHidden);
+  }
+
   // ── the legend + zoom controls (viewport overlays, NOT transformed) ──────────
   function buildBpLegend(view) {
     var legend = Dom.mk('div', 'bp-legend');
@@ -1681,6 +1885,11 @@
     zb('⤢', 'fit the whole map to view', function () {
       bpFit(bpView.worldW, bpView.worldH);
       applyBpWorldTransform();
+    });
+    // bpmap-2: toggle the edge labels (the via/queue names + bundle counts).
+    zb('🏷', 'toggle edge labels', function () {
+      bpView.labelsHidden = !bpView.labelsHidden;
+      applyBpLabelVisibility();
     });
     return box;
   }
