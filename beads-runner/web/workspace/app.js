@@ -1106,6 +1106,25 @@
   var bpInFlight = false;             // a customization write is in flight — skip the timer repaint
   var bpScrolled = false;             // scroll a ?focus target into view ONCE (not on every refresh)
 
+  // ── bpmap-1 positioned-canvas state (claude-tools-bpmap1) ─────────────────────
+  // bpView is the pan/zoom of the ONE transformed 'world' (see THE SHARED RENDER
+  // CONTRACT comment above renderBlueprintMap): panX/panY are VIEWPORT px, zoom is
+  // unitless, world{W,H} the last world extent (for the fit control). The state is
+  // PRESERVED across the 30s refresh + drill — auto-fit runs ONCE (fitted), so a
+  // repaint never yanks the viewport. bpSelected = the node whose H4 edit
+  // affordances show in the panel below the canvas (the gestures, kept working).
+  var bpView = { panX: 0, panY: 0, zoom: 1, fitted: false, worldW: 1, worldH: 1 };
+  var bpSelected = null;            // node id whose edit panel is open (null = none)
+  var BP_MIN_ZOOM = 0.15, BP_MAX_ZOOM = 4;
+  // pointer pan/pinch bookkeeping (mouse + touch; jsdom never fires these — the
+  // render test asserts the DOM, not the gestures).
+  var bpPointers = Object.create(null); // pointerId → {x,y} in viewport coords
+  var bpPanLast = null;            // last single-pointer pos (incremental pan)
+  var bpPanOrigin = null;          // single-pointer down pos (tap-vs-drag threshold)
+  var bpPinchDist = 0;             // last two-pointer distance (pinch zoom)
+  var bpJustPanned = false;        // a drag/pinch happened → suppress the trailing tap
+  var bpHandlersOn = false;        // window-level pointer listeners attached once
+
   // ?focus=<node-id> deep-link (§8.4). H3 owns the route+param CONTRACT: a Board
   // done·verified card, a decision dossier, or the Flow F FYI link
   // /ws/<ref>/blueprint?focus=<id> and it must RESOLVE (open at that node, full
@@ -1185,16 +1204,27 @@
     cSec.appendChild(cHost);
     body.appendChild(cSec);
 
-    // MAP — the drill-in node tree (top-level boxes; tap to drill / edit).
+    // MAP — the positioned canvas (bpmap-1): absolutely-placed boxes in a scaled,
+    // pannable world. Tap a box to drill (containers) or open its ⋯ editor.
     var mSec = Dom.mk('div', 'bp-sec');
+    mSec.id = 'bp-map-sec';
     var mHead = Dom.mk('div', 'bp-sl');
     mHead.id = 'bp-map-sl';
-    mHead.textContent = 'MAP · tap a box to drill in; edit to rename / regroup / pin / hide';
+    mHead.textContent = 'MAP · drag to pan · scroll / pinch / ± to zoom · tap a box to drill, ⋯ to edit';
     mSec.appendChild(mHead);
     var mHost = Dom.mk('div', 'bp-map');
     mHost.id = 'bp-map';
     mSec.appendChild(mHost);
     body.appendChild(mSec);
+    attachBpPanZoom(mHost); // wheel/pointer pan+zoom (once; the viewport persists)
+
+    // EDIT PANEL — the H4 customization gestures (rename/regroup/pin/hide +
+    // split/merge), KEPT WORKING (bpmap-1 must not lose them). Surfaced below the
+    // canvas for the tapped node; bpmap-3 folds them onto the positioned node.
+    var eSec = Dom.mk('section', 'bp-edit-panel');
+    eSec.id = 'bp-edit-panel';
+    eSec.hidden = true;
+    body.appendChild(eSec);
 
     // HIDDEN — nodes Brian hid (so a hide is reversible from off the map).
     var hSec = Dom.mk('div', 'bp-sec bp-hidden-sec');
@@ -1308,15 +1338,18 @@
     if (body) body.hidden = false;
     if (healthDot) healthDot.classList.remove('bad');
 
-    // Empty state: no record, or a record with zero nodes (honest, B.4).
+    // Empty state: no record, or a record with zero nodes (honest, B.4). Hide the
+    // whole map section (label + viewport) so the empty box stands alone.
     var isEmpty = !view.found || view.empty;
     Dom.el('bp-emptybox').hidden = !isEmpty;
-    Dom.el('bp-map-sl').hidden = isEmpty;
+    var mapSec = Dom.el('bp-map-sec');
+    if (mapSec) mapSec.hidden = isEmpty;
 
     renderBlueprintFocusBanner(view);
     renderBlueprintNarrative(view.narrative);
     renderBlueprintConflicts(record);
     renderBlueprintMap(view);
+    renderBlueprintEditPanel(view);
     renderBlueprintHidden(view);
     renderBlueprintDegraded(view.degraded);
     scrollFocusIntoView(view);
@@ -1384,10 +1417,19 @@
   // (renderBlueprintNode); scrollIntoView is a no-op in jsdom (guarded).
   function scrollFocusIntoView(view) {
     if (!bpFocus || bpScrolled || !view.focus) return;
-    var host = Dom.el('bp-map');
-    var target = host ? host.querySelector('.bp-focus') : null;
-    if (target && typeof target.scrollIntoView === 'function') {
-      try { target.scrollIntoView({ block: 'center' }); } catch (e) { /* jsdom / older browsers */ }
+    // The box is placed by a transform on #bp-world inside an overflow:hidden
+    // viewport — scrollIntoView can't move it. PAN the world so the focus node's
+    // centre lands at the viewport centre (at the current fit zoom), ONCE.
+    var target = null;
+    view.nodes.forEach(function (n) { if (n.id === view.focus && n.layout) target = n.layout; });
+    if (target) {
+      var map = Dom.el('bp-map');
+      var vw = (map && map.clientWidth) || 800;
+      var vh = (map && map.clientHeight) || 480;
+      var cx = target.x + target.w / 2, cy = target.y + target.h / 2;
+      bpView.panX = vw / 2 - cx * bpView.zoom;
+      bpView.panY = vh / 2 - cy * bpView.zoom;
+      applyBpWorldTransform();
     }
     bpScrolled = true;
   }
@@ -1457,10 +1499,36 @@
     }
   }
 
-  // ── the drill-in node tree (the [free] geometry; the contract is the gestures) ─
-  // Render visible top-level boxes; descend into a box's visible children only
-  // when it is OPEN (view.open, driven by bpOpened + pins). Each node carries its
-  // edit affordances (rename/regroup/pin/hide + split/merge recorders).
+  /* ════════════════════════════════════════════════════════════════════════════
+   * THE SHARED RENDER CONTRACT  (bpmap-1, claude-tools-bpmap1)
+   * bpmap-2 (edges + API boundary boxes) and bpmap-3 (focus/dim/drill) BIND to the
+   * three facts below — they read this committed code, not a parallel renderer.
+   *
+   * (1) WORLD COORDINATE SPACE. Units = the H2 model's layout px. Every visible
+   *     node carries `n.layout = {x, y, w, h}` (deriveBlueprintView → layoutGrowToFit
+   *     / place[id]); coordinates are absolute and ALREADY nested — a child's
+   *     {x,y} falls inside its open parent's rect (grow-to-fit), so a box that
+   *     contains children literally contains them in world space. Origin (0,0) is
+   *     the top-left of the top-left root box; +x → right, +y → down. The world
+   *     EXTENT is max(x+w) × max(y+h) over the visible nodes.
+   *
+   * (2) PAN + ZOOM — ONE transformed container. A single `#bp-world` div
+   *     (transform-origin 0 0) carries `translate(panX,panY) scale(zoom)`
+   *     (panX/panY in viewport px, zoom unitless — bpView). `#bp-map` is the
+   *     viewport and CLIPS (overflow:hidden). Drag pans, wheel/pinch/± zoom
+   *     (wheel + pinch are cursor/centroid-anchored). The transform lives on the
+   *     world ONLY — never on a node — so a node's style.left/top stays pure world
+   *     px and bpmap-2 can place an edge endpoint straight from `n.layout`.
+   *
+   * (3) LAYERING. `#bp-world` holds TWO sibling layers in the SAME transformed
+   *     space, so edges and boxes pan/zoom together and align:
+   *        #bp-edge-layer  — an <svg> (world-sized, pointer-events:none) UNDER the
+   *                          boxes. bpmap-2 appends resolved/bundled edge <path>s
+   *                          here using each node's `n.layout` for endpoints.
+   *        #bp-box-layer   — the absolutely-positioned `.bp-node` boxes, OVER the
+   *                          edges (appended after the svg). Boxes are appended
+   *                          shallow→deep so a child paints over its parent.
+   * ════════════════════════════════════════════════════════════════════════════ */
   function renderBlueprintMap(view) {
     var mapHost = Dom.el('bp-map');
     Dom.clear(mapHost);
@@ -1469,10 +1537,121 @@
     var byId = Object.create(null);
     view.nodes.forEach(function (n) { byId[n.id] = n; });
 
-    var roots = view.nodes.filter(function (n) { return n.top_level && n.visible; });
-    roots.forEach(function (n) { mapHost.appendChild(renderBlueprintNode(n, byId)); });
+    // Visible, laid-out nodes only — sorted shallow→deep so a child box is
+    // appended AFTER (and therefore paints OVER) its parent.
+    var vis = view.nodes.filter(function (n) { return n.visible && n.layout; });
+    vis.sort(function (a, b) { return (a.depth || 0) - (b.depth || 0); });
 
-    // A compact legend of the live overlay / counts (honest, derived).
+    // World extent (max x+w, y+h) — what the two layers are sized to + what fit reads.
+    var worldW = 1, worldH = 1;
+    vis.forEach(function (n) {
+      var L = n.layout;
+      if (L.x + L.w > worldW) worldW = L.x + L.w;
+      if (L.y + L.h > worldH) worldH = L.y + L.h;
+    });
+    bpView.worldW = worldW; bpView.worldH = worldH;
+
+    // The ONE transformed world (pan+zoom applied here, nowhere else).
+    var world = Dom.mk('div', 'bp-world');
+    world.id = 'bp-world';
+
+    // Edge layer (bpmap-2 draws here) — UNDER the boxes, same world coords.
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('id', 'bp-edge-layer');
+    svg.setAttribute('width', String(worldW));
+    svg.setAttribute('height', String(worldH));
+    svg.setAttribute('viewBox', '0 0 ' + worldW + ' ' + worldH);
+    world.appendChild(svg);
+
+    // Box layer — the positioned node boxes, OVER the edges.
+    var boxLayer = Dom.mk('div', 'bp-box-layer');
+    boxLayer.id = 'bp-box-layer';
+    boxLayer.style.width = worldW + 'px';
+    boxLayer.style.height = worldH + 'px';
+    vis.forEach(function (n) { boxLayer.appendChild(renderBlueprintNode(n, byId)); });
+    world.appendChild(boxLayer);
+
+    mapHost.appendChild(world);
+
+    // Overlays — NOT in the transformed world (fixed in the viewport corners).
+    mapHost.appendChild(buildBpLegend(view));
+    mapHost.appendChild(buildBpZoomControls());
+
+    // Auto-fit ONCE; thereafter the pan/zoom is preserved across refresh + drill.
+    if (!bpView.fitted) { bpFit(worldW, worldH); bpView.fitted = true; }
+    applyBpWorldTransform();
+  }
+
+  // A positioned node box: absolutely placed at its world layout{x,y,w,h}. A
+  // container (open + has visible children) grows to fit (the model sized it); its
+  // children are SEPARATE positioned boxes painted over its body. A collapsed node
+  // is a compact card. The .bp-node / .bp-focus / .bp-dim / .bp-active /
+  // .bp-collision / .bp-kind-* classes are preserved (H3/H4 + the overlay bind to
+  // them); marginLeft is GONE (the old indented-list signature the regression test
+  // forbids). Tap the box to drill (container) or open its editor (leaf); the ⋯
+  // button always opens the editor; the caret toggles drill.
+  function renderBlueprintNode(n, byId) {
+    var kids = (n.children || []).filter(function (id) { return byId[id] && byId[id].visible; });
+    var isOpen = n.open && kids.length > 0;
+    var cls = 'bp-node bp-kind-' + (n.kind_known ? n.kind : 'unknown');
+    if (isOpen) cls += ' bp-open';
+    if (n.dimmed) cls += ' bp-dim';
+    if (n.active) cls += ' bp-active';
+    if (n.collision) cls += ' bp-collision';
+    if (n.focused_self) cls += ' bp-focus';
+    if (n.id === bpSelected) cls += ' bp-selected';
+    var card = Dom.mk('div', cls);
+    card.setAttribute('data-id', n.id);
+
+    var L = n.layout || { x: 0, y: 0, w: 120, h: 56 };
+    card.style.position = 'absolute';
+    card.style.left = L.x + 'px';
+    card.style.top = L.y + 'px';
+    card.style.width = L.w + 'px';
+    card.style.height = L.h + 'px';
+
+    var head = Dom.mk('div', 'bp-node-head');
+    if (kids.length) {
+      var caret = Dom.mk('button', 'bp-caret', n.open ? '▾' : '▸');
+      caret.setAttribute('type', 'button');
+      caret.setAttribute('aria-label', (n.open ? 'collapse ' : 'drill into ') + n.label);
+      caret.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (bpJustPanned) return;
+        toggleOpen(n.id);
+      });
+      head.appendChild(caret);
+    }
+    var nameEl = Dom.mk('span', 'bp-name', n.label);
+    if (n.renamed) nameEl.appendChild(Dom.mk('span', 'bp-badge', 'renamed'));
+    if (n.regrouped) nameEl.appendChild(Dom.mk('span', 'bp-badge', 'regrouped'));
+    if (n.pinned) nameEl.appendChild(Dom.mk('span', 'bp-badge bp-badge-pin', '📌'));
+    head.appendChild(nameEl);
+    if (kids.length) head.appendChild(Dom.mk('span', 'bp-count', String(kids.length)));
+
+    var menu = Dom.mk('button', 'bp-node-menu', '⋯');
+    menu.setAttribute('type', 'button');
+    menu.setAttribute('aria-label', 'edit ' + n.label);
+    menu.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (bpJustPanned) return;
+      selectNode(n.id);
+    });
+    head.appendChild(menu);
+    card.appendChild(head);
+
+    // Tap the box itself: drill a container, open the editor for a leaf. A drag
+    // that ended here (bpJustPanned) is a pan, not a tap — ignore it.
+    card.addEventListener('click', function () {
+      if (bpJustPanned) return;
+      if (kids.length) toggleOpen(n.id);
+      else selectNode(n.id);
+    });
+    return card;
+  }
+
+  // ── the legend + zoom controls (viewport overlays, NOT transformed) ──────────
+  function buildBpLegend(view) {
     var legend = Dom.mk('div', 'bp-legend');
     legend.appendChild(Dom.mk('span', null,
       view.counts.top_level + ' top-level · ' + view.counts.nodes + ' nodes · ' +
@@ -1485,47 +1664,184 @@
       view.counts.active + ' in flight'));
     if (view.counts.collisions) legend.appendChild(Dom.mk('span', 'bp-legend-collision',
       view.counts.collisions + ' collision' + (view.counts.collisions === 1 ? '' : 's')));
-    mapHost.appendChild(legend);
+    return legend;
   }
 
-  function renderBlueprintNode(n, byId) {
-    var card = Dom.mk('div', 'bp-node bp-kind-' + (n.kind_known ? n.kind : 'unknown') +
-      (n.dimmed ? ' bp-dim' : '') + (n.active ? ' bp-active' : '') +
-      (n.collision ? ' bp-collision' : '') + (n.focused_self ? ' bp-focus' : ''));
-    card.style.marginLeft = (n.depth * 16) + 'px';
-
-    var head = Dom.mk('div', 'bp-node-head');
-    var kids = (n.children || []).filter(function (id) { return byId[id] && byId[id].visible; });
-    // The drill toggle (only when there are visible children to reveal).
-    if (kids.length) {
-      var caret = Dom.mk('button', 'bp-caret', n.open ? '▾' : '▸');
-      caret.setAttribute('type', 'button');
-      caret.setAttribute('aria-label', (n.open ? 'collapse ' : 'drill into ') + n.label);
-      caret.addEventListener('click', function () { toggleOpen(n.id); });
-      head.appendChild(caret);
-    } else {
-      head.appendChild(Dom.mk('span', 'bp-caret bp-caret-leaf', '·'));
+  function buildBpZoomControls() {
+    var box = Dom.mk('div', 'bp-zoom');
+    function zb(label, aria, handler) {
+      var b = Dom.mk('button', 'bp-zoom-btn', label);
+      b.setAttribute('type', 'button');
+      b.setAttribute('aria-label', aria);
+      b.addEventListener('click', function (e) { e.stopPropagation(); handler(); });
+      box.appendChild(b);
     }
+    zb('+', 'zoom in', function () { bpZoomBy(1.25); });
+    zb('−', 'zoom out', function () { bpZoomBy(0.8); });
+    zb('⤢', 'fit the whole map to view', function () {
+      bpFit(bpView.worldW, bpView.worldH);
+      applyBpWorldTransform();
+    });
+    return box;
+  }
 
-    head.appendChild(Dom.mk('span', 'bp-kindtag', n.kind_known ? n.kind : (n.kind || '?')));
-    var nameEl = Dom.mk('span', 'bp-name', n.label);
-    if (n.renamed) nameEl.appendChild(Dom.mk('span', 'bp-badge', 'renamed'));
-    if (n.regrouped) nameEl.appendChild(Dom.mk('span', 'bp-badge', 'regrouped'));
-    if (n.pinned) nameEl.appendChild(Dom.mk('span', 'bp-badge bp-badge-pin', '📌 pinned'));
-    head.appendChild(nameEl);
-    if (kids.length) head.appendChild(Dom.mk('span', 'bp-count', String(kids.length)));
-    card.appendChild(head);
+  // ── pan/zoom math + transform (THE one transformed world) ────────────────────
+  function applyBpWorldTransform() {
+    var world = Dom.el('bp-world');
+    if (!world) return;
+    world.style.transform =
+      'translate(' + bpView.panX + 'px,' + bpView.panY + 'px) scale(' + bpView.zoom + ')';
+  }
 
-    // EDIT row — the four first-class overrides (§5.4) + split/merge recorders.
-    card.appendChild(renderNodeEditRow(n));
+  function bpClampZoom(z) {
+    if (!isFinite(z)) return bpView.zoom;
+    return Math.max(BP_MIN_ZOOM, Math.min(BP_MAX_ZOOM, z));
+  }
 
-    // children (only when open).
-    if (n.open && kids.length) {
-      var kidWrap = Dom.mk('div', 'bp-children');
-      kids.forEach(function (id) { kidWrap.appendChild(renderBlueprintNode(byId[id], byId)); });
-      card.appendChild(kidWrap);
+  // Zoom about a viewport point (cx,cy), keeping the world point under it fixed
+  // (cursor-anchored wheel / centroid-anchored pinch). pan' = c − worldPoint·zoom'.
+  function bpZoomAt(cx, cy, factor) {
+    var nz = bpClampZoom(bpView.zoom * factor);
+    if (nz === bpView.zoom) return;
+    var wx = (cx - bpView.panX) / bpView.zoom;
+    var wy = (cy - bpView.panY) / bpView.zoom;
+    bpView.panX = cx - wx * nz;
+    bpView.panY = cy - wy * nz;
+    bpView.zoom = nz;
+    applyBpWorldTransform();
+  }
+
+  function bpZoomBy(factor) {
+    var map = Dom.el('bp-map');
+    var vw = (map && map.clientWidth) || 800;
+    var vh = (map && map.clientHeight) || 480;
+    bpZoomAt(vw / 2, vh / 2, factor);
+  }
+
+  // Fit the whole world into the viewport (centered, small margin). Sets bpView
+  // pan/zoom; the caller applies the transform. Falls back to a sane viewport size
+  // when clientWidth/Height are 0 (jsdom / pre-layout) so the transform is always set.
+  function bpFit(w, h) {
+    var map = Dom.el('bp-map');
+    var vw = (map && map.clientWidth) || 800;
+    var vh = (map && map.clientHeight) || 480;
+    var margin = 28;
+    w = w || 1; h = h || 1;
+    var z = Math.min((vw - margin * 2) / w, (vh - margin * 2) / h, 1.4);
+    z = bpClampZoom((isFinite(z) && z > 0) ? z : 1);
+    bpView.zoom = z;
+    bpView.panX = Math.max(margin, (vw - w * z) / 2);
+    bpView.panY = Math.max(margin, (vh - h * z) / 2);
+  }
+
+  // ── pointer pan + pinch zoom (mouse + touch) ─────────────────────────────────
+  function bpPointerDist() {
+    var ids = Object.keys(bpPointers);
+    if (ids.length < 2) return 0;
+    var a = bpPointers[ids[0]], b = bpPointers[ids[1]];
+    return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+  }
+  function bpPointerMid() {
+    var ids = Object.keys(bpPointers);
+    var a = bpPointers[ids[0]], b = bpPointers[ids[1]];
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+  function bpViewportPos(e, map) {
+    var r = map.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  // Attached ONCE per facet mount: wheel + pointerdown on the viewport, the
+  // pointer move/up/cancel on window (so a drag continues outside the box).
+  function attachBpPanZoom(map) {
+    map.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      var p = bpViewportPos(e, map);
+      bpZoomAt(p.x, p.y, Math.exp(-e.deltaY * 0.0015)); // smooth, cursor-anchored
+    }, { passive: false });
+    map.addEventListener('pointerdown', function (e) {
+      bpJustPanned = false;
+      var p = bpViewportPos(e, map);
+      bpPointers[e.pointerId] = p;
+      var n = Object.keys(bpPointers).length;
+      if (n === 1) { bpPanLast = p; bpPanOrigin = p; bpPinchDist = 0; }
+      else if (n === 2) { bpPanLast = null; bpPinchDist = bpPointerDist(); }
+      map.classList.add('bp-panning');
+    });
+    if (!bpHandlersOn) {
+      window.addEventListener('pointermove', bpOnPointerMove);
+      window.addEventListener('pointerup', bpOnPointerUp);
+      window.addEventListener('pointercancel', bpOnPointerUp);
+      bpHandlersOn = true;
     }
-    return card;
+  }
+  function bpOnPointerMove(e) {
+    if (!(e.pointerId in bpPointers)) return;
+    var map = Dom.el('bp-map');
+    if (!map) return;
+    var p = bpViewportPos(e, map);
+    bpPointers[e.pointerId] = p;
+    if (Object.keys(bpPointers).length >= 2) {
+      var d = bpPointerDist();
+      if (bpPinchDist > 0 && d > 0) {
+        var m = bpPointerMid();
+        bpZoomAt(m.x, m.y, d / bpPinchDist);
+      }
+      bpPinchDist = d;
+      bpJustPanned = true;
+    } else if (bpPanLast) {
+      bpView.panX += p.x - bpPanLast.x;
+      bpView.panY += p.y - bpPanLast.y;
+      bpPanLast = p;
+      if (bpPanOrigin &&
+        (Math.abs(p.x - bpPanOrigin.x) > 4 || Math.abs(p.y - bpPanOrigin.y) > 4)) {
+        bpJustPanned = true; // crossed the tap-vs-drag threshold → suppress the tap
+      }
+      applyBpWorldTransform();
+    }
+  }
+  function bpOnPointerUp(e) {
+    if (!(e.pointerId in bpPointers)) return;
+    delete bpPointers[e.pointerId];
+    var ids = Object.keys(bpPointers);
+    if (ids.length === 1) {                       // pinch → single-finger pan
+      bpPanLast = bpPointers[ids[0]]; bpPanOrigin = bpPanLast; bpPinchDist = 0;
+    } else if (ids.length === 0) {
+      bpPanLast = null; bpPanOrigin = null; bpPinchDist = 0;
+      var map = Dom.el('bp-map');
+      if (map) map.classList.remove('bp-panning');
+    }
+  }
+
+  // Select a node → open its edit panel below the canvas (tap the same ⋯ to close).
+  function selectNode(id) {
+    bpSelected = (bpSelected === id) ? null : id;
+    if (bpRecord !== undefined) renderBlueprint(bpRecord);
+  }
+
+  // The H4 customization affordances (rename/regroup/pin/hide + split/merge),
+  // KEPT WORKING (bpmap-1 must not lose them). Rendered in a panel below the
+  // canvas for the node whose ⋯ was tapped; bpmap-3 folds them onto the box.
+  function renderBlueprintEditPanel(view) {
+    var panel = Dom.el('bp-edit-panel');
+    if (!panel) return;
+    Dom.clear(panel);
+    if (!bpSelected) { panel.hidden = true; return; }
+    var n = null;
+    view.nodes.forEach(function (x) { if (x.id === bpSelected && x.visible) n = x; });
+    if (!n) { panel.hidden = true; return; } // the selection drilled away / was hidden
+    panel.hidden = false;
+    var head = Dom.mk('div', 'bp-edit-panel-h');
+    head.appendChild(Dom.mk('span', 'bp-edit-panel-t', 'Editing'));
+    head.appendChild(Dom.mk('span', 'bp-name', n.label));
+    head.appendChild(Dom.mk('code', 'bp-edit-panel-id', n.id));
+    var close = Dom.mk('button', 'bp-act bp-edit-close', '✕');
+    close.setAttribute('type', 'button');
+    close.setAttribute('aria-label', 'close editor');
+    close.addEventListener('click', function () { bpSelected = null; renderBlueprint(bpRecord); });
+    head.appendChild(close);
+    panel.appendChild(head);
+    panel.appendChild(renderNodeEditRow(n)); // the SAME H4 gestures, relocated
   }
 
   // The per-node edit affordances. Each gesture builds the NEXT customization via

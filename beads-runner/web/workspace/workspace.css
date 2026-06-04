@@ -361,11 +361,30 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   background:var(--ink);padding:1px 5px;border-radius:5px}
 .bp-conflict-note{font-size:12px;color:var(--faint);margin-top:5px;line-height:1.5}
 
-/* the map tree */
-.bp-map{padding:0 18px;display:flex;flex-direction:column;gap:7px}
-.bp-node{border:1px solid var(--line);border-radius:11px;background:var(--panel);
-  padding:8px 10px}
-.bp-node.bp-dim{opacity:.5}
+/* ── the positioned-canvas map (bpmap-1, claude-tools-bpmap1) ──────────────────
+ * THE SHARED RENDER CONTRACT (bpmap-2/3 bind to it — see app.js):
+ *  • #bp-map is the VIEWPORT — clips (overflow:hidden), fixed height, grab cursor +
+ *    touch-action:none so a drag pans instead of scrolling the page.
+ *  • .bp-world is the ONE transformed container (transform-origin 0 0) carrying
+ *    translate(pan) scale(zoom); it holds BOTH layers in the SAME coordinate space
+ *    so edges (bpmap-2) align with boxes:
+ *      #bp-edge-layer  — the SVG edge layer (UNDER the boxes; pointer-events:none)
+ *      .bp-box-layer   — the absolutely-positioned node boxes (OVER the edges)
+ *  • a .bp-node is absolutely placed at the model's layout{x,y,w,h} (world px). */
+.bp-map{position:relative;overflow:hidden;margin:0 18px;
+  height:clamp(360px,56vh,640px);border:1px solid var(--line);border-radius:14px;
+  background:var(--ink-2);cursor:grab;touch-action:none;user-select:none}
+.bp-map.bp-panning{cursor:grabbing}
+.bp-world{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+#bp-edge-layer{position:absolute;top:0;left:0;overflow:visible;pointer-events:none}
+.bp-box-layer{position:absolute;top:0;left:0}
+
+.bp-node{position:absolute;box-sizing:border-box;border:1px solid var(--line);
+  border-radius:11px;background:var(--panel);padding:6px 8px;overflow:hidden;
+  display:flex;flex-direction:column}
+.bp-node.bp-open{background:rgba(20,26,38,.55);overflow:visible}
+.bp-node.bp-selected{border-color:var(--amber);box-shadow:0 0 0 2px rgba(240,180,90,.28)}
+.bp-node.bp-dim{opacity:.4}
 .bp-node.bp-active{border-color:var(--mint)}
 .bp-node.bp-collision{border-color:var(--coral);box-shadow:0 0 0 1px rgba(255,107,107,.3)}
 .bp-kind-domain{border-left:3px solid var(--sky)}
@@ -373,22 +392,45 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .bp-kind-store{border-left:3px solid var(--amber)}
 .bp-kind-vendor{border-left:3px solid var(--slate)}
 .bp-kind-capability{border-left:3px solid var(--line-2)}
-.bp-node-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bp-kind-unknown{border-left:3px solid var(--line-2)}
+.bp-node-head{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;min-width:0}
+.bp-node.bp-open>.bp-node-head{flex:0 0 auto}
 .bp-caret{font:inherit;font-size:13px;color:var(--amber);background:none;border:none;
-  cursor:pointer;min-width:18px;min-height:var(--tap);padding:0;line-height:1}
-.bp-caret-leaf{color:var(--dim);cursor:default;min-height:auto}
-.bp-kindtag{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--slate);
-  border:1px solid var(--line-2);border-radius:5px;padding:1px 5px}
-.bp-name{font-size:14px;color:var(--text);font-weight:500}
-.bp-badge{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink);
-  background:var(--amber);border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:middle}
+  cursor:pointer;min-width:24px;min-height:24px;padding:0;line-height:1;flex:0 0 auto;
+  display:inline-flex;align-items:center;justify-content:center}
+.bp-name{font-size:12px;color:var(--text);font-weight:500;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;min-width:0}
+.bp-badge{font-size:8px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink);
+  background:var(--amber);border-radius:4px;padding:0 4px;margin-left:5px;vertical-align:middle}
 .bp-badge-pin{background:var(--sky)}
-.bp-count{font-size:11px;color:var(--faint);margin-left:auto}
-.bp-children{margin-top:8px;display:flex;flex-direction:column;gap:7px}
-.bp-legend{padding:10px 0 2px;color:var(--faint);font-size:11px;display:flex;gap:14px;flex-wrap:wrap}
+.bp-count{font-size:10px;color:var(--faint);flex:0 0 auto}
+.bp-node-menu{font:inherit;font-size:15px;color:var(--faint);background:none;border:none;
+  cursor:pointer;min-width:26px;min-height:24px;padding:0;line-height:1;flex:0 0 auto;
+  margin-left:auto;display:inline-flex;align-items:center;justify-content:center}
+.bp-node-menu:hover{color:var(--amber)}
+
+/* legend + zoom controls — overlays, NOT transformed (fixed in the viewport) */
+.bp-legend{position:absolute;left:12px;bottom:10px;color:var(--faint);font-size:11px;
+  display:flex;gap:12px;flex-wrap:wrap;pointer-events:none;z-index:4;
+  background:rgba(10,14,22,.6);padding:4px 8px;border-radius:8px}
 .bp-legend-hidden{color:var(--slate)}
 .bp-legend-active{color:var(--mint)}
 .bp-legend-collision{color:var(--coral)}
+.bp-zoom{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;
+  gap:6px;z-index:5}
+.bp-zoom-btn{font:inherit;font-size:16px;line-height:1;color:var(--text);
+  background:var(--ink-2);border:1px solid var(--line-2);border-radius:8px;
+  width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.bp-zoom-btn:hover{border-color:var(--amber)}
+
+/* edit panel (the H4 gestures, relocated below the canvas — bpmap-1 keeps them) */
+.bp-edit-panel{margin:8px 18px 0;border:1px solid var(--line);border-radius:12px;
+  background:var(--panel);padding:11px 13px}
+.bp-edit-panel-h{display:flex;align-items:center;gap:9px;margin-bottom:8px;flex-wrap:wrap}
+.bp-edit-panel-t{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate)}
+.bp-edit-panel-id{font-family:var(--mono);font-size:11px;color:var(--amber-soft);
+  background:var(--ink);padding:1px 5px;border-radius:5px}
+.bp-edit-close{margin-left:auto;min-height:auto;padding:3px 8px}
 
 /* per-node edit affordances */
 .bp-edit-box{margin-top:7px}
@@ -431,5 +473,6 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .bp-err-b{color:var(--amber-soft);font-size:13px;line-height:1.6}
 
 @media (min-width:880px){
-  .bp-map,.bp-conflicts,.bp-hidden-host{padding:0 22px}
+  .bp-conflicts,.bp-hidden-host{padding:0 22px}
+  .bp-map,.bp-edit-panel{margin-left:22px;margin-right:22px}
 }
