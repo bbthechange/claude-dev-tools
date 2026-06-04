@@ -1,6 +1,6 @@
 # Handoff — UX v2 expansion: tracking, anti-drift, and how to drive it
 
-Last updated: 2026-05-31 · Author: the "architect" session
+Last updated: 2026-06-03 · Author: the "architect" session (2026-05-31), refreshed by a triage session (2026-06-03)
 Audience: the next agent (or human) picking up the UX v2 overhaul — to keep it
 on-track, keep the parallel agents from drifting apart, and expand/adapt it.
 
@@ -159,7 +159,30 @@ fit," run **two audits** (I did this with parallel general-purpose agents):
 ### 3.4 Gaps found + filed this session (so you don't re-discover them)
 Real coverage holes the audits caught, now beads under `mhcp`:
 - **push DELIVERY to the phone** (N1 only wired triggers; nothing delivered) →
-  `uxg1`/N2 (built on the n2 branch) + DESIGN N.
+  `uxg1`/N2 + DESIGN N. **STATUS 2026-06-03:** the code is **MERGED TO MAIN**
+  (the bead's "NOT on main" debrief note is now STALE — `cf/src/push.js`,
+  `daemon/notif-delivery-poll.sh`, `web/inbox/{manifest,push.js,sw.js}` are all
+  tracked on main; the n2 branch is 0 commits ahead) and the engine is deployed:
+  live `push-list` reports **2 subscriptions** (the phone is already installed +
+  subscribed). The ONE remaining blocker is that the **VAPID_PUBLIC/PRIVATE/
+  SUBJECT Worker secrets are NOT set on `coordinator-cf`** — so `notif-deliver`
+  returned an honest **503**. **RESOLVED 2026-06-03:** the 3 VAPID secrets
+  (`VAPID_PRIVATE_KEY`/`VAPID_PUBLIC_KEY`/`VAPID_SUBJECT`) are now SET on
+  `coordinator-cf` (runbook `design/notifications-N2-deploy.md` step 1, values in
+  `.vapid-private.local`). A manual `notif-deliver blocking` then returned
+  `{ok:true, subscriptions:2, pending:31, pushed:14, pushes:27}` — **real Web
+  Push delivery is proven live**. **`uxg1` is now CLOSED (2026-06-03)** — full
+  live-verify: 43 real pushes landed on the installed PWA, tap deep-link
+  confirmed by Brian, `verify-pages-deploy.sh inbox`=`mismatches=0`. Push is LIVE
+  in prod. The one-time flush surfaced a **32-item historical backlog** of
+  blocking notifs (worker_stuck forks + runner-kill human_flags accrued
+  05-18→06-02 while no delivery channel existed); the ~14 test/probe/smoke junk
+  dossiers were DELETED from D1 (blocking notifs 32→18; 47 real dossiers intact),
+  leaving 18 real-but-stale (already delivered+ledgered — won't re-buzz).
+  **Steady-state caveat:** every `worker_stuck` fork + runner-kill `human_flag`
+  across all workspaces now buzzes the phone near-real-time — consider tuning
+  which triggers are tier=`blocking` vs `digest`. *(`notif-get` with no args 500s
+  on a D1_TYPE_ERROR — minor read-op bug; follow-up worth filing.)*
 - **done·code vs done·verified** Board sub-state (`uxg2`, done) — the anti-
   "wired-but-not-live" feature itself.
 - **dossier↔Blueprint focus bridge** `?focus=` (`uxg3`).
@@ -227,7 +250,7 @@ These cost real time or caused real breakage. Heed them.
 
 ---
 
-## 5. Current state (2026-05-31) + how to re-derive it
+## 5. Current state (2026-06-03) + how to re-derive it
 
 **Re-derive (always trust these over this doc's frozen numbers):**
 ```bash
@@ -240,24 +263,42 @@ bd dep cycles
 cat .beads/runner-logs/detached-runner.pid   # this ws's runner pid
 ```
 
-**Snapshot at handoff:**
-- Working tree on **`main`**, `7ae4c0e`, **== origin/main**. Runner respawned on
-  main (daemon), alive. Worktrees back to 1.
-- **ux-v2 (`mhcp`):** 35 total — ~17 closed, ~33 open/blocked/deferred (the 4
-  designs + C-shell + many impl/gap beads closed). 1 deferred = `uxdec`
-  (decisions), 1 blocked.
-- **v2-cutover (`v2cut`):** 4 closed (`v2c0`, `v2c2`, plus `2fkp`, `5jt6`), 5
-  open (`v2c1` port-forward, `v2c3` conformance-gate, `v2c4` staged cutover,
-  `v2c5` retire-v1, + the epic).
-- Branches: `main` (live), `n2-uxg1-push-delivery` (already merged into main —
-  stale, safe to delete), `i5-rehearsal-deploy-divergence-fixes` (stale). `n3`
-  deleted this session.
+**Snapshot at triage (2026-06-03):**
+- Working tree on **`main`**, `89a4737`, **== origin/main**. Clean tree, no
+  stashes, 1 worktree, no dep cycles. (This workspace's runner pidfile pointed at
+  a dead pid at triage — fine; the daemon respawns on demand.)
+- **Offline regression gate GREEN** — `bash beads-runner/run-tests.sh` exits 0,
+  every tier (lib 46 / daemon 19 / hooks 3 / agents 1 / top 13 / cf / conformance
+  / contract), zero fails. (It cleans `tmp/` as it runs, so the scratch log
+  vanishes at the end — trust the exit code, not a leftover file.)
+- **ux-v2 (`mhcp`):** **46 closed** (`uxg1`/N2 push delivery CLOSED 2026-06-03,
+  live-verified — see §3.4), 2 open (`uxg6` + the epic), 0 blocked, 2 deferred
+  (`uxdec` decisions, `uxvi5` I5 daemon dispatch). The track is essentially built;
+  what remains is human-gated or P3 polish.
+- **v2-cutover (`v2cut`):** **12 closed** — the v1→v2 cutover MECHANISM landed and
+  rhythmGame is flipped to v2 + live-verified (clean STARTING→RECONCILE→DRAINED
+  boot). Open: `v2c5` (retire v1) + the epic. Deferred: `v2cut.6` — a deliberate
+  human go/no-go (watch rhythmGame run ONE real bead end-to-end, then flip the
+  rest ONE AT A TIME: thirsty → thirsty-backend → hangoutsBackend → claude-tools
+  LAST). Recipe in `docs/context/runner.md`; selector `daemon_m3_uses_v2`.
+- **NEW epic `claude-tools-rznj`** — the UX-v2 testing strategy: `rznj.1`
+  (`run-tests.sh`, the one offline gate) + `rznj.2` (A–D contract harness +
+  `web/shared/enums.js`) are CLOSED; `rznj.5` (offline CI on push — GitHub Actions
+  yes/no) is a deferred Brian decision. CLAUDE.md's run-tests.sh gate is this
+  epic's output.
+- **13 ready beads, all P3** Inbox/Cross-WS/Board follow-ups (`o2mk` `653d` `uxa2`
+  `1xx1` `uxgpre` `uxvl4` `uxvk5` `uxvj5` …) — the swarm drains these; none block.
+- Branches: `main` (live). `n2-uxg1-push-delivery` AND
+  `i5-rehearsal-deploy-divergence-fixes` are **both fully merged into main, 0
+  commits ahead** (verified `git log main..<branch>` empty) — safe to delete,
+  local + remote.
 
 ---
 
 ## 6. Open decisions for Brian (do not guess — they gate impl)
-Tracked in **`claude-tools-uxdec`** (deferred to 2026-06-02 to keep it out of the
-runner's hot queue; un-defer/surface when Brian's ready):
+Tracked in **`claude-tools-uxdec`** (was deferred to 2026-06-02 — **that date has
+now PASSED (triage is 2026-06-03), so it is due**; surface it to Brian. Same for
+`uxvi5` and `rznj.5`, both defer-dated 2026-06-02):
 1. **v1-vs-v2 runner fork** for `uxvj4`/`uxvi1`/`uxvi5` — current default: build
    on v2 behind `v2c3` (the `v2cut` epic). Confirm.
 2. **§14.1 gate placement authority** — any agent (assumed) vs specific hats.
