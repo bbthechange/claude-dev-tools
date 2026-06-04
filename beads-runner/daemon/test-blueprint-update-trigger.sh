@@ -63,6 +63,7 @@ for fn in daemon_blueprint_update_should_trigger \
           daemon_blueprint_update__list_structural_closes \
           daemon_blueprint_update__build_hat_input \
           daemon_blueprint_update__shape_timed_fyi \
+          daemon_blueprint_update__extract_json \
           _daemon_blueprint_update_write_blueprint \
           daemon_blueprint_update_dispatch_one; do
   grep -q "^$fn()" "$F_LIB" && ok "defines $fn" || bad "missing $fn"
@@ -251,6 +252,48 @@ OUTCOME="$DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME"
 eq "$OUTCOME" "refused" "refuse:true ⇒ outcome=refused"
 [[ ! -f "$BP_SENTINEL" && ! -f "$FYI_SENTINEL" ]] && ok "refuse ⇒ no write, no FYI (honest empty state preserved)" \
   || bad "refuse must not write or emit"
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART G — tolerant parse: a prose preamble before the JSON still dispatches
+#          (claude-tools-03q2 — opus prepended a sentence; the parser must not
+#          silently no-op a good run to parse-failed)
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART G — tolerant stdout parse (prose preamble ⇒ still dispatched) ──"
+
+# Unit: the extractor recovers the object from drifted stdout, untouched on the
+# obedient path, and yields nothing on genuine non-object output.
+eq "$(daemon_blueprint_update__extract_json '{"material_change":true}')" \
+   '{"material_change":true}' "extract: obedient single object passes through unchanged"
+eq "$(daemon_blueprint_update__extract_json "$(printf 'I now have a confirmed picture. Emitting v1.\n\n{"a":1}')" | jq -r '.a')" \
+   "1" "extract: leading prose preamble ⇒ object recovered"
+eq "$(daemon_blueprint_update__extract_json "$(printf '{"a":2}\n\nThat is the v1 map.')" | jq -r '.a')" \
+   "2" "extract: trailing prose ⇒ object recovered"
+eq "$(daemon_blueprint_update__extract_json 'preamble {"x":{"y":3}} trailer' | jq -r '.x.y')" \
+   "3" "extract: nested object preserved through first-{..last-} slice"
+eq "$(daemon_blueprint_update__extract_json "$(printf '```json\n{"a":4}\n```')" | jq -r '.a')" \
+   "4" "extract: a Markdown-fenced object is recovered"
+eq "$(daemon_blueprint_update__extract_json '[1,2,3]')" "" "extract: a scalar JSON array is not an object ⇒ empty"
+eq "$(daemon_blueprint_update__extract_json '[{"a":1},{"b":2}]')" "" \
+   "extract: an ARRAY OF OBJECTS fails safe (slice is a 2-value stream ⇒ empty, not the first element)"
+eq "$(daemon_blueprint_update__extract_json '{"a":1}{"b":2}')" "" \
+   "extract: two bare objects ⇒ ambiguous ⇒ empty (no silent first-value pick)"
+eq "$(daemon_blueprint_update__extract_json 'no json here at all')" "" "extract: pure prose ⇒ empty (parse-failed)"
+
+# Integration: dispatch_one with the real opus drift shape ⇒ writes + ONE FYI.
+PREAMBLE='I now have a confirmed, accurate picture: the Messaging domain is real. Emitting v1.'
+printf '%s\n\n%s' "$PREAMBLE" "$HAT_MATERIAL" > "$HAT_OUT_FILE"
+rm -f "$BP_SENTINEL" "$FYI_SENTINEL"
+daemon_blueprint_update_dispatch_one "$WD" "rhythmGame" "" "" "rhythmGame-abc" "stage:impl"
+OUTCOME="$DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME"
+eq "$OUTCOME" "dispatched" "prose-prefixed hat stdout ⇒ outcome=dispatched (NOT parse-failed)"
+[[ -f "$BP_SENTINEL" ]] && ok "blueprint-put WAS called despite the preamble" \
+  || bad "blueprint-put not called — preamble was rejected"
+if [[ -f "$BP_SENTINEL" ]]; then
+  eq "$(jq -r '.derived.nodes[0].id' "$BP_SENTINEL")" "domain:messaging" "recovered payload carries the regenerated derived"
+fi
+[[ -f "$FYI_SENTINEL" ]] && ok "exactly one timed-fyi emitted despite the preamble" \
+  || bad "no timed-fyi emitted — preamble was rejected"
 
 # ════════════════════════════════════════════════════════════════════════════
 # PART F — canary: disabled ⇒ no spawn (I5 turns it live + parallel)

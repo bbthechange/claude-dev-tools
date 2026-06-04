@@ -155,6 +155,15 @@ The drift check is the "done means verified" gate for any plist change.
   (run every heartbeat) ships them. `run-beads-tasks.sh` drains only the *workspace*
   outbox — forgetting the daemon drain left `machines[]` empty in the projection
   (claude-tools-1p0u).
+- **Hat stdout drifts a prose preamble (claude-tools-03q2).** The `blueprint-update`
+  hat is told to print EXACTLY one JSON object, but opus prepended a sentence
+  ('… Emitting v1.') before it — the old strict `jq type=="object"` parse failed
+  ⇒ silent `parse-failed`, no write, no FYI. `daemon_blueprint_update_dispatch_one`
+  now parses via `daemon_blueprint_update__extract_json` (raw bytes first, then a
+  first-`{`…last-`}` slice) with a SLURP single-object guard (`jq -cs length==1`)
+  so a multi-value drift — array-of-objects, two bare objects — fails safe instead
+  of silently picking the first value. Any new "parse a hat's single-JSON stdout"
+  site should reuse this tolerant pattern, not a bare `type=="object"`.
 - **README scope drift.** `daemon/README.md` is framed as "M1 skeleton, jobs land
   later" — that framing is stale; M2–M6 + I3/P1/L2/N2 all landed. Trust the code +
   this doc over the README's "what this is NOT — yet" section.

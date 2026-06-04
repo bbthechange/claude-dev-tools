@@ -71,7 +71,7 @@ When the map changed, regenerate `narrative` so the prose matches the new `deriv
 
 # Step 5 — Emit ONE JSON object on stdout (your entire output)
 
-Print **exactly one** JSON object and nothing else (diagnostics go to stderr). The daemon parses this; it does the `blueprint-put` and emits the single `timed-fyi`.
+Print **exactly one** JSON object and nothing else (diagnostics go to stderr). The daemon parses this; it does the `blueprint-put` and emits the single `timed-fyi`. The **first character of stdout must be `{`** — no preamble sentence (e.g. *"I now have a confirmed picture… Emitting v1."*), no Markdown code fence, no trailing commentary. Any such narration belongs on stderr.
 
 **No material change:**
 ```json

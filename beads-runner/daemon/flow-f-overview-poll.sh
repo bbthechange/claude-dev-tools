@@ -709,6 +709,45 @@ _daemon_blueprint_update_write_blueprint() {
   )
 }
 
+# daemon_blueprint_update__extract_json <hat_stdout>
+#   Recover the single JSON object from a blueprint-update hat's stdout,
+#   tolerating a prose preamble (or trailer) the model may emit despite the §7
+#   prompt's emphatic "stdout is ONLY the JSON object" rule. A real opus run
+#   (claude-tools-03q2) prepended a sentence ('… Emitting v1.\n\n{json}') often
+#   enough that the prompt alone is not a fix — the parser must be tolerant, the
+#   same way the dossier-builder path defends against model stdout drift.
+#   Echoes the compact object on success; echoes NOTHING on failure (the caller's
+#   `[[ -z … ]]` ⇒ parse-failed). ALWAYS returns 0.
+daemon_blueprint_update__extract_json() {
+  local raw="${1:-}" out
+  # Single-object guard: SLURP the candidate (-s) and accept only when it is
+  # EXACTLY one value AND that value is an object. Slurping is what rejects a
+  # drifted MULTI-value stream — an array-of-objects slice '{…},{…}', or two
+  # bare objects — which a plain `jq 'type=="object"'` would mis-handle by
+  # reading just the FIRST value and handing back a structurally-wrong-but-
+  # plausible object (claude-tools-03q2 review). Ambiguous ⇒ empty ⇒ parse-failed.
+  local guard='if (length==1 and (.[0]|type)=="object") then .[0] else empty end'
+
+  # 1. Happy path: the model obeyed — stdout is exactly one JSON object. Test the
+  #    raw bytes untouched first so an obedient run is NEVER reshaped.
+  out="$(printf '%s' "$raw" | jq -cs "$guard" 2>/dev/null)"
+  [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
+
+  # 2. Drift path: slice the first '{' … last '}' span and re-test. This recovers
+  #    'prose\n\n{json}' (the observed opus preamble), '{json}\ntrailer', and a
+  #    ```json-fenced object — the §7 hat emits EXACTLY one object, so as long as
+  #    the surrounding prose carries no braces (a natural-language sentence does
+  #    not) the span IS that object. A brace-bearing preamble or a multi-object
+  #    span just fails the guard ⇒ parse-failed, no worse than today.
+  [[ "$raw" == *'{'* && "$raw" == *'}'* ]] || return 0
+  local sliced="{${raw#*\{}"   # drop everything before the first '{'
+  sliced="${sliced%\}*}"       # drop everything after the last  '}'
+  sliced="$sliced}"            # restore the closing brace
+  out="$(printf '%s' "$sliced" | jq -cs "$guard" 2>/dev/null)"
+  [[ -n "$out" ]] && printf '%s' "$out"
+  return 0
+}
+
 # daemon_blueprint_update_dispatch_one <ws> <pref> <curl> <tk_item> <bead_ref> <trigger_stage>
 #   The SYNCHRONOUS H5 orchestration unit (I5 wraps it in the parallel/capacity-
 #   gated scheduler). Assumes the caller already passed the §7.3 coarse predicate
@@ -788,9 +827,13 @@ daemon_blueprint_update_dispatch_one() {
     DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='spawn-failed'; return 0
   fi
 
-  # ── 3. parse the single stdout JSON ────────────────────────────────────────
+  # ── 3. parse the single stdout JSON (tolerant of a prose preamble) ──────────
+  # The hat is told to print EXACTLY one JSON object, but models drift (an opus
+  # run prepended a sentence before the object — claude-tools-03q2). Extract
+  # tolerantly so a good run with a preamble still lands instead of silently
+  # no-opping to parse-failed.
   local parsed material refuse
-  parsed="$(printf '%s' "$hat_out" | jq -c 'if type=="object" then . else empty end' 2>/dev/null)"
+  parsed="$(daemon_blueprint_update__extract_json "$hat_out")"
   if [[ -z "$parsed" ]]; then DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='parse-failed'; return 0; fi
   refuse="$(printf '%s' "$parsed" | jq -r '.refuse // false' 2>/dev/null)"
   material="$(printf '%s' "$parsed" | jq -r '.material_change // false' 2>/dev/null)"
