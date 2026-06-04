@@ -1104,7 +1104,8 @@
   var bpRecord = null;                // last blueprint-get body (the B.2 record)
   var bpOverlay = null;               // §8.2 in-flight overlay {active_domains,activity} (best-effort /api/board)
   var bpInFlight = false;             // a customization write is in flight — skip the timer repaint
-  var bpScrolled = false;             // scroll a ?focus target into view ONCE (not on every refresh)
+  var bpFocusDirty = false;          // a NEW focus (deep-link or tap) → zoom-to-fit on it next paint
+  var bpRefitDirty = false;          // focus cleared (back to system) → re-fit the whole world next paint
 
   // ── bpmap-1 positioned-canvas state (claude-tools-bpmap1) ─────────────────────
   // bpView is the pan/zoom of the ONE transformed 'world' (see THE SHARED RENDER
@@ -1131,10 +1132,13 @@
   // ?focus=<node-id> deep-link (§8.4). H3 owns the route+param CONTRACT: a Board
   // done·verified card, a decision dossier, or the Flow F FYI link
   // /ws/<ref>/blueprint?focus=<id> and it must RESOLVE (open at that node, full
-  // map) — never 404. The render fidelity (zoom-to-fit + dim) is the renderer's;
-  // here we just read the param and pass it as opts.focus. A focus id the map
-  // doesn't know is honestly surfaced (the view-model notes it + renders the full
-  // map), never an error. Parsed ONCE at mount (the URL doesn't change in-facet).
+  // map) — never 404. bpmap-3 makes focus the LIVE interaction state too: tapping a
+  // box sets bpFocus (→ the H2 model opens it + its ancestors and DIMS the
+  // unconnected, all already exposed on each node); 'back to system' / Esc clears
+  // it (the focus-opened boxes auto-collapse, manual/pinned drill-ins survive via
+  // the model's open_source pin>manual>focus). A focus id the map doesn't know is
+  // honestly surfaced (the view-model notes it + renders the full map), never an
+  // error. SEEDED ONCE from the URL ?focus param at mount, then mutated by taps.
   var bpFocus = (function () {
     try {
       var q = new URLSearchParams(location.search);
@@ -1142,6 +1146,7 @@
       return (typeof f === 'string' && f) ? f : null;
     } catch (e) { return null; }
   })();
+  bpFocusDirty = !!bpFocus; // a ?focus deep-link zooms-to-focus once on the first paint
 
   function mountBlueprintFacet() {
     Dom.clear(host);
@@ -1213,7 +1218,7 @@
     mSec.id = 'bp-map-sec';
     var mHead = Dom.mk('div', 'bp-sl');
     mHead.id = 'bp-map-sl';
-    mHead.textContent = 'MAP · drag to pan · scroll / pinch / ± to zoom · tap a box to drill, ⋯ to edit';
+    mHead.textContent = 'MAP · drag to pan · scroll / pinch / ± to zoom · tap a box to focus, ▸ to peek, ⋯ to edit';
     mSec.appendChild(mHead);
     var mHost = Dom.mk('div', 'bp-map');
     mHost.id = 'bp-map';
@@ -1221,13 +1226,9 @@
     body.appendChild(mSec);
     attachBpPanZoom(mHost); // wheel/pointer pan+zoom (once; the viewport persists)
 
-    // EDIT PANEL — the H4 customization gestures (rename/regroup/pin/hide +
-    // split/merge), KEPT WORKING (bpmap-1 must not lose them). Surfaced below the
-    // canvas for the tapped node; bpmap-3 folds them onto the positioned node.
-    var eSec = Dom.mk('section', 'bp-edit-panel');
-    eSec.id = 'bp-edit-panel';
-    eSec.hidden = true;
-    body.appendChild(eSec);
+    // bpmap-3 FOLDED the H4 customization gestures (rename/regroup/pin/hide +
+    // split/merge) ONTO the positioned box — a per-node ⋯ popover (buildNodeMenu),
+    // REPLACING the flat #bp-edit-panel edit-row list that used to live here.
 
     // HIDDEN — nodes Brian hid (so a hide is reversible from off the map).
     var hSec = Dom.mk('div', 'bp-sec bp-hidden-sec');
@@ -1352,10 +1353,9 @@
     renderBlueprintNarrative(view.narrative);
     renderBlueprintConflicts(record);
     renderBlueprintMap(view);
-    renderBlueprintEditPanel(view);
     renderBlueprintHidden(view);
     renderBlueprintDegraded(view.degraded);
-    scrollFocusIntoView(view);
+    applyFocusViewport(view);
 
     var updated = Dom.el('bp-updated');
     if (updated) {
@@ -1378,7 +1378,13 @@
       el.className = 'bp-focus-banner';
       el.appendChild(document.createTextNode('Focused on '));
       el.appendChild(Dom.mk('code', 'bp-focus-id', view.focus));
-      el.appendChild(document.createTextNode(' — the map is opened to it.'));
+      el.appendChild(document.createTextNode(' — the map is opened to it. '));
+      // STEP OUT (§3.4.4): 'back to system' clears the focus — the focus-opened
+      // boxes auto-collapse, manual/pinned drill-ins survive, the whole map re-fits.
+      var back = Dom.mk('button', 'bp-focus-back', '← Back to system');
+      back.setAttribute('type', 'button');
+      back.addEventListener('click', clearFocus);
+      el.appendChild(back);
     } else {
       // Resolved the ROUTE, but the id isn't in this map (stale link / hidden /
       // renamed-away). Honest, never a throw — show the full map.
@@ -1415,29 +1421,37 @@
     });
   }
 
-  // Bring a ?focus target into view ONCE (the deep-link landed; don't yank the
-  // viewport on every 30s refresh). The focused node carries the .bp-focus class
-  // (renderBlueprintNode); scrollIntoView is a no-op in jsdom (guarded).
-  function scrollFocusIntoView(view) {
-    if (!bpFocus || bpScrolled || !view.focus) return;
-    // The box is placed by a transform on #bp-world inside an overflow:hidden
-    // viewport — scrollIntoView can't move it. PAN the world so the focus node's
-    // centre lands at the viewport centre (at the current fit zoom), ONCE.
-    var target = null;
-    view.nodes.forEach(function (n) { if (n.id === view.focus && n.layout) target = n.layout; });
-    if (target) {
-      var map = Dom.el('bp-map');
-      var vw = (map && map.clientWidth) || 800;
-      var vh = (map && map.clientHeight) || 480;
-      // + the world origin offset (bpmap-2): the box layer is shifted by originX/Y so
-      // an api box straddling past x=0 stays on-canvas — the node centre moves with it.
-      var ox = bpView.originX || 0, oy = bpView.originY || 0;
-      var cx = target.x + ox + target.w / 2, cy = target.y + oy + target.h / 2;
-      bpView.panX = vw / 2 - cx * bpView.zoom;
-      bpView.panY = vh / 2 - cy * bpView.zoom;
+  // ── focus viewport (§3.4.4 zoom-to-fit + back-to-system) ─────────────────────
+  // Apply the viewport move a focus CHANGE asks for, exactly once per change (a 30s
+  // refresh sets neither flag, so it never yanks the viewport):
+  //   • bpFocusDirty (a deep-link landed, or a tap focused a box) → ZOOM-TO-FIT on
+  //     the focus node. Its grown layout rect already contains its open descendants
+  //     (the grow-to-fit contract), so fitting that rect frames the focused subtree.
+  //   • bpRefitDirty ('back to system' / Esc cleared the focus) → re-fit the whole
+  //     world (zoom back out to the system view).
+  function applyFocusViewport(view) {
+    if (bpFocusDirty && view.focus && bpFitToFocus(view)) {
+      bpFocusDirty = false; bpRefitDirty = false;
+      return;
+    }
+    if (bpRefitDirty) {
+      bpFit(bpView.worldW, bpView.worldH);
       applyBpWorldTransform();
     }
-    bpScrolled = true;
+    bpFocusDirty = false; bpRefitDirty = false;
+  }
+
+  // Zoom-to-fit on the focus node's (origin-offset) world rect. The box is placed by
+  // a transform on #bp-world inside an overflow:hidden viewport, so we set the world
+  // pan+zoom directly (jsdom: clientWidth/Height fall back to a sane viewport).
+  function bpFitToFocus(view) {
+    var target = null;
+    view.nodes.forEach(function (n) { if (n.id === view.focus && n.layout) target = n.layout; });
+    if (!target) return false;
+    var ox = bpView.originX || 0, oy = bpView.originY || 0;
+    bpFitRect(target.x + ox, target.y + oy, target.w, target.h);
+    applyBpWorldTransform();
+    return true;
   }
 
   // ── conflict FYIs (§5.3 keep / drop; KEEP is the §14.2 default) ──────────────
@@ -1628,8 +1642,9 @@
   // is a compact card. The .bp-node / .bp-focus / .bp-dim / .bp-active /
   // .bp-collision / .bp-kind-* classes are preserved (H3/H4 + the overlay bind to
   // them); marginLeft is GONE (the old indented-list signature the regression test
-  // forbids). Tap the box to drill (container) or open its editor (leaf); the ⋯
-  // button always opens the editor; the caret toggles drill.
+  // forbids). bpmap-3 INTERACTIONS: tap the box body = FOCUS it (zoom-to-fit + dim
+  // the unconnected); the ▸ caret = PEEK (manual drill, no zoom); the ⋯ button =
+  // open the per-node EDIT menu folded onto the box (rename/regroup/pin/hide).
   function renderBlueprintNode(n, byId) {
     var kids = (n.children || []).filter(function (id) { return byId[id] && byId[id].visible; });
     var isOpen = n.open && kids.length > 0;
@@ -1639,7 +1654,7 @@
     if (n.active) cls += ' bp-active';
     if (n.collision) cls += ' bp-collision';
     if (n.focused_self) cls += ' bp-focus';
-    if (n.id === bpSelected) cls += ' bp-selected';
+    if (n.id === bpSelected) cls += ' bp-menu-open'; // the box whose ⋯ editor is open
     var card = Dom.mk('div', cls);
     card.setAttribute('data-id', n.id);
 
@@ -1680,12 +1695,17 @@
     head.appendChild(menu);
     card.appendChild(head);
 
-    // Tap the box itself: drill a container, open the editor for a leaf. A drag
-    // that ended here (bpJustPanned) is a pan, not a tap — ignore it.
+    // The H4 edit affordances FOLDED ONTO THE BOX (bpmap-3): when this is the
+    // selected node, its ⋯ editor is an on-box popover (NOT the old flat panel
+    // below the canvas). It lives inside the card so it pans/zooms glued to the box.
+    if (n.id === bpSelected) card.appendChild(buildNodeMenu(n));
+
+    // Tap the box body = FOCUS this node (the model opens it + its ancestors and
+    // dims the unconnected; applyFocusViewport zooms-to-fit). A drag that ended here
+    // (bpJustPanned) is a pan, not a tap — ignore it.
     card.addEventListener('click', function () {
       if (bpJustPanned) return;
-      if (kids.length) toggleOpen(n.id);
-      else selectNode(n.id);
+      toggleFocus(n.id);
     });
     return card;
   }
@@ -1928,9 +1948,15 @@
   }
 
   // Fit the whole world into the viewport (centered, small margin). Sets bpView
-  // pan/zoom; the caller applies the transform. Falls back to a sane viewport size
-  // when clientWidth/Height are 0 (jsdom / pre-layout) so the transform is always set.
-  function bpFit(w, h) {
+  // pan/zoom; the caller applies the transform.
+  function bpFit(w, h) { bpFitRect(0, 0, w, h); }
+
+  // Fit an arbitrary world rect (x,y,w,h, world px incl. the origin offset) into the
+  // viewport, centered with a small margin. The shared framing math for both the
+  // whole-world fit (bpFit) and the §3.4.4 zoom-to-fit-on-focus (bpFitToFocus). Falls
+  // back to a sane viewport size when clientWidth/Height are 0 (jsdom / pre-layout)
+  // so the transform is always set.
+  function bpFitRect(x, y, w, h) {
     var map = Dom.el('bp-map');
     var vw = (map && map.clientWidth) || 800;
     var vh = (map && map.clientHeight) || 480;
@@ -1939,8 +1965,8 @@
     var z = Math.min((vw - margin * 2) / w, (vh - margin * 2) / h, 1.4);
     z = bpClampZoom((isFinite(z) && z > 0) ? z : 1);
     bpView.zoom = z;
-    bpView.panX = Math.max(margin, (vw - w * z) / 2);
-    bpView.panY = Math.max(margin, (vh - h * z) / 2);
+    bpView.panX = vw / 2 - (x + w / 2) * z;   // centre the rect's centre in the viewport
+    bpView.panY = vh / 2 - (y + h / 2) * z;
   }
 
   // ── pointer pan + pinch zoom (mouse + touch) ─────────────────────────────────
@@ -1981,8 +2007,19 @@
       window.addEventListener('pointermove', bpOnPointerMove);
       window.addEventListener('pointerup', bpOnPointerUp);
       window.addEventListener('pointercancel', bpOnPointerUp);
+      window.addEventListener('keydown', bpOnKeyDown); // Esc steps out (§3.4.4)
       bpHandlersOn = true;
     }
+  }
+
+  // Esc steps OUT, innermost-first: close an open ⋯ editor, else clear the focus
+  // (back to system). Guarded to the blueprint facet (the map host must be present)
+  // so the once-attached window listener is inert on other facets.
+  function bpOnKeyDown(e) {
+    if (e.key !== 'Escape') return;
+    if (!Dom.el('bp-map')) return;
+    if (bpSelected) { bpSelected = null; renderBlueprint(bpRecord); }
+    else if (bpFocus) { clearFocus(); }
   }
   function bpOnPointerMove(e) {
     if (!(e.pointerId in bpPointers)) return;
@@ -2022,35 +2059,61 @@
     }
   }
 
-  // Select a node → open its edit panel below the canvas (tap the same ⋯ to close).
+  // ── focus / drill state transitions (§3.4.4) ─────────────────────────────────
+  // FOCUS a node: the H2 model (re-derived with opts.focus) opens it + its ancestor
+  // chain and dims everything not connected to it; applyFocusViewport zooms-to-fit on
+  // the next paint (bpFocusDirty). Tapping the SAME focused box again steps out.
+  function toggleFocus(id) {
+    if (bpSelected) bpSelected = null;     // a navigation gesture closes any open editor
+    if (bpFocus === id) { clearFocus(); return; }
+    bpFocus = id;
+    bpFocusDirty = true;
+    if (bpRecord !== undefined) renderBlueprint(bpRecord);
+  }
+  // STEP OUT (back to system / Esc / tap-again): clear the focus. The focus-opened
+  // boxes auto-collapse (the model only keeps a box open while it is pinned, manually
+  // drilled, or the focus target — open_source pin>manual>focus); the whole world
+  // re-fits (bpRefitDirty). Manual drill-ins (bpOpened) and pins are PRESERVED.
+  function clearFocus() {
+    if (!bpFocus) return;
+    bpFocus = null;
+    bpRefitDirty = true;
+    if (bpRecord !== undefined) renderBlueprint(bpRecord);
+  }
+
+  // Open the per-node ⋯ EDITOR, folded ONTO the box (buildNodeMenu). Tapping ⋯ also
+  // FOCUSES + zooms the node so the on-box popover (which lives in the transformed
+  // world) is readable; tap the same ⋯ to close.
   function selectNode(id) {
-    bpSelected = (bpSelected === id) ? null : id;
+    if (bpSelected === id) { bpSelected = null; }
+    else {
+      bpSelected = id;
+      if (bpFocus !== id) { bpFocus = id; bpFocusDirty = true; }
+    }
     if (bpRecord !== undefined) renderBlueprint(bpRecord);
   }
 
   // The H4 customization affordances (rename/regroup/pin/hide + split/merge),
-  // KEPT WORKING (bpmap-1 must not lose them). Rendered in a panel below the
-  // canvas for the node whose ⋯ was tapped; bpmap-3 folds them onto the box.
-  function renderBlueprintEditPanel(view) {
-    var panel = Dom.el('bp-edit-panel');
-    if (!panel) return;
-    Dom.clear(panel);
-    if (!bpSelected) { panel.hidden = true; return; }
-    var n = null;
-    view.nodes.forEach(function (x) { if (x.id === bpSelected && x.visible) n = x; });
-    if (!n) { panel.hidden = true; return; } // the selection drilled away / was hidden
-    panel.hidden = false;
-    var head = Dom.mk('div', 'bp-edit-panel-h');
-    head.appendChild(Dom.mk('span', 'bp-edit-panel-t', 'Editing'));
-    head.appendChild(Dom.mk('span', 'bp-name', n.label));
-    head.appendChild(Dom.mk('code', 'bp-edit-panel-id', n.id));
-    var close = Dom.mk('button', 'bp-act bp-edit-close', '✕');
+  // KEPT WORKING and now FOLDED ONTO THE BOX (bpmap-3): a popover rendered INSIDE the
+  // selected node card (renderBlueprintNode appends it), REPLACING the old flat
+  // #bp-edit-panel row list below the canvas. Living inside the card means it pans/
+  // zooms glued to the box. Its own click/pointerdown are stopped so a tap on a
+  // gesture doesn't bubble to the card (→ toggleFocus) or start a pan.
+  function buildNodeMenu(n) {
+    var pop = Dom.mk('div', 'bp-node-pop');
+    pop.addEventListener('click', function (e) { e.stopPropagation(); });
+    pop.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+    var head = Dom.mk('div', 'bp-pop-h');
+    head.appendChild(Dom.mk('span', 'bp-edit-panel-t', 'Edit'));
+    head.appendChild(Dom.mk('code', 'bp-pop-id', n.id));
+    var close = Dom.mk('button', 'bp-act bp-pop-close', '✕');
     close.setAttribute('type', 'button');
     close.setAttribute('aria-label', 'close editor');
     close.addEventListener('click', function () { bpSelected = null; renderBlueprint(bpRecord); });
     head.appendChild(close);
-    panel.appendChild(head);
-    panel.appendChild(renderNodeEditRow(n)); // the SAME H4 gestures, relocated
+    pop.appendChild(head);
+    pop.appendChild(renderNodeEditRow(n)); // the SAME H4 gestures, now on the box
+    return pop;
   }
 
   // The per-node edit affordances. Each gesture builds the NEXT customization via
@@ -2091,6 +2154,11 @@
         'You can bring it back from the HIDDEN list below.')) return;
       var r = BlueprintCustomize.setHidden(cust(), n.id, true);
       if (!r.ok) { setStatus(status, 'err', r.error); return; }
+      // Hiding a node removes it from the map — step out of it cleanly: close its
+      // editor and, if it was the focus, clear focus (+ re-fit) so the next paint
+      // shows the whole map, not a stale "isn't in this map" miss banner for it.
+      bpSelected = null;
+      if (bpFocus === n.id) { bpFocus = null; bpRefitDirty = true; }
       putCustomization(r.customization, b, status, 'hide');
     });
 

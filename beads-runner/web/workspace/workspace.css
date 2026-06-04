@@ -406,7 +406,6 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   border-radius:11px;background:var(--panel);padding:6px 8px;overflow:hidden;
   display:flex;flex-direction:column}
 .bp-node.bp-open{background:rgba(20,26,38,.55);overflow:visible}
-.bp-node.bp-selected{border-color:var(--amber);box-shadow:0 0 0 2px rgba(240,180,90,.28)}
 .bp-node.bp-dim{opacity:.4}
 .bp-node.bp-active{border-color:var(--mint)}
 .bp-node.bp-collision{border-color:var(--coral);box-shadow:0 0 0 1px rgba(255,107,107,.3)}
@@ -446,14 +445,31 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .bp-zoom-btn:hover{border-color:var(--amber)}
 
-/* edit panel (the H4 gestures, relocated below the canvas — bpmap-1 keeps them) */
-.bp-edit-panel{margin:8px 18px 0;border:1px solid var(--line);border-radius:12px;
-  background:var(--panel);padding:11px 13px}
-.bp-edit-panel-h{display:flex;align-items:center;gap:9px;margin-bottom:8px;flex-wrap:wrap}
+/* the H4 edit gestures FOLDED ONTO THE BOX (bpmap-3): an on-box ⋯ popover rendered
+ * INSIDE the selected node card (REPLACES the old flat #bp-edit-panel below the
+ * canvas). The card opens its overflow + lifts above siblings so the popover shows. */
+.bp-node.bp-menu-open{overflow:visible;z-index:50}
+/* anchored just UNDER the head row (not below the whole card) so a TALL focused
+ * domain — whose grown rect can fill the viewport after zoom-to-fit — still shows
+ * its menu near the top, never clipped off the bottom of the overflow:hidden map. */
+.bp-node-pop{position:absolute;top:32px;left:0;min-width:184px;z-index:60;
+  background:var(--panel);border:1px solid var(--line-2);border-radius:11px;
+  padding:9px 10px;box-shadow:0 12px 32px rgba(0,0,0,.5);cursor:default;
+  white-space:normal}
+.bp-pop-h{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.bp-pop-id{font-family:var(--mono);font-size:11px;color:var(--amber-soft);
+  background:var(--ink);padding:1px 5px;border-radius:5px;
+  overflow:hidden;text-overflow:ellipsis;max-width:120px}
+.bp-pop-close{margin-left:auto;min-height:auto;padding:3px 8px}
+.bp-node-pop .bp-edit-row{flex-direction:column;align-items:stretch;gap:6px}
+.bp-node-pop .bp-act{text-align:left}
 .bp-edit-panel-t{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate)}
-.bp-edit-panel-id{font-family:var(--mono);font-size:11px;color:var(--amber-soft);
-  background:var(--ink);padding:1px 5px;border-radius:5px}
-.bp-edit-close{margin-left:auto;min-height:auto;padding:3px 8px}
+
+/* back-to-system — step out of a focus (§3.4.4), shown in the focus banner */
+.bp-focus-back{font:inherit;font-size:11px;color:var(--sky);background:var(--ink-2);
+  border:1px solid rgba(110,180,255,.34);border-radius:8px;padding:3px 9px;
+  cursor:pointer;margin-left:4px;white-space:nowrap}
+.bp-focus-back:hover{border-color:var(--sky)}
 
 /* per-node edit affordances */
 .bp-edit-box{margin-top:7px}
@@ -497,5 +513,5 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 
 @media (min-width:880px){
   .bp-conflicts,.bp-hidden-host{padding:0 22px}
-  .bp-map,.bp-edit-panel{margin-left:22px;margin-right:22px}
+  .bp-map{margin-left:22px;margin-right:22px}
 }

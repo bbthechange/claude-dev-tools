@@ -261,3 +261,80 @@ test('bpmap-2 (apis) — a domain with apis renders API boundary BOXES + an open
       'a queue (async) edge renders dashed (.bp-edge-async)');
   } finally { window.close(); }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// bpmap-3 (claude-tools-bpmap3) ANTI-REGRESSION: the §3.4.4 focus/dim/drill model.
+// The H2 model already exposes per-node focused/dimmed/open state; these assert the
+// RENDERER honors it — a ?focus opens that node, rings it .bp-focus, and DIMS the
+// unconnected — and that the H4 edit gestures are FOLDED onto the box (an on-box ⋯
+// popover), not the old flat panel below the canvas. A regression that drops the
+// dim, the focus open, or the on-box editor goes RED.
+
+// Helper: a node box by its stable id (in the box layer).
+function nodeById(window, id) {
+  return window.document.querySelector('.bp-node[data-id="' + id + '"]');
+}
+
+test('bpmap-3 (focus/dim) — a ?focus OPENS that node, rings it .bp-focus, and DIMS the unconnected', async () => {
+  // Focus the nested capability: its domain (messaging) must OPEN so the target is
+  // visible + ringed; the OTHER domain (posts-feed) shares no shown edge with the
+  // focused subtree (the §3.2 focus-density drops the cross-domain edge) → dimmed.
+  const window = loadBlueprint('/ws/projA/blueprint?focus=capability:send-dm', RECORD, SNAP);
+  try {
+    await flush();
+    // the ?focus target carries the .bp-focus ring AND is the exact focused node.
+    const focused = window.document.querySelector('.bp-node.bp-focus');
+    assert.ok(focused, 'the focused node carries the .bp-focus class');
+    assert.equal(focused.getAttribute('data-id'), 'capability:send-dm',
+      'the ring is on the ?focus target, not some other node');
+    // ?focus OPENS that node: its ancestor domain is drilled open so the target shows.
+    const msg = nodeById(window, 'domain:messaging');
+    assert.ok(msg, 'the focus target ancestor renders');
+    assert.ok(msg.classList.contains('bp-open'),
+      'focus OPENED the target\'s ancestor (the ?focus opts opens that node)');
+    assert.ok(nodeById(window, 'capability:send-dm'),
+      'the focus target itself is visible (its ancestor was opened to reveal it)');
+    // the unconnected domain is DIMMED; the focus node itself is NOT.
+    const pf = nodeById(window, 'domain:posts-feed');
+    assert.ok(pf, 'the unconnected domain renders');
+    assert.ok(pf.classList.contains('bp-dim'),
+      'a node not connected to the focus carries the .bp-dim class');
+    assert.ok(!focused.classList.contains('bp-dim'), 'the focus node is never dimmed');
+  } finally { window.close(); }
+});
+
+test('bpmap-3 (interactive focus) — clicking a node BODY focuses it (no deep-link needed)', async () => {
+  const window = loadBlueprint('/ws/projA/blueprint', RECORD, SNAP); // no ?focus
+  try {
+    await flush();
+    // at macro nothing is focused or dimmed (the full system view).
+    assert.ok(!window.document.querySelector('.bp-node.bp-focus'), 'no focus at macro');
+    assert.ok(!window.document.querySelector('.bp-node.bp-dim'), 'nothing dimmed at macro');
+    // tap a domain box body → it becomes the focus (the live §3.4.4 interaction).
+    const msg = nodeById(window, 'domain:messaging');
+    msg.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    const focused = window.document.querySelector('.bp-node.bp-focus');
+    assert.ok(focused, 'clicking a node body focuses it');
+    assert.equal(focused.getAttribute('data-id'), 'domain:messaging',
+      'the clicked node is the new focus');
+  } finally { window.close(); }
+});
+
+test('bpmap-3 (H4 on the box) — tapping ⋯ opens the edit menu ON the node box (the flat panel is gone)', async () => {
+  const window = loadBlueprint('/ws/projA/blueprint', RECORD, SNAP);
+  try {
+    await flush();
+    // the old flat below-canvas edit panel is REMOVED (folded onto the box).
+    assert.equal(window.document.getElementById('bp-edit-panel'), null,
+      'the flat #bp-edit-panel edit-row list is gone (folded onto the node)');
+    const pf = nodeById(window, 'domain:posts-feed');
+    const menuBtn = pf.querySelector('.bp-node-menu');
+    assert.ok(menuBtn, 'each box carries a ⋯ edit-menu button');
+    menuBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    // the editor renders as a popover INSIDE the node box (re-query post-render).
+    const pop = window.document.querySelector('.bp-node[data-id="domain:posts-feed"] .bp-node-pop');
+    assert.ok(pop, 'the edit affordances render in an on-box ⋯ popover');
+    assert.ok(pop.querySelector('.bp-act-edit'),
+      'the rename/regroup/pin/hide gestures live in the on-box menu (kept working)');
+  } finally { window.close(); }
+});
