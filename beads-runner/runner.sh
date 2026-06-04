@@ -481,6 +481,33 @@ job_reconcile_desired()   { co_deliver_desired_state "$PROJECT_REF"; }          
 job_publish_snapshot()    { la_publish_work_snapshot "$PROJECT_REF"; }           # §3 j5 / §4.5 — read-only projection
 job_report_terminal()     { la_report_terminal_reason "$1" "${2:-}" "${3:-}" "$PROJECT_REF"; } # §3 j6 / §8.2
 
+# ── §1.1/§2.4 outbox DRAIN — BC-45's SHIPPING half (claude-tools-zyxz) ─────────
+# job_heartbeat -> la_heartbeat -> la_report_heartbeat only APPENDS the §4.2
+# actual-state line to the durable §1.1 UP queue (.beads/runner-logs/coordinator-
+# outbox.jsonl); NOTHING reaches the hosted engine until that queue is DRAINED.
+# v1 run-beads-tasks.sh drains inline in hb() (288-302) AND in its mid-task HB
+# subshell, so the engine's last_heartbeat_at stays live BOTH between tasks AND
+# during a long one. v2 emitted heartbeats but had NO drain call anywhere — so
+# the instant a workspace ran on v2 the engine froze at the PRIOR runner's
+# heartbeat: stale Board liveness, a frozen current_task_ref, and a spurious-
+# 'runner stuck' risk while desired=running (the live cutover scar). This is the
+# single drain seam; its three call sites mirror v1's drain cadence:
+#   1. st_reconcile — once per loop, ships the just-finished task's heartbeats
+#   2. the during-task §2.5 heartbeat branch — once per HEARTBEAT_INTERVAL so a
+#      task longer than the engine's STALE_AFTER stays live (the ACTUAL bug:
+#      st_reconcile is NOT re-entered during a task, so a reconcile-only drain
+#      would still freeze a >STALE_AFTER task)
+#   3. st_terminal — the last durable write, ships the final `stopped` state
+# Guarded-optional (BC-43): la_outbox_drain is defined ONLY when the HTTP
+# transport is sourced with a non-empty COORDINATOR_URL; absent ⇒ the queue just
+# persists locally (standalone/oracle/conformance byte-unaffected, drained on a
+# later hosted reconnect — the §2.4 at-least-once contract). NEVER aborts.
+_drain_outbox() {
+  declare -F la_outbox_drain >/dev/null 2>&1 || return 0
+  [[ -n "${COORDINATOR_URL:-}" ]] || return 0
+  la_outbox_drain "${COORDINATOR_TOKEN:-}" >/dev/null 2>&1 || true
+}
+
 # ── §6.2 / AD2.2 — bounded LOCAL lease fallback (the machine-local half, la_*) ──
 # These are NOT one of the six §3 jobs (the LA does NOT arbitrate leases — T4
 # does); they are the runner-side wiring of the §6.2 degraded-CLOSED posture. The
@@ -2177,6 +2204,12 @@ _drain_one_orphan() {
 st_reconcile() {
   CANDIDATE_ID=""; CANDIDATE_TITLE=""; CANDIDATE_DESC=""
 
+  # §1.1/§2.4 drain (BC-45, claude-tools-zyxz): ship the durable UP queue ONCE
+  # per reconcile pass, so the heartbeats the just-finished task (or st_starting)
+  # queued actually reach the hosted engine — keeps last_heartbeat_at / Board
+  # liveness / current_task_ref fresh BETWEEN tasks. Guarded; never aborts.
+  _drain_outbox
+
   # Graceful stop file is a between-tasks signal (§2.5 completion semantic).
   if [[ -f "$STOP_FILE" ]]; then
     echo "runner: stop file ($STOP_FILE) observed"
@@ -2654,6 +2687,14 @@ st_run_task() {
       # a fix; decoupling liveness from lease-renewal would be a §3 job-surface
       # change (v2c2/§11), out of this port-forward's scope.
       job_heartbeat running "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null  # renews held lease (§3 j3)
+      # §1.1/§2.4 drain (BC-45, claude-tools-zyxz): SHIP that running heartbeat
+      # NOW. st_reconcile is NOT re-entered during a task, so without an in-loop
+      # drain a task longer than the engine's STALE_AFTER (≈180s) freezes the
+      # engine heartbeat and risks a spurious 'runner stuck' — the exact live
+      # cutover scar (a 30-min bpmap1 task showed the prior runner's heartbeat).
+      # Gated by since_hb ⇒ at most once per HEARTBEAT_INTERVAL, matching v1's
+      # mid-task HB-subshell cadence (run-beads-tasks.sh:2280-2310 → hb() drain).
+      _drain_outbox
     fi
   done
   # BC-09: the exit code is NOT trusted as a verdict (truth is `bd` status).
@@ -3010,6 +3051,12 @@ st_stopping() {
 st_terminal() {
   job_heartbeat stopped "" "" >/dev/null
   job_report_terminal "$TERMINAL_CLASS" "$EXIT_CODE" "" >/dev/null
+  # §1.1/§2.4 drain (BC-45, claude-tools-zyxz; mirrors v1 run-beads-tasks.sh:2693):
+  # the LAST durable write — ship the final `stopped` heartbeat so the engine sees
+  # a clean stop instead of waiting out STALE_AFTER. (The terminal-reason line has
+  # no hosted op and is correctly RETAINED here, not dropped — pre-existing, not
+  # this bug.)
+  _drain_outbox
   echo "runner: $COMPLETED completed / $PROCESSED processed — terminal=$TERMINAL_CLASS exit=$EXIT_CODE"
   # §8.2 visibility: surface every incident this run (watchdog kills and other
   # silently-retried failures that later succeeded) on the ONE terminal funnel —

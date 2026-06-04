@@ -113,3 +113,56 @@ _need "T1 closed (the unconditional beat did not wedge a healthy run)" \
 _need "runner drained exit 0" test "${RUN_EXIT:-1}" -eq 0
 _emit
 H_cleanup
+
+# ── D · the §1.1/§2.4 OUTBOX DRAIN is wired — BC-45's SHIPPING half ───────────
+# (claude-tools-zyxz) The regression this locks: v2 EMITTED heartbeats but never
+# DRAINED the durable §1.1 UP queue (.beads/runner-logs/coordinator-outbox.jsonl),
+# so the hosted engine froze at the PRIOR runner's heartbeat the instant a
+# workspace ran on v2 — stale Board liveness, a frozen current_task_ref, and a
+# spurious-'runner stuck' risk while desired=running. BC-45's assertion is
+# emit-AND-drain ("drains the durable outbox when a hosted COORDINATOR_URL is
+# configured"); sections A/B above asserted only the EMIT half — that omission is
+# EXACTLY how the drift slipped the v2cut gate (conformance-green while drifting
+# behind v1's outbox-drain). These bind the drain to all three v1 cadences:
+#   1. st_reconcile         — once per loop (between-task freshness)
+#   2. the during-task beat — once per HEARTBEAT_INTERVAL (the LOAD-BEARING one:
+#                             st_reconcile is NOT re-entered during a task, so a
+#                             reconcile-only drain still freezes a >STALE_AFTER
+#                             task — the actual live scar)
+#   3. st_terminal          — the last durable write (clean-stop signal)
+# Source-structural (the drain is a no-op in the stub harness: la_outbox_drain is
+# defined only under co-http-transport's COORDINATOR_URL gate, absent here), the
+# same posture as sections A/B.
+H_init_test bc45tree-outbox-drain-wired
+
+# The during-task drain window: from the heartbeat-branch interval test through
+# the loop `done`. A future edit that drops the in-loop drain (re-introducing the
+# zyxz freeze) leaves this window without `_drain_outbox` ⇒ this assertion fails.
+beat_drain_body="$WORKDIR/.beat-drain.txt"
+awk '/since_hb -ge .HEARTBEAT_INTERVAL/{f=1} f{print} /^[[:space:]]*done/{if(f) exit}' \
+    "$RUNNER" > "$beat_drain_body"
+# The reconcile + terminal drain windows (each function header → its col-0 close).
+reconcile_body="$WORKDIR/.reconcile.txt"
+awk '/^st_reconcile\(\) \{/{f=1} f{print} /^\}/{if(f) exit}' "$RUNNER" > "$reconcile_body"
+terminal_body="$WORKDIR/.terminal.txt"
+awk '/^st_terminal\(\) \{/{f=1} f{print} /^\}/{if(f) exit}' "$RUNNER" > "$terminal_body"
+
+_expect "BC-45" "§BC-45" "the §1.1/§2.4 outbox drain (la_outbox_drain) is WIRED — heartbeats are SHIPPED, not just queued"
+_need "the _drain_outbox seam is defined" \
+      grep -qE '^_drain_outbox\(\)' "$RUNNER"
+_need "the seam calls la_outbox_drain (BC-45 shipping half)" \
+      grep -qE 'la_outbox_drain' "$RUNNER"
+_need "the drain is guarded on la_outbox_drain being DEFINED (BC-43 optional-lib posture)" \
+      grep -qE 'declare -F la_outbox_drain' "$RUNNER"
+_need "the drain is guarded on a non-empty COORDINATOR_URL (no hosted URL ⇒ queue persists locally)" \
+      bash -c 'grep -qE "COORDINATOR_URL" "'"$RUNNER"'"'
+_need "the drain never aborts the loop (|| true on the la_outbox_drain call)" \
+      grep -qE 'la_outbox_drain "\$\{COORDINATOR_TOKEN:-\}".*\|\| true' "$RUNNER"
+_need "st_reconcile drains once per loop (between-task freshness)" \
+      grep -qE '_drain_outbox' "$reconcile_body"
+_need "the during-task beat DRAINS after emitting — the zyxz freeze fix (load-bearing)" \
+      bash -c 'grep -qE "job_heartbeat running" "'"$beat_drain_body"'" && grep -qE "_drain_outbox" "'"$beat_drain_body"'"'
+_need "st_terminal drains the final stopped state (clean-stop signal; mirrors v1:2693)" \
+      grep -qE '_drain_outbox' "$terminal_body"
+_emit
+H_cleanup

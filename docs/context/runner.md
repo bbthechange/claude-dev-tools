@@ -219,6 +219,21 @@ was lost).
   Because v2 has **no `tail -f` parser**, this poll IS the activity seam (not a
   second tail). Guarded-optional (BC-43): absent lib / offline transport ⇒ no-op,
   never blocks or crashes the loop.
+- **v2 now DRAINS the §1.1 outbox — heartbeats are SHIPPED, not just queued
+  (BC-45, claude-tools-zyxz).** v2 generated/queued heartbeats correctly
+  (`job_heartbeat`→`la_heartbeat`→`la_report_heartbeat` appends to
+  `coordinator-outbox.jsonl`) but for the whole pre-cutover life **never called
+  `la_outbox_drain`**, so the hosted engine froze at the *prior* runner's
+  heartbeat the instant a workspace ran on v2 (stale Board liveness, frozen
+  `current_task_ref`, spurious-'runner stuck' risk). Fixed with one guarded
+  `_drain_outbox` seam (`declare -F la_outbox_drain` + non-empty `COORDINATOR_URL`
+  + `|| true`) called at **three** v1-cadence sites: `st_reconcile` (once per
+  loop, between-task), the **during-task heartbeat branch** (once per
+  `HEARTBEAT_INTERVAL` — load-bearing: `st_reconcile` is NOT re-entered during a
+  task, so a reconcile-only drain still freezes a `>STALE_AFTER` task), and
+  `st_terminal` (final stopped state, mirrors v1 run-beads-tasks.sh:2693).
+  Regression-locked by **section D** of `conformance/assertions/bc-45-heartbeat-honesty-tree.sh`
+  (the original rig asserted only the *emit* half — the drift's blind spot).
 - **§9 audit-coverage marker is refreshed at each inventory publish (v1 only,
   claude-tools-mhcp.3).** `run-beads-tasks.sh` calls `runner_refresh_audit_coverage`
   — a guarded subprocess run of `defer-cascade-audit.sh audit` — immediately BEFORE

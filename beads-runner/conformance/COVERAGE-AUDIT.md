@@ -86,6 +86,22 @@ intent, not v1 silence-on-stuck), **BC-49/50** (capacity gate + desired-state
 resolver), **BC-60** (epoch-floor + liveness mechanism), and the no-assertion
 load-bearing present behaviours **BC-37/42/43/44/47/63/64/BC-NEW-SPAWN**.
 
+> **BC-45 drift CAUGHT LIVE (claude-tools-zyxz, 2026-06-04).** The original
+> bc-45 `-tree` rig (v2cut.5) asserted only the *emit* half of BC-45 (the
+> unconditional beat + watchdog soft-warn). It did **not** assert the *shipping*
+> half — that `hb()`/the beat then **drains** the durable §1.1 outbox — even
+> though BC-45's own assertion text says "*drains the durable outbox when a
+> hosted COORDINATOR_URL is configured*". v2 emitted heartbeats but **never
+> called `la_outbox_drain` anywhere**, so the hosted engine froze at the prior
+> runner's heartbeat the instant a workspace ran on v2 (stale Board liveness,
+> frozen `current_task_ref`, spurious-'runner stuck' risk). This is the exact
+> "conformance-green while drifting behind v1" failure mode this audit exists to
+> surface — a green emit-only assertion is **necessary-but-not-sufficient**.
+> Fixed: a single guarded `_drain_outbox` seam called at **three** v1-cadence
+> sites (st_reconcile / the during-task beat / st_terminal); the during-task
+> drain is load-bearing (st_reconcile is not re-entered during a long task).
+> Locked by **section D** of `bc-45-heartbeat-honesty-tree.sh`.
+
 ## Decisions (NOT ports)
 
 - **BC-39/40/41** stream-merge / signal-file IPC / `RESULT_IS_ERROR` dead-data —
