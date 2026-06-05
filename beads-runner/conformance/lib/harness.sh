@@ -82,6 +82,20 @@ H_init_test() {
   # its own, so the harness skips it via the runner's seam.
   export RUNNER_SKIP_POST_CLOSE_AUDIT=1
   unset HARNESS_BD_SHOW_STATUS_EMPTY HARNESS_KEYCHAIN HARNESS_USAGE HARNESS_HANG_SECONDS 2>/dev/null || true
+  # claude-tools-b1ya: scrub the runner's session-identity env at the harness
+  # boundary (the same class fixed in w3re's close-checklist run_hook). When the
+  # gate runs from INSIDE a runner-spawned worker, the parent env carries
+  # BEADS_RUNNER_SESSION=1 + CURRENT_TASK_ID=<live in-flight bead>. Today every
+  # rig is immune anyway — it drives the runner-under-test, which OVERWRITES both
+  # (runner.sh:2458/2590) before spawning its worker, or only greps runner source.
+  # This unset is defense-in-depth: a FUTURE rig that invokes a consumer DIRECTLY
+  # (e.g. close-checklist.sh / auto-label-live-session.sh, the only two readers)
+  # without going through the runner would otherwise inherit the live bead and
+  # false-RED/GREEN on ambient session state. Scrubbing here makes "green == safe
+  # to close" session-independent for the whole 77-rig family at one chokepoint.
+  # Safe: the runner re-sets both for its worker AFTER this runs, so bc-2fkp's
+  # "worker env carries BEADS_RUNNER_SESSION=1" assertion is unaffected.
+  unset BEADS_RUNNER_SESSION CURRENT_TASK_ID 2>/dev/null || true
 }
 
 # _reap_runner_pg — sweep the runner's ENTIRE process group.

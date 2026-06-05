@@ -199,6 +199,24 @@ against the live host — not local-green + committed — is acceptance.
 - **`conformance` and `cf`/`jsdom` count as ONE unit each.** They fan out internally;
   on failure the gate prints their full output. Bash `test-*.sh` files are one unit
   apiece (pass == exit 0).
+- **Ambient runner-env leak — `green == safe to close` must stay session-independent
+  (claude-tools-b1ya, originating scar w3re).** A runner spawns each worker with
+  `BEADS_RUNNER_SESSION=1` + `CURRENT_TASK_ID=<live in-flight bead>` exported
+  (runner.sh:2458/2590), so running the gate from INSIDE a worker LEAKS that env into
+  every harness. Only two scripts BRANCH on those vars — `hooks/close-checklist.sh`
+  (enforce when `BEADS_RUNNER_SESSION=1`) and `hooks/auto-label-live-session.sh`
+  (suppress the label when set). **Immunity rule:** a harness that *drives the
+  runner-under-test* is immune (the runner OVERWRITES both before spawning its worker),
+  as is one that only greps runner source. A harness that *invokes a consumer hook
+  DIRECTLY* must scrub at the boundary (`unset BEADS_RUNNER_SESSION CURRENT_TASK_ID`
+  before applying its own env) or run it under a clean env. Both hook tests already do
+  this in their `run_hook`; the conformance harness `H_init_test` now scrubs as
+  defense-in-depth for the whole 77-rig family (pinned by top-tier
+  `test-conformance-harness-env-scrub.sh`; the safe-because-runner-re-sets-it half is
+  pinned by rig bc-2fkp). The b1ya audit swept every offline harness family
+  (lib/daemon/agents/hooks/top + conformance rigs + the JS cf/jsdom tiers, ~250
+  file-scans) and found NO other consumer and NO unprotected direct-invoker — but a NEW
+  rig/test that calls a hook directly must follow the rule.
 
 ## Go deeper
 
