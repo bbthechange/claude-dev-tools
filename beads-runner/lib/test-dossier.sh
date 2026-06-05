@@ -292,7 +292,7 @@ ck "round-trip preserved the item set (2 items, da1 open, da2 answered)" \
 # (claude-tools-fyci — kill the digest+armed-timer edge at the source). deF ALSO
 # arms a REAL §2.2 substrate timer (id==dossier id, past fire_at ⇒ timer-due) so
 # escalate's soft-disarm (timer-ack) is proven end-to-end, not just the envelope
-# field (code-review #1). co_timer_due reads from this herestring via ck's stdin.
+# field (code-review #1). The timer-due output is fed to grep via ck's stdin.
 do_dossier_put "$GOOD" "$(jq -c '.tier="timed-fyi"|.timer_fire_at="2026-06-01T00:00:00Z"' <<<"$(mk deF 2 "[$(item df1 open)]")")" >/dev/null
 co_request "$GOOD" timer-arm deF "2026-06-01T00:00:00Z" >/dev/null 2>&1
 ck "  BEFORE escalate: deF's armed §2.2 timer surfaces in timer-due" \
