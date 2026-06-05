@@ -12,6 +12,12 @@
  *       and holds the SVG edge layer + the box layer in the SAME world (the shared
  *       render contract bpmap-2/3 bind to).
  *
+ * bplayout (claude-tools-bplayout) then tightened it: distinct-left + "an edge path
+ * exists" both PASS for a 1-D horizontal ROW with hidden edge slivers, so the strip
+ * shipped green. The three bplayout tests at the bottom assert LEGIBILITY, not mere
+ * existence — top-level boxes spread in BOTH x and y (§5 banding), at least one drawn
+ * edge has a non-degenerate bounding box, and opening a container grows its height.
+ *
  * Discipline (§8): deterministic (the model is fed an explicit record; no
  * wall-clock matters to geometry), no network (Net.getJSON stubbed to resolve the
  * record + an empty snapshot), assert STRUCTURE (positions/layers/transform), never
@@ -110,10 +116,45 @@ const RECORD_API = {
   customization: {}, narrative: { tldr: 'x', sections: [] }, conflicts: [],
 };
 
+// A multi-BAND record (claude-tools-bplayout): top-level nodes span THREE bands —
+// a client, two product domains (one with a drill-in capability), and a store — plus
+// CROSS-BAND edges (client→domain, domain→store). Banding stacks the lanes
+// vertically, so the top-level boxes differ in both x and y and the cross-band edges
+// have real vertical extent (the 2-D-spread + visible-edge contract this bead restores).
+const RECORD_BANDS = {
+  schema_version: 1, project_ref: 'projB',
+  derived: {
+    nodes: [
+      { id: 'client:web', label: 'Web App', kind: 'client', parent: null },
+      { id: 'domain:posts-feed', label: 'Posts & Feed', kind: 'domain', parent: null },
+      { id: 'domain:messaging', label: 'Messaging', kind: 'domain', parent: null },
+      { id: 'capability:send-dm', label: 'Send a DM', kind: 'capability', parent: 'domain:messaging' },
+      { id: 'store:postgres', label: 'Postgres', kind: 'store', parent: null },
+    ],
+    edges: [
+      { from: 'client:web', to: 'domain:posts-feed', kind: 'call', bundle_key: 'web->pf' },
+      { from: 'domain:posts-feed', to: 'store:postgres', kind: 'data', bundle_key: 'pf->pg' },
+    ],
+    apis: [],
+  },
+  customization: {}, narrative: { tldr: 'x', sections: [] }, conflicts: [],
+};
+
 function edgeLayer(window) {
   const svg = window.document.getElementById('bp-edge-layer');
   assert.ok(svg, 'the #bp-edge-layer SVG (where bpmap-2 draws edges + api arrows) exists');
   return svg;
+}
+
+// The bounding box of an SVG path's "d" (the M/Q control points bpCurve emits). jsdom
+// does no real layout (getBBox() is unreliable), so we parse the coord pairs straight
+// from the path string — deterministic and layout-engine-independent.
+function pathBBox(d) {
+  const nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  const xs = [], ys = [];
+  for (let i = 0; i + 1 < nums.length; i += 2) { xs.push(nums[i]); ys.push(nums[i + 1]); }
+  return { w: Math.max.apply(null, xs) - Math.min.apply(null, xs),
+           h: Math.max.apply(null, ys) - Math.min.apply(null, ys) };
 }
 
 function boxNodeStyles(window) {
@@ -242,10 +283,11 @@ test('bpmap-2 (apis) — a domain with apis renders API boundary BOXES + an open
       assert.equal(b.style.position, 'absolute', 'an api box is absolutely positioned in the world');
       assert.match(b.style.left, /-?\d/, 'an api box carries an absolute world left');
     });
-    // posts-feed is the left-most domain (x=0) so its api straddles into x<0; the
-    // box layer is shifted by a non-negative origin offset so it stays on-canvas
-    // (left + boxLayer.left ≥ 0). A regression that clipped it would leave the box
-    // at a negative world pixel with no compensating offset.
+    // The api straddles its domain's LEFT border (x = L.x - BP_API_W/2). §5 banding
+    // reserves a left GUTTER ≥ BP_API_W/2, so the straddle lands at a non-negative
+    // world pixel and the box-layer origin offset is non-negative (it would also
+    // compensate a true negative overhang — the inequality holds either way). A
+    // regression that clipped it would leave the box at a negative pixel with no offset.
     const offset = parseFloat(boxLayer.style.left) || 0;
     assert.ok(offset >= 0, 'the box layer carries a non-negative origin offset');
     apiBoxes.forEach((b) => {
@@ -336,5 +378,120 @@ test('bpmap-3 (H4 on the box) — tapping ⋯ opens the edit menu ON the node bo
     assert.ok(pop, 'the edit affordances render in an on-box ⋯ popover');
     assert.ok(pop.querySelector('.bp-act-edit'),
       'the rename/regroup/pin/hide gestures live in the on-box menu (kept working)');
+  } finally { window.close(); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// bplayout (claude-tools-bplayout) ANTI-REGRESSION: EXISTENCE != LEGIBILITY.
+// The bpmap-1/2/3 gate above PASSED for a 1-D horizontal ROW of boxes with hidden,
+// near-zero-height edge slivers — distinct *left* and "an edge <path> exists" are
+// both true of a strip. These three assertions close that gap: top-level boxes must
+// spread in BOTH axes (§5 banding), at least one drawn edge must have a non-degenerate
+// bounding box (visible, not a sliver), and opening a container must actually grow it.
+
+test('bplayout (a) — top-level boxes spread in BOTH x and y (§5 bands, not a 1-D row)', async () => {
+  // At macro (no focus/opened) only top-level boxes are visible, so every rendered
+  // .bp-node here IS a band root. The OLD layout put them all at y:0 (one row); §5
+  // banding stacks the client / domain / store lanes vertically.
+  const window = loadBlueprint('/ws/projB/blueprint', RECORD_BANDS, SNAP);
+  try {
+    await flush();
+    const styles = boxNodeStyles(window);
+    assert.ok(styles.length >= 3, 'the three band roots (client/domains/store) render at macro');
+
+    const tops = new Set(styles.map((s) => s.top));
+    const lefts = new Set(styles.map((s) => s.left));
+    // THE core fix: more than one DISTINCT top among top-level boxes (a 1-D row has
+    // exactly one). The old strip shipped green precisely because this was never asserted.
+    assert.ok(tops.size > 1,
+      '>1 distinct top among top-level boxes — bands occupy distinct y lanes (NOT a y:0 strip)');
+    assert.ok(lefts.size > 1, '>1 distinct left among top-level boxes');
+
+    // …and a genuine 2-D pair exists: two top-level boxes differing in BOTH x AND y
+    // (a row differs only in x; a column only in y — banding gives both).
+    const px = styles.map((s) => ({ x: parseFloat(s.left), y: parseFloat(s.top) }));
+    let twoD = false;
+    for (let i = 0; i < px.length && !twoD; i++)
+      for (let j = i + 1; j < px.length; j++)
+        if (px[i].x !== px[j].x && px[i].y !== px[j].y) { twoD = true; break; }
+    assert.ok(twoD, 'at least two top-level boxes differ in BOTH x and y (true 2-D spread)');
+  } finally { window.close(); }
+});
+
+test('bplayout (b) — at least one drawn edge is VISIBLE (non-degenerate bbox, not a sliver)', async () => {
+  // The cross-band edges (client→domain, domain→store) connect boxes at different y,
+  // so a real path has both width AND height. The old single-row layout made every
+  // edge a flat horizontal sliver (height ≈ 0) hidden behind the boxes — "22 edges"
+  // in the legend, nothing on screen.
+  const window = loadBlueprint('/ws/projB/blueprint', RECORD_BANDS, SNAP);
+  try {
+    await flush();
+    const svg = edgeLayer(window);
+    const paths = Array.prototype.slice.call(svg.querySelectorAll('path.bp-edge'));
+    assert.ok(paths.length >= 1, 'cross-band edges draw at least one edge path');
+    const MIN = 6; // a few px — a sliver is sub-pixel in one axis
+    const visible = paths.some((p) => {
+      const bb = pathBBox(p.getAttribute('d') || '');
+      return bb.w > MIN && bb.h > MIN;
+    });
+    assert.ok(visible,
+      'at least one edge path has width AND height above a few px (legible, not a horizontal sliver)');
+  } finally { window.close(); }
+});
+
+test('bplayout (c) — opening a container GROWS its rendered height (drill-in is real)', async () => {
+  // Collapsed, the messaging domain is a leaf box. Focusing its child opens it, and
+  // the grow-to-fit must size it TALLER to hold the capability (the "room to drill in"
+  // §3.4.2 behavior — a 1-D root placement gave growth no legible room).
+  const collapsed = loadBlueprint('/ws/projB/blueprint', RECORD_BANDS, SNAP);
+  let hClosed, hOpen;
+  try {
+    await flush();
+    const msg = nodeById(collapsed, 'domain:messaging');
+    assert.ok(msg, 'the messaging domain renders collapsed');
+    assert.ok(!msg.classList.contains('bp-open'), 'messaging starts collapsed at macro');
+    hClosed = parseFloat(msg.style.height);
+  } finally { collapsed.close(); }
+
+  const opened = loadBlueprint('/ws/projB/blueprint?focus=capability:send-dm', RECORD_BANDS, SNAP);
+  try {
+    await flush();
+    const msg = nodeById(opened, 'domain:messaging');
+    assert.ok(msg && msg.classList.contains('bp-open'), 'focusing the child opened messaging');
+    hOpen = parseFloat(msg.style.height);
+  } finally { opened.close(); }
+
+  assert.ok(isFinite(hClosed) && isFinite(hOpen), 'both heights parsed from style.height (px)');
+  assert.ok(hOpen > hClosed,
+    'the opened container is taller than collapsed (it grew to fit its child) — got open=' +
+    hOpen + ' closed=' + hClosed);
+});
+
+test('bplayout (d) — a SINGLE all-domains band still spreads in y (the 2-col pack wraps to rows)', async () => {
+  // The dominant real shape is a top level that is mostly DOMAINS — one band. The
+  // §5 domain lane packs into ~2 columns, so ≥3 domains wrap onto ≥2 rows → distinct
+  // y even with no second band. (The old 1-D walk put all N domains at y:0; this is
+  // the binding test for that single-band reality, which RECORD_BANDS' multi-band
+  // fixture does not exercise.)
+  const ALL_DOMAINS = {
+    schema_version: 1, project_ref: 'projC',
+    derived: {
+      nodes: [
+        { id: 'domain:posts-feed', label: 'Posts', kind: 'domain', parent: null },
+        { id: 'domain:messaging', label: 'Messaging', kind: 'domain', parent: null },
+        { id: 'domain:profiles', label: 'Profiles', kind: 'domain', parent: null },
+      ],
+      edges: [], apis: [],
+    },
+    customization: {}, narrative: { tldr: 'x', sections: [] }, conflicts: [],
+  };
+  const window = loadBlueprint('/ws/projC/blueprint', ALL_DOMAINS, SNAP);
+  try {
+    await flush();
+    const styles = boxNodeStyles(window);
+    assert.equal(styles.length, 3, 'all three domains render at macro');
+    const tops = new Set(styles.map((s) => s.top));
+    assert.ok(tops.size > 1,
+      'a 3-domain single band wraps onto >1 row (distinct y) — NOT all at y:0');
   } finally { window.close(); }
 });
