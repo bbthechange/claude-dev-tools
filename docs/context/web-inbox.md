@@ -18,7 +18,7 @@ on me — let me read it, decide, and know it landed, without going to ask."*
 - `web/inbox/{push.js, sw.js, manifest.webmanifest, icon.svg}` — the PWA: the
   phone end of the push pipeline (subscribe + wake-on-push + deep-link).
 - `web/inbox/{index.html, inbox.css}` — the shell (reuses the Board visual language).
-- `web/functions/api/inbox/{index,dossier,respond,defer,escalate,expire,forensic}.js`
+- `web/functions/api/inbox/{index,dossier,respond,defer,escalate,snooze,expire,forensic}.js`
   — one server-side proxy per verb, each pinning exactly one engine op.
 
 **Not here (go to the right doc):**
@@ -75,6 +75,7 @@ Four facts explain the page:
 | `…/dossier.js` | GET `/api/inbox/dossier?id=` → op `get` + type `dossier`. |
 | `…/respond.js` | **The one write path.** POST `/api/inbox/respond` → op `item-apply` (T5's idempotent per-Item applier). UI submits a response; never applies. |
 | `…/defer.js` / `…/escalate.js` | POST → op `dossier-defer` (tier→digest) / `dossier-escalate` (tier→blocking). Attention-tier moves only; resolve nothing. |
+| `…/snooze.js` | POST `/api/inbox/snooze` → op `dossier-snooze` `{dossier_id, snooze_until}` (claude-tools-653d). DEFERS now (tier→digest) AND arms the §2.2 timer to RE-SURFACE (not auto-proceed) at the user-set future instant; the proxy guards the RFC-3339 shape + future-ness. UI = preset chips (1h/3h/Tomorrow/Next week) computing an RFC-3339 `Z` client-side. The fire-action (`snooze-surface`) lives in `cf/src/timer.js`, NOT a dossier op. |
 | `…/expire.js` | POST `/api/inbox/expire` → op `item-set-state` + target `expired` (the "dismiss as stale" verb). |
 | `…/forensic.js` | GET op `forensic-fetch` + POST op `forensic-dismiss` (§10.3 on-demand redacted blob; hard-delete). No put/sweep op is client-reachable. |
 

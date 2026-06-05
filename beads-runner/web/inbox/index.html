@@ -152,8 +152,21 @@
             title="Push out without resolving — drop to the daily-digest roundup (§5.6)">Defer</button>
     <button class="btn ghost" id="descalate" type="button" hidden
             title="Promote to the foreground decision lane / push surface (§5.6)">Escalate</button>
+    <!-- L1 follow-up (claude-tools-653d) §5.6 — SNOOZE: out of the way NOW, then
+         RE-SURFACE (not auto-proceed) at a time you pick. Tapping it reveals the
+         preset re-surface times below; each chip POSTs a future RFC-3339 instant. -->
+    <button class="btn ghost" id="dsnooze" type="button" hidden
+            title="Out of the way now — re-surfaces (does NOT auto-proceed) at the time you pick (§5.6/§2.2)">Snooze</button>
     <button class="btn ghost" id="ddismiss" type="button" hidden>Dismiss as stale</button>
     <button class="btn primary" id="dsubmit" type="button">Submit</button>
+    <!-- preset re-surface times, revealed on tapping #dsnooze. Full-width block
+         below the button row (reuses the per-item option-picker chip styling). -->
+    <div class="du-opts" id="dsnooze-presets" hidden>
+      <button class="optchip" id="snz-1h" type="button">In 1 hour</button>
+      <button class="optchip" id="snz-3h" type="button">In 3 hours</button>
+      <button class="optchip" id="snz-tom" type="button">Tomorrow 9am</button>
+      <button class="optchip" id="snz-wk" type="button">Next week</button>
+    </div>
   </div>
 
   <div class="pop" id="pop"><span id="popmsg"></span></div>

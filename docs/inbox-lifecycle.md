@@ -260,9 +260,9 @@ Stage 3's larger lesson: every Inbox button needs an explicit verb that round-tr
 
 - **apply** (`pick` / `approve` / `reject`) — the deterministic path that exists today.
 - **dismiss-as-stale** — new; resolves without consuming recommendation.
-- **defer** — push out without resolution.
-- **escalate** — promote to higher-attention surface (push notification, etc.).
-- **(future) snooze** — like timer expiry, set by user.
+- **defer** — push out without resolution. **BUILT** (claude-tools-uxl1b): `dossier-defer` → tier=digest.
+- **escalate** — promote to higher-attention surface (push notification, etc.). **BUILT** (claude-tools-uxl1b): `dossier-escalate` → tier=blocking.
+- **snooze** — like timer expiry, set by user. **BUILT** (claude-tools-653d): `dossier-snooze {dossier_id, snooze_until}` DEFERS now (tier→digest) AND arms the §2.2 timer to RE-SURFACE (not auto-proceed) at `snooze_until`. The re-surface (`snoozeSurface`, the fire=SURFACE primitive ready-to-pair built) re-tiers blocking + re-fires the blocking `new_dossier` ping; it rides a `snoozed_until` envelope discriminator so `fireDueTimers` routes it to surface (not auto-proceed). Lives in `cf/src/timer.js`/`TIMER_OPS` (a timer-arming verb), bash twin `lib/timed-fyi.sh` `do_dossier_snooze`/`snooze_surface`, web proxy `inbox/snooze.js`, UI preset chips. The L2 auto-close discriminator (`beadStatusChanged`) was narrowed from "armed timer ⇒ exempt" to "GENUINELY timed-fyi ⇒ exempt" so a snoozed dead-bead card still auto-closes. KNOWN follow-up: the re-fire restores the blocking lane but does NOT generate a fresh push for a notif already in CF.9's `push_deliveries` deliver-once ledger (the pairSurface property) — a targeted ledger eviction is the clean fix.
 
 No verb may default to another verb's payload. Empty payload = hard reject in §5.2, surfaces an error to the UI.
 

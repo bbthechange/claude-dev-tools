@@ -80,6 +80,12 @@
       "op": "agent-activity-report", "track": "I", "status": "wired",
       "module": "cf/src/activity.js", "ops_set": "ACTIVITY_OPS", "guard": "ACTIVITY_OPS",
       "proxy": null, "adapter": false, "migration": "cf/migrations/0010_agent_activity.sql"
+    },
+    {
+      "_landed_note": "Track L (Inbox §5.6 verbs) — claude-tools-653d SNOOZE LANDED. The §5.6 verb family's third member (defer/escalate are the others): DEFER a blocking decision card now + arm the §2.2 timer to RE-SURFACE it (NOT auto-proceed) at a user-set snooze_until — the pairSurface fire=SURFACE primitive (DESIGN N §4.3). Rides TIMER_OPS (cf/src/timer.js dossierSnooze/snoozeSurface), NOT DOSSIER_OPS, because it is a timer-arming verb; snooze-surface is the fire-action (poll/alarm-driven AND directly callable). Web proxy inbox/snooze.js forwards {dossier_id, snooze_until}. NO migration (rides the dossier type + the §2.2 timers ns, like pair). Bash twin lib/timed-fyi.sh do_dossier_snooze/snooze_surface; differential cf/test/snooze.spec.js + lib/test-snooze.sh.",
+      "op": "dossier-snooze", "track": "L", "status": "wired",
+      "module": "cf/src/timer.js", "ops_set": "TIMER_OPS", "guard": "TIMER_OPS",
+      "proxy": "web/functions/api/inbox/snooze.js", "adapter": true, "migration": null
     }
   ]
 }

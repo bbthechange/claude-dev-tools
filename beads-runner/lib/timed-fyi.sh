@@ -437,6 +437,91 @@ pair_surface() {
 }
 
 # ════════════════════════════════════════════════════════════════════════════
+# L1 follow-up (claude-tools-653d) — §5.6 SNOOZE (bash twin of cf/src/timer.js
+# dossierSnooze / snoozeSurface). The §5.6 verb family's third member
+# (do_dossier_defer / do_dossier_escalate are the others, in dossier.sh): DEFER a
+# blocking decision card NOW + arm the §2.2 timer to RE-SURFACE it (NOT
+# auto-proceed) at a user-set snooze_until — the SAME fire=SURFACE primitive
+# ready-to-pair built (pair_surface), a DISTINCT fire handler from tf_fire's
+# auto-proceed. `snoozed_until` is the tf_poll routing discriminator (a snoozed
+# card keeps its original `kind`, so it cannot route by kind). NO payload
+# defaulting (the uxl1b contract). Lives HERE (not dossier.sh) because it consumes
+# the §2.2 timer arm + the tf__rfc helpers + the tf_poll routing — all in this
+# module (mirroring the CF op riding TIMER_OPS, not DOSSIER_OPS).
+# ════════════════════════════════════════════════════════════════════════════
+# do_dossier_snooze <bearer> <dossier_id> <snooze_until>
+#   DEFER now (tier→digest, out of the foreground) + arm the §2.2 re-surface
+#   timer at snooze_until. snooze_until MUST be a FUTURE RFC-3339 …Z (§0.4) —
+#   fail-closed (NO write, NO timer) on missing/unparseable/non-future (the
+#   tf_arm/pair_arm bad-time discipline; never guess a fire time). Writes BOTH the
+#   validated §4.1 timer_fire_at (what the substrate/poll fires on) AND the
+#   un-validated snoozed_until (the tf_poll routing discriminator) = snooze_until.
+#   NOT idempotent — always (re)writes + (re)arms (a new snooze_until
+#   re-schedules). Echoes the armed snooze_until. JS twin: dossierSnooze.
+do_dossier_snooze() {
+  local bearer="${1:-}" did="${2:-}" su="${3:-}" rec ep now_ep upd
+  [[ -n "$did" ]] || { echo "snooze: arm — need <dossier_id> (§4.1)" >&2; return 2; }
+  [[ -n "$su"  ]] || { echo "snooze: arm — need <snooze_until> (§0.4 RFC-3339 …Z)" >&2; return 2; }
+  ep="$(tf__rfc_to_epoch "$su")" \
+    || { echo "snooze: arm REJECTED — snooze_until '$su' unparseable (§0.4 RFC-3339 …Z); fail-closed, NO timer" >&2; return 3; }
+  now_ep="$(tf__rfc_to_epoch "$(tf__now_rfc)")" || now_ep=""
+  if [[ -n "$now_ep" && "$ep" -le "$now_ep" ]]; then
+    echo "snooze: arm REJECTED — snooze_until '$su' is not in the future (a snooze RE-SURFACES later, not now); fail-closed, NO timer" >&2
+    return 3
+  fi
+  rec="$(do_dossier_get "$bearer" "$did")" \
+    || { echo "snooze: arm — dossier '$did' not found OR not authorized (§9.1 chokepoint collapses 401/absent; no second auth path — C4)" >&2; return 1; }
+  # DEFER out of the foreground (tier→digest) AND write the re-surface timer
+  # fields, in ONE write. snoozed_until is the routing discriminator; timer_fire_at
+  # is the validated §4.1 field the substrate/poll fires on — BOTH = snooze_until.
+  upd=$(printf '%s' "$rec" | jq -c --arg t "$su" '.tier="digest" | .timer_fire_at=$t | .snoozed_until=$t' 2>/dev/null) \
+    || { echo "snooze: arm — could not assemble the snoozed envelope for '$did'" >&2; return 4; }
+  do_dossier_put "$bearer" "$upd" >/dev/null || return $?
+  # Arm the §2.2 one-shot fire(dossier_id) @ snooze_until via the §2.3 front door.
+  co_request "$bearer" timer-arm "$did" "$su" \
+    || { echo "snooze: arm — §2.2 timer-arm failed for '$did'@$su" >&2; return 5; }
+  printf '%s' "$su"
+}
+
+# snooze_surface <bearer> <dossier_id>
+#   The §5.6 snooze FIRE-action (mirror of pair_surface: SURFACE, not
+#   auto-proceed). RE-tier the card back to the foreground (digest→blocking),
+#   CLEAR the snooze fields (timer_fire_at + snoozed_until → null: the timer
+#   fired, no longer snoozed), best-effort timer-ack (stop the S-6 poll
+#   re-surfacing), and best-effort re-fire the blocking `new_dossier` ping. NO
+#   item applied, NO §5.3 consequence (the OPPOSITE of tf_fire's auto-apply). A
+#   card no longer snoozed is an informational no-op success (mirroring
+#   pair_surface's non-pair no-op). Echoes the fired notification id. JS twin:
+#   snoozeSurface. RE-PUSH CAVEAT: a notif already in N2's deliver-once ledger
+#   will NOT re-push (the pair_surface property) — observable, never crashes.
+snooze_surface() {
+  local bearer="${1:-}" did="${2:-}" rec snz upd nid
+  [[ -n "$did" ]] || { echo "snooze: surface — need <dossier_id>" >&2; return 2; }
+  rec="$(do_dossier_get "$bearer" "$did")" \
+    || { echo "snooze: surface — dossier '$did' not found OR not authorized (§9.1 collapses 401/absent — C4)" >&2; return 1; }
+  snz=$(printf '%s' "$rec" | jq -r '.snoozed_until // ""' 2>/dev/null) || snz=""
+  if [[ -z "$snz" ]]; then
+    # Not (or no longer) snoozed — nothing to surface (informational no-op success).
+    echo "snooze: surface — dossier '$did' is not snoozed; nothing to surface — no-op" >&2
+    return 0
+  fi
+  # RE-tier to the foreground + clear the snooze fields, in ONE write.
+  upd=$(printf '%s' "$rec" | jq -c '.tier="blocking" | .timer_fire_at=null | .snoozed_until=null' 2>/dev/null) \
+    || { echo "snooze: surface — could not re-tier '$did' to blocking" >&2; return 4; }
+  do_dossier_put "$bearer" "$upd" >/dev/null || return $?
+  # Best-effort disarm the substrate timer (stop the S-6 poll re-surfacing).
+  co_request "$bearer" timer-ack "$did" >/dev/null 2>&1 || true
+  # Best-effort re-fire the blocking new_dossier ping (the card is tier=blocking
+  # after the re-tier, so the §10.2 tier-guard passes; new_dossier binds blocking).
+  if nid="$(notif_fire "$bearer" new_dossier "$did")"; then
+    printf '%s' "$nid"
+    return 0
+  fi
+  echo "snooze: surface — WARN notif_fire(new_dossier,'$did') did not fire; observable, not silent; idempotent retry is safe (AD7)." >&2
+  return 5
+}
+
+# ════════════════════════════════════════════════════════════════════════════
 # S-6 poll-fallback DRIVER — a missed alarm degrades to fire-on-next-poll
 # ════════════════════════════════════════════════════════════════════════════
 # tf_poll <bearer> [now_rfc3339]
@@ -450,14 +535,30 @@ pair_surface() {
 #   §7.4 per-Item latch makes every auto-proceed exactly-once. Echoes each
 #   fired dossier id (observability).
 tf_poll() {
-  local bearer="${1:-}" now="${2:-}" due id kind rc=0
+  local bearer="${1:-}" now="${2:-}" due id rec kind snz rc=0
   due="$(co_request "$bearer" timer-due "$now" 2>/dev/null)" \
     || { echo "timed-fyi: poll — T4 §2.2 timer-due query failed" >&2; return 1; }
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
-    # ROUTE BY kind (DESIGN N §4.3) — pair SURFACES, everything else auto-proceeds.
-    kind=$(do_dossier_get "$bearer" "$id" 2>/dev/null | jq -r '.kind // ""' 2>/dev/null) || kind=""
-    if [[ "$kind" == "pair" ]]; then
+    # ROUTE (DESIGN N §4.3) — the §2.2 namespace is SHARED across THREE
+    # fire-actions. Read the due dossier ONCE and route:
+    #   • a SNOOZED card (snoozed_until set — §5.6) RE-SURFACES. Checked FIRST: a
+    #     snoozed dossier keeps its original `kind` (e.g. "decide"), so it cannot
+    #     route by kind, and it MUST NOT fall through to tf_fire (auto-proceed).
+    #   • a `kind:"pair"` card SURFACES the blocking ready_to_pair notif.
+    #   • everything else runs the SHARED auto-proceed handler tf_fire (itself a
+    #     no-op on a non-timed-fyi tier).
+    rec=$(do_dossier_get "$bearer" "$id" 2>/dev/null) || rec=""
+    kind=$(printf '%s' "$rec" | jq -r '.kind // ""' 2>/dev/null) || kind=""
+    snz=$(printf '%s' "$rec" | jq -r '.snoozed_until // ""' 2>/dev/null) || snz=""
+    if [[ -n "$snz" ]]; then
+      if snooze_surface "$bearer" "$id" >/dev/null; then
+        printf '%s\n' "$id"
+      else
+        echo "timed-fyi: poll — snooze_surface('$id') reported a WARN (notif-fire failure observable; idempotent)" >&2
+        printf '%s\n' "$id"; rc=5
+      fi
+    elif [[ "$kind" == "pair" ]]; then
       if pair_surface "$bearer" "$id" >/dev/null; then
         printf '%s\n' "$id"
       else

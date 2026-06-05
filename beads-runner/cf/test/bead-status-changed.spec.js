@@ -161,6 +161,29 @@ it("L2 (claude-tools-uxvl2) — bead-status-changed auto-closes a bead's open do
   ck2("deferred card now counts as a matched_dossiers (acted on, not skipped)", rd.body && rd.body.matched_dossiers === 1);
   ck2("AFTER: the deferred card drops off the Inbox (the o2mk gap closed)", !(await waitingHas(BREF3)));
 
+  // ── SNOOZE refinement (claude-tools-653d): a §5.6-SNOOZED card is tier=digest
+  //    WITH an armed timer (timer_fire_at + snoozed_until = snooze_until) — a NEW
+  //    shape, NOT a Flow-F auto-proceeder (its timer RE-SURFACES, never
+  //    auto-applies). The exemption is narrowed from "armed timer ⇒ skip" to
+  //    "GENUINELY timed-fyi ⇒ skip", so a snoozed card whose bead resolves OUTSIDE
+  //    auto-closes (drops the dead card) instead of being mistaken for an armed
+  //    timed-fyi overview. (The armed timed-fyi overview above is STILL exempt —
+  //    the predicate change keeps that case green.) ───────────────────────────
+  const BREF4 = "thirsty-L2snooze";
+  const SNZ = "2099-06-01T00:00:00Z";
+  const Dsnz = { ...mkFor("snooze-bsc4", BREF4, [{ id: "z1", state: "open" }], "digest", SNZ), snoozed_until: SNZ };
+  await call(GOOD, "dossier-put", [Dsnz]);
+  ck2("snoozed card is tier=digest WITH an armed timer AND snoozed_until set", await (async () => {
+    const s = await GET("snooze-bsc4");
+    return !!s && s.tier === "digest" && s.timer_fire_at === SNZ && s.snoozed_until === SNZ;
+  })());
+  ck2("BEFORE: the snoozed card still shows on the Inbox", await waitingHas(BREF4));
+  const rs = await call(GOOD, "bead-status-changed", [evt(BREF4, "closed", "2026-05-30T02:09:30Z")]);
+  ck2("snoozed card IS auto-closed despite its armed timer (not a Flow-F auto-proceeder) — z1 → expired",
+    istate(await GET("snooze-bsc4"), "z1") === "expired");
+  ck2("snoozed card counts as matched (acted on, NOT skipped like an armed timed-fyi)", rs.body && rs.body.matched_dossiers === 1);
+  ck2("AFTER: the snoozed dead-bead card drops off the Inbox (the 653d refinement)", !(await waitingHas(BREF4)));
+
   // ── bead scoping: a different bead_ref's open item is untouched ─────────────
   await call(GOOD, "dossier-put", [mkFor("bsc-other", "thirsty-Other", [{ id: "o1", state: "open" }])]);
   await call(GOOD, "bead-status-changed", [evt(BREF, "closed", "2026-05-30T02:10:00Z")]);

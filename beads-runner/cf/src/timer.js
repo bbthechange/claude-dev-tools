@@ -80,6 +80,15 @@ export const TIMER_OPS = new Set([
   //    surface N3 (uxg6) left as a follow-up (it built the ops + rendering but
   //    nothing PRODUCED a pair dossier). NOT a §2 capability line either.
   "pair-create", // pairCreate — build the kind:"pair" envelope + arm @ scheduled_at
+  // ── L1 follow-up (claude-tools-653d) §5.6 SNOOZE — defer a blocking decision
+  //    card NOW + arm the §2.2 timer to RE-SURFACE it (NOT auto-proceed) at a
+  //    user-set snooze_until. The SAME "fire=SURFACE not auto-proceed" primitive
+  //    ready-to-pair uses (DESIGN N §4.3) — a DISTINCT fire handler from tf_fire's
+  //    auto-proceed. Rides TIMER_OPS (not DOSSIER_OPS) because it is fundamentally
+  //    a timer-arming verb (it consumes timer-arm + the local rfc helpers + the
+  //    fireDueTimers routing, all in THIS module). NOT a §2 capability line.
+  "dossier-snooze", // dossierSnooze — defer (tier→digest) + arm re-surface @ snooze_until
+  "snooze-surface", // snoozeSurface — the SURFACE fire-action (re-tier blocking + new_dossier ping)
 ]);
 
 // ── §0.5 frozen constant — single normative definition is INTERFACE.md ───────
@@ -329,16 +338,25 @@ async function fireDueTimers(co, principal, now) {
   const fired = [];
   let warned = false;
   for (const id of due) {
-    // ROUTE BY kind — the §2.2 timer namespace is SHARED (timed-fyi auto-proceed
-    // AND ready-to-pair surface both arm fire(dossier_id) on it, DESIGN N §4.3).
-    // A due timer's fire-action depends on the dossier's §4.1 kind: a
-    // `kind:"pair"` dossier SURFACES (fire the blocking ready_to_pair notif —
-    // NEVER auto-proceed); every other kind runs the SHARED auto-proceed handler
-    // (which itself no-ops on a non-`timed-fyi` tier). A missing/unreadable
-    // dossier falls through to fireDossier (its own §9.1/§0.3 rejection path).
+    // ROUTE — the §2.2 timer namespace is SHARED across THREE fire-actions
+    // (timed-fyi auto-proceed AND ready-to-pair surface AND §5.6 snooze
+    // re-surface all arm fire(dossier_id) on it, DESIGN N §4.3). The fire-action
+    // depends on the dossier:
+    //   • a SNOOZED card (`snoozed_until` set — the §5.6 verb's discriminator)
+    //     RE-SURFACES (re-tier blocking + new_dossier ping; NEVER auto-proceed).
+    //     Checked FIRST because a snoozed dossier keeps its original `kind`
+    //     (e.g. "decide"), so it cannot route by kind — and it MUST NOT fall
+    //     through to fireDossier (auto-proceed).
+    //   • a `kind:"pair"` dossier SURFACES the blocking ready_to_pair notif.
+    //   • every other due timer runs the SHARED auto-proceed handler (which
+    //     itself no-ops on a non-`timed-fyi` tier).
+    // A missing/unreadable dossier falls through to fireDossier (its own
+    // §9.1/§0.3 rejection path).
     const rec = await dossierGet(co, principal, id);
     const r =
-      rec && rec.kind === "pair"
+      rec && neStr(rec.snoozed_until)
+        ? await snoozeSurface(co, principal, id)
+        : rec && rec.kind === "pair"
         ? await pairSurface(co, principal, id)
         : await fireDossier(co, principal, id);
     fired.push(id);
@@ -549,6 +567,167 @@ async function pairSurface(co, principal, did) {
   return { ok: true, surfaced: did, fired: true, notif: body.id };
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// L1 follow-up (claude-tools-653d) — §5.6 SNOOZE: "get this decision out of my
+// face NOW, bring it BACK at a time I pick." inbox-lifecycle §5.6 listed snooze
+// as "(future) — like timer expiry, set by user"; it was unbuilt because it needs
+// a "surface-at-T" fire-action (the SAME fire=SURFACE primitive N3 ready-to-pair
+// built — DESIGN N §4.3), NOT the timed-fyi auto-proceed (tf_fire) the only timer
+// shipped with. Snooze is the §5.6 verb family's third member (defer/escalate are
+// the others — dossier.js dossierSetAttention): a DISTINCT engine verb, NO payload
+// defaulting to another verb (the uxl1b contract).
+//
+// THE SHAPE — two halves, mirroring its two neighbours:
+//   • ARM (dossierSnooze): DEFER now (tier→digest, out of the foreground blocking
+//     lane — like dossierSetAttention's defer) AND arm the §2.2 one-shot at
+//     snooze_until (like tfArm/pairArm). Carries `snoozed_until` = snooze_until as
+//     the ROUTING DISCRIMINATOR (a snoozed card keeps its original kind, so
+//     fireDueTimers cannot route it by kind — it routes on this field, FIRST).
+//   • SURFACE (snoozeSurface): the fire-action at snooze_until — RE-tier to
+//     blocking (back in the foreground) + best-effort re-fire the blocking
+//     new_dossier ping; NEVER auto-proceed, NEVER apply a §5.3 consequence. The
+//     OPPOSITE of tf_fire (which auto-applies fyi-objectable items on silence).
+//
+// THE fyci/o2mk EDGE (handled in dossier.js beadStatusChanged): a snoozed card is
+// tier=digest WITH an armed timer — the ONE shape fyci's "digest/blocking ≡
+// no-armed-timer" invariant otherwise forbids. That is DELIBERATE here (a snooze
+// keeps its re-surface alarm). dossier.js's L2 auto-close discriminator is
+// narrowed from "armed timer ⇒ exempt" to "timed-fyi tier ⇒ exempt" so a snoozed
+// card whose bead resolves OUTSIDE still auto-closes (drops the dead card) instead
+// of being mistaken for a Flow-F auto-proceeder.
+//
+// RE-PUSH CAVEAT (honest, claude-tools-653d follow-up): snoozeSurface's notif-fire
+// restores the foreground TIER and is idempotent, but a `new_dossier` notification
+// already in CF.9's push_deliveries deliver-once ledger will NOT generate a FRESH
+// phone push on re-surface (the SAME property pairSurface relies on — timer.js
+// pairSurface: "N2's deliver-once ledger guarantees one push"). The re-surface is
+// real (the card returns to the blocking Inbox lane); a brand-new push on
+// re-surface is a documented follow-up (a targeted ledger eviction in CF.9/push.js,
+// a sibling segment kept out of this MVP).
+// ════════════════════════════════════════════════════════════════════════════
+
+// dossierSnooze(co, principal, did, snoozeUntil) — the §5.6 SNOOZE ARM verb.
+// DEFER now (tier→digest) + arm the §2.2 RE-SURFACE timer at snoozeUntil.
+// snoozeUntil MUST be a FUTURE RFC-3339 …Z (§0.4) — fail-closed (NO write, NO
+// timer) on missing/unparseable/non-future, the tfArm/pairArm bad-time discipline
+// (never guess a fire time). Returns { ok:true, id, snooze_until, tier:"digest" }
+// or { ok:false, msg } REJECT.
+async function dossierSnooze(co, principal, did, snoozeUntil) {
+  if (!neStr(did)) return { ok: false, msg: "snooze: arm — need <dossier_id> (§4.1)" };
+  if (!neStr(snoozeUntil))
+    return { ok: false, msg: "snooze: arm — need <snooze_until> (§0.4 RFC-3339 …Z)" };
+  const ep = rfcToEpochSec(snoozeUntil);
+  if (ep === null)
+    return {
+      ok: false,
+      msg: `snooze: arm REJECTED — snooze_until '${snoozeUntil}' unparseable (§0.4 RFC-3339 …Z); fail-closed, NO timer`,
+    };
+  // Must RE-SURFACE LATER, not now — a past/now instant would fire immediately
+  // (a no-op snooze = a mis-tap). The web proxy guards this too (defense in depth).
+  const nowEp = rfcToEpochSec(nowRfc());
+  if (nowEp !== null && ep <= nowEp)
+    return {
+      ok: false,
+      msg: `snooze: arm REJECTED — snooze_until '${snoozeUntil}' is not in the future (a snooze RE-SURFACES later, not now); fail-closed, NO timer`,
+    };
+
+  const rec = await dossierGet(co, principal, did);
+  if (!rec)
+    return {
+      ok: false,
+      msg: `snooze: arm — dossier '${did}' not found OR not authorized (§9.1 chokepoint collapses 401/absent; no second auth path — C4)`,
+    };
+
+  // DEFER out of the foreground (tier→digest) AND arm the re-surface timer, in
+  // ONE write. `snoozed_until` is the fireDueTimers routing discriminator; the
+  // validated §4.1 `timer_fire_at` is what the substrate/poll actually fires on —
+  // BOTH carry snooze_until. putDossier re-validates the §4.1 envelope + the §5.1
+  // write gate and re-derives the rollup; everything else (items/response/latches)
+  // round-trips verbatim (the dossierSetAttention discipline). NOT idempotent on a
+  // re-snooze — it always (re)writes + (re)arms at the new time (the pairCreate
+  // re-put discipline: a new snooze_until simply re-schedules the same timer id).
+  const w = await dossierPut(co, principal, {
+    ...rec,
+    tier: "digest",
+    timer_fire_at: snoozeUntil,
+    snoozed_until: snoozeUntil,
+  });
+  if (!w) return { ok: false, msg: `snooze: arm — could not write the snoozed envelope for '${did}'` };
+
+  if (!(await timerArm(co, did, snoozeUntil)))
+    return { ok: false, msg: `snooze: arm — §2.2 timer-arm failed for '${did}'@${snoozeUntil}` };
+  return { ok: true, id: did, snooze_until: snoozeUntil, tier: "digest" };
+}
+
+// snoozeSurface(co, principal, did) — the §5.6 snooze FIRE-action (mirror of
+// pairSurface: SURFACE, not auto-proceed). RE-tier the card back to the
+// foreground (digest→blocking), CLEAR the snooze fields (timer_fire_at +
+// snoozed_until → null: the timer fired, it is no longer snoozed), best-effort
+// disarm (timer-ack), and best-effort re-fire the blocking new_dossier ping so
+// the Inbox/delivery path treats it like a fresh decision. NO item applied, NO
+// §5.3 consequence (a snooze re-surface is the OPPOSITE of tf_fire's auto-apply).
+// Idempotent: a card no longer snoozed (snoozed_until cleared) is a no-op success
+// — and a re-fire (S-6 poll) is harmless (notif-fire is one-per-Dossier idempotent
+// and timer-ack stops the re-surface). Returns { ok:true, surfaced, fired }.
+async function snoozeSurface(co, principal, did) {
+  if (!neStr(did)) return { ok: false, msg: "snooze: surface — need <dossier_id>" };
+  const rec = await dossierGet(co, principal, did);
+  if (!rec)
+    return {
+      ok: false,
+      msg: `snooze: surface — dossier '${did}' not found OR not authorized (§9.1 collapses 401/absent — C4)`,
+    };
+  // Not (or no longer) snoozed ⇒ informational no-op success (the field drives
+  // it, mirroring pairSurface's non-pair no-op).
+  if (!neStr(rec.snoozed_until)) return { ok: true, surfaced: did, fired: false };
+
+  // RE-tier to the foreground + clear the snooze fields, in ONE write. The
+  // dossierPut re-validates the §4.1 envelope; snoozed_until cleared to null
+  // round-trips (it is an un-validated extra field, like pair's scheduled_at).
+  const w = await dossierPut(co, principal, {
+    ...rec,
+    tier: "blocking",
+    timer_fire_at: null,
+    snoozed_until: null,
+  });
+  if (!w) return { ok: false, msg: `snooze: surface — could not re-tier '${did}' to blocking` };
+
+  // Best-effort disarm the substrate timer (the stop-re-surfacing primitive —
+  // the same timer-ack dossierSetAttention/tfArm make; NEVER the correctness
+  // mechanism, since the snooze fields are already cleared).
+  await timerAck(co, did);
+
+  // Best-effort re-fire the blocking new_dossier ping. The card is tier=blocking
+  // after the re-tier write, so the §10.2 tier-guard passes (new_dossier binds
+  // [blocking]). RE-PUSH CAVEAT (above): a notif already in the push_deliveries
+  // deliver-once ledger will NOT re-push — observable, never crashes the poll.
+  const res = await handleNotificationOp(co, "notif-fire", ["new_dossier", did], principal);
+  let body = null;
+  try {
+    body = JSON.parse(await res.text());
+  } catch {
+    body = null;
+  }
+  const fired = !!(body && body.ok === true);
+  // A notif-fire failure (e.g. the dossier's existing notif is stuck at a
+  // non-blocking tier the §10.2 new_dossier guard rejects) is OBSERVABLE, never
+  // swallowed — set `warned` so fireDueTimers propagates it into the poll's
+  // warned flag, EXACTLY as pairSurface does and as the bash snooze_surface →
+  // tf_poll rc=5 path does (differential parity). The re-tier already succeeded,
+  // so this is ok:true (the load-bearing part landed); only the re-ping warns.
+  if (!fired)
+    return {
+      ok: true,
+      surfaced: did,
+      fired: false,
+      warned: true,
+      msg: `snooze: surface — WARN notif-fire(new_dossier,'${did}') did not fire${
+        body && body.msg ? ` (${body.msg})` : ""
+      }; observable, not silent; idempotent retry is safe (AD7).`,
+    };
+  return { ok: true, surfaced: did, fired: true, notif: body.id };
+}
+
 // ── the §2.2 setAlarm() entrypoint — wired from the Coordinator DO `alarm()` ─
 // CF.1 deliberately left `alarm()` a no-op MARKER for CF.7. The runtime invokes
 // the DO directly here: there is NO request and NO bearer to authenticate (so
@@ -605,6 +784,16 @@ export async function handleTimerOp(co, op, args, principal) {
     // args: [bead_ref, scheduled_at, tldr?, full_detail?, dossier_id?]
     if (op === "pair-create") {
       const r = await pairCreate(co, principal, a[0], a[1], a[2], a[3], a[4]);
+      return jsonRes(r, r.ok ? 200 : 422);
+    }
+    // ── L1 follow-up (claude-tools-653d) — §5.6 SNOOZE ─────────────────────
+    // args: dossier-snooze [dossier_id, snooze_until]; snooze-surface [dossier_id]
+    if (op === "dossier-snooze") {
+      const r = await dossierSnooze(co, principal, a[0], a[1]);
+      return jsonRes(r, r.ok ? 200 : 422);
+    }
+    if (op === "snooze-surface") {
+      const r = await snoozeSurface(co, principal, a[0]);
       return jsonRes(r, r.ok ? 200 : 422);
     }
     return jsonRes({ ok: false, error: `co: unknown timer op '${op}'` }, 400);

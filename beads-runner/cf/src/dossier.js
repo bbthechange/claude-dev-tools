@@ -1046,8 +1046,22 @@ async function beadStatusChanged(co, principal, a0) {
     // resolved OUTSIDE the tap. "Armed" = a non-empty string timer_fire_at, the
     // exact value timer.js writes (else null) — an absent/null/empty window is
     // NOT an auto-proceeder, so it auto-closes like a blocking card.
+    //
+    // SNOOZE refinement (claude-tools-653d): a §5.6-SNOOZED card is tier=digest
+    // WITH an armed timer (timer_fire_at + snoozed_until = snooze_until) — the
+    // shape fyci's "digest/blocking ≡ no-armed-timer" invariant otherwise forbids,
+    // re-opened deliberately by snooze (it keeps a RE-SURFACE alarm). A snooze is
+    // NOT an auto-proceeder — its timer RE-SURFACES (timer.js snoozeSurface), it
+    // never auto-applies — so a snoozed card whose bead resolves OUTSIDE must
+    // auto-close like any blocking/digest card (drop the dead card), NOT be
+    // skipped as a Flow-F auto-proceeder. So the exemption is narrowed from "armed
+    // timer ⇒ skip" to "GENUINELY timed-fyi ⇒ skip": the only tier that ever
+    // legitimately carries an armed AUTO-PROCEED timer is `timed-fyi` (a Flow-F
+    // `overview-<ref>` card). `&& !snoozed` is belt-and-suspenders (a snooze rides
+    // `digest`, so `tier === "timed-fyi"` already excludes it) documenting intent.
     const armedTimer = typeof d.timer_fire_at === "string" && d.timer_fire_at !== "";
-    if (d.tier !== "blocking" && armedTimer) continue;
+    const snoozed = typeof d.snoozed_until === "string" && d.snoozed_until !== "";
+    if (d.tier === "timed-fyi" && armedTimer && !snoozed) continue;
     matched_dossiers++;
     // §7.9 v1-skip: a sub-bound stored dossier cannot be written back.
     if (intSv(d.schema_version) !== bound) {

@@ -477,6 +477,14 @@
     escBtn.hidden = !(pending && curView.tier !== 'blocking');
     if (!defBtn.hidden) { defBtn.disabled = false; defBtn.textContent = 'Defer'; }
     if (!escBtn.hidden) { escBtn.disabled = false; escBtn.textContent = 'Escalate'; }
+    // claude-tools-653d §5.6 — snooze is meaningful on ANY still-pending dossier
+    // (it re-surfaces at a user-set T regardless of current tier; unlike
+    // defer/escalate it is not a tier toggle). Reset its label + hide a stale
+    // preset row on every render so a re-render after a snooze is a clean slate.
+    var snzBtn = Dom.el('dsnooze'), snzPre = Dom.el('dsnooze-presets');
+    snzBtn.hidden = !pending;
+    if (!snzBtn.hidden) { snzBtn.disabled = false; snzBtn.textContent = 'Snooze'; }
+    if (snzPre) snzPre.hidden = true;
   }
 
   // claude-tools-23r — ids of items where state==='open' (NOT 'answered').
@@ -605,6 +613,51 @@
   }
   function deferDossier() { attentionMove('defer', '/api/inbox/defer', 'ddefer', 'Deferring…'); }
   function escalateDossier() { attentionMove('escalate', '/api/inbox/escalate', 'descalate', 'Escalating…'); }
+
+  // claude-tools-653d §5.6 SNOOZE — "out of my face NOW, bring it back at T".
+  // A DISTINCT verb (its own /api/inbox/snooze proxy + dossier-snooze engine op);
+  // it NEVER reuses respond's payload (the L1 empty-payload bug class). The user
+  // picks a re-surface time from presets; each preset computes a FUTURE RFC-3339
+  // …Z instant CLIENT-SIDE (new Date(ms).toISOString() is the canonical …Z form —
+  // exactly what the engine §2.2 timer wants), then POSTs {dossier_id, snooze_until}.
+  // On success the card is DEFERRED out of the foreground AND armed to RE-SURFACE
+  // (NOT auto-proceed) at T; we re-fetch so the new tier is honest (S-2 — never an
+  // optimistic local patch). Tapping #dsnooze reveals the preset chips.
+  function snoozeUntilFor(kind) {
+    var now = Date.now();
+    if (kind === '1h') return new Date(now + 36e5).toISOString();
+    if (kind === '3h') return new Date(now + 3 * 36e5).toISOString();
+    if (kind === 'tom') { var d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return d.toISOString(); }
+    if (kind === 'wk') return new Date(now + 7 * 864e5).toISOString();
+    return '';
+  }
+  function toggleSnoozePresets() {
+    var box = Dom.el('dsnooze-presets');
+    if (box) box.hidden = !box.hidden;
+  }
+  function snoozeDossier(ts) {
+    if (!curView) return;
+    // Guard a non-future instant client-side (a past time would re-surface
+    // immediately — a no-op snooze). The proxy + engine re-enforce.
+    if (!ts || !(Date.parse(ts) > Date.now())) { toast('Pick a snooze time in the future.'); return; }
+    var id = curView.id;
+    var btn = Dom.el('dsnooze');
+    Dom.el('ddefer').disabled = true;
+    Dom.el('descalate').disabled = true;
+    btn.disabled = true;
+    btn.textContent = 'Snoozing…';
+    Net.postJSON('/api/inbox/snooze', { dossier_id: id, snooze_until: ts }).then(function () {
+      toast('Snoozed — out of the way until ' + pairWhen(ts) + '. It will re-surface then, not auto-proceed.');
+      loadDossier(id); // honest re-fetch → recount() re-toggles/cleans every dock button + hides the presets
+    }).catch(function (e) {
+      // Nothing changed server-side; recount() does not run, so reset here.
+      Dom.el('ddefer').disabled = false;
+      Dom.el('descalate').disabled = false;
+      btn.disabled = false;
+      btn.textContent = 'Snooze';
+      toast(e.message); // honest: unreachable / rejected, never masked
+    });
+  }
 
   // EXIT crit 1 / S-2: the ack is the RE-FETCHED §4 Dossier's latch-true
   // state (control-plane truth the Coordinator reconciles into beads) — NOT a
@@ -785,6 +838,13 @@
   Dom.el('ddismiss').addEventListener('click', dismissDossier);
   Dom.el('ddefer').addEventListener('click', deferDossier);
   Dom.el('descalate').addEventListener('click', escalateDossier);
+  // claude-tools-653d §5.6 — snooze: tap reveals the preset re-surface times,
+  // each chip computes a future RFC-3339 …Z and POSTs the §5.6 snooze verb.
+  Dom.el('dsnooze').addEventListener('click', toggleSnoozePresets);
+  Dom.el('snz-1h').addEventListener('click', function () { snoozeDossier(snoozeUntilFor('1h')); });
+  Dom.el('snz-3h').addEventListener('click', function () { snoozeDossier(snoozeUntilFor('3h')); });
+  Dom.el('snz-tom').addEventListener('click', function () { snoozeDossier(snoozeUntilFor('tom')); });
+  Dom.el('snz-wk').addEventListener('click', function () { snoozeDossier(snoozeUntilFor('wk')); });
   Dom.el('den-skim').addEventListener('click', function () { density = 'skim'; applyDensity(); });
   Dom.el('den-full').addEventListener('click', function () { density = 'full'; applyDensity(); });
   window.addEventListener('hashchange', route);

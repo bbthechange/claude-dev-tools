@@ -119,6 +119,16 @@ function argsForPost(op, body) {
   // (dossier-defer / dossier-escalate) hard-codes the target tier (digest /
   // blocking); the adapter stays dumb plumbing and never picks the op or tier.
   if (op === "dossier-defer" || op === "dossier-escalate") return [b.dossier_id];
+  // L1 follow-up (claude-tools-653d) — the §5.6 SNOOZE verb. The narrow proxy
+  // (inbox/snooze.js) sends {dossier_id, snooze_until} (a FUTURE RFC-3339 …Z);
+  // here it unwraps to dossierSnooze's positional [did, snooze_until]. Unlike
+  // defer/escalate (1-arg), snooze carries a SECOND arg — so it gets its OWN
+  // mapping, NOT folded into the line above. The engine op hard-codes the
+  // semantics (DEFER now + arm a §2.2 RE-SURFACE timer; NOT auto-proceed); the
+  // adapter stays dumb plumbing — the PROXY guards the timestamp shape, the
+  // ENGINE owns the §2.2 timer gate. (This is the live prod front — adapter
+  // arg-mappings ship to prod; a missed 2nd arg would ship a broken snooze.)
+  if (op === "dossier-snooze") return [b.dossier_id, b.snooze_until];
   // N2 (claude-tools-uxg1) — the Inbox PWA's Web-Push subscribe/unsubscribe.
   // The browser holds NO secret (§9.1/§9.2): it POSTs the same-origin proxy
   // (web/functions/api/push/*.js), which attaches the server bearer and calls

@@ -255,7 +255,7 @@ ck "snapshot schema_version 2 ⇒ Inbox list REFUSED (§4.5/§0.3)" eq "$(jqr "$
 ck "inbox-view.js makes NO network call (pure core)"          hasnt "fetch(" "$(cat "$VIEW")"
 ck "inbox-view.js has no POST verb"                           hasnt "POST" "$(cat "$VIEW")"
 ck "app.js issues NO direct beads/bd write"                   hasnt "bd update" "$(cat "$APP")"
-ck "app.js POSTs only to /api/inbox/respond + /api/inbox/forensic + /api/inbox/expire (no Dolt)" eq "$(grep -oE "postJSON\('/api/inbox/[a-z]+'" "$APP" | sort -u | paste -sd, -)" "postJSON('/api/inbox/expire',postJSON('/api/inbox/forensic',postJSON('/api/inbox/respond'"
+ck "app.js POSTs only to /api/inbox/{respond,forensic,expire,snooze} (no Dolt; defer/escalate use a variable path)" eq "$(grep -oE "postJSON\('/api/inbox/[a-z]+'" "$APP" | sort -u | paste -sd, -)" "postJSON('/api/inbox/expire',postJSON('/api/inbox/forensic',postJSON('/api/inbox/respond',postJSON('/api/inbox/snooze'"
 ck "inbox proxy exports ONLY onRequestGet"                    has "export async function onRequestGet" "$(cat "$P_INBOX")"
 ck "inbox proxy exports NO onRequestPost"                     hasnt "onRequestPost" "$(cat "$P_INBOX")"
 ck "inbox proxy hard-codes the §4.5 read op"                  has "COORDINATOR_OP = 'work-snapshot'" "$(cat "$P_INBOX")"
