@@ -198,7 +198,21 @@ a facet that graduated from placeholder to live (update the maturity table!), a 
 view-model field, a moved/renamed module, a fresh scar. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete stale lines; don't let
 it grow into a re-spec of Contract C. Last substantive update: 2026-06-04
-(bpmap-3 claude-tools-bpmap3 — the §3.4.4 interactions on bpmap-1/2's positioned canvas:
+(bplayout claude-tools-bplayout — the LAYOUT half of the bpmap umbrella: bpmap-1/2/3
+built the positioned canvas/edges/interactions but `blueprint-view.js layoutGrowToFit`
+still placed every ROOT at y:0 marching cursorX right — a 1-D STRIP, so the
+center-to-center edges collapsed to zero-height slivers hidden behind the boxes ["N
+edges" in the legend, none on screen]. Fix: §5 BANDING in the root walk — group roots
+into lanes by band [`bandOf(kind)`: client|domain|store|ext|vendor], stack the lanes as
+horizontal rows top→bottom, the domain lane a ~2-col pack [wraps to ≥2 rows at ≥3
+domains], each lane centered, a reserved left GUTTER for §7 API straddle. Nested
+grow-to-fit [sizeOf/placeNode] untouched; geometry stays [free] [§3.5]. SCAR: the
+bpmap gate PASSED for the strip — distinct-LEFT + "an edge path exists" are both true
+of a 1-D row with bowed-but-hidden edges; EXISTENCE != LEGIBILITY. `jsdom/test/
+blueprint-canvas.test.js` now asserts 2-D legibility: top-level boxes spread in BOTH x
+AND y [>1 distinct top — RED on the old y:0 walk], a drawn edge has a non-degenerate
+bbox, a container grows on open, and a single all-domains band still wraps to >1 row.
+On top of bpmap-3 claude-tools-bpmap3 — the §3.4.4 interactions on bpmap-1/2's positioned canvas:
 tap a box body = FOCUS [model re-derived with `opts.focus` opens it + ancestors + DIMS the
 unconnected; `applyFocusViewport`/`bpFitToFocus` zoom-to-fit, `bpFocusDirty`-gated so the 30s
 refresh never yanks the viewport], the `▸` caret = manual PEEK, `Esc`/`← Back to system` =
