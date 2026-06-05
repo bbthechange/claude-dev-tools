@@ -72,7 +72,10 @@ for fn in daemon_bu_marker_for daemon_bu_already_fired daemon_bu_write_marker \
           daemon_bu_pidfile_for daemon_bu_already_in_flight \
           daemon_bu__bead_stage daemon_bu_dispatch_detached \
           daemon_bu__poll_workspace daemon_blueprint_update_poll_once \
-          daemon_bu_kill_all; do
+          daemon_bu_kill_all \
+          daemon_bu_pending_marker_for daemon_bu_pending_exists \
+          daemon_bu_write_pending daemon_bu_clear_pending \
+          daemon_bu_retry_pending_fyi; do
   grep -q "^$fn()" "$F_LIB" && ok "defines $fn" || bad "missing $fn"
 done
 
@@ -98,6 +101,7 @@ export DAEMON_CACHE_DIR="$CACHE_DIR"
 export DAEMON_BU_FIRED_DIR="$CACHE_DIR/blueprint-update-fired"
 export DAEMON_BU_SEED_FLAG="$CACHE_DIR/blueprint-update-seeded.flag"
 export DAEMON_BU_BASE="$CACHE_DIR/blueprint-update-dispatch"
+export DAEMON_BU_PENDING_DIR="$CACHE_DIR/blueprint-update-fyi-pending"  # claude-tools-49rx
 export DAEMON_BU_SYNC_DISPATCH=1          # run the dispatch foreground (no detach race)
 export USAGE_THRESHOLD=70 USAGE_CACHE_SECONDS=300
 
@@ -117,7 +121,7 @@ LOG_CAPTURE="$WD/daemon.log"
 log() { printf '%s\n' "$*" >> "$LOG_CAPTURE"; }
 
 reset_state() {
-  rm -rf "$DAEMON_BU_FIRED_DIR" "$DAEMON_BU_SEED_FLAG" "$DAEMON_BU_BASE" 2>/dev/null
+  rm -rf "$DAEMON_BU_FIRED_DIR" "$DAEMON_BU_SEED_FLAG" "$DAEMON_BU_BASE" "$DAEMON_BU_PENDING_DIR" 2>/dev/null
   mkdir -p "$DAEMON_BU_FIRED_DIR" "$DAEMON_BU_BASE/pids" "$DAEMON_BU_BASE/logs" 2>/dev/null
   : > "$LOG_CAPTURE" 2>/dev/null || true
 }
@@ -222,8 +226,15 @@ EOF
 chmod +x "$BIN/bp-write-stub.sh"
 
 export FYI_SENTINEL="$WD/fyi.gi"
+export FYI_FAIL_FLAG="$WD/fyi-fail.flag"   # claude-tools-49rx: when present ⇒ transient emit failure
 cat > "$BIN/fyi-engine-stub.sh" <<'EOF'
 #!/usr/bin/env bash
+# Transient-failure seam (claude-tools-49rx): if FYI_FAIL_FLAG names an existing
+# file, simulate a transient engine failure (no id, nonzero rc) so the caller
+# sees an empty written id. Otherwise record the gi + print a fake dossier id.
+if [[ -n "${FYI_FAIL_FLAG:-}" && -f "$FYI_FAIL_FLAG" ]]; then
+  exit 1
+fi
 cp "$2" "$FYI_SENTINEL" 2>/dev/null
 printf 'overview-written-fake'
 exit 0
@@ -362,6 +373,56 @@ rm -f "$HAT_CALLS_LOG" "$CACHE_DIR/capacity.json"
 : > "$DAEMON_BU_SEED_FLAG"
 DAEMON_BLUEPRINT_UPDATE_DISABLED=1 daemon_blueprint_update_poll_once
 [[ ! -f "$HAT_CALLS_LOG" ]] && ok "G1: DISABLED=1 ⇒ poll early-returns (no spawn even with NEW closes)" || bad "G1: poll dispatched despite DISABLED=1"
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART H — claude-tools-49rx: a transient timed-fyi emit failure does NOT drop
+#          the overview ping. Poll #1's FYI emit fails (the map is still written)
+#          ⇒ a fyi-pending marker is parked, NO terminal fired marker, the hat
+#          ran once. Poll #2's FYI emit succeeds ⇒ the ping is re-emitted from the
+#          parked gi WITHOUT re-running the hat, the pending marker is cleared,
+#          and the bead is promoted to a terminal fired marker. Poll #3 is a clean
+#          no-op (the ping landed exactly once on recovery).
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART H — fyi-pending recovery (transient FYI failure ⇒ ping not dropped) ──"
+reset_state
+rm -f "$HAT_CALLS_LOG" "$BP_SENTINEL" "$FYI_SENTINEL" "$CACHE_DIR/capacity.json"
+: > "$DAEMON_BU_SEED_FLAG"                  # skip seed so the bead is considered
+printf '%s' "$HAT_MATERIAL" > "$HAT_OUT_FILE"
+: > "$FYI_FAIL_FLAG"                        # arm the transient FYI failure
+
+daemon_blueprint_update_poll_once          # poll #1 — map written, FYI emit fails
+n_h1="$(wc -l < "$HAT_CALLS_LOG" 2>/dev/null | tr -d ' ')"
+eq "${n_h1:-0}" "1" "H1: hat spawned once on poll #1 (the material-change dispatch)"
+[[ -f "$BP_SENTINEL" ]] && ok "H2: blueprint-put WAS called — the map is written despite the FYI failure" \
+  || bad "H2: map not written"
+daemon_bu_pending_exists "rg-impl-1" && ok "H3: a fyi-pending marker is parked (the ping is owed)" \
+  || bad "H3: no fyi-pending marker parked — the ping would be lost"
+daemon_bu_already_fired "rg-impl-1" && bad "H4: bead must NOT be terminally fired while the ping is owed" \
+  || ok "H4: NO terminal fired marker (the bead is retried, not stranded)"
+has "$(cat "$LOG_CAPTURE" 2>/dev/null)" "parked fyi-pending" "H4b: the fyi-pending park is logged"
+
+rm -f "$FYI_FAIL_FLAG" "$FYI_SENTINEL"      # the engine recovers
+daemon_blueprint_update_poll_once          # poll #2 — re-emit ONLY the FYI
+n_h2="$(wc -l < "$HAT_CALLS_LOG" 2>/dev/null | tr -d ' ')"
+eq "${n_h2:-0}" "1" "H5: hat NOT re-spawned on poll #2 (the FYI is re-emitted WITHOUT the hat — the fix)"
+[[ -f "$FYI_SENTINEL" ]] && ok "H6: the overview ping WAS re-emitted on poll #2 (not dropped — claude-tools-49rx)" \
+  || bad "H6: ping still missing after the engine recovered"
+if [[ -f "$FYI_SENTINEL" ]]; then
+  eq "$(jq -r '.kind' "$FYI_SENTINEL")"            "overview"         "H6b: re-emitted FYI is the unified kind=overview"
+  eq "$(jq -r '.source.focus_id' "$FYI_SENTINEL")" "domain:messaging" "H6c: re-emitted FYI preserves the parked focus_id deep-link"
+fi
+daemon_bu_pending_exists "rg-impl-1" && bad "H7: fyi-pending marker should be cleared after a successful re-emit" \
+  || ok "H7: fyi-pending marker cleared"
+daemon_bu_already_fired "rg-impl-1" && ok "H8: bead promoted to a terminal fired marker (no more retries)" \
+  || bad "H8: bead not promoted to fired"
+
+rm -f "$FYI_SENTINEL"
+daemon_blueprint_update_poll_once          # poll #3 — fully settled
+n_h3="$(wc -l < "$HAT_CALLS_LOG" 2>/dev/null | tr -d ' ')"
+eq "${n_h3:-0}" "1" "H9: poll #3 is a clean no-op (hat not spawned again)"
+[[ ! -f "$FYI_SENTINEL" ]] && ok "H10: poll #3 emits no further FYI (the ping landed exactly once on recovery)" \
+  || bad "H10: spurious FYI on poll #3"
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

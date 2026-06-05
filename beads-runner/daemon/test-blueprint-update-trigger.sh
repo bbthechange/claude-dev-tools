@@ -297,6 +297,50 @@ fi
   || bad "no timed-fyi emitted — preamble was rejected"
 
 # ════════════════════════════════════════════════════════════════════════════
+# PART H — claude-tools-49rx: a transient timed-fyi emit failure stashes the gi
+#          (the map is written; the ping is OWED, not lost). On a material change
+#          the unit writes the Blueprint FIRST, then emits ONE timed-fyi; if that
+#          emit transiently fails, outcome=fyi-failed AND the shaped gi is parked
+#          in DAEMON_BLUEPRINT_UPDATE_LAST_GI so the next cadence (the I5 poll)
+#          re-emits ONLY the FYI instead of re-running the idempotent hat (which
+#          would see no material change and silently drop the overview ping).
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART H — transient FYI failure stashes the gi (claude-tools-49rx) ──"
+# A failing engine override: print no id, nonzero rc (the transient emit failure).
+cat > "$BIN/fyi-engine-fail-stub.sh" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod +x "$BIN/fyi-engine-fail-stub.sh"
+printf '%s' "$HAT_MATERIAL" > "$HAT_OUT_FILE"
+rm -f "$BP_SENTINEL" "$FYI_SENTINEL"
+SAVE_ENGINE="$DAEMON_FLOW_F_ENGINE_OVERRIDE"
+export DAEMON_FLOW_F_ENGINE_OVERRIDE="$BIN/fyi-engine-fail-stub.sh"
+daemon_blueprint_update_dispatch_one "$WD" "rhythmGame" "" "" "rhythmGame-abc" "stage:impl"
+OUTCOME="$DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME"
+STASHED="$DAEMON_BLUEPRINT_UPDATE_LAST_GI"
+export DAEMON_FLOW_F_ENGINE_OVERRIDE="$SAVE_ENGINE"
+eq "$OUTCOME" "fyi-failed" "H1: transient FYI emit failure ⇒ outcome=fyi-failed"
+[[ -f "$BP_SENTINEL" ]] && ok "H2: the map WAS written before the FYI (blueprint-put called)" \
+  || bad "H2: map not written (5a must precede 5b)"
+[[ ! -f "$FYI_SENTINEL" ]] && ok "H3: no FYI landed (the emit failed)" \
+  || bad "H3: FYI unexpectedly landed"
+[[ -n "$STASHED" ]] && ok "H4: the shaped gi is stashed for an FYI-only retry (ping owed, not lost)" \
+  || bad "H4: gi not stashed — the ping would be silently dropped on the no-change retry"
+if [[ -n "$STASHED" ]]; then
+  eq "$(jq -r '.kind' <<<"$STASHED")" "overview"               "H5: stashed gi is the unified kind=overview"
+  eq "$(jq -r '.tier' <<<"$STASHED")" "timed-fyi"              "H6: stashed gi tier=timed-fyi"
+  eq "$(jq -r '.id' <<<"$STASHED")"   "overview-rhythmGame-abc" "H7: stashed gi carries the deterministic id (idempotent re-emit)"
+fi
+# A clean dispatch (success path) leaves the stash empty — no stale gi leaks.
+printf '%s' "$HAT_MATERIAL" > "$HAT_OUT_FILE"
+rm -f "$BP_SENTINEL" "$FYI_SENTINEL"
+daemon_blueprint_update_dispatch_one "$WD" "rhythmGame" "" "" "rhythmGame-abc" "stage:impl"
+eq "$DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME" "dispatched" "H8: the engine recovers ⇒ outcome=dispatched"
+eq "$DAEMON_BLUEPRINT_UPDATE_LAST_GI" "" "H9: a successful dispatch leaves NO stashed gi (reset per call)"
+
+# ════════════════════════════════════════════════════════════════════════════
 # PART F — canary: disabled ⇒ no spawn (I5 turns it live + parallel)
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

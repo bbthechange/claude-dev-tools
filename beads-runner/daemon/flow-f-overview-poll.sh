@@ -780,10 +780,21 @@ daemon_blueprint_update__extract_json() {
 #   write-failed|fyi-failed) for the caller / test — NOT stdout, because the
 #   daemon `log` helper writes to stdout and would otherwise pollute a captured
 #   outcome. ALWAYS returns 0 (a per-bead failure must never abort a loop).
+#
+#   claude-tools-49rx: when the map is written (5a) but the ONE timed-fyi emit
+#   (5b) transiently fails, the unit ALSO stashes the shaped generation_input in
+#   the GLOBAL `DAEMON_BLUEPRINT_UPDATE_LAST_GI` so the markability policy can
+#   park a 'fyi-pending' marker. The next cadence then re-emits ONLY the FYI from
+#   that gi (the engine write is idempotent — deterministic dossier id, upsert at
+#   both the CF engine and the bash oracle) INSTEAD of re-running the hat, whose
+#   idempotent regen would now see no material change and silently drop the
+#   overview ping. The global is "" on every other outcome.
 DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME=""
+DAEMON_BLUEPRINT_UPDATE_LAST_GI=""
 daemon_blueprint_update_dispatch_one() {
   local ws="${1:-}" pref="${2:-}" curl="${3:-}" tk_item="${4:-}" bref="${5:-}" stage="${6:-}"
   DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME=""
+  DAEMON_BLUEPRINT_UPDATE_LAST_GI=""
   [[ -n "$bref" && -n "$ws" && -d "$ws" ]] || { DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='spawn-failed'; return 0; }
 
   local did; did="overview-$(daemon_flow_f__safe_key "$bref")"
@@ -873,8 +884,15 @@ daemon_blueprint_update_dispatch_one() {
   if [[ -z "$gi" ]]; then DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='fyi-failed'; return 0; fi
   written="$(_daemon_flow_f_engine_write "$ws" "$pref" "$curl" "$tk_item" "$gi" 2>/dev/null)"
   if [[ -z "$written" ]]; then
+    # claude-tools-49rx: the map IS already written (5a) but the proactive ping's
+    # engine emit transiently failed. Stash the shaped gi so the markability
+    # policy parks a 'fyi-pending' marker; the next cadence re-emits ONLY this FYI
+    # (idempotent re-put under the deterministic id $did) rather than re-running
+    # the hat — whose idempotent regen would now report no material change and
+    # never re-ping. Without the stash the overview notification is silently lost.
+    DAEMON_BLUEPRINT_UPDATE_LAST_GI="$gi"
     declare -F log >/dev/null 2>&1 && \
-      log "blueprint-update dispatch: timed-fyi emit returned no id bead_ref=$bref (map written; FYI retried by I5 next poll)"
+      log "blueprint-update dispatch: timed-fyi emit returned no id bead_ref=$bref (map written; gi parked ⇒ FYI re-emitted ONLY next cadence, hat skipped — claude-tools-49rx)"
     DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='fyi-failed'; return 0
   fi
   declare -F log >/dev/null 2>&1 && \
@@ -926,6 +944,15 @@ DAEMON_BU_LIB_SELF="${DAEMON_BU_LIB_SELF:-$(cd "$(dirname "${BASH_SOURCE[0]}")" 
 # subsequent poll, even across a daemon restart.
 DAEMON_BU_FIRED_DIR="${DAEMON_BU_FIRED_DIR:-$DAEMON_CACHE_DIR/blueprint-update-fired}"
 DAEMON_BU_SEED_FLAG="${DAEMON_BU_SEED_FLAG:-$DAEMON_CACHE_DIR/blueprint-update-seeded.flag}"
+
+# claude-tools-49rx: the 'fyi-pending' lane — SEPARATE from the fired/ dedup dir
+# (a pending bead must NOT read as terminally 'done' to daemon_bu_already_fired).
+# When a material-change dispatch writes the Blueprint but the ONE timed-fyi emit
+# transiently fails, the shaped generation_input is parked here keyed by bead.
+# The next cadence re-emits ONLY that FYI from the parked gi (no hat spawn) and,
+# on success, promotes the bead to a terminal fired marker. A bead is in AT MOST
+# one of {pending, fired} in steady state.
+DAEMON_BU_PENDING_DIR="${DAEMON_BU_PENDING_DIR:-$DAEMON_CACHE_DIR/blueprint-update-fyi-pending}"
 
 # Detached-dispatch bookkeeping (m6 posture): a per-bead pidfile (single-flight +
 # drain-kill target) and a per-dispatch log file capturing the detached child's
@@ -988,7 +1015,16 @@ daemon_bu_write_marker() {
 #     terminal  → dispatched | no-change | refused | parse-failed   (mark)
 #     transient → disabled | spawn-failed | write-failed | fyi-failed (no mark)
 #   `no-change` (the hat's idempotent "nothing to redraw") IS terminal — it is
-#   exactly the case the marker exists to stop re-spawning. ALWAYS returns 0.
+#   exactly the case the marker exists to stop re-spawning.
+#
+#   claude-tools-49rx: `fyi-failed` stays transient (NO terminal fired marker —
+#   re-running the hat would be wrong AND re-emitting is owed), BUT when the unit
+#   stashed the shaped gi (DAEMON_BLUEPRINT_UPDATE_LAST_GI non-empty: the map was
+#   written, only the ping was lost) we park a SEPARATE 'fyi-pending' marker so
+#   the next cadence re-emits ONLY the FYI (daemon_bu_retry_pending_fyi) instead
+#   of re-running the now-idempotent hat. A `fyi-failed` with no stashed gi (e.g.
+#   the shape step failed before any emit) stays a plain unmarked retry.
+#   ALWAYS returns 0.
 daemon_bu__mark_by_outcome() {
   local bref="${1:-}" ws="${2:-}" outcome="${3:-}"
   [[ -n "$bref" ]] || return 0
@@ -996,11 +1032,106 @@ daemon_bu__mark_by_outcome() {
     dispatched|no-change|refused|parse-failed)
       daemon_bu_write_marker "$bref" "$ws" "$outcome"
       ;;
+    fyi-failed)
+      if [[ -n "${DAEMON_BLUEPRINT_UPDATE_LAST_GI:-}" ]]; then
+        daemon_bu_write_pending "$bref" "$ws" "$DAEMON_BLUEPRINT_UPDATE_LAST_GI"
+        declare -F log >/dev/null 2>&1 && \
+          log "blueprint-update: bead_ref=$bref outcome=fyi-failed (map written) ⇒ parked fyi-pending; next cadence re-emits ONLY the FYI, hat skipped (claude-tools-49rx)"
+      else
+        declare -F log >/dev/null 2>&1 && \
+          log "blueprint-update: bead_ref=$bref outcome=fyi-failed (no parked gi) ⇒ NO dedup marker (retried next cadence)"
+      fi
+      ;;
     *)
       declare -F log >/dev/null 2>&1 && \
         log "blueprint-update: bead_ref=$bref outcome=${outcome:-unknown} ⇒ NO dedup marker (retried next cadence)"
       ;;
   esac
+  return 0
+}
+
+# ── claude-tools-49rx: the fyi-pending lane (park ⇄ exists ⇄ clear ⇄ retry) ────
+
+# daemon_bu_pending_marker_for <bead_ref> — echo the per-bead fyi-pending path.
+daemon_bu_pending_marker_for() {
+  local bref="${1:-}" key
+  [[ -n "$bref" ]] || return 0
+  key="$(daemon_flow_f__safe_key "$bref")"
+  printf '%s/%s.json' "$DAEMON_BU_PENDING_DIR" "$key"
+}
+
+# daemon_bu_pending_exists <bead_ref> — true (0) iff a fyi-pending marker exists.
+daemon_bu_pending_exists() {
+  local pf
+  pf="$(daemon_bu_pending_marker_for "$1")"
+  [[ -n "$pf" && -f "$pf" ]]
+}
+
+# daemon_bu_write_pending <bead_ref> <workspace> <gi_json>
+#   Park the shaped timed-fyi generation_input so the next cadence re-emits ONLY
+#   the FYI. An empty/invalid gi is a no-op (nothing to retry). ALWAYS returns 0 —
+#   a park failure is logged but must not abort the loop.
+daemon_bu_write_pending() {
+  local bref="${1:-}" ws="${2:-}" gi="${3:-}" pf tmp
+  [[ -n "$bref" && -n "$gi" ]] || return 0
+  printf '%s' "$gi" | jq -e . >/dev/null 2>&1 || return 0
+  pf="$(daemon_bu_pending_marker_for "$bref")"
+  [[ -n "$pf" ]] || return 0
+  mkdir -p "$DAEMON_BU_PENDING_DIR" 2>/dev/null || return 0
+  tmp="$pf.$$.tmp"
+  if jq -cn \
+        --arg b "$bref" --arg w "$ws" \
+        --argjson gi "$gi" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")" \
+        '{bead_ref:$b, workspace:$w, gi:$gi, observed_at:$ts}' \
+        > "$tmp" 2>/dev/null && mv -f "$tmp" "$pf" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  declare -F log >/dev/null 2>&1 && \
+    log "blueprint-update: WARN — could not park fyi-pending marker bead_ref=$bref"
+  return 0
+}
+
+# daemon_bu_clear_pending <bead_ref> — remove the fyi-pending marker. ALWAYS 0.
+daemon_bu_clear_pending() {
+  local pf
+  pf="$(daemon_bu_pending_marker_for "$1")"
+  [[ -n "$pf" ]] && rm -f "$pf" 2>/dev/null
+  return 0
+}
+
+# daemon_bu_retry_pending_fyi <ws> <pref> <curl> <tk_item> <bead_ref>
+#   THE claude-tools-49rx recovery: a bead with a parked fyi-pending marker has
+#   its Blueprint ALREADY written — only the proactive overview ping is missing.
+#   Re-emit ONLY that FYI from the parked gi (NO hat spawn, NOT capacity-gated —
+#   it is a single idempotent engine write, not the expensive redraw). On success
+#   promote the bead to a terminal 'dispatched' fired marker (so later polls skip
+#   it) THEN clear the pending marker. On failure leave the pending marker for the
+#   next cadence (the map stays correct meanwhile). A corrupt/empty parked gi is
+#   dropped so the bead falls back to a normal hat dispatch. ALWAYS returns 0.
+daemon_bu_retry_pending_fyi() {
+  local ws="${1:-}" pref="${2:-}" curl="${3:-}" tk_item="${4:-}" bref="${5:-}"
+  local pf gi written
+  pf="$(daemon_bu_pending_marker_for "$bref")"
+  [[ -n "$pf" && -f "$pf" ]] || return 0
+  gi="$(jq -c '.gi' "$pf" 2>/dev/null)"
+  if [[ -z "$gi" || "$gi" == "null" ]]; then
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update: fyi-pending marker for bead_ref=$bref has no usable gi — dropping (will re-dispatch via the hat)"
+    daemon_bu_clear_pending "$bref"
+    return 0
+  fi
+  written="$(_daemon_flow_f_engine_write "$ws" "$pref" "$curl" "$tk_item" "$gi" 2>/dev/null)"
+  if [[ -n "$written" ]]; then
+    daemon_bu_write_marker "$bref" "$ws" "dispatched"
+    daemon_bu_clear_pending "$bref"
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update: fyi-pending RESOLVED bead_ref=$bref dossier_id=$written — overview ping re-emitted (map was already correct; claude-tools-49rx)"
+  else
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update: fyi-pending RETRY still failing bead_ref=$bref workspace=$ws — left parked for next cadence (map remains correct)"
+  fi
   return 0
 }
 
@@ -1132,6 +1263,7 @@ daemon_bu_dispatch_detached() {
     BU_LIB="$DAEMON_BU_LIB_SELF" \
     BU_CACHE="$DAEMON_CACHE_DIR" \
     BU_FIRED_DIR="$DAEMON_BU_FIRED_DIR" \
+    BU_PENDING_DIR="$DAEMON_BU_PENDING_DIR" \
     BU_WS="$ws" BU_PREF="$pref" BU_CURL="$curl" BU_TK="$tk_item" \
     BU_BREF="$bref" BU_STAGE="$stage" \
       nohup bash -c '
@@ -1141,6 +1273,9 @@ daemon_bu_dispatch_detached() {
         log() { printf "%s [bu-aux pid=%d] %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$$" "$*"; }
         export DAEMON_CACHE_DIR="$BU_CACHE"
         export DAEMON_BU_FIRED_DIR="$BU_FIRED_DIR"
+        # claude-tools-49rx: pin the fyi-pending dir to the parent'\''s so a child
+        # that parks a pending gi writes where the parent poll later looks for it.
+        export DAEMON_BU_PENDING_DIR="$BU_PENDING_DIR"
         . "$BU_LIB" 2>/dev/null || exit 0
         daemon_blueprint_update_dispatch_one "$BU_WS" "$BU_PREF" "$BU_CURL" "$BU_TK" "$BU_BREF" "$BU_STAGE"
         daemon_bu__mark_by_outcome "$BU_BREF" "$BU_WS" "$DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME"
@@ -1187,6 +1322,14 @@ daemon_bu__poll_workspace() {
   [[ -n "$ws" && -d "$ws" ]] || return 0
   while IFS= read -r bref; do
     [[ -n "$bref" ]] || continue
+    # claude-tools-49rx: a parked fyi-pending bead has its map already written —
+    # re-emit ONLY the owed FYI (cheap idempotent engine write, NO hat, NOT
+    # capacity-gated) and skip the normal dispatch. A successful re-emit promotes
+    # the bead to a terminal fired marker; a still-failing one stays parked.
+    if daemon_bu_pending_exists "$bref"; then
+      daemon_bu_retry_pending_fyi "$ws" "$pref" "$curl" "$tk_item" "$bref"
+      continue
+    fi
     daemon_bu_already_fired "$bref"     && continue
     daemon_bu_already_in_flight "$bref" && continue
     # §I5(b) — route EVERY aux spawn through the I5-cap capacity gate. The gate
