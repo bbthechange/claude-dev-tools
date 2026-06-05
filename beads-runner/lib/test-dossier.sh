@@ -264,10 +264,11 @@ ck "the surviving binding is internally consistent (one fork⇒one dossier)" \
 
 echo ""
 echo "── EXIT-DEFER: §5.6 defer/escalate attention verbs (claude-tools-uxl1b) ──"
-# The two remaining Inbox verbs as DISTINCT ops: adjust ONLY the §4.1 attention
-# tier (defer→digest, escalate→blocking) — no §5.2 resolution, no §7.4 latch, no
-# §2.2 timer touch. Total + idempotent. JS twin: cf/src/dossier.js
-# dossierSetAttention (cf/test/defer-escalate.spec.js).
+# The two remaining Inbox verbs as DISTINCT ops: adjust the §4.1 attention tier
+# (defer→digest, escalate→blocking) AND disarm the §2.2 timer — no §5.2
+# resolution, no §7.4 latch. A real move nulls timer_fire_at (both targets are
+# non-auto-proceed tiers, claude-tools-fyci). Total + idempotent. JS twin:
+# cf/src/dossier.js dossierSetAttention (cf/test/defer-escalate.spec.js).
 TIER() { JFIELD "$1" '.tier'; }
 defer_then_tier()    { do_dossier_defer    "$1" "$2" >/dev/null 2>&1 && [[ "$(TIER "$2")" == "$3" ]]; }
 escalate_then_tier() { do_dossier_escalate "$1" "$2" >/dev/null 2>&1 && [[ "$(TIER "$2")" == "$3" ]]; }
@@ -280,17 +281,29 @@ ck "  answered item left untouched (recommendation NOT consumed)"  eq "$(ISTATE 
 ck "  recorded .response preserved verbatim" \
    eq "$(JFIELD deA '.items[]|select(.id=="da2").response.decision')" "approve"
 ck "  every consequence_applied latch still false"             eq "$(JFIELD deA '[.items[]|select(.consequence_applied==false)]|length')" "2"
-ck "  timer_fire_at untouched (null)"                          eq "$(JFIELD deA '.timer_fire_at')" "null"
+ck "  timer_fire_at null (deA never armed; disarm is a no-op here)"  eq "$(JFIELD deA '.timer_fire_at')" "null"
 ck "defer idempotent at the digest floor (success, no move)"   defer_then_tier "$GOOD" deA digest
 ck "escalate: digest→blocking (the reverse)"                   escalate_then_tier "$GOOD" deA blocking
 ck "escalate idempotent at the blocking ceiling"               escalate_then_tier "$GOOD" deA blocking
 ck "round-trip preserved the item set (2 items, da1 open, da2 answered)" \
    eq "$(JFIELD deA '[.items[]]|length')" "2"
-# timed-fyi is the auto-proceed lane — the verbs move OUT of it, NEVER into it.
+# timed-fyi is the auto-proceed lane — the verbs move OUT of it AND disarm it.
+# Plant with an ARMED timer so the §2.2 disarm (timer_fire_at→null) is observable
+# (claude-tools-fyci — kill the digest+armed-timer edge at the source). deF ALSO
+# arms a REAL §2.2 substrate timer (id==dossier id, past fire_at ⇒ timer-due) so
+# escalate's soft-disarm (timer-ack) is proven end-to-end, not just the envelope
+# field (code-review #1). co_timer_due reads from this herestring via ck's stdin.
 do_dossier_put "$GOOD" "$(jq -c '.tier="timed-fyi"|.timer_fire_at="2026-06-01T00:00:00Z"' <<<"$(mk deF 2 "[$(item df1 open)]")")" >/dev/null
+co_request "$GOOD" timer-arm deF "2026-06-01T00:00:00Z" >/dev/null 2>&1
+ck "  BEFORE escalate: deF's armed §2.2 timer surfaces in timer-due" \
+   grep -qx deF <<<"$(co_request "$GOOD" timer-due "2030-01-01T00:00:00Z" 2>/dev/null)"
 ck "escalate(timed-fyi)→blocking (out of the auto-proceed lane)"  escalate_then_tier "$GOOD" deF blocking
+ck "  escalate DISARMED the timer_fire_at field (→null — fyci)"   eq "$(JFIELD deF '.timer_fire_at')" "null"
+ckn "  escalate SOFT-DISARMED the §2.2 substrate timer (gone from timer-due — fyci)" \
+   grep -qx deF <<<"$(co_request "$GOOD" timer-due "2030-01-01T00:00:00Z" 2>/dev/null)"
 do_dossier_put "$GOOD" "$(jq -c '.tier="timed-fyi"|.timer_fire_at="2026-06-01T00:00:00Z"' <<<"$(mk deG 2 "[$(item dg1 open)]")")" >/dev/null
 ck "defer(timed-fyi)→digest (out of the auto-proceed lane, never stays timed-fyi)"  defer_then_tier "$GOOD" deG digest
+ck "  defer DISARMED the timer (timer_fire_at→null — fyci)"       eq "$(JFIELD deG '.timer_fire_at')" "null"
 # rejection arms — a missing/empty dossier is rejected (no write).
 ckn "defer on a missing dossier ⇒ reject"     do_dossier_defer "$GOOD" deNope
 ckn "escalate on a missing dossier ⇒ reject"  do_dossier_escalate "$GOOD" deNope

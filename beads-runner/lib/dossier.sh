@@ -378,18 +378,23 @@ do__item_set_state_locked() {
 # ════════════════════════════════════════════════════════════════════════════
 # do_dossier_defer    <bearer> <dossier_id>   → tier="digest"   ("push out")
 # do_dossier_escalate <bearer> <dossier_id>   → tier="blocking" ("promote")
-#   Adjust ONLY the §4.1 attention tier — the two remaining Inbox verbs as
-#   DISTINCT ops (no verb defaults to another's payload — the L1 empty-payload
-#   bug class). NO §5.2 response, NO §5.3 ConsequenceBlock, NO per-Item state
-#   move, NO §2.2 timer touch: items[]/response/consequence_applied/
-#   timer_fire_at all round-trip verbatim. The verbs toggle the two
+#   Adjust the §4.1 attention tier AND DISARM the §2.2 auto-proceed timer — the
+#   two remaining Inbox verbs as DISTINCT ops (no verb defaults to another's
+#   payload — the L1 empty-payload bug class). NO §5.2 response, NO §5.3
+#   ConsequenceBlock, NO per-Item state move: items[]/response/
+#   consequence_applied all round-trip verbatim. The verbs toggle the two
 #   human-managed attention levels — foreground `blocking` ⟷ background
 #   `digest` — and NEVER target the `timed-fyi` auto-proceed lane (pushing a
 #   decision INTO timed-fyi would arm a silent auto-apply — the §5.6/L1
-#   hazard). Total + idempotent: already at the target tier ⇒ success with NO
-#   write. Runs under the per-dossier single-writer lock (a tier move is a
-#   read-decide-write of the shared envelope, exactly like do_item_set_state).
-#   JS twin: cf/src/dossier.js dossierSetAttention (same targets, same idempotency).
+#   hazard). Because both targets are non-auto-proceed tiers, a real move ALSO
+#   nulls timer_fire_at + soft-disarms any prior arm (claude-tools-fyci) — so a
+#   deferred/escalated ARMED timed-fyi card cannot strand a stale fire time (the
+#   digest+armed-timer edge that split o2mk's L2 auto-close discriminators).
+#   Total + idempotent: already at the target tier ⇒ success with NO write (so a
+#   no-op move never even re-touches an already-null timer). Runs under the
+#   per-dossier single-writer lock (a tier move is a read-decide-write of the
+#   shared envelope, exactly like do_item_set_state). JS twin: cf/src/dossier.js
+#   dossierSetAttention (same targets, same idempotency, same disarm).
 do_dossier_defer()    { do__with_dossier_lock "${2:-}" do__dossier_set_attention_locked "${1:-}" "${2:-}" digest; }
 do_dossier_escalate() { do__with_dossier_lock "${2:-}" do__dossier_set_attention_locked "${1:-}" "${2:-}" blocking; }
 do__dossier_set_attention_locked() {
@@ -399,9 +404,16 @@ do__dossier_set_attention_locked() {
   if [[ "$from" == "$target" ]]; then
     return 0      # idempotent: already at the target attention tier, NO write
   fi
-  upd=$(printf '%s' "$rec" | jq -c --arg t "$target" '.tier=$t' 2>/dev/null) \
+  # Move .tier AND null timer_fire_at in the SAME write (claude-tools-fyci): the
+  # target is always a non-auto-proceed tier (digest|blocking), which §4.1 MUST
+  # NOT carry an armed §2.2 timer — so a deferred/escalated ARMED timed-fyi card
+  # cannot strand a stale fire time.
+  upd=$(printf '%s' "$rec" | jq -c --arg t "$target" '.tier=$t | .timer_fire_at=null' 2>/dev/null) \
     || { echo "dossier: attention — could not set tier for '$did'" >&2; return 3; }
   do_dossier_put "$bearer" "$upd" >/dev/null || return $?
+  # Soft-disarm any prior §2.2 arm — mirrors tf_arm's non-timed-fyi path (§2.2
+  # has no disarm; timer-ack stops the poll-fallback re-surfacing). Best-effort.
+  co_request "$bearer" timer-ack "$did" >/dev/null 2>&1 || true
   return 0
 }
 

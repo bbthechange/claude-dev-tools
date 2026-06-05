@@ -5,11 +5,12 @@
 //   dossier-defer    → tier="digest"   ("push out without resolution")
 //   dossier-escalate → tier="blocking" ("promote to higher-attention surface")
 //
-// They adjust ONLY the §4.1 attention tier: no §5.2 response, no §5.3
-// ConsequenceBlock, no per-Item state move, no §2.2 timer touch. Total +
-// idempotent (re-running at the target tier is a no-op). They NEVER target
-// `timed-fyi` (the auto-proceed lane) — escalate(timed-fyi)→blocking and
-// defer(timed-fyi)→digest both move OUT of it, the safe direction.
+// They adjust the §4.1 attention tier AND disarm the §2.2 timer: no §5.2
+// response, no §5.3 ConsequenceBlock, no per-Item state move — but a real move
+// nulls timer_fire_at (both targets are non-auto-proceed tiers, claude-tools-
+// fyci). Total + idempotent (re-running at the target tier is a no-op). They
+// NEVER target `timed-fyi` (the auto-proceed lane) — escalate(timed-fyi)→
+// blocking and defer(timed-fyi)→digest both move OUT of it AND disarm it.
 //
 // Exercises the REAL engine via SELF.fetch (Worker §9.1 chokepoint → singleton
 // Coordinator DO → D1) under the SAME workerd+miniflare runtime as the CF.6
@@ -125,15 +126,21 @@ it("L1 follow-up (claude-tools-uxl1b) §5.6 — defer / escalate adjust the atte
   const r2b = await call(GOOD, "dossier-escalate", ["de-d1"]);
   ck("second escalate (already blocking) ⇒ idempotent no-op", r2b.body && r2b.body.idempotent === true && r2b.body.tier === "blocking");
 
-  // ── timed-fyi is the auto-proceed lane: verbs move OUT of it, never into it ─
+  // ── timed-fyi is the auto-proceed lane: verbs move OUT of it AND disarm it ──
+  // Plant the cards with an ARMED timer (timer_fire_at set) so the disarm is
+  // observable: escalate/defer must move the tier OUT *and* null timer_fire_at
+  // (claude-tools-fyci — kill the digest+armed-timer edge at the source).
   const D2 = mkFor("de-fyi", "thirsty-uxl1b-fyi", [{ id: "f1", state: "open", kind: "fyi-objectable" }], "timed-fyi", "2026-06-01T00:00:00Z");
-  ck("plant a timed-fyi (Flow F) overview", good(await call(GOOD, "dossier-put", [D2])));
+  ck("plant a timed-fyi (Flow F) overview WITH an armed timer", good(await call(GOOD, "dossier-put", [D2])));
+  ck("BEFORE escalate: the timed-fyi card carries an armed timer_fire_at", (await GET("de-fyi")).timer_fire_at === "2026-06-01T00:00:00Z");
   ck("escalate(timed-fyi) → blocking (OUT of the auto-proceed lane — auto-proceed OFF)",
     good(await call(GOOD, "dossier-escalate", ["de-fyi"])) && tierOf(await GET("de-fyi")) === "blocking");
+  ck("escalate(timed-fyi) DISARMED the timer (timer_fire_at now null — fyci)", (await GET("de-fyi")).timer_fire_at === null);
   // put it back to timed-fyi and verify defer also exits the lane (to digest), never stays timed-fyi
   await call(GOOD, "dossier-put", [mkFor("de-fyi2", "thirsty-uxl1b-fyi2", [{ id: "f1", state: "open", kind: "fyi-objectable" }], "timed-fyi", "2026-06-01T00:00:00Z")]);
   ck("defer(timed-fyi) → digest (OUT of the auto-proceed lane, never into/stays timed-fyi)",
     good(await call(GOOD, "dossier-defer", ["de-fyi2"])) && tierOf(await GET("de-fyi2")) === "digest");
+  ck("defer(timed-fyi) DISARMED the timer (timer_fire_at now null — fyci)", (await GET("de-fyi2")).timer_fire_at === null);
   ck("a defer/escalate NEVER lands a dossier in timed-fyi", tierOf(await GET("de-fyi")) !== "timed-fyi" && tierOf(await GET("de-fyi2")) !== "timed-fyi");
 
   // ── reversibility round-trip preserves the item set exactly ────────────────

@@ -865,8 +865,10 @@ async function itemSetState(co, principal, did, iid, to, respArg) {
 // L1 follow-up (claude-tools-uxl1b) §5.6 — DEFER / ESCALATE: the two remaining
 // Inbox verbs, realized as DISTINCT engine ops (no verb defaults to another
 // verb's payload — the L1 empty-payload bug class). They adjust the dossier's
-// §4.1 ATTENTION TIER and NOTHING else: no §5.2 response, no §5.3
-// ConsequenceBlock, no per-Item state move, and no §2.2 timer touch.
+// §4.1 ATTENTION TIER and DISARM any §2.2 auto-proceed timer: no §5.2 response,
+// no §5.3 ConsequenceBlock, no per-Item state move — but timer_fire_at is
+// nulled (and the substrate timer soft-disarmed) because both targets are
+// non-auto-proceed tiers (claude-tools-fyci; see TOTAL+IDEMPOTENT below).
 //
 //   • defer    (dossier-defer)    → tier = "digest"   — "push out without
 //       resolution" (inbox-lifecycle §5.6): drop the card from the foreground
@@ -892,10 +894,16 @@ async function itemSetState(co, principal, did, iid, to, respArg) {
 //
 // TOTAL + IDEMPOTENT: defined for every tier; re-running at the target tier is
 // { ok:true, idempotent:true } with NO write. items[] / response /
-// consequence_applied / timer_fire_at / the §4.3 Notification record are ALL
-// left exactly as they were. The §7.4 latch is never touched, so a real later
-// decision on any item still applies. Bash twin: lib/dossier.sh
-// do_dossier_defer / do_dossier_escalate (same tier targets, same idempotency).
+// consequence_applied / the §4.3 Notification record are ALL left exactly as
+// they were. The §7.4 latch is never touched, so a real later decision on any
+// item still applies. The ONE field a real move also writes is timer_fire_at →
+// null (claude-tools-fyci): both targets are non-auto-proceed tiers, so the
+// stored record must not carry an armed §2.2 timer — clearing it at the source
+// kills the digest+armed-timer edge that split o2mk's L2 auto-close
+// discriminators. (A no-op move — from===target — writes nothing, so an already
+// digest/blocking card's null timer is never even re-touched.) Bash twin:
+// lib/dossier.sh do_dossier_defer / do_dossier_escalate (same targets, same
+// idempotency, same disarm).
 const ATTENTION_BY_VERB = { defer: "digest", escalate: "blocking" };
 
 async function dossierSetAttention(co, principal, did, verb) {
@@ -912,10 +920,24 @@ async function dossierSetAttention(co, principal, did, verb) {
   // Idempotent at the target attention tier — NO write (so a no-op defer/
   // escalate never churns the record or re-stamps applied_at on anything).
   if (from === target) return { ok: true, idempotent: true, tier: target };
-  // Move ONLY `.tier`. putDossier re-validates the §4.1 envelope + the §5.1
-  // write gate and re-derives the rollup; everything else round-trips verbatim.
-  const w = await putDossier(co, principal, { ...rec, tier: target });
+  // Move `.tier` AND DISARM (claude-tools-fyci). The target is ALWAYS a
+  // non-auto-proceed tier (digest|blocking) — §4.1 binds an armed §2.2 timer to
+  // `timed-fyi` ONLY — so the moved record MUST carry timer_fire_at=null. Clear
+  // it in the SAME write: without this, deferring/escalating an ARMED timed-fyi
+  // card would strand a stale timer_fire_at, the ONE row where o2mk's two L2
+  // auto-close discriminators disagree (engine beadStatusChanged skips on
+  // timer_fire_at!=null, but the daemon select_open_beads emits on
+  // tier∈{blocking,digest}). Nulling at the source makes digest/blocking ≡
+  // no-armed-timer hold for the STORED record, not just by construction of the
+  // arm path. putDossier re-validates the §4.1 envelope + the §5.1 write gate
+  // and re-derives the rollup; everything else round-trips verbatim.
+  const w = await putDossier(co, principal, { ...rec, tier: target, timer_fire_at: null });
   if (!w.ok) return w;
+  // Soft-disarm any prior §2.2 one-shot fire on the substrate surface — the
+  // same timer-ack primitive tfArm uses for its non-timed-fyi soft-disarm.
+  // Best-effort ONLY: fireDossier already no-ops on a non-timed-fyi tier and
+  // the per-Item §7.4 latch is the truth, so a failed/absent ack is harmless.
+  try { await co.opTimerAck(did); } catch { /* non-fatal — see timer.js timerAck */ }
   return { ok: true, from, tier: target };
 }
 
