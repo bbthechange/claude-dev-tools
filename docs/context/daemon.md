@@ -82,7 +82,7 @@ runner (Flow D), bounded to ≤ one `DESIRED_STATE_POLL_INTERVAL` (60s).
 | `hosted-resolution-poll.sh` | **M4**: per-workspace poll for phone-answered dossiers; captures the resume-answer into the workspace store, flips the S-2 bfh record, and **classifies M5 vs M6** dispatch (`daemon_dispatch_for_state`). |
 | `m6-dispatch.sh` | **M6**: when an answered dossier lands while the runner is busy on a DIFFERENT task, launch a short-lived READ-ONLY `claude -p` (reconciler hat) that does `bd` bookkeeping only (no Write/Edit, no commit). Daemon owns its lifecycle (`daemon_m6_kill_all` on exit). |
 | `intake-dispatch-poll.sh` | **I3**: poll engine `intake-pending`; for each request whose `project_ref` is registered here, dispatch the enricher hat (`specialist.sh --kind=enricher`) → new bd task, then mark the record processed. Flow A. |
-| `flow-f-overview-poll.sh` | **P1**: walk each workspace for closed beads with `stage:design`; dispatch a dossier-builder and push a `timed-fyi` overview dossier. Seed-flag suppresses the first-run backlog. **Also hosts the H5 (claude-tools-uxvh5) blueprint-update trigger path** — `daemon_blueprint_update_should_trigger` (coarse gate: `stage:design\|impl\|docs`), `daemon_blueprint_update__shape_timed_fyi` (the §6.5 unification: a Blueprint change shapes the SAME `kind=overview`/`timed-fyi` gi as the Flow F overview — NOT a 2nd mechanism), and the synchronous `daemon_blueprint_update_dispatch_one` (spawn the read-only `blueprint-update` hat → on a material change `blueprint-put` + emit ONE timed-fyi via the shared `_daemon_flow_f_engine_write`). **Canary-disabled by default** (`DAEMON_BLUEPRINT_UPDATE_DISABLED=1`) and NOT wired into the main loop — **I5** (`uxvi5`, deferred) owns turning it live + wrapping it in the parallel/detached/capacity-gated scheduler. |
+| `flow-f-overview-poll.sh` | **P1**: walk each workspace for closed beads with `stage:design`; dispatch a dossier-builder and push a `timed-fyi` overview dossier. Seed-flag suppresses the first-run backlog. **Also hosts the H5 (claude-tools-uxvh5) blueprint-update trigger path** — `daemon_blueprint_update_should_trigger` (coarse gate: `stage:design\|impl\|docs`), `daemon_blueprint_update__shape_timed_fyi` (the §6.5 unification: a Blueprint change shapes the SAME `kind=overview`/`timed-fyi` gi as the Flow F overview — NOT a 2nd mechanism), and the synchronous `daemon_blueprint_update_dispatch_one` (spawn the read-only `blueprint-update` hat → on a material change `blueprint-put` + emit ONE timed-fyi via the shared `_daemon_flow_f_engine_write`). **I5 (`uxvi5`) made it LIVE + PARALLEL** (canary now `DAEMON_BLUEPRINT_UPDATE_DISABLED=0`): `daemon_blueprint_update_poll_once` (wired into the main loop on `BLUEPRINT_UPDATE_POLL_INTERVAL`, 60s + boot-fire) walks each workspace for NEW closed structural beads (`stage:design\|impl\|docs`) and **detaches** a read-only hat per bead via the M6 nohup/disown idiom (`daemon_bu_dispatch_detached`) so it runs truly parallel to the per-workspace serial writer. Every spawn is routed through the **I5-cap capacity gate** (`daemon_aux_capacity_ok`, `low_priority`), **deduped per bead** (`$DAEMON_CACHE_DIR/blueprint-update-fired/`, plus a first-run seed flag that suppresses the backlog — same shape as `flow-f-overview-fired/`), and **single-flight** via a per-bead pidfile (`$DAEMON_CACHE_DIR/blueprint-update-dispatch/pids/`). The aux NEVER takes the writer lease and is read-only BY CONSTRUCTION (specialist.sh `blueprint-update` permission set). Drain hook: `daemon_bu_kill_all` (in `on_exit`). Off-switch: set `DAEMON_BLUEPRINT_UPDATE_DISABLED=1`. |
 | `work-control-reconcile-poll.sh` | **L2**: ask engine for BLOCKING dossiers still on the Inbox whose bead resolved outside the tap; publish `bead_status_changed` onto the daemon outbox so the engine expires the stale card. |
 | `notif-delivery-poll.sh` | **N2**: rings the engine `notif-deliver` op — blocking sweep (~30s) + digest sweep (~daily). VAPID private key + ledger stay server-side; this only triggers. See `notifications.md`. |
 | `timer-due-poll.sh` | **N10-11** (claude-tools-buoz): the §2.2 timer CLOCK. Rings the engine's COMPOSITE `timed-fyi-poll` driver op (~60s + boot-fire) — that op (`cf/src/timer.js` `fireDueTimers`) lists every due §2.2 timer and FIRES it server-side, ROUTING by the dossier's §4.1 kind: `kind:"pair"` ⇒ `pairSurface` (ready-to-pair surface + blocking notif), else ⇒ `fireDossier` (timed-fyi S-6 auto-proceed). Rings the COMPOSITE op, NEVER the bare substrate `timer-due` (which only LISTS ids — does not fire). No `now` arg (engine owns the clock). Singleton-DO call (workspace[0] url+bearer, N2 pattern), not per-workspace. There is NO alarm daemon — this poll IS the S-6 backstop. Closed audit gap wzejgmopj (engine timer.js was live but nothing rang it in prod). |
@@ -167,6 +167,16 @@ The drift check is the "done means verified" gate for any plist change.
 - **README scope drift.** `daemon/README.md` is framed as "M1 skeleton, jobs land
   later" — that framing is stale; M2–M6 + I3/P1/L2/N2 all landed. Trust the code +
   this doc over the README's "what this is NOT — yet" section.
+- **Don't capture a per-workspace poll's count via `$(…)` if it also `log`s
+  (claude-tools-uxvi5).** `log()` writes to stdout (launchd captures it), so a
+  driver doing `c="$(daemon_*__poll_workspace "$i")"` SWALLOWS every per-bead
+  `log` line into `$c` AND pollutes the count (no longer a bare integer ⇒ the
+  `=~ ^[0-9]+$` guard zeroes it ⇒ the summary line never fires, and the
+  fire-and-forget launch trace never reaches the daemon log). Both the I5
+  blueprint-update poll and its Flow-F sibling now report the count via a GLOBAL
+  (`DAEMON_BU_WS_DISPATCH_COUNT` / `DAEMON_FLOW_F_WS_DISPATCH_COUNT`) and call the
+  per-workspace function DIRECTLY (not in a subshell) so its `log` lines survive.
+  Any new per-workspace poll that both logs and counts must do the same.
 
 ## Go deeper
 
@@ -186,6 +196,7 @@ didn't find here: a new poll job + its cadence env, a changed liveness oracle, a
 moved/renamed helper, a fresh plist scar, a new invariant. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete lines that have gone
 stale; don't let it grow into a copy of DESIGN.md or the README. Last substantive
-update: 2026-06-03 (N10-11 added `timer-due-poll.sh` — the §2.2 timer daemon
-clock that rings the engine's `timed-fyi-poll` driver, firing timed-fyi
-auto-proceed + ready-to-pair surface in prod; closed audit gap wzejgmopj).
+update: 2026-06-04 (I5/`uxvi5` made the blueprint-update path LIVE + PARALLEL —
+`daemon_blueprint_update_poll_once` detaches a read-only hat per NEW structural
+close, capacity-gated + per-bead-deduped + drain-killed; canary flipped to 0; the
+swallowed-poll-count scar above. Prior: 2026-06-03 N10-11 `timer-due-poll.sh`).

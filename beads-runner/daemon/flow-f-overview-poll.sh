@@ -462,23 +462,29 @@ daemon_flow_f_dispatch_one() {
 }
 
 # daemon_flow_f__poll_workspace <idx>
-#   Per-workspace poll: list closed stage:design beads, dispatch the new
-#   ones. ALWAYS returns 0. Echoes the count of dispatched beads on stdout
-#   for the driver to aggregate into a single log line.
+#   Per-workspace poll: list closed stage:design beads, dispatch the new ones.
+#   ALWAYS returns 0. Reports the count of dispatched beads via the GLOBAL
+#   DAEMON_FLOW_F_WS_DISPATCH_COUNT — NOT stdout: daemon_flow_f_dispatch_one's
+#   per-bead `log` lines (dispatched/refused/failed) write to stdout, so a `$()`
+#   capture in the caller swallowed them AND polluted the count (claude-tools-
+#   uxvi5 review). The driver reads the global to aggregate the one summary line.
+DAEMON_FLOW_F_WS_DISPATCH_COUNT=0
 daemon_flow_f__poll_workspace() {
   local i="${1:-0}" ws pref curl tk_item bref count=0
+  DAEMON_FLOW_F_WS_DISPATCH_COUNT=0
   ws="${REGISTRY_DIRS[$i]:-}"
   pref="${REGISTRY_PROJECT_REFS[$i]:-}"
   curl="${REGISTRY_COORDINATOR_URLS[$i]:-}"
   tk_item="${REGISTRY_TOKEN_KEYCHAIN_ITEMS[$i]:-}"
-  [[ -n "$ws" && -d "$ws" ]] || { printf '0'; return 0; }
+  [[ -n "$ws" && -d "$ws" ]] || return 0
   while IFS= read -r bref; do
     [[ -n "$bref" ]] || continue
     daemon_flow_f_already_fired "$bref" && continue
     daemon_flow_f_dispatch_one "$ws" "$pref" "$curl" "$tk_item" "$bref"
     count=$((count + 1))
   done < <(daemon_flow_f__list_closed_at_stage "$ws")
-  printf '%s' "$count"
+  DAEMON_FLOW_F_WS_DISPATCH_COUNT="$count"
+  return 0
 }
 
 # daemon_flow_f_poll_once
@@ -492,7 +498,10 @@ daemon_flow_f_poll_once() {
   [[ "$n" -gt 0 ]] || return 0
   i=0
   while [[ "$i" -lt "$n" ]]; do
-    c="$(daemon_flow_f__poll_workspace "$i" 2>/dev/null)"
+    # call directly (not in a `$()`) so dispatch_one's `log` lines reach the
+    # daemon stdout log; the count returns via the global.
+    daemon_flow_f__poll_workspace "$i"
+    c="$DAEMON_FLOW_F_WS_DISPATCH_COUNT"
     [[ "$c" =~ ^[0-9]+$ ]] || c=0
     total=$((total + c))
     i=$((i + 1))
@@ -531,11 +540,16 @@ daemon_flow_f_poll_once() {
 # Space-separated, env-overridable (a project may extend it without forking).
 DAEMON_BLUEPRINT_STRUCTURAL_STAGES="${DAEMON_BLUEPRINT_STRUCTURAL_STAGES:-stage:design stage:impl stage:docs}"
 
-# Canary: 1 (default) ⇒ dispatch_one logs "would dispatch" and does NOT spawn a
-# real hat (I5 flips this to 0 when it wires the parallel poll). A test/override
-# spawner (DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE) takes precedence — the override
-# IS the dispatch path (mirrors DAEMON_FLOW_F_BUILDER_OVERRIDE > _DISABLED).
-DAEMON_BLUEPRINT_UPDATE_DISABLED="${DAEMON_BLUEPRINT_UPDATE_DISABLED:-1}"
+# Canary: 0 (default, LIVE) ⇒ dispatch_one spawns the real read-only hat. I5
+# (claude-tools-uxvi5) flipped this from the H5 canary default (1) to 0 when it
+# wired the parallel poll below — the blueprint-update aux dispatch is now live in
+# prod. Set DAEMON_BLUEPRINT_UPDATE_DISABLED=1 (e.g. in the plist env) to turn the
+# WHOLE parallel blueprint-update dispatch back off without a code change: the I5
+# poll (daemon_blueprint_update_poll_once) early-returns AND dispatch_one short-
+# circuits to outcome=disabled. A test/override spawner
+# (DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE) takes precedence — the override IS the
+# dispatch path (mirrors DAEMON_FLOW_F_BUILDER_OVERRIDE > _DISABLED).
+DAEMON_BLUEPRINT_UPDATE_DISABLED="${DAEMON_BLUEPRINT_UPDATE_DISABLED:-0}"
 
 # Test overrides (parallel to the Flow-F override hooks):
 #   _HAT_OVERRIDE     — replaces specialist.sh for the --kind=blueprint-update spawn
@@ -866,4 +880,385 @@ daemon_blueprint_update_dispatch_one() {
   declare -F log >/dev/null 2>&1 && \
     log "blueprint-update dispatch: OK — bead_ref=$bref dossier_id=$written tier=timed-fyi (Blueprint redrawn; ONE overview ping = the Flow F overview, §6.5)"
   DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME='dispatched'; return 0
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# I5 (claude-tools-uxvi5) — parallel auxiliary dispatch (the LIVE wiring)
+# (DESIGN I design/activity.md §5 + ARCH §9.1; daemon-driven, NO runner rewrite).
+#
+# WHAT I5 ADDS over the H5 scaffolding above:
+#   H5 (uxvh5) defined the SYNCHRONOUS unit daemon_blueprint_update_dispatch_one
+#   (canary-disabled, not wired into the main loop). I5 makes it LIVE + PARALLEL:
+#     (a) flips the canary off (above) so the read-only blueprint-update hat is
+#         spawned for real, and DETACHES the whole dispatch unit with the M6
+#         nohup/disown idiom (m6-dispatch.sh:175-189) so it runs TRULY parallel
+#         to the per-workspace serial WRITER — the writer lane is untouched (no
+#         runner rewrite, ARCH §9 dec.1) and the aux NEVER takes the writer lease;
+#     (b) routes every aux spawn through the I5-cap capacity gate
+#         (aux-dispatch-gate.sh / daemon_aux_capacity_ok) on the cheaper
+#         `low_priority` class — the first lane suppressed as budget tightens,
+#         fail-OPEN on a missing/stale signal;
+#     (c) adds a PER-BEAD dedup marker (analogous to flow-f-overview-fired/) so
+#         turning the canary on does NOT re-spawn a claude -p hat per structural-
+#         closed bead EVERY poll — the hat's idempotent regen suppresses the
+#         write/FYI but NOT the (expensive) spawn, so the marker is the real
+#         spawn-suppressor — plus a per-bead single-flight pidfile (m6 posture)
+#         and a first-run seed flag that suppresses the existing structural-close
+#         backlog (matches the Flow F seed).
+#
+# READ-ONLY BY CONSTRUCTION (must-protect #11 — assert the capability SET, not
+#   intent): the spawned hat is `specialist.sh --kind=blueprint-update`, whose
+#   permission set (agents/specialist.sh `reconciler|enricher|blueprint-update)`
+#   branch) is COMMON_ALLOWED + the full NO_CODE_EDITS disallow set
+#   (Write/Edit/MultiEdit/NotebookEdit/BashWriteEdits) at --permission-mode
+#   default. An aux CANNOT mutate the tree and is structurally not a 2nd writer:
+#   this poll only ever launches that read-only hat — it never spawns a runner,
+#   never claims a bead, never takes a lease.
+# ════════════════════════════════════════════════════════════════════════════
+
+# This file's own absolute path — the detached child re-sources it to recover
+# daemon_blueprint_update_dispatch_one + the marker helpers (the lib only DEFINES
+# functions at top level, so re-sourcing it is safe and side-effect-free).
+DAEMON_BU_LIB_SELF="${DAEMON_BU_LIB_SELF:-$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/flow-f-overview-poll.sh}"
+
+# Per-bead dedup markers + first-run seed flag (the §I5(c) spawn-suppressor),
+# parallel to the Flow F marker dir. A bead with a marker is skipped on every
+# subsequent poll, even across a daemon restart.
+DAEMON_BU_FIRED_DIR="${DAEMON_BU_FIRED_DIR:-$DAEMON_CACHE_DIR/blueprint-update-fired}"
+DAEMON_BU_SEED_FLAG="${DAEMON_BU_SEED_FLAG:-$DAEMON_CACHE_DIR/blueprint-update-seeded.flag}"
+
+# Detached-dispatch bookkeeping (m6 posture): a per-bead pidfile (single-flight +
+# drain-kill target) and a per-dispatch log file capturing the detached child's
+# stdout/stderr (the hat's full claude stream is captured by specialist.sh under
+# <ws>/.beads/runner-logs/, so this log only holds the orchestration trace).
+DAEMON_BU_BASE="${DAEMON_BU_BASE:-$DAEMON_CACHE_DIR/blueprint-update-dispatch}"
+DAEMON_BU_PIDS="$DAEMON_BU_BASE/pids"
+DAEMON_BU_LOGS="$DAEMON_BU_BASE/logs"
+
+# Test seam: DAEMON_BU_SYNC_DISPATCH=1 runs the dispatch unit FOREGROUND (no
+# nohup/disown) so the offline gate can assert spawn + marker deterministically.
+# The prod default (0) detaches. NOT a prod knob — the canary
+# (DAEMON_BLUEPRINT_UPDATE_DISABLED) is the operator off-switch.
+DAEMON_BU_SYNC_DISPATCH="${DAEMON_BU_SYNC_DISPATCH:-0}"
+
+# daemon_bu_marker_for <bead_ref> — echo the per-bead dedup marker path.
+daemon_bu_marker_for() {
+  local bref="${1:-}" key
+  [[ -n "$bref" ]] || return 0
+  key="$(daemon_flow_f__safe_key "$bref")"
+  printf '%s/%s.json' "$DAEMON_BU_FIRED_DIR" "$key"
+}
+
+# daemon_bu_already_fired <bead_ref> — true (0) iff a dedup marker exists.
+daemon_bu_already_fired() {
+  local mf
+  mf="$(daemon_bu_marker_for "$1")"
+  [[ -n "$mf" && -f "$mf" ]]
+}
+
+# daemon_bu_write_marker <bead_ref> <workspace> <outcome>
+#   Record a per-bead dedup marker so subsequent polls skip the bead. ALWAYS
+#   returns 0 — a marker-write failure is logged but must not abort the loop.
+daemon_bu_write_marker() {
+  local bref="${1:-}" ws="${2:-}" outcome="${3:-}" mf tmp
+  mf="$(daemon_bu_marker_for "$bref")"
+  [[ -n "$mf" ]] || return 0
+  mkdir -p "$DAEMON_BU_FIRED_DIR" 2>/dev/null || return 0
+  tmp="$mf.$$.tmp"
+  if jq -cn \
+        --arg b "$bref" \
+        --arg w "$ws" \
+        --arg o "$outcome" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")" \
+        '{bead_ref:$b, workspace:$w, outcome:$o, observed_at:$ts}' \
+        > "$tmp" 2>/dev/null && mv -f "$tmp" "$mf" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  declare -F log >/dev/null 2>&1 && \
+    log "blueprint-update: WARN — could not write dedup marker bead_ref=$bref (outcome=$outcome)"
+  return 0
+}
+
+# daemon_bu__mark_by_outcome <bead_ref> <workspace> <outcome>
+#   The §I5(c) markability policy (mirrors the Flow F terminal-vs-transient
+#   split): a TERMINAL outcome (the hat ran and reached a verdict) is marked so
+#   we never re-spawn an expensive hat for this structural close; a TRANSIENT /
+#   not-yet-live outcome is NOT marked so the next cadence retries.
+#     terminal  → dispatched | no-change | refused | parse-failed   (mark)
+#     transient → disabled | spawn-failed | write-failed | fyi-failed (no mark)
+#   `no-change` (the hat's idempotent "nothing to redraw") IS terminal — it is
+#   exactly the case the marker exists to stop re-spawning. ALWAYS returns 0.
+daemon_bu__mark_by_outcome() {
+  local bref="${1:-}" ws="${2:-}" outcome="${3:-}"
+  [[ -n "$bref" ]] || return 0
+  case "$outcome" in
+    dispatched|no-change|refused|parse-failed)
+      daemon_bu_write_marker "$bref" "$ws" "$outcome"
+      ;;
+    *)
+      declare -F log >/dev/null 2>&1 && \
+        log "blueprint-update: bead_ref=$bref outcome=${outcome:-unknown} ⇒ NO dedup marker (retried next cadence)"
+      ;;
+  esac
+  return 0
+}
+
+# daemon_bu_seed_if_needed
+#   On a fresh install, mark every currently-closed structural bead as
+#   already-fired WITHOUT dispatching, then drop the seed flag — so a first run
+#   does not detach a redraw hat for the entire historical backlog. Subsequent
+#   polls dispatch only on NEW structural closes. Idempotent. ALWAYS returns 0.
+daemon_bu_seed_if_needed() {
+  [[ -f "$DAEMON_BU_SEED_FLAG" ]] && return 0
+  mkdir -p "$DAEMON_CACHE_DIR" "$DAEMON_BU_FIRED_DIR" 2>/dev/null || return 0
+  local n i ws bref count=0
+  n="${#REGISTRY_DIRS[@]}"
+  i=0
+  while [[ "$i" -lt "$n" ]]; do
+    ws="${REGISTRY_DIRS[$i]:-}"
+    if [[ -n "$ws" && -d "$ws" ]]; then
+      while IFS= read -r bref; do
+        [[ -n "$bref" ]] || continue
+        daemon_bu_already_fired "$bref" && continue
+        daemon_bu_write_marker "$bref" "$ws" "seeded"
+        count=$((count + 1))
+      done < <(daemon_blueprint_update__list_structural_closes "$ws")
+    fi
+    i=$((i + 1))
+  done
+  : > "$DAEMON_BU_SEED_FLAG" 2>/dev/null || true
+  declare -F log >/dev/null 2>&1 && \
+    log "blueprint-update: seeded $count existing closed structural bead(s) — backlog suppressed; only NEW structural closes dispatch a redraw hat"
+  return 0
+}
+
+# daemon_bu_pidfile_for <bead_ref> — echo the per-bead detached-dispatch pidfile.
+daemon_bu_pidfile_for() {
+  local bref="${1:-}" key
+  [[ -n "$bref" ]] || return 0
+  key="$(daemon_flow_f__safe_key "$bref")"
+  printf '%s/%s.pid' "$DAEMON_BU_PIDS" "$key"
+}
+
+# daemon_bu_already_in_flight <bead_ref> — true (0) iff a previous detached
+#   dispatch for the same bead still has a live pid (m6 single-flight). Stale
+#   pidfile is reclaimed.
+daemon_bu_already_in_flight() {
+  local pf pid
+  pf="$(daemon_bu_pidfile_for "$1")"
+  [[ -n "$pf" && -f "$pf" ]] || return 1
+  pid="$(cat "$pf" 2>/dev/null || echo "")"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$pf" 2>/dev/null || true
+  return 1
+}
+
+# daemon_bu__bead_stage <workspace> <bead_ref>
+#   Resolve the bead's structural stage label (the first of
+#   $DAEMON_BLUEPRINT_STRUCTURAL_STAGES it carries) so the hat input's
+#   trigger_stage is honest. Subshell-isolated. Echoes "" if none found (the hat
+#   diffs the actual tree regardless — trigger_stage is informational). Runs
+#   once per NEW bead (the marker stops re-processing), so the extra `bd` read is
+#   bounded.
+daemon_bu__bead_stage() {
+  local ws="${1:-}" bref="${2:-}"
+  [[ -n "$ws" && -n "$bref" && -d "$ws" ]] || return 0
+  (
+    cd "$ws" 2>/dev/null || exit 0
+    local labels s
+    labels="$(bd label list "$bref" --json 2>/dev/null \
+                | jq -r 'if type=="array" then .[] else empty end' 2>/dev/null)"
+    for s in $DAEMON_BLUEPRINT_STRUCTURAL_STAGES; do
+      printf '%s\n' "$labels" | grep -qx "$s" && { printf '%s' "$s"; exit 0; }
+    done
+    exit 0
+  )
+}
+
+# daemon_bu_dispatch_detached <ws> <pref> <curl> <tk_item> <bead_ref> <stage>
+#   Launch the H5 dispatch unit (daemon_blueprint_update_dispatch_one) so it runs
+#   TRULY parallel to the serial writer, then mark the bead by its outcome. Uses
+#   the M6 detached idiom (nohup … & ; disown) in prod; the DAEMON_BU_SYNC_DISPATCH
+#   test seam runs it foreground. ALWAYS returns 0 — a per-bead failure must never
+#   abort the daemon's main loop.
+daemon_bu_dispatch_detached() {
+  local ws="${1:-}" pref="${2:-}" curl="${3:-}" tk_item="${4:-}" bref="${5:-}" stage="${6:-}"
+  [[ -n "$bref" && -n "$ws" && -d "$ws" ]] || return 0
+
+  # Single-flight: a live dispatch for the same bead ⇒ no-op (m6 posture). Belt-
+  # and-suspenders with the dedup marker — the marker stops a *completed* bead,
+  # the pidfile stops a *concurrent* one (the brief window before the child marks).
+  if daemon_bu_already_in_flight "$bref"; then
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update: a dispatch for bead_ref=$bref is already in flight — skipping (single-flight)"
+    return 0
+  fi
+
+  mkdir -p "$DAEMON_BU_PIDS" "$DAEMON_BU_LOGS" 2>/dev/null || {
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update: could not create $DAEMON_BU_BASE — refusing to dispatch (bead_ref=$bref)"
+    return 0
+  }
+
+  local ts safe pidfile logfile
+  ts="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo run)"
+  safe="$(daemon_flow_f__safe_key "$bref")"
+  pidfile="$DAEMON_BU_PIDS/$safe.pid"
+  logfile="$DAEMON_BU_LOGS/$safe-$ts.log"
+
+  # Test/foreground seam: run synchronously so the offline gate asserts spawn +
+  # marker without a nohup/disown race.
+  if [[ "$DAEMON_BU_SYNC_DISPATCH" == "1" ]]; then
+    echo "$$" > "$pidfile" 2>/dev/null || true
+    daemon_blueprint_update_dispatch_one "$ws" "$pref" "$curl" "$tk_item" "$bref" "$stage"
+    daemon_bu__mark_by_outcome "$bref" "$ws" "$DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME"
+    rm -f "$pidfile" 2>/dev/null || true
+    return 0
+  fi
+
+  # THE DETACH — the M6 idiom (m6-dispatch.sh:175-189): subshell-background +
+  # nohup + </dev/null + log redirect reparents the child to PID 1 so the daemon
+  # main loop returns at once and the hat runs in parallel with the serial
+  # writer. Every value crosses via the ENVIRONMENT (never string-spliced) so a
+  # workspace path containing a quote / $() stays inert data (the m6 security
+  # posture). The child re-sources this lib, runs the dispatch unit, then marks
+  # the bead by outcome and cleans its pidfile on exit.
+  (
+    cd "$ws" 2>/dev/null || exit 0
+    BU_PIDFILE="$pidfile" \
+    BU_LIB="$DAEMON_BU_LIB_SELF" \
+    BU_CACHE="$DAEMON_CACHE_DIR" \
+    BU_FIRED_DIR="$DAEMON_BU_FIRED_DIR" \
+    BU_WS="$ws" BU_PREF="$pref" BU_CURL="$curl" BU_TK="$tk_item" \
+    BU_BREF="$bref" BU_STAGE="$stage" \
+      nohup bash -c '
+        echo "$$" > "$BU_PIDFILE" 2>/dev/null || true
+        trap "rm -f \"$BU_PIDFILE\" 2>/dev/null || true" EXIT
+        # minimal log shim so dispatch_one'\''s log lines land in this child log
+        log() { printf "%s [bu-aux pid=%d] %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$$" "$*"; }
+        export DAEMON_CACHE_DIR="$BU_CACHE"
+        export DAEMON_BU_FIRED_DIR="$BU_FIRED_DIR"
+        . "$BU_LIB" 2>/dev/null || exit 0
+        daemon_blueprint_update_dispatch_one "$BU_WS" "$BU_PREF" "$BU_CURL" "$BU_TK" "$BU_BREF" "$BU_STAGE"
+        daemon_bu__mark_by_outcome "$BU_BREF" "$BU_WS" "$DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME"
+      ' >"$logfile" 2>&1 </dev/null &
+    disown 2>/dev/null || true
+  )
+
+  # Poll briefly for the bootstrap to write the pidfile (m6 precedent — a single
+  # check races a loaded machine and prints a spurious "unconfirmed").
+  local newpid="" i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    newpid="$(cat "$pidfile" 2>/dev/null || echo "")"
+    [[ -n "$newpid" ]] && kill -0 "$newpid" 2>/dev/null && break
+    newpid=""
+    sleep 0.2 2>/dev/null || true
+  done
+  if declare -F log >/dev/null 2>&1; then
+    if [[ -n "$newpid" ]]; then
+      log "blueprint-update: read-only aux hat LAUNCHED detached (pid=$newpid) bead_ref=$bref workspace=$ws trigger=${stage:-<none>} — parallel to the serial writer; log=$logfile"
+    else
+      log "blueprint-update: aux hat launch issued (pid unconfirmed) bead_ref=$bref workspace=$ws — log=$logfile (inspect for cause)"
+    fi
+  fi
+  return 0
+}
+
+# daemon_bu__poll_workspace <idx>
+#   Per-workspace: enumerate closed structural beads (the H5
+#   __list_structural_closes), and for each NEW one (not fired, not in flight)
+#   that the capacity gate allows, DETACH a blueprint-update aux hat. Reports the
+#   number of dispatches issued via the GLOBAL DAEMON_BU_WS_DISPATCH_COUNT (NOT
+#   stdout — this function's `log` lines, especially the detached-launch
+#   confirmation + the capacity-suppression line, are the only operator trace for
+#   a fire-and-forget child and MUST reach the daemon stdout log; a `$()` capture
+#   in the caller would swallow them and pollute the count). ALWAYS returns 0.
+DAEMON_BU_WS_DISPATCH_COUNT=0
+daemon_bu__poll_workspace() {
+  local i="${1:-0}" ws pref curl tk_item bref stage count=0
+  DAEMON_BU_WS_DISPATCH_COUNT=0
+  ws="${REGISTRY_DIRS[$i]:-}"
+  pref="${REGISTRY_PROJECT_REFS[$i]:-}"
+  curl="${REGISTRY_COORDINATOR_URLS[$i]:-}"
+  tk_item="${REGISTRY_TOKEN_KEYCHAIN_ITEMS[$i]:-}"
+  [[ -n "$ws" && -d "$ws" ]] || return 0
+  while IFS= read -r bref; do
+    [[ -n "$bref" ]] || continue
+    daemon_bu_already_fired "$bref"     && continue
+    daemon_bu_already_in_flight "$bref" && continue
+    # §I5(b) — route EVERY aux spawn through the I5-cap capacity gate. The gate
+    # tests the cheaper low_priority class (dropped before the writer's standard)
+    # and fail-OPENs on a missing/stale signal (the daemon is the cache
+    # producer). A FRESH over-budget signal SUPPRESSES the spawn; NO marker is
+    # written so the next cadence retries once budget recovers.
+    if declare -F daemon_aux_capacity_ok >/dev/null 2>&1 && ! daemon_aux_capacity_ok; then
+      declare -F log >/dev/null 2>&1 && \
+        log "blueprint-update: SUPPRESSED bead_ref=$bref workspace=$ws — aux pool over budget (reason=${AUX_GATE_REASON:-unknown}); retried next cadence"
+      continue
+    fi
+    stage="$(daemon_bu__bead_stage "$ws" "$bref")"
+    daemon_bu_dispatch_detached "$ws" "$pref" "$curl" "$tk_item" "$bref" "$stage"
+    count=$((count + 1))
+  done < <(daemon_blueprint_update__list_structural_closes "$ws")
+  DAEMON_BU_WS_DISPATCH_COUNT="$count"
+  return 0
+}
+
+# daemon_blueprint_update_poll_once
+#   The I5 main-loop entry: seed-on-first-run, then walk every registered
+#   workspace dispatching read-only blueprint-update aux hats in parallel with
+#   the serial writer. ALWAYS returns 0. Called from daemon.sh's main loop on the
+#   BLUEPRINT_UPDATE_POLL_INTERVAL cadence.
+#
+#   Operator off-switch: DAEMON_BLUEPRINT_UPDATE_DISABLED=1 turns the WHOLE
+#   parallel dispatch off here (no enumeration, no spawn) — the inverse of the
+#   I5 canary flip. Default 0 (live).
+daemon_blueprint_update_poll_once() {
+  [[ "${DAEMON_BLUEPRINT_UPDATE_DISABLED:-0}" == "1" ]] && return 0
+  daemon_bu_seed_if_needed
+  local n i total=0 c
+  n="${#REGISTRY_DIRS[@]}"
+  [[ "$n" -gt 0 ]] || return 0
+  i=0
+  while [[ "$i" -lt "$n" ]]; do
+    # NB: call directly (NOT in a `$()`) so the per-bead launch/suppress `log`
+    # lines flow to the daemon stdout log; the count returns via the global.
+    daemon_bu__poll_workspace "$i"
+    c="$DAEMON_BU_WS_DISPATCH_COUNT"
+    [[ "$c" =~ ^[0-9]+$ ]] || c=0
+    total=$((total + c))
+    i=$((i + 1))
+  done
+  if [[ "$total" -gt 0 ]]; then
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update poll (§5 / I5): dispatched $total read-only blueprint-update hat(s) DETACHED across $n workspace(s) — parallel to the serial writer, capacity-gated on low_priority, one-per-structural-close (serial writer lane untouched)"
+  fi
+  return 0
+}
+
+# daemon_bu_kill_all — SIGTERM every live detached blueprint-update aux hat.
+#   Called from the daemon's drain handler (the daemon OWNS these children's
+#   lifecycle, exactly like the M6 bd-surgery agents). Best-effort. ALWAYS 0.
+daemon_bu_kill_all() {
+  [[ -d "$DAEMON_BU_PIDS" ]] || return 0
+  local f pid killed=0
+  for f in "$DAEMON_BU_PIDS"/*.pid; do
+    [[ -e "$f" ]] || continue
+    pid="$(cat "$f" 2>/dev/null || echo "")"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+      killed=$((killed+1))
+      declare -F log >/dev/null 2>&1 && \
+        log "blueprint-update: sent SIGTERM to detached aux hat pid=$pid (pidfile=$f) on daemon drain"
+    fi
+    rm -f "$f" 2>/dev/null || true
+  done
+  if [[ "$killed" -gt 0 ]]; then
+    declare -F log >/dev/null 2>&1 && \
+      log "blueprint-update: drain killed $killed in-flight detached aux hat(s)"
+  fi
+  return 0
 }

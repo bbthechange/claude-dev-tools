@@ -63,6 +63,12 @@ INTAKE_POLL_INTERVAL="${BEADS_DAEMON_INTAKE_POLL_INTERVAL:-30}"
 # tight cadence buys nothing. Matches the M3 desired-state cadence so the
 # daemon's per-workspace bd reads cluster at the same beat.
 FLOW_F_POLL_INTERVAL="${BEADS_DAEMON_FLOW_F_POLL_INTERVAL:-60}"
+# I5 (claude-tools-uxvi5): parallel blueprint-update aux dispatch cadence. 60s —
+# matches Flow F (same trigger family: a structural bd close at stage
+# design|impl|docs). The dispatch is DETACHED (m6 nohup/disown) so the cadence
+# bounds only discovery latency, never the hat's runtime; the per-bead dedup
+# marker + the low_priority capacity gate keep a tight cadence cheap.
+BLUEPRINT_UPDATE_POLL_INTERVAL="${BEADS_DAEMON_BLUEPRINT_UPDATE_POLL_INTERVAL:-60}"
 # L2 (claude-tools-uxvl2): WORK→CONTROL auto-close reconcile cadence. On this
 # beat the daemon asks the engine which blocking dossiers are still on the Inbox
 # and auto-closes any whose bead has resolved outside the dossier tap. Matches
@@ -134,6 +140,14 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # result as a timed-fyi (24h auto-proceed) overview dossier. Defines
 # daemon_flow_f_poll_once + daemon_flow_f_* helpers. Strict no-op until the
 # main loop calls into it.
+#
+# ALSO HOSTS H5 (claude-tools-uxvh5) + I5 (claude-tools-uxvi5): the blueprint-
+# update path. H5 defined the synchronous unit (daemon_blueprint_update_dispatch_
+# one); I5 made it LIVE + PARALLEL — daemon_blueprint_update_poll_once detaches a
+# read-only blueprint-update hat (m6 nohup/disown) per NEW structural close,
+# capacity-gated on low_priority, deduped per bead, drain-killed via
+# daemon_bu_kill_all. Both live in flow-f-overview-poll.sh because the blueprint
+# change→timed-fyi ping UNIFIES with the Flow F overview (§6.5). Wired below.
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/flow-f-overview-poll.sh"
 # L2 (claude-tools-uxvl2): WORK→CONTROL auto-close reconciler — when a bead
@@ -257,6 +271,13 @@ on_exit() {
   if declare -F daemon_m6_kill_all >/dev/null 2>&1; then
     daemon_m6_kill_all || true
   fi
+  # I5 (claude-tools-uxvi5): SIGTERM any in-flight DETACHED blueprint-update aux
+  # hats — the daemon owns their lifecycle exactly like the M6 bd-surgery
+  # children (they self-terminate in a few minutes; this is the shutdown
+  # backstop so no orphan read-only claude -p lingers against a workspace).
+  if declare -F daemon_bu_kill_all >/dev/null 2>&1; then
+    daemon_bu_kill_all || true
+  fi
   # M2 (claude-tools-8mz): clear the capacity cache so a workspace that
   # checks $DAEMON_CACHE_DIR/capacity.json during the daemon-down window
   # falls back to its own direct Keychain+API path (BC-34 fail-OPEN
@@ -301,7 +322,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s NOTIF_DELIVERY_POLL_INTERVAL=${NOTIF_DELIVERY_POLL_INTERVAL}s NOTIF_DIGEST_SWEEP_INTERVAL=${NOTIF_DIGEST_SWEEP_INTERVAL}s TIMER_DUE_POLL_INTERVAL=${TIMER_DUE_POLL_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s BLUEPRINT_UPDATE_POLL_INTERVAL=${BLUEPRINT_UPDATE_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s NOTIF_DELIVERY_POLL_INTERVAL=${NOTIF_DELIVERY_POLL_INTERVAL}s NOTIF_DIGEST_SWEEP_INTERVAL=${NOTIF_DIGEST_SWEEP_INTERVAL}s TIMER_DUE_POLL_INTERVAL=${TIMER_DUE_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -323,6 +344,7 @@ main() {
   local _last_agent_action_poll=0
   local _last_intake_poll=0
   local _last_flow_f_poll=0
+  local _last_blueprint_update_poll=0
   local _last_wc_poll=0
   local _last_usage_poll=0
   local _last_notif_delivery_poll=0
@@ -383,6 +405,23 @@ main() {
     if [ "$((_now - _last_flow_f_poll))" -ge "$FLOW_F_POLL_INTERVAL" ] || [ "$_last_flow_f_poll" -eq 0 ]; then
       _last_flow_f_poll="$_now"
       daemon_flow_f_poll_once || true
+    fi
+    # I5 (claude-tools-uxvi5): on cadence, walk every workspace for closed beads
+    # at a STRUCTURAL stage (design|impl|docs) and DETACH a read-only blueprint-
+    # update hat for each NEW one — TRULY parallel to the per-workspace serial
+    # WRITER (m6 nohup/disown), routed through the I5-cap capacity gate
+    # (low_priority, dropped before the writer's standard), one-per-structural-
+    # close via a per-bead marker. The hat is read-only BY CONSTRUCTION
+    # (specialist.sh blueprint-update permission set — NO_CODE_EDITS) and NEVER
+    # takes the writer lease, so this can never spawn a 2nd writer. Boot-fire
+    # (|| -eq 0) so a structural close that landed while the daemon was down
+    # still redraws; the seed flag makes the first-ever run a no-op on the
+    # existing backlog. DAEMON_BLUEPRINT_UPDATE_DISABLED=1 turns it fully off.
+    if [ "$((_now - _last_blueprint_update_poll))" -ge "$BLUEPRINT_UPDATE_POLL_INTERVAL" ] || [ "$_last_blueprint_update_poll" -eq 0 ]; then
+      _last_blueprint_update_poll="$_now"
+      if declare -F daemon_blueprint_update_poll_once >/dev/null 2>&1; then
+        daemon_blueprint_update_poll_once || true
+      fi
     fi
     # L2 (claude-tools-uxvl2): on cadence, ask the engine which blocking dossiers
     # are still on the Inbox and auto-close any whose bead has resolved outside

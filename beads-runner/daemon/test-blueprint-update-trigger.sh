@@ -29,8 +29,9 @@
 #   PART E — idempotent + refuse: hat emits material_change:false ⇒ NO
 #            blueprint-put, NO FYI, outcome=no-change; hat emits refuse:true ⇒
 #            NO writes, outcome=refused (the real redraw gate is the hat's regen).
-#   PART F — canary: DAEMON_BLUEPRINT_UPDATE_DISABLED=1 (default) ⇒ no spawn,
-#            outcome=disabled (I5 turns it live + parallel).
+#   PART F — canary: DAEMON_BLUEPRINT_UPDATE_DISABLED=1 ⇒ no spawn,
+#            outcome=disabled. (I5/uxvi5 flipped the DEFAULT to 0 = live; this
+#            part sets =1 explicitly to prove the off-switch still short-circuits.)
 #
 # Run: bash beads-runner/daemon/test-blueprint-update-trigger.sh
 set -u
@@ -301,14 +302,14 @@ fi
 echo ""
 echo "── PART F — canary (DAEMON_BLUEPRINT_UPDATE_DISABLED) ──"
 rm -f "$BP_SENTINEL" "$FYI_SENTINEL"
-# With the HAT override UNSET, the canary default (disabled=1) must short-circuit.
+# With the HAT override UNSET + the canary set =1, dispatch must short-circuit.
 SAVE_OV="$DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE"
 DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE=""
 DAEMON_BLUEPRINT_UPDATE_DISABLED=1
 daemon_blueprint_update_dispatch_one "$WD" "rhythmGame" "" "" "rhythmGame-abc" "stage:impl"
 OUTCOME="$DAEMON_BLUEPRINT_UPDATE_LAST_OUTCOME"
 DAEMON_BLUEPRINT_UPDATE_HAT_OVERRIDE="$SAVE_OV"
-eq "$OUTCOME" "disabled" "canary on (default) ⇒ outcome=disabled, no spawn (I5 owns turning it live)"
+eq "$OUTCOME" "disabled" "canary off-switch (=1) ⇒ outcome=disabled, no spawn (default is now 0=live, I5/uxvi5)"
 [[ ! -f "$BP_SENTINEL" && ! -f "$FYI_SENTINEL" ]] && ok "canary ⇒ no write, no FYI" \
   || bad "canary must not write or emit"
 
