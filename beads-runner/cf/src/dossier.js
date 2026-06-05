@@ -1009,13 +1009,23 @@ async function beadStatusChanged(co, principal, a0) {
       continue;
     }
     if (!isObj(d) || d.principal !== principal || d.bead_ref !== bref) continue;
-    // TIER SCOPING — auto-close targets BLOCKING decision dossiers ONLY. A
-    // `timed-fyi` / `digest` dossier (e.g. a Flow F `overview-<bead_ref>`, which
-    // FIRES when the bead closes) rides its OWN §2.2 auto-proceed timer (CF.7);
-    // force-expiring it on bead-resolution would defeat the 24h objection window
-    // that is Flow F's entire point. A bead can carry BOTH a `stuck-<ref>`
-    // (blocking) and an `overview-<ref>` (timed-fyi) — this preserves the latter.
-    if (d.tier !== "blocking") continue;
+    // TIER SCOPING (refined — claude-tools-o2mk) — auto-close BLOCKING decision
+    // dossiers AND any non-blocking dossier with NO ARMED auto-proceed timer
+    // (timer_fire_at == null). The exemption protects ONLY a GENUINE
+    // auto-proceeder: a non-blocking dossier with an ARMED timer
+    // (a Flow F `overview-<bead_ref>` timed-fyi card) rides its OWN §2.2 timer
+    // (CF.7); force-expiring it on bead-resolution would defeat the 24h objection
+    // window that is Flow F's entire point. A bead can carry BOTH a `stuck-<ref>`
+    // (blocking) and an armed `overview-<ref>` (timed-fyi) — this preserves the
+    // latter. But a §5.6-DEFERRED decision card (the escalate inverse: tier
+    // lowered blocking→digest WITHOUT arming any timer — bd memory
+    // inbox-verb-defer-escalate-tier-mapping) has NO timer to ride; the old
+    // blocking-only skip stranded it as a stale Inbox card when its bead later
+    // resolved OUTSIDE the tap. "Armed" = a non-empty string timer_fire_at, the
+    // exact value timer.js writes (else null) — an absent/null/empty window is
+    // NOT an auto-proceeder, so it auto-closes like a blocking card.
+    const armedTimer = typeof d.timer_fire_at === "string" && d.timer_fire_at !== "";
+    if (d.tier !== "blocking" && armedTimer) continue;
     matched_dossiers++;
     // §7.9 v1-skip: a sub-bound stored dossier cannot be written back.
     if (intSv(d.schema_version) !== bound) {

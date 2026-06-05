@@ -12,7 +12,8 @@
 #   dossier. This reconciler closes that gap.
 #
 #   On a cadence it asks the engine for the dossiers still on the Inbox
-#   (`work-snapshot` → `waiting_on_you`, BLOCKING tier only), checks each one's
+#   (`work-snapshot` → `waiting_on_you`, the TIMER-LESS tiers — blocking AND
+#   digest; see daemon_wc__select_open_beads), checks each one's
 #   bead status in its workspace's bd, and for every bead that has resolved
 #   outside the flow it PUBLISHES a `bead_status_changed` event onto the daemon
 #   outbox — the SAME zdxd D2 channel the machine_state telemetry rides
@@ -27,10 +28,17 @@
 #     bead). This is the deliberately-separate INVERSE: WORK→CONTROL. It does
 #     NOT reuse S-2's machinery (inbox-lifecycle §7.9: "the new flow is a NEW
 #     reconciler").
-#   • NOT a timed-fyi closer. A `timed-fyi` / `digest` dossier (the Flow F
+#   • NOT a timed-fyi closer. A `timed-fyi` dossier (the Flow F
 #     `overview-<bead_ref>` fired ON bead close) rides its own §2.2 24h
-#     auto-proceed timer; this reconciler considers BLOCKING dossiers only, and
-#     the engine op re-checks the tier as defense-in-depth.
+#     auto-proceed timer; this reconciler EXCLUDES it. It DOES consider `digest`
+#     dossiers, though: a §5.6-DEFERRED decision card is lowered blocking→digest
+#     WITHOUT arming any timer (claude-tools-o2mk), so — unlike timed-fyi — it has
+#     no timer to ride and would otherwise strand on the Inbox forever when its
+#     bead resolves outside the tap. digest can NEVER carry an armed timer
+#     (timer.js tfArm soft-disarms every non-timed-fyi tier), so selecting it is
+#     safe. The engine op (cf/src/dossier.js beadStatusChanged) re-checks per
+#     dossier as defense-in-depth, skipping ONLY a still-armed auto-proceeder
+#     (timer_fire_at != null).
 #   • NOT a bd writer. It only READS bd status/labels; the bead lifecycle is the
 #     workspace runner's / Brian's business.
 #
@@ -68,8 +76,10 @@ DAEMON_WC_PRINCIPAL="${DAEMON_WC_PRINCIPAL:-${PRINCIPAL_V1:-brian}}"
 #   DAEMON_WC_DISABLED=1            — run the decision logic + markers but DO NOT
 #                                     emit outbox lines (CI-safe no-token canary).
 #   DAEMON_WC_SNAPSHOT_OVERRIDE     — executable that echoes, one per line,
-#                                     "<bead_ref>" for each BLOCKING dossier still
-#                                     on the Inbox (replaces the work-snapshot read).
+#                                     "<bead_ref>" for each OWNED (blocking|digest)
+#                                     dossier still on the Inbox — the post-tier-
+#                                     filter list (replaces the work-snapshot read
+#                                     AND daemon_wc__select_open_beads).
 #   DAEMON_WC_BD_OVERRIDE           — executable called "<override> <bead_ref>"
 #                                     that echoes "<status>\t<labels_csv>"
 #                                     (replaces the per-workspace bd read).
@@ -144,8 +154,26 @@ daemon_wc__workspace_for() {
   printf '%s' "$best"
 }
 
-# daemon_wc__fetch_open_dossier_beads — echo the unique bead_refs of BLOCKING
-# dossiers still on the Inbox (waiting_on_you), one per line. Honors
+# daemon_wc__select_open_beads — read a work-snapshot JSON on stdin, echo the
+# unique bead_refs of the dossiers this reconciler OWNS, one per line. OWNED =
+# the TIMER-LESS tiers: `blocking` (decision card, never arms a timer) AND
+# `digest` (a §5.6-DEFERRED card, claude-tools-o2mk — also never armed: timer.js
+# tfArm soft-disarms every non-timed-fyi tier). EXCLUDES `timed-fyi` (Flow F
+# overview-<ref>) — it rides its own §2.2 24h auto-proceed timer and must NOT be
+# force-expired on bead resolution. A pure tier predicate is exact here precisely
+# because digest≡no-armed-timer, so it needs NO timer_fire_at projection field
+# (Contract B stays frozen). Pure filter — extracted so the tier scoping is unit-
+# testable without a live engine.
+daemon_wc__select_open_beads() {
+  jq -r '
+    (.waiting_on_you // [])
+    | map(select((.tier // "") == "blocking" or (.tier // "") == "digest"))
+    | .[] | (.bead_ref // empty)' 2>/dev/null | awk 'NF' | sort -u
+}
+
+# daemon_wc__fetch_open_dossier_beads — echo the unique bead_refs of the OWNED
+# dossiers still on the Inbox (waiting_on_you), one per line (see
+# daemon_wc__select_open_beads for the tier scoping). Honors
 # DAEMON_WC_SNAPSHOT_OVERRIDE for tests. ALWAYS returns 0 (empty on any failure
 # — a transient engine outage just means "nothing to reconcile this pass").
 daemon_wc__fetch_open_dossier_beads() {
@@ -172,11 +200,9 @@ daemon_wc__fetch_open_dossier_beads() {
     command -v co_request >/dev/null 2>&1 || exit 0
     local snap
     snap="$(co_request "${COORDINATOR_TOKEN:-}" work-snapshot "" 2>/dev/null)" || exit 0
-    # BLOCKING tier only — timed-fyi/digest ride their own §2.2 timer (Flow F).
-    printf '%s' "$snap" | jq -r '
-      (.waiting_on_you // [])
-      | map(select((.tier // "") == "blocking"))
-      | .[] | (.bead_ref // empty)' 2>/dev/null | awk 'NF' | sort -u
+    # OWNED tiers only — blocking + digest (timer-less); timed-fyi rides its own
+    # §2.2 timer (Flow F) and is excluded. See daemon_wc__select_open_beads.
+    printf '%s' "$snap" | daemon_wc__select_open_beads
     exit 0
   )
 }
@@ -206,7 +232,7 @@ daemon_wc__bd_status_labels() {
 }
 
 # daemon_wc__resolved_outside_flow <status> <labels_csv> — 0 (yes) iff the bead
-# behind a BLOCKING dossier has resolved OUTSIDE the dossier tap:
+# behind an OWNED (blocking|digest) dossier has resolved OUTSIDE the dossier tap:
 #   • status == closed                                  → yes (close-without-decision)
 #   • status != blocked AND no `human` label            → yes (self-unblocked / re-scoped)
 #   • status == blocked WITH `human` label              → NO (still genuinely waiting)
@@ -278,9 +304,9 @@ daemon_wc_reconcile_one() {
   printf '0'; return 0
 }
 
-# daemon_wc_reconcile_once — single iteration: fetch the blocking dossiers still
-# on the Inbox, reconcile each. ALWAYS returns 0. Called from daemon.sh's main
-# loop on the WORK_CONTROL_POLL_INTERVAL cadence.
+# daemon_wc_reconcile_once — single iteration: fetch the OWNED (blocking|digest)
+# dossiers still on the Inbox, reconcile each. ALWAYS returns 0. Called from
+# daemon.sh's main loop on the WORK_CONTROL_POLL_INTERVAL cadence.
 daemon_wc_reconcile_once() {
   local bref total=0 c
   while IFS= read -r bref; do

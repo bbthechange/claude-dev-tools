@@ -207,6 +207,37 @@ eq "$f_lines" "0" "canary: NO outbox line emitted (DAEMON_WC_DISABLED=1)"
 [[ -f "$PART_F/published/thirsty-closedbead.closed.json" ]] \
   && ok "canary: marker still written (so we don't retry)" || bad "canary marker missing"
 
+# ════════════════════════════════════════════════════════════════════════════
+# PART G — tier scoping (claude-tools-o2mk): daemon_wc__select_open_beads owns the
+#          TIMER-LESS tiers (blocking + DEFERRED digest) but EXCLUDES timed-fyi.
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART G — tier scoping: blocking + digest owned, timed-fyi excluded ──"
+SNAP_JSON='{"waiting_on_you":[
+  {"bead_ref":"thirsty-blk","tier":"blocking","open_item_count":1},
+  {"bead_ref":"thirsty-deferred","tier":"digest","open_item_count":1},
+  {"bead_ref":"thirsty-overview","tier":"timed-fyi","open_item_count":1},
+  {"bead_ref":"thirsty-notier","tier":"","open_item_count":1}
+]}'
+SEL="$(
+  set -u
+  export DAEMON_CACHE_DIR="$WORK/cacheG"
+  # shellcheck source=/dev/null
+  . "$LIB"
+  printf '%s' "$SNAP_JSON" | daemon_wc__select_open_beads
+)"
+printf '%s\n' "$SEL" | grep -qx "thirsty-blk" \
+  && ok "blocking dossier's bead is selected (unchanged)" || bad "blocking bead missing from selection"
+printf '%s\n' "$SEL" | grep -qx "thirsty-deferred" \
+  && ok "DEFERRED (digest, no-timer) dossier's bead IS selected — the o2mk gap closed" \
+  || bad "deferred/digest bead NOT selected (the o2mk gap)"
+printf '%s\n' "$SEL" | grep -qx "thirsty-overview" \
+  && bad "timed-fyi overview bead was selected (must be EXCLUDED — rides its own §2.2 timer)" \
+  || ok "timed-fyi overview bead is EXCLUDED (Flow F timer preserved)"
+printf '%s\n' "$SEL" | grep -qx "thirsty-notier" \
+  && bad "untiered bead was selected (only blocking|digest are owned)" \
+  || ok "an absent/empty tier is NOT owned (excluded)"
+
 echo ""
 echo "════════════════════════════════════════════════════════════════════"
 echo " L2 work→control reconciler: PASS=$PASS FAIL=$FAIL"

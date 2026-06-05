@@ -65,10 +65,12 @@ async function workPlaneRows() {
 
 // a v2 dossier for <bref> with explicit per-item {id,state,response}
 // Defaults to the BLOCKING decision tier; pass tier="timed-fyi" for Flow F.
-const mkFor = (id, bref, items, tier = "blocking") => ({
+// timerFireAt: pass an RFC-3339 string to ARM the §2.2 auto-proceed timer
+// (a genuine auto-proceeder); default null = no armed timer (claude-tools-o2mk).
+const mkFor = (id, bref, items, tier = "blocking", timerFireAt = null) => ({
   id, schema_version: 2, kind: "decide", trigger: "worker_stuck",
   bead_ref: bref, tier, created_at: "2026-05-30T00:00:00Z",
-  timer_fire_at: null,
+  timer_fire_at: timerFireAt,
   body: { dossier_schema_version: 2, tldr: "t", sections: [], diagrams: [], full_detail: "f" },
   items: items.map((x) => ({
     id: x.id, kind: "approve-reject", framing: {},
@@ -127,16 +129,37 @@ it("L2 (claude-tools-uxvl2) — bead-status-changed auto-closes a bead's open do
   ck2("second identical event => { ok:true, idempotent:true } (monotonic no-op)",
     r2.body && r2.body.ok === true && r2.body.idempotent === true);
 
-  // ── tier scoping: a co-existing timed-fyi (Flow F overview) for the SAME bead
-  //    rides its own 24h timer and is NOT force-expired ──────────────────────
+  // ── tier scoping: a co-existing ARMED timed-fyi (Flow F overview) for the SAME
+  //    bead rides its own 24h timer and is NOT force-expired ──────────────────
   const BREF2 = "thirsty-L2beta";
   await call(GOOD, "dossier-put", [mkFor("stuck-bsc2", BREF2, [{ id: "d1", state: "open" }], "blocking")]);
-  await call(GOOD, "dossier-put", [mkFor("overview-bsc2", BREF2, [{ id: "f1", state: "open" }], "timed-fyi")]);
+  // ARMED timer (timer_fire_at set) ⇒ a genuine §2.2 auto-proceeder, exempt.
+  await call(GOOD, "dossier-put", [mkFor("overview-bsc2", BREF2, [{ id: "f1", state: "open" }], "timed-fyi", "2026-05-31T00:00:00Z")]);
   const rt = await call(GOOD, "bead-status-changed", [evt(BREF2, "closed", "2026-05-30T02:08:00Z")]);
   ck2("tier scoping: blocking dossier's item -> expired", istate(await GET("stuck-bsc2"), "d1") === "expired");
-  ck2("tier scoping: co-existing timed-fyi overview is PRESERVED (rides its timer)",
+  ck2("tier scoping: co-existing ARMED timed-fyi overview is PRESERVED (rides its timer)",
     istate(await GET("overview-bsc2"), "f1") === "open");
-  ck2("tier scoping: matched_dossiers counts only the blocking dossier", rt.body && rt.body.matched_dossiers === 1);
+  ck2("tier scoping: matched_dossiers counts only the blocking dossier (armed timed-fyi exempt)", rt.body && rt.body.matched_dossiers === 1);
+
+  // ── L2 gap (claude-tools-o2mk): a §5.6-DEFERRED decision card (tier lowered
+  //    blocking→digest WITHOUT arming a timer) has NO timer to ride, so it IS
+  //    auto-closed when its bead resolves outside the tap — it is NOT a genuine
+  //    auto-proceeder. Plant blocking, then `defer` it (the real Inbox verb) so
+  //    tier=digest & timer_fire_at stays null, then resolve the bead. ──────────
+  const BREF3 = "thirsty-L2gamma";
+  await call(GOOD, "dossier-put", [mkFor("defer-bsc3", BREF3, [{ id: "g1", state: "open" }], "blocking")]);
+  const def = await call(GOOD, "dossier-defer", ["defer-bsc3"]);
+  ck2("defer lowers the card to tier=digest (the §5.6 verb)", good(def));
+  ck2("deferred card is tier=digest with NO armed timer (timer_fire_at null)", await (async () => {
+    const s = await GET("defer-bsc3");
+    return !!s && s.tier === "digest" && s.timer_fire_at === null;
+  })());
+  ck2("BEFORE: the deferred card still shows on the Inbox", await waitingHas(BREF3));
+  const rd = await call(GOOD, "bead-status-changed", [evt(BREF3, "closed", "2026-05-30T02:09:00Z")]);
+  ck2("deferred (no-timer) card IS auto-closed — its open item -> expired",
+    istate(await GET("defer-bsc3"), "g1") === "expired");
+  ck2("deferred card now counts as a matched_dossiers (acted on, not skipped)", rd.body && rd.body.matched_dossiers === 1);
+  ck2("AFTER: the deferred card drops off the Inbox (the o2mk gap closed)", !(await waitingHas(BREF3)));
 
   // ── bead scoping: a different bead_ref's open item is untouched ─────────────
   await call(GOOD, "dossier-put", [mkFor("bsc-other", "thirsty-Other", [{ id: "o1", state: "open" }])]);
