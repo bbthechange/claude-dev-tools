@@ -99,6 +99,22 @@ echo "── no marker dir ──"
 out="$(_watchdog_scan_agent_action "$TMP/does-not-exist" "$BEAD" 999999 "$SIG" 2>/dev/null)"
 [[ -z "$out" ]] && ok "missing marker dir ⇒ silent no-op" || bad "missing dir should be a no-op (got '$out')"
 
+# ── claude-tools-wqx7: the watchdog scan dir is a daemon→runner RENDEZVOUS, so
+#    st_run_task must PIN it to the FROZEN default .beads/runner-logs/agent-action,
+#    NOT derive it from $log_dir/$LOG_DIR. The daemon (daemon_aa_control_marker_dir)
+#    hardcodes the same fixed path and cannot know a workspace's LOG_DIR override;
+#    a $log_dir derive here would silently break the seam under a non-default
+#    LOG_DIR (daemon drops in the default dir, watchdog scans the override dir).
+#    design/agent-action.md §4 freezes "the marker directory". Lock the symmetry. ──
+echo "── marker dir pinned to the frozen rendezvous path (wqx7) ──"
+aa_assign="$(grep -E '^[[:space:]]*local agent_action_dir=' "$RUNNER")"
+if printf '%s' "$aa_assign" | grep -q '\.beads/runner-logs/agent-action' \
+   && ! printf '%s' "$aa_assign" | grep -qE '\$\{?(log_dir|LOG_DIR)'; then
+  ok "st_run_task pins agent_action_dir to the fixed .beads/runner-logs/agent-action (not \$LOG_DIR)"
+else
+  bad "agent_action_dir must be the frozen fixed path, not \$log_dir/\$LOG_DIR (got: '$aa_assign')"
+fi
+
 rm -rf "$TMP"
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"

@@ -75,6 +75,17 @@ daemon_aa__safe_key() {
 }
 
 # daemon_aa_control_marker_dir <ws> → the runner-honored control-marker dir.
+#
+# The fixed `.beads/runner-logs/agent-action` is INTENTIONAL and FROZEN, not a
+# stray literal: design/agent-action.md §4 freezes "the marker directory" at
+# <ws>/.beads/runner-logs/agent-action/. This is a daemon→runner RENDEZVOUS — the
+# daemon supervises many workspaces and cannot know any one workspace's exported
+# LOG_DIR override (it never sources <ws>/.beads/runner.sh), so the rendezvous
+# MUST live at the workspace-stable default, exactly as launch-detached.sh pins the
+# detached-runner.pid liveness rendezvous there. Do NOT "fix" this toward $LOG_DIR;
+# the symmetry is restored on the RUNNER side instead — runner.sh st_run_task pins
+# its watchdog scan dir to the same fixed path (claude-tools-wqx7), so LOG_DIR
+# (BC-27) reparents only the runner's own raw artifacts, never this IPC seam.
 daemon_aa_control_marker_dir() {
   local ws="${1:-}"
   [[ -n "$ws" ]] || return 0

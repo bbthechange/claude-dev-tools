@@ -2615,7 +2615,22 @@ st_run_task() {
   # I4 (claude-tools-uxvi4): the agent-action control-marker dir the daemon drops
   # into for THIS workspace's stuck-actions (nudge / kill-retry / kill-gate). The
   # watchdog reads it each tick and honors a marker targeting CURRENT_TASK_ID.
-  local agent_action_dir="$log_dir/agent-action"
+  #
+  # claude-tools-wqx7: PIN this to the FROZEN default path, NOT $log_dir/$LOG_DIR.
+  # This dir is a daemon→runner RENDEZVOUS, not a runner post-mortem artifact: the
+  # daemon (agent-action-poll.sh daemon_aa_control_marker_dir) drops markers here
+  # but cannot know a workspace's exported LOG_DIR override, so it hardcodes
+  # .beads/runner-logs/agent-action — exactly as launch-detached.sh pins the
+  # detached-runner.pid rendezvous to the fixed path. design/agent-action.md §4
+  # FREEZES "the marker directory" at <ws>/.beads/runner-logs/agent-action/. LOG_DIR
+  # (BC-27) reparents only the runner's OWN raw artifacts (STREAM/SIGNAL/PROC, the
+  # 62xc $log_dir derive above); a cross-process rendezvous must stay at the fixed
+  # path so the daemon side can find it. Deriving this from $log_dir (it did so
+  # incidentally) would silently break the seam under a non-default LOG_DIR — the
+  # daemon drops into the default dir while the watchdog scans the override dir, so
+  # stuck-actions never arrive. cwd is the workspace, so the relative literal here
+  # resolves to the same dir the daemon writes ($ws/.beads/runner-logs/agent-action).
+  local agent_action_dir=".beads/runner-logs/agent-action"
   ( trap - EXIT HUP INT TERM
     _watchdog_loop "$CLAUDE_PID" "$STREAM_FILE" "$SIGNAL_FILE" "$PROC_SNAPSHOT" "$POST_TERMINAL_FILE" \
                    "$agent_action_dir" "$CURRENT_TASK_ID" ) &

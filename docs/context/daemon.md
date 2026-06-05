@@ -97,6 +97,16 @@ runner (Flow D), bounded to ≤ one `DESIRED_STATE_POLL_INTERVAL` (60s).
   for `kill -0` / `kill -TERM`, never a `pgrep` count. Process-name matching
   inflates the count and mis-fires spawn/kill. M3 adopts whatever pidfile a prior
   boot left and reconciles off it.
+- **Daemon↔runner rendezvous files live at the FIXED `.beads/runner-logs` path,
+  never under a per-workspace `LOG_DIR` override.** `agent-action-poll.sh`'s
+  `daemon_aa_control_marker_dir` hardcodes `<ws>/.beads/runner-logs/agent-action`
+  (the I4 stuck-action control markers the runner watchdog reads) — this is
+  INTENTIONAL and frozen (design/agent-action.md §4), not a stray literal: the
+  daemon supervises many workspaces and never sources `<ws>/.beads/runner.sh`, so
+  it cannot know a workspace's `LOG_DIR`. Do NOT "fix" it toward `LOG_DIR`; the
+  symmetry is held on the RUNNER side instead (runner.sh `st_run_task` pins its
+  watchdog scan dir to the same fixed path — claude-tools-wqx7). Same principle as
+  the `detached-runner.pid` rendezvous `launch-detached.sh` pins there.
 - **`coordinator_token_keychain` is a Keychain item NAME, never the token.** It is
   dereferenced at use time via `security find-generic-password -s <item> -w`. No
   bearer ever lands in `workspaces.json` (BC-34 / §9.2 posture).

@@ -113,7 +113,17 @@ patch live v1. See HANDOFF-UX-V2 §2.
   artifacts in `st_run_task` (STREAM/SIGNAL/PROC, POST_TERMINAL/HOOK_SETTINGS)
   derive their dir from `"${LOG_DIR:-.beads/runner-logs}"`, NOT a second hardcoded
   literal, so they stay symmetric with the `$LOG_DIR/current-task` pointer + teardown
-  `rm` under a non-default `LOG_DIR` (claude-tools-62xc).
+  `rm` under a non-default `LOG_DIR` (claude-tools-62xc). **The exception is a
+  daemon↔runner RENDEZVOUS dir/file, which must NOT follow `LOG_DIR`:** the
+  agent-action control-marker dir (`st_run_task`'s `agent_action_dir`) is PINNED to
+  the frozen `.beads/runner-logs/agent-action`, and the `detached-runner.pid`
+  liveness file is pinned by `launch-detached.sh`. The daemon supervises many
+  workspaces and cannot know a per-workspace `LOG_DIR` override, so cross-process
+  IPC stays at the workspace-stable default (design/agent-action.md §4 freezes the
+  marker dir; claude-tools-wqx7) — `LOG_DIR` reparents only the runner's OWN raw
+  artifacts. A `$log_dir` derive on a rendezvous path silently breaks the seam under
+  a non-default `LOG_DIR` (daemon drops in the default dir, watchdog scans the
+  override dir).
 - **SCAR vs SCAFFOLDING when porting to v2.** Before "faithfully porting" any v1
   mechanism, read its BC class: a SCAFFOLDING entry (e.g. the `read -ra` empty-array
   quirk BC-03, the `--exclude-type=epic` belt-and-suspenders BC-52) is a bash
