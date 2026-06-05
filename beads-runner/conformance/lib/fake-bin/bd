@@ -152,11 +152,28 @@ case "$cmd" in
     _emit_issues "$id"; echo ; exit 0 ;;
 
   label)
-    # bd label list <id> --json
+    # bd label list <id> --json   |   bd label add <id> <label> [<label>...]
     sub="${1:-}"; id="${2:-}"
     if [[ "$sub" == "list" ]]; then
       L=$(_get "$id" labels "")
       jq -cn --arg L "$L" '($L|if .=="" then [] else split(",") end)'
+      exit 0
+    fi
+    if [[ "$sub" == "add" ]]; then
+      # claude-tools-1vnx: a real `bd label add` so a fake worker can stick the
+      # `human` label the no-claim gate / _bead_blocked_for_human read (append,
+      # comma-joined, dedup'd). The `human` fork label is what the un-thrash guard
+      # keys on, so the harness must persist it (bd_seed's static labels were the
+      # only prior way to set them).
+      shift 2 || true
+      _exists "$id" || exit 0
+      cur=$(_get "$id" labels "")
+      for lab in "$@"; do
+        [[ -z "$lab" ]] && continue
+        printf '%s' "$cur" | tr ',' '\n' | grep -qxF "$lab" 2>/dev/null && continue
+        if [[ -z "$cur" ]]; then cur="$lab"; else cur="$cur,$lab"; fi
+      done
+      _set "$id" labels "$cur"
       exit 0
     fi
     exit 0 ;;

@@ -280,6 +280,29 @@ was lost).
   so the dominant agent-fallback vector also ages out of the window; the predicate's
   bare-note path stays only for BC-53 back-compat. v2 has no such predicate — its
   STUCK path is `$sig`-file based, already window-bounded by construction.
+- **A surfaced human-decision bead must be UN-THRASHABLE (claude-tools-1vnx, both
+  runners).** A compliant worker that hits a human fork sets `status=blocked` + a
+  `human` label + a structured ask, then ENDS ITS TURN — so `claude -p` exits 0
+  (NOT the `WORKER_STUCK_EXIT=7` sentinel, no stuck stream marker). Both runners
+  used to fold that to `TASK_NOT_CLOSED`, reset `--status=open`, and (on retry)
+  spawn an analysis child whose close re-armed the bead → **thrash** (re-pick →
+  re-block → re-misclassify, burning an Opus analysis task per cycle; casualty
+  claude-tools-m3xi, re-surfaced 3×). v1's §7.3 preempt SHOULD have caught it via
+  `detect_worker_stuck_primary` Case 2 (blocked+human) but its **one-shot
+  `bd show` read** was fragile (a transient hiccup / a status flipped away from
+  blocked at check time ⇒ miss). Fix: (1) v1 retries that read; (2) v1 adds a
+  dispatch-site belt `_bead_blocked_for_human` (ungated by `ASK_BRIAN_ENABLED`,
+  retried label+status read, fail-SAFE on an unreadable status) that pins a
+  blocked+human-at-exit bead — STUCK_NEEDS_HUMAN recorded, breaker/retry-exempt,
+  NO reset, NO analysis; (3) v2 (`runner.sh`) had the IDENTICAL hole — its
+  `classify_failure` now reads the sticky `human` label and classifies exit-0
+  blocked+human as `STUCK_NEEDS_HUMAN`, reusing the existing exempt STUCK dispatch
+  (`_drive_blocked_for_human`). The `human` LABEL is the load-bearing signal
+  (sticky/durable, same reasoning as `RUNNER_NO_CLAIM_LABELS`); a reliably
+  non-blocked bare `human` label still falls through (the test-stuck-primary-relaxed
+  negative posture). Regression-locked by the `bc13-1vnx-…`/`bc13tree-1vnx-…`
+  rigs in `bc-13-14-retry-asymmetry{,-tree}.sh` (the new harness verb is the
+  `stuck_primary_exit0` claude plan + a real `bd label add` in the fake bd).
 - **Never gate a lease decision on the transport `rc==4`** — it conflates a
   GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
   AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409

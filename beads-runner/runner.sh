@@ -959,6 +959,22 @@ parse_stream_signals() {
 #            EITHER the worker sentinel exit WORKER_STUCK_EXIT (§7.2 primary,
 #            this child's literal slot) OR a `STUCK_NEEDS_HUMAN=` marker (the
 #            §7.2 backstop, PRODUCED by T2.5 — consumed here).
+# claude-tools-1vnx — true iff the bead carries the sticky `human` decision label.
+# Read via `bd label list` (the same read the RUNNER_NO_CLAIM_LABELS gate uses),
+# RETRIED once so a transient hiccup does not drop a genuine fork. A degraded/empty
+# read ⇒ false: the caller only UPGRADES blocked→STUCK on a POSITIVE label, never on
+# an unread one (mirrors v1 _bead_blocked_for_human, which fires only on a confirmed
+# label). The label is the durable fork signal where status/defer are not.
+_bead_has_human_label() {
+  local id="$1" labels _try
+  labels=""
+  for _try in 1 2; do
+    labels="$(safe_capture BD_UNAVAILABLE "" -- bd label list "$id" --json)"
+    [[ -n "$labels" && "$labels" != "[]" ]] && break
+  done
+  printf '%s' "$labels" | jq -e 'any(.[]?; . == "human")' >/dev/null 2>&1
+}
+
 classify_failure() {
   local sig="$1" id="$2" ec="$3" raw status
   local stuck=0
@@ -984,6 +1000,23 @@ classify_failure() {
     fi
     # exit-0, bead still open: STUCK (backstop) slots ABOVE TASK_NOT_CLOSED.
     [[ $stuck -eq 1 ]] && { echo "STUCK_NEEDS_HUMAN"; return; }
+    # claude-tools-1vnx — exit-0 deliberate human fork. A COMPLIANT worker that
+    # hits a human-decision fork takes the deterministic bd path (status=blocked +
+    # a `human` label + a structured ask) and then ENDS ITS TURN: `claude -p`
+    # exits 0 with NO WORKER_STUCK_EXIT sentinel and NO STUCK_NEEDS_HUMAN= stream
+    # marker, so `stuck` is 0 above. Without this, the bead folds to
+    # TASK_NOT_CLOSED, st_post_task resets it --status=open, and the retry spawns
+    # an analysis child whose close re-arms the bead (re-pick → re-block →
+    # re-misclassify) — the claude-tools-m3xi thrash that burned an Opus analysis
+    # task per cycle (v1 had the same hole; fixed there too). The bead the worker
+    # DELIBERATELY left blocked + `human` IS a human decision, not an unclosed
+    # task: confirm the sticky LABEL and classify STUCK_NEEDS_HUMAN so v2's
+    # existing breaker/retry-EXEMPT STUCK dispatch (drive-blocked-for-human, no
+    # reset, no analysis — BC-13/14/53) pins it. (A degraded bd-show at line 969
+    # already fails SAFE to DEGRADED, which does not mutate work state.)
+    if [[ "$status" == "blocked" ]] && _bead_has_human_label "$id"; then
+      echo "STUCK_NEEDS_HUMAN"; return
+    fi
     echo "TASK_NOT_CLOSED"; return
   fi
 

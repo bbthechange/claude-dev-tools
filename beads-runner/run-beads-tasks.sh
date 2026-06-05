@@ -1040,7 +1040,20 @@ detect_worker_stuck_primary() {
   command -v bd >/dev/null 2>&1 || return 1
   # --long --json includes the `notes` key (the runner already relies on this
   # shape at create_analysis_task — same contract).
-  row=$(bd show "$task_id" --long --json 2>/dev/null) || return 1
+  # claude-tools-1vnx: RETRY a transient empty/failed read. A ONE-SHOT read here
+  # was a root of the m3xi thrash — a single `bd show` hiccup made a genuine
+  # status=blocked + `human` fork read as not-stuck, so it fell through to
+  # TASK_NOT_CLOSED (reset --status=open + analysis child + re-pick → re-block →
+  # re-misclassify, burning an Opus analysis task per cycle). A bounded re-fetch
+  # closes that transient window; the dispatch-site _bead_blocked_for_human guard
+  # (claude-tools-1vnx) is the belt-and-suspenders behind this for a read that
+  # STILL fails or a status that flipped away from blocked at check time.
+  local _read_try
+  row=""
+  for _read_try in 1 2 3; do
+    row=$(bd show "$task_id" --long --json 2>/dev/null || true)
+    if [[ -n "$row" ]]; then break; fi
+  done
   [[ -n "$row" ]] || return 1
   status=$(printf '%s' "$row" | jq -r '.[0].status // ""' 2>/dev/null)
   has_human=$(printf '%s' "$row" | jq -r '
@@ -1103,6 +1116,44 @@ detect_worker_stuck_primary() {
     return 0
   fi
   return 1
+}
+
+# claude-tools-1vnx — un-thrashable human-decision fork detector (belt-and-
+# suspenders behind the §7.3 STUCK preempt). True iff the bead is a human
+# decision the worker DELIBERATELY left in place: the `human` label set AND a
+# status the runner must not silently undo (blocked, or unreadable). The casualty
+# (claude-tools-m3xi) was re-picked/re-surfaced 3× because the preempt's one-shot
+# `bd show` read missed a genuine blocked+human at exit and the TASK_NOT_CLOSED
+# arm then reset it --status=open and spawned an analysis child whose close
+# re-armed the bead. This predicate is the OUTCOME guard the preempt asserts,
+# made INDEPENDENT of the preempt's gating (ASK_BRIAN_ENABLED + the stuck-routing
+# lib) and of its read fragility:
+#   • The `human` LABEL is the load-bearing signal — sticky and durable where
+#     status/defer are not (the same reasoning as RUNNER_NO_CLAIM_LABELS at :86),
+#     and read via `bd label list` (the proven no-claim-gate read), retried.
+#   • Status is corroboration: fire on `blocked` (the worker's deliberate fork
+#     state), OR fail-SAFE when status is UNREADABLE after retries (never thrash a
+#     CONFIRMED human fork on a transient bd hiccup). A reliably non-blocked status
+#     (open/in_progress/closed) returns 1 → normal classification, matching the
+#     detect_worker_stuck_primary negative posture that a non-blocked bare `human`
+#     label alone is NOT the fork we pin (test-stuck-primary-relaxed.sh).
+# Returns 0 = pin blocked-for-human; 1 = not our case (let classify_failure run).
+_bead_blocked_for_human() {
+  local task_id="$1" labels status _try
+  command -v bd >/dev/null 2>&1 || return 1
+  labels=""
+  for _try in 1 2; do
+    labels=$(bd label list "$task_id" --json 2>/dev/null | jq -r '.[]?' 2>/dev/null || true)
+    if [[ -n "$labels" ]]; then break; fi
+  done
+  printf '%s\n' "$labels" | grep -qxF "human" 2>/dev/null || return 1
+  status=""
+  for _try in 1 2; do
+    status=$(bd show "$task_id" --json 2>/dev/null \
+             | jq -r '(if type == "array" then .[0] else . end) | (.status // "")' 2>/dev/null || true)
+    if [[ -n "$status" ]]; then break; fi
+  done
+  [[ "$status" == "blocked" || -z "$status" ]]
 }
 
 # Create an analysis task that blocks the failed task.
@@ -2475,6 +2526,33 @@ $PROMPT"
       fi
       SR_STUCK_HANDLED=1
     fi
+  fi
+
+  # ── claude-tools-1vnx: un-thrashable human-decision fork (belt-and-suspenders) ─
+  # The §7.3 preempt above is the PRIMARY honor-the-fork path (it also authors the
+  # §7.4 dossier + §4.3 notification). But it is gated on ASK_BRIAN_ENABLED + the
+  # stuck-routing lib AND leans on detect_worker_stuck_primary's bd read — the exact
+  # fragility that let claude-tools-m3xi thrash: a flaky/late read missed a genuine
+  # status=blocked + `human` at exit, so the bead fell to the TASK_NOT_CLOSED arm,
+  # was reset --status=open, and on retry spawned an analysis child whose close
+  # re-armed the bead (re-pick → re-block → re-misclassify), burning an Opus
+  # analysis task every cycle. This OUTCOME guard closes that loop INDEPENDENTLY of
+  # the preempt: a bead the worker DELIBERATELY left blocked + `human` is a decision
+  # the runner must never silently undo. _bead_blocked_for_human reads the sticky
+  # LABEL + status via separate, RETRIED bd calls (fail-SAFE on a transient hiccup),
+  # so the bead is pinned blocked-for-human — STUCK_NEEDS_HUMAN recorded, breaker/
+  # retry-exempt, NO reset-to-open, NO analysis child. Idempotent with the preempt
+  # (if it already fired, SR_STUCK_HANDLED is set and this is skipped) and a strict
+  # no-op for every non-human bead (the `human` label gate never matches them, so
+  # the whole offline conformance suite is unaffected).
+  if [[ -z "$SR_STUCK_HANDLED" ]] && _bead_blocked_for_human "$TASK_ID"; then
+    append_runner_note "$TASK_ID" "STUCK_NEEDS_HUMAN" "-"
+    record_incident    "$TASK_ID" "STUCK_NEEDS_HUMAN" "-"
+    if command -v la_report_terminal_reason >/dev/null 2>&1; then
+      la_report_terminal_reason STUCK_NEEDS_HUMAN "" "$TASK_ID" "${PROJECT_REF:-}" || true
+    fi
+    SR_STUCK_HANDLED=1
+    SR_REASON="blocked+human at exit (claude-tools-1vnx un-thrash guard — the §7.3 preempt did not fire; bead pinned blocked-for-human, NOT reset, NO analysis child)"
   fi
 
   # Preserve the stream-json for serious failures so we can post-mortem what

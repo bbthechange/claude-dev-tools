@@ -125,3 +125,31 @@ _need "post-T2: 3 stuck tasks must NOT trip breaker" test "$RUN_EXIT" -ne 2
 _need "post-T2: no analysis child for a stuck bead"  test "$(analysis_count)" -eq 0
 _emit
 H_cleanup
+
+# ── claude-tools-1vnx: a blocked+human EXIT-0 fork is UN-THRASHABLE (v1) ───────
+# The COMPLIANT worker that hits a human-decision fork takes the deterministic bd
+# path — status=blocked + a real `human` label + a structured ask — and then ENDS
+# ITS TURN, so `claude -p` exits 0 (NOT the WORKER_STUCK_EXIT(7) sentinel the
+# stuck_primary gate above uses). classify_failure ⇒ TASK_NOT_CLOSED, and the OLD
+# arm reset it --status=open and (on the retry) spawned an analysis child whose
+# close re-armed the bead (dep resolves → bd ready → re-pick → re-block →
+# re-misclassify) — the claude-tools-m3xi thrash that burned an Opus analysis task
+# per cycle. The fix: the _bead_blocked_for_human dispatch-site guard pins a bead
+# the worker DELIBERATELY left blocked + `human` as blocked-for-human, INDEPENDENT
+# of the §7.3 preempt (this rig runs with ASK_BRIAN_ENABLED OFF, so the preempt is
+# skipped entirely — the belt is the ONLY thing that can catch it). Unlike the v1
+# stuck_primary gate above (exit-7, GATE-PENDING on v1), this is the EXIT-0 vector
+# and MUST be GREEN on v1 now.
+H_init_test bc13-1vnx-blocked-human-exit0-unthrash
+bd_seed T1 "human fork" "x"
+claude_plan stuck_primary_exit0
+run_runner
+_expect "BC-13/14" "§7.5" "blocked+human EXIT-0 fork ⇒ STUCK_NEEDS_HUMAN, NO reset-to-open, NO analysis, breaker/retry-exempt (claude-tools-1vnx)"
+_need "STUCK_NEEDS_HUMAN incident recorded"          inc_has T1 STUCK_NEEDS_HUMAN
+_need "ZERO analysis children (not thrashed)"        test "$(analysis_count)" -eq 0
+_need "bead left status=blocked (NOT reset to open)" test "$(bd_status T1)" = "blocked"
+_need "no TASK_NOT_CLOSED reset taken"               test "$(inc_count T1 TASK_NOT_CLOSED)" -eq 0
+_need "breaker never tripped (exit != 2)"            test "$RUN_EXIT" -ne 2
+_need "no consecutive-failures breaker message"      bash -c '! grep -q "consecutive failures" "'"$HARNESS_OUT"'/runner.out"'
+_emit
+H_cleanup

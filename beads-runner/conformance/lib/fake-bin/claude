@@ -176,6 +176,22 @@ case "$behavior" in
     emit '{"type":"result","result":"I need a human decision; blocked.","is_error":false,"stop_reason":"end_turn"}'
     exit "${WORKER_STUCK_EXIT:-7}" ;;
 
+  stuck_primary_exit0)  # claude-tools-1vnx: the EXIT-0 human-decision fork — the
+    # m3xi thrash vector. A COMPLIANT worker takes the deterministic bd path
+    # (status=blocked + a real `human` label + a structured ask in notes) but then
+    # ENDS ITS TURN, so `claude -p` exits 0 — NOT the WORKER_STUCK_EXIT(7) sentinel
+    # the `stuck_primary` plan uses (research Q4: a capable headless worker exits 0,
+    # the bd side effects ARE the signal). classify_failure ⇒ TASK_NOT_CLOSED; the
+    # runner must NOT reset --status=open / spawn an analysis child — the §7.3
+    # preempt OR the claude-tools-1vnx belt pins it blocked-for-human.
+    if [[ -n "$bead_id" ]]; then
+      bd update "$bead_id" --status=blocked >/dev/null 2>&1
+      bd label add "$bead_id" human >/dev/null 2>&1
+      bd update "$bead_id" --append-notes="TL;DR: need a human decision. The ask: pick A or B." >/dev/null 2>&1
+    fi
+    emit '{"type":"result","result":"I left it status=blocked + human and wrote the A/B ask.","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
   # ── T1b additions (claude-tools-crq) ─────────────────────────────────────────
 
   subagent_err_then_success)

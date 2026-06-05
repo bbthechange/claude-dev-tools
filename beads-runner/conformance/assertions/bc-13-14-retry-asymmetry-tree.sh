@@ -130,3 +130,25 @@ _need "STUCK_NEEDS_HUMAN incident recorded"       inc_has T1 STUCK_NEEDS_HUMAN
 _need "STUCK never advanced the breaker"          bash -c '! grep -q "consecutive failures" "'"$HARNESS_OUT"'/runner.out"'
 _emit
 H_cleanup
+
+# ── claude-tools-1vnx: a blocked+human EXIT-0 fork is UN-THRASHABLE (v2) ───────
+# The compliant worker leaves status=blocked + a real `human` label + a structured
+# ask and ENDS ITS TURN — `claude -p` exits 0 (NOT WORKER_STUCK_EXIT(7), and no
+# STUCK_NEEDS_HUMAN= stream marker). v2's classify_failure folded this to
+# TASK_NOT_CLOSED → st_post_task reset --status=open + (retry) analysis child whose
+# close re-armed the bead → the m3xi thrash (v2 had the IDENTICAL hole to v1; v2 is
+# piloting live, so the hole was reachable). The fix reads the sticky `human` label
+# in classify_failure and classifies STUCK_NEEDS_HUMAN, reusing v2's breaker/retry-
+# EXEMPT STUCK dispatch (_drive_blocked_for_human — no reset, no analysis).
+H_init_test bc13tree-1vnx-blocked-human-exit0-unthrash
+bd_seed T1 "human fork" "x"
+claude_plan stuck_primary_exit0
+run_runner
+_expect "BC-13/14" "§7.5" "blocked+human EXIT-0 fork ⇒ STUCK_NEEDS_HUMAN, NO reset-to-open, NO analysis, breaker/retry-exempt (claude-tools-1vnx) (runner.sh)"
+_need "STUCK_NEEDS_HUMAN incident recorded"          inc_has T1 STUCK_NEEDS_HUMAN
+_need "ZERO analysis children (not thrashed)"        test "$(analysis_count)" -eq 0
+_need "bead left status=blocked (NOT reset to open)" test "$(bd_status T1)" = "blocked"
+_need "no TASK_NOT_CLOSED reset taken"               test "$(inc_count T1 TASK_NOT_CLOSED)" -eq 0
+_need "breaker never tripped (exit != 2)"            test "$RUN_EXIT" -ne 2
+_emit
+H_cleanup
