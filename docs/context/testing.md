@@ -217,6 +217,22 @@ against the live host — not local-green + committed — is acceptance.
   (lib/daemon/agents/hooks/top + conformance rigs + the JS cf/jsdom tiers, ~250
   file-scans) and found NO other consumer and NO unprotected direct-invoker — but a NEW
   rig/test that calls a hook directly must follow the rule.
+- **Ambient coordinator-wiring leak — fleet-box false-RED (claude-tools-hr7b, found by
+  309l).** Every live-fleet box's daemon/runner shell exports `COORDINATOR_URL` +
+  `COORDINATOR_TOKEN` + `RUNNER_BACKEND=real`. A v2 (`runner.sh`) `-tree` conformance
+  rig launched from that shell has the runner source the REAL backend and route the §6.1
+  `co_lease_acquire` to the HOSTED coordinator, which refuses the rig's fake bead ⇒ no
+  claim ⇒ EVERY assertion false-REDs (symptom: `lease unavailable for T1 — not claiming`
+  + a downstream `harness.sh: line NNN: test: : integer expression expected` because
+  `inc_count` over a never-created incidents.log returns empty). The full gate scrubs
+  only the `COORDINATOR_*` pair (`run-tests.sh:380`, NOT `RUNNER_BACKEND`) and a DIRECT
+  subset run (`run-conformance.sh bc-NN`) inherits the box env wholesale — so neither
+  path was hermetic. **Fix:** `H_init_test` now `unset`s `COORDINATOR_URL
+  COORDINATOR_TOKEN` and pins `export RUNNER_BACKEND=stub` (whose lease/capacity always
+  grant) at the per-test boundary — the whole rig family is hermetic regardless of entry
+  point. A rig that WANTS the wired/real path sets those AFTER calling `H_init_test`
+  (today only bc-43 §D, which asserts it source-structurally via grep, never by running).
+  Pinned by top-tier `test-conformance-harness-env-scrub.sh` alongside the b1ya scrub.
 
 ## Go deeper
 

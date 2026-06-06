@@ -96,6 +96,30 @@ H_init_test() {
   # Safe: the runner re-sets both for its worker AFTER this runs, so bc-2fkp's
   # "worker env carries BEADS_RUNNER_SESSION=1" assertion is unaffected.
   unset BEADS_RUNNER_SESSION CURRENT_TASK_ID 2>/dev/null || true
+  # claude-tools-hr7b: scrub the coordinator wiring + pin the in-process stub
+  # backend at the harness boundary — the same defense-in-depth class as the
+  # b1ya session-var scrub above, for the WHOLE rig family at one chokepoint.
+  # WHY: on every live-fleet box the daemon/runner shell exports COORDINATOR_URL
+  # + COORDINATOR_TOKEN + RUNNER_BACKEND=real. A v2 ('-tree') rig that does NOT
+  # self-unset them has runner.sh source the REAL backend and (because
+  # COORDINATOR_URL is set) route §6.1 `co_lease_acquire` to the HOSTED
+  # coordinator — which refuses to lease the rig's fake bead, so the runner never
+  # claims it and EVERY assertion goes falsely RED (symptom: "lease unavailable
+  # for T1 — not claiming", plus a downstream "test: : integer expression
+  # expected" because inc_count over a never-created incidents.log returns
+  # empty). The full gate (run-tests.sh:380) only unsets the COORDINATOR_* pair —
+  # NOT RUNNER_BACKEND — and a DIRECT subset run (run-conformance.sh bc-NN, per
+  # the README) inherits the box env wholesale, so neither path was hermetic.
+  # Forcing the stub backend (whose lease/capacity always grant) here makes the
+  # harness test the runner, not the box's ambient env, regardless of entry point
+  # — mirroring the complete self-guard bc-13-14/bc-43 already carry (claude-tools-309l).
+  # ORDER: a rig that WANTS the wired/real path sets COORDINATOR_URL +
+  # RUNNER_BACKEND AFTER calling H_init_test (today only bc-43 §D, which asserts
+  # that path SOURCE-structurally via grep, never by running) — so this scrub
+  # cannot clobber an intended wired run. Pinned by top-tier
+  # test-conformance-harness-env-scrub.sh.
+  unset COORDINATOR_URL COORDINATOR_TOKEN 2>/dev/null || true
+  export RUNNER_BACKEND=stub
 }
 
 # _reap_runner_pg — sweep the runner's ENTIRE process group.
