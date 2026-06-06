@@ -66,7 +66,7 @@ Four facts explain the page:
 
 | File | Role |
 |---|---|
-| `inbox-view.js` | The pure core. `deriveInboxList` (§4.5 lane + Flow-G glance, ranked newest-first), `deriveDossierView` (the §5 render model — the ONE refusal lives here), `deriveItem` (always answerable, never `{missing}`), `buildItemResponse` (form→§5.2 payload + honest deterministic/reconciler preview), `deriveConfirm` (S-2 no-Dolt-lag ack), `deriveFailureView` (Flow-G tiers 1–2 + §10.3 affordance). `schemaGate`/`unknownHigher` = the §0.3 gate. `looksLikeMermaid` = byte-port of the engine/bash predicate. `blueprintFocusLink` = the §6.4 dossier↔Blueprint bridge classifier (claude-tools-uxg3). |
+| `inbox-view.js` | The pure core. `deriveInboxList` (§4.5 lane + Flow-G glance, ranked newest-first — also derives the **`kind:"pair"` third mode**: `upcoming`↔`ready` off `scheduled_at`, painted as "ready to pair on X" never "decide X", DESIGN N §4.4 / claude-tools-uxg6), `deriveDossierView` (the §5 render model — the ONE refusal lives here), `deriveItem` (always answerable, never `{missing}`), `buildItemResponse` (form→§5.2 payload + honest deterministic/reconciler preview), `deriveConfirm` (S-2 no-Dolt-lag ack), `deriveFailureView` (Flow-G tiers 1–2 + §10.3 affordance). `schemaGate`/`unknownHigher` = the §0.3 gate. `looksLikeMermaid` = byte-port of the engine/bash predicate. `blueprintFocusLink` = the §6.4 dossier↔Blueprint bridge classifier (claude-tools-uxg3). |
 | `app.js` | Browser glue. Hash routes: `#/`→list, `#/d/<id>`→dossier, `#/f/<bead>`→failure. Renders diagrams (Mermaid→SVG, the authoritative parse), submits the verbs, polls `/api/inbox`. No control logic. |
 | `push.js` | N2 web-push subscribe glue: registers `sw.js`, captures Notification permission + `PushSubscription`, POSTs it to `/api/push/subscribe`. Holds only the PUBLIC VAPID key (private half is a Worker secret). |
 | `sw.js` | The service worker. Does exactly two things: `push`→show a TRIAGE-only notification from `{tldr,dossier_ref,tier,url}` (the §5 body NEVER crosses the wire); `notificationclick`→focus/open the Inbox at the deep link. Deliberately NOT an offline cache (S-1: never serve a stale projection). |
@@ -180,6 +180,13 @@ bytes (`mismatches=0`).
   illegal attempt reads back as still-open (no false success).
 - **`sw.js` is intentionally cache-free.** Don't add a fetch handler — a cached
   projection would lie about liveness/decision state (S-1).
+- **A `kind:"pair"` card is a 0-Item SESSION card, not a decide dossier (uxg6/N3).**
+  It carries `scheduled_at`, not Items — render "ready to pair on X", never decide
+  affordances. `upcoming` (before `scheduled_at`) is a deferred card that does NOT
+  push; the §2.2 timer fires at the appointment → `pairSurface` promotes it to
+  `ready` + emits the blocking `ready_to_pair` notif (delivered by N2, **not**
+  auto-proceed). The producer is `pair-create` (CLI `pair-create.sh` / engine op,
+  claude-tools-l6vx); the surface fire-action is `cf/src/timer.js pairSurface`.
 
 ## Go deeper
 
@@ -197,4 +204,4 @@ When you finish a task here, append anything a future agent will need and didn't
 find: a new verb/proxy pattern, a moved derive, a fresh degraded-fallback, a new
 scar, a changed §5/§4.5 field, a PWA payload change. **Keep it concise — this doc
 earns its keep only if agents read all of it.** Delete stale lines; don't let it
-grow into a copy of the README or INTERFACE.md. Last substantive update: 2026-05-31.
+grow into a copy of the README or INTERFACE.md. Last substantive update: 2026-06-06.
