@@ -175,6 +175,23 @@ sr__resolve_bfh() {
   return "$rc"
 }
 
+# sr__bead_status <task_ref> — echo the bead's CURRENT work-plane bd status, or
+#   empty if `bd` is absent / the read fails. Used SOLELY by the §7.9 work→
+#   control auto-close guard (below + the reconcile) to recognise a TERMINAL
+#   human CLOSE; every OTHER reconcile decision stays driven by the control-plane
+#   record (S-2), never by this read. `closed` is the only value the guards act
+#   on — it is a definite, monotonic, deliberate state, so an empty/unreadable
+#   result is treated as "not closed" (fail-safe: the fork stays parked, never
+#   auto-closed on a transient bd hiccup). `bd show --json` is an array.
+sr__bead_status() {
+  local tref="${1:-}" out
+  [[ -n "$tref" ]] || return 1
+  command -v bd >/dev/null 2>&1 || return 1
+  out="$(bd show "$tref" --json 2>/dev/null)" || return 1
+  [[ -n "$out" ]] || return 1
+  printf '%s' "$out" | jq -r '(if type=="array" then .[0].status else .status end) // empty' 2>/dev/null
+}
+
 # sr_drive_bead_blocked <task_ref>  (§7.3)
 #   The work-plane PROJECTION of the control-plane truth: drive the bead to
 #   blocked-for-human (status=blocked + `bd human`) for IMMEDIATE honesty so
@@ -186,6 +203,16 @@ sr_drive_bead_blocked() {
   local tref="${1:-}"
   [[ -n "$tref" ]] || return 1
   command -v bd >/dev/null 2>&1 || return 0
+  # NEVER resurrect a CLOSED bead to blocked (claude-tools-2z14). A closed bead
+  # is a terminal human resolution / success; driving it back to blocked is the
+  # zombie / false-human-fork vector the attention-router exists to prevent. At
+  # a GENUINE fork the bead is in_progress, so this guard is a no-op there — it
+  # only fires on the resurrection path (a reconcile / re-trigger after close).
+  # This is the single work-plane chokepoint, so the invariant lives here once.
+  if [[ "$(sr__bead_status "$tref")" == "closed" ]]; then
+    echo "stuck-routing: drive — refusing to drive CLOSED $tref to blocked (claude-tools-2z14 zombie guard)" >&2
+    return 0
+  fi
   bd update "$tref" --status=blocked >/dev/null 2>&1 || true
   # `bd human <id>` is NOT a valid invocation in this bd build — `human` is a
   # command GROUP (human list/respond/dismiss) and a human-needed bead is one
@@ -340,7 +367,14 @@ sr_route_stuck() {
 #   The COORDINATOR reconciles its blocked-for-human records back into beads.
 #   It is DRIVEN BY THE CONTROL-PLANE RECORD, never by the bead's Dolt status
 #   (which may lag or have been clobbered) — so Dolt lag is INVISIBLE to the
-#   human-latency path:
+#   human-latency path. The ONE exception is a TERMINAL `closed` bead:
+#     • bead status == closed  ⇒ §7.9 work→control AUTO-CLOSE (claude-tools-2z14,
+#       the bash S-2 twin of L2/uxvl2). The human closed the bead out of band —
+#       a terminal resolution of the fork — so hard-delete the record and act on
+#       NEITHER branch below. Checked FIRST so a closed bead can never be
+#       resurrected to blocked (resolved:false) NOR reopened (resolved:true).
+#       `closed` is unambiguous (lag never fabricates it); an unreadable status
+#       fails safe to the existing re-assert (the fork must not rot).
 #     • record resolved:false  ⇒ (re-)assert the work-plane block
 #       (status=blocked + `bd human`) unconditionally and idempotently —
 #       a lagged/clobbered bead is corrected here (the Board never lies, S-2).
@@ -367,6 +401,29 @@ sr_reconcile_blocked_for_human() {
     [[ -e "$f" ]] || continue
     tref=$(jq -r '.task_ref // ""' "$f" 2>/dev/null) || tref=""
     [[ -n "$tref" ]] || continue
+    # ── §7.9 work→control AUTO-CLOSE — the bash S-2 twin of L2/uxvl2
+    #    (claude-tools-2z14 zombie-fix) ───────────────────────────────────────
+    # uxvl2 auto-closed the HOSTED engine Dossier on a bead-close but DELIBERATELY
+    # added no bash twin, so this LOCAL S-2 bfh record never learned that the
+    # human closed the bead OUT OF BAND (closed the bead directly, never answered
+    # the dossier). A human CLOSING the bead is the MOST authoritative resolution
+    # of the fork — strictly more so than a pending dossier answer. Checked FIRST,
+    # before the resolved branch, so it guards BOTH vectors: the resolved:false
+    # re-assert (→ blocked) AND the resolved:true lift (→ open) — either one on a
+    # CLOSED bead is a zombie that re-surfaces a verified-done bead as a false
+    # "Brian must decide" every reconcile (~30s). uxg1 zombied +18/+29s after two
+    # manual closes precisely here. Safe vs the S-2 anti-Dolt-lag rationale:
+    # `closed` is a definite, monotonic, deliberate write — lag shows a STALE OLD
+    # status (open/in_progress), NEVER a spurious `closed` — and `sr__bead_status`
+    # fails SAFE (empty ⇒ "not closed" ⇒ falls through to the existing
+    # unconditional re-assert, so a transient bd hiccup never auto-closes a live
+    # fork). The fork is over: hard-delete the record so it stops re-asserting.
+    if [[ "$(sr__bead_status "$tref")" == "closed" ]]; then
+      rm -f "$f" 2>/dev/null || true
+      echo "stuck-routing: reconcile — $tref is CLOSED; auto-closing the stale blocked-for-human record (work→control §7.9) instead of resurrecting it to blocked/open (claude-tools-2z14)" >&2
+      n=$((n+1))
+      continue
+    fi
     resolved=$(jq -r '.resolved // false' "$f" 2>/dev/null) || resolved="false"
     if [[ "$resolved" == "true" ]]; then
       # Human decided ⇒ lift the block (control→work). Driven by the record,

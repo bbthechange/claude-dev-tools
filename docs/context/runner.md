@@ -357,6 +357,35 @@ was lost).
   negatives). The v1 `--append-notes` fallback (run-beads-tasks.sh:2050) still emits
   `STUCK_NEEDS_HUMAN@<epoch>` (load-bearing for the §7.3 recency auto-flip) — both forms are
   now detected.
+- **A verified-CLOSED bead zombied back to a false human-fork — the S-2 reconcile
+  re-asserted a stale fork record (claude-tools-2z14, FIXED).** The stuck NET above
+  is the CLASSIFY side (recognising a worker's fork); this is the RECONCILE side.
+  `lib/stuck-routing.sh sr_reconcile_blocked_for_human` re-asserts `status=blocked`
+  + `human` from its CONTROL-plane `blocked-for-human` record (`$CO_STORE/blocked-for-
+  human/<ref>.json`) "unconditionally, driven by the record, NEVER the bead status"
+  — by design, to defeat Dolt lag (the Board never lies, S-2). But the record is
+  raised `{resolved:false}` at fork time and is only resolved when the human ANSWERS
+  the dossier. When Brian instead **closes the bead out of band** (closes it directly,
+  never answers the dossier), the record stays `resolved:false`, so every reconcile
+  (~30s, runner `run-beads-tasks.sh:1750` + daemon `hosted-resolution-poll.sh:207`)
+  RESURRECTS the closed bead to blocked+human → a false "Brian must decide" in the
+  Inbox (uxg1 zombied +18s/+29s after two manual closes; forensics: the closed→blocked
+  re-flips carry NO `--reason` and actor=git-user fallback — the bash `bd update`
+  signature, NOT a human edit). **uxvl2 (L2 work→control auto-close) shipped the
+  ENGINE/dossier half but chose "no bash twin", leaving this local S-2 record without
+  the symmetric guard.** Fix: `sr_reconcile_blocked_for_human` now reads the bead
+  status FIRST and, on a definite `closed`, hard-deletes the record (the §7.9 work→
+  control auto-close, bash twin) instead of re-asserting — guarding BOTH the
+  resolved:false re-block AND the resolved:true reopen. Safe vs the anti-lag rationale:
+  lag shows a STALE OLD status, never a spurious `closed`; an unreadable status fails
+  SAFE to the existing re-assert (the fork must not rot). `sr_drive_bead_blocked` (the
+  single work-plane chokepoint) also categorically refuses a closed bead now. **A
+  stale record is only RE-ASSERTED, never recreated** (creation needs a fresh fork,
+  which a closed bead can't trigger), so deleting the record durably kills a live
+  zombie even against old-code runners that have the lib slurped in memory. Lock:
+  `lib/test-stuck-routing.sh` (the claude-tools-2z14 section + the preserved
+  open-clobber re-assert). The fix is in a SOURCED lib ⇒ live runners get it on the
+  next respawn; clean a live zombie by deleting its `<ref>.json` + re-closing.
 - **Never gate a lease decision on the transport `rc==4`** — it conflates a
   GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
   AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409

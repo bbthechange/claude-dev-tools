@@ -190,6 +190,52 @@ ckn  "resolved record hard-deleted (fork closed)"     sr_bfh_get "$H"
 sr_reconcile_blocked_for_human "$GOOD" "$H" >/dev/null 2>&1 || true
 eq   "reconcile is idempotent (re-run ⇒ no-op, stays open)" "$(BDSTATUS "$H")" "open"
 
+# ── claude-tools-2z14 — §7.9 work→control AUTO-CLOSE: a CLOSED bead must NEVER
+#    be resurrected by the reconcile (the zombie / false-human-fork vector) ────
+# A worker raised a fork (bfh resolved:false). The human then CLOSED the bead
+# OUT OF BAND (closed the bead directly, never answered the dossier) — so the
+# bfh record is STILL resolved:false. The PRE-FIX reconcile re-asserted
+# status=blocked on that closed bead every ~30s (uxg1: zombied +18/+29s after
+# two manual closes — a verified-done bead surfacing as "Brian must decide").
+# The fix: a closed bead auto-closes the stale record instead of resurrecting it.
+echo ""
+echo "── claude-tools-2z14 — closed bead auto-closes the fork (no zombie) ──────────"
+Z=stuck-closed-zombie
+DIDZ="$(sr_route_stuck "$GOOD" "$Z" worker_stuck "$ASK_JSON" 2>/dev/null)"
+eq   "zombie fixture: bead raised blocked-for-human"   "$(BDSTATUS "$Z")" "blocked"
+eq   "zombie fixture: bfh raised, unresolved"          "$(BFHJQ "$Z" '.resolved')" "false"
+# The human CLOSES the bead directly (terminal resolution; the dossier is never
+# answered, so the bfh record stays resolved:false — the exact uxg1 shape).
+printf 'closed' > "$BDST/$Z"
+: > "$BD_LOG"   # capture only the reconcile's bd calls
+nZ="$(sr_reconcile_blocked_for_human "$GOOD" "$Z" 2>/dev/null)"
+eq   "reconcile acted on the closed bead's record"     "$nZ" "1"
+eq   "CLOSED bead is NOT resurrected to blocked (stays closed — zombie killed)" \
+       "$(BDSTATUS "$Z")" "closed"
+ckn  "reconcile issued NO 'bd update --status=blocked' on the closed bead" \
+       grep -q -- "update $Z --status=blocked" "$BD_LOG"
+ckn  "stale bfh record hard-deleted (the fork is closed, work→control §7.9)" \
+       sr_bfh_get "$Z"
+# Re-run is a clean no-op — the record is gone, nothing to re-assert.
+nZ2="$(sr_reconcile_blocked_for_human "$GOOD" "$Z" 2>/dev/null)"
+eq   "reconcile idempotent after auto-close (re-run acts on 0 records)" "$nZ2" "0"
+eq   "closed bead STAYS closed on re-run (no zombie resurrection)"      "$(BDSTATUS "$Z")" "closed"
+# Defense-in-depth: the single work-plane drive chokepoint also refuses a closed
+# bead — so no other current/future caller can resurrect it either.
+sr_drive_bead_blocked "$Z" >/dev/null 2>&1 || true
+eq   "sr_drive_bead_blocked refuses to drive a CLOSED bead to blocked" \
+       "$(BDSTATUS "$Z")" "closed"
+# PRESERVE the S-2 anti-Dolt-lag contract: a NON-closed (clobbered/lagged) bead
+# is STILL re-asserted + its record KEPT — only `closed` short-circuits.
+P=stuck-lagged-keep
+DIDP="$(sr_route_stuck "$GOOD" "$P" worker_stuck "$ASK_JSON" 2>/dev/null)"
+printf 'open' > "$BDST/$P"        # Dolt lag clobbered it back to open (not closed)
+sr_reconcile_blocked_for_human "$GOOD" "$P" >/dev/null 2>&1 || true
+eq   "non-closed lag STILL re-asserts blocked (S-2 anti-lag preserved)" \
+       "$(BDSTATUS "$P")" "blocked"
+ck   "non-closed bfh record KEPT (only a closed bead auto-closes — fork must not rot)" \
+       sr_bfh_get "$P"
+
 # ── EXIT 5 — §7.4 DOSSIER-level (task_ref) DISTINCT from T5.3 per-Item latch ──
 ne   "a DIFFERENT task_ref ⇒ an INDEPENDENT dossier id" \
        "$(sr_dossier_id_for other-fork)" "$DID1"
