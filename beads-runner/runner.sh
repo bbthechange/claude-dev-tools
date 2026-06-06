@@ -663,9 +663,10 @@ When a step needs a long-running command -- the offline test gate (e.g. `bash be
 
 If you reach a genuine fork you must NOT resolve yourself -- an irreversible or judgement-call decision the task description does not settle, where guessing could be wrong and costly -- do NOT pick for the human, do NOT use an interactive tool, and do NOT stop silently. Instead, in THIS exact order:
   1. bd update BEADS_ID --status=blocked
-  2. Write the structured ask into the bead:
-       bd update BEADS_ID --append-notes="<the ask>"   (or --design="...")
-     It MUST clearly contain, labelled: TL;DR; the ask (the single decision needed); the options; your recommendation and why; and how reversible each option is.
+  2. Write the structured ask into the bead, HEADED by a first line that contains the exact marker HUMAN DECISION NEEDED -- keep that marker verbatim, it is the canonical signal the runner's human-fork safety net keys on, and without it a status-read race can misfile your correctly-surfaced fork as an unclosed task:
+       bd update BEADS_ID --append-notes="HUMAN DECISION NEEDED -- <one-line title of the decision>
+       <the structured ask>"   (or --design="...")
+     The ask MUST clearly contain, labelled: TL;DR; the ask (the single decision needed); the options; your recommendation and why; and how reversible each option is.
   3. bd label add BEADS_ID human
   4. Exit with status code BEADS_STUCK_EXIT and do NOT close the issue.
 This is the only correct way to surface a human decision.
@@ -986,15 +987,28 @@ _bead_has_human_label() {
   printf '%s' "$labels" | jq -e 'any(.[]?; . == "human")' >/dev/null 2>&1
 }
 
-# claude-tools-309l — true iff the bead carries the worker's OWN STUCK_NEEDS_HUMAN
-# ask note (bare or @epoch, RECENCY-INDEPENDENT). The `(?<!Runner: )` lookbehind
-# drops the runner's own audit/auto-flip residue (the dominant uxvi4 over-trigger
-# vector), so this is the honest worker-ask signal, not a self-echo. Paired with
-# _bead_has_human_label below, it distinguishes a genuine fork the worker left
-# NOT blocked (slipped the status flip — the m3xi vector) from a spurious bare
-# `human` label (the test-stuck-primary-relaxed negative posture). Reads via
-# `bd show --long --json` (the only form carrying `notes`), retried; a degraded
-# read ⇒ false (fail-CLOSED, never pin an unfinished bead on a read glitch).
+# claude-tools-309l/gqyp — true iff the bead carries the worker's OWN human-fork
+# ask note, RECENCY-INDEPENDENT. The `(?<!Runner: )` lookbehind drops the runner's
+# own audit/auto-flip residue (the dominant uxvi4 over-trigger vector), so this is
+# the honest worker-ask signal, not a self-echo. Paired with _bead_has_human_label
+# below, it distinguishes a genuine fork the worker left NOT blocked (slipped the
+# status flip — the m3xi vector) from a spurious bare `human` label (the
+# test-stuck-primary-relaxed negative posture). Reads via `bd show --long --json`
+# (the only form carrying `notes`), retried; a degraded read ⇒ false (fail-CLOSED,
+# never pin an unfinished bead on a read glitch).
+#
+# claude-tools-gqyp — the detector MUST recognise the signal the escalation
+# PROTOCOL actually emits. 309l keyed ONLY on the literal token STUCK_NEEDS_HUMAN,
+# but the human-fork protocol (build_worker_prompt's "If you reach a genuine fork"
+# block) tells the worker to write a structured ask HEADED `HUMAN DECISION NEEDED`
+# (TL;DR / the ask / options / recommendation / reversibility) and NEVER that
+# token — so Net 2 was DEAD for every canonical fork (proven on casualty
+# claude-tools-o0yq: a full ask, 0 occurrences of STUCK_NEEDS_HUMAN). Match BOTH
+# the canonical `HUMAN DECISION NEEDED` header (the protocol contract; producer-
+# guaranteed in build_worker_prompt) AND the legacy STUCK_NEEDS_HUMAN token (the
+# v1 `--append-notes` fallback at run-beads-tasks.sh:2050 + the runner's own
+# recency stamp), both under the same `(?<!Runner: )` guard. The runner never
+# writes "HUMAN DECISION NEEDED" to a bead note, so adding it cannot self-echo.
 _bead_has_stuck_ask_note() {
   local id="$1" row notes _try
   row="__ERR__"
@@ -1007,7 +1021,8 @@ _bead_has_stuck_ask_note() {
   # swallowed by jq's parse error into an empty string — a dead guard).
   [[ "$row" == "__ERR__" || -z "$row" ]] && return 1
   notes="$(printf '%s' "$row" | jq -r '.[0].notes // ""' 2>/dev/null)" || return 1
-  printf '%s' "$notes" | jq -Rrs 'test("(?<!Runner: )STUCK_NEEDS_HUMAN")' 2>/dev/null \
+  printf '%s' "$notes" \
+    | jq -Rrs 'test("(?<!Runner: )(STUCK_NEEDS_HUMAN|HUMAN DECISION NEEDED)")' 2>/dev/null \
     | grep -qx true
 }
 
@@ -1018,7 +1033,18 @@ classify_failure() {
   [[ "$ec" == "$WORKER_STUCK_EXIT" ]] && stuck=1
 
   if [[ "$ec" -eq 0 ]]; then
-    raw="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd show "$id" --json)"
+    # claude-tools-gqyp — harden Net 1's status read: RETRY a degraded read once
+    # before typing DEGRADED, mirroring v1's retried reads (_bead_blocked_for_human)
+    # and _bead_has_human_label above. A transient bd hiccup on this single read is
+    # what left a blocked+human fork to fall through to Net 2; give it a second
+    # chance so the canonical blocked+human path (Net 1) catches it on THIS classify
+    # rather than relying on the recency-independent backstop. (A persistent failure
+    # still types DEGRADED, which does not mutate work state — the BC-42 fail-safe.)
+    raw="__DEGRADED__"
+    for _try in 1 2; do
+      raw="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd show "$id" --json)"
+      [[ "$raw" != "__DEGRADED__" ]] && break
+    done
     if [[ "$raw" == "__DEGRADED__" ]]; then echo "DEGRADED"; return; fi
     if ! status="$(printf '%s' "$raw" | jq -r '.[0].status // empty' 2>/dev/null)"; then
       # bd-show returned but its JSON is unparseable: that is an infra/parse

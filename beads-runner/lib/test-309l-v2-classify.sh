@@ -88,10 +88,29 @@ STUCK_NEEDS_HUMAN
 The ask: foo"
 
 echo ""
+echo "── gqyp (new): the PROTOCOL ask shape — 'HUMAN DECISION NEEDED', NO token ──"
+# The canonical escalation protocol (build_worker_prompt) tells the worker to write
+# a structured ask HEADED `HUMAN DECISION NEEDED` and NEVER emits STUCK_NEEDS_HUMAN.
+# This is the exact casualty shape (claude-tools-o0yq): Net 2 keyed only on the token
+# was GUARANTEED to miss it. The detector must now recognise the real marker.
+run_case "in_progress + human + 'HUMAN DECISION NEEDED' ask (o0yq shape)" STUCK_NEEDS_HUMAN '["human"]' in_progress "=== HUMAN DECISION NEEDED (x) — amend authorization ===
+**TL;DR** the gap can be closed two ways.
+**THE ASK** option a or b?
+**REVERSIBILITY** option 1 fully reversible."
+run_case "open + human + 'HUMAN DECISION NEEDED -- title' header"         STUCK_NEEDS_HUMAN '["human"]' open        "HUMAN DECISION NEEDED -- pick the carrier
+TL;DR: ...
+The ask: A or B"
+
+echo ""
 echo "── over-trigger SAFETY + negatives ──"
 run_case "in_progress + human + ONLY runner audit line" TASK_NOT_CLOSED '["human"]' in_progress "Runner: STUCK_NEEDS_HUMAN at 10:00:00Z — no stream preserved"
 run_case "in_progress + human + NO note"     TASK_NOT_CLOSED   '["human"]'      in_progress ""
 run_case "in_progress + note + NO human"     TASK_NOT_CLOSED   '["model:opus"]' in_progress "STUCK_NEEDS_HUMAN@${AGED}"
+# gqyp negatives: the FULL marker is required (a partial 'HUMAN DECISION' phrase —
+# e.g. the I4 resume-directive 'HUMAN DECISION —' header — must NOT fire), and the
+# `human` label is still mandatory even for the new marker.
+run_case "in_progress + human + partial 'HUMAN DECISION' only" TASK_NOT_CLOSED '["human"]'      in_progress "═══ HUMAN DECISION — the parked fork on x"
+run_case "in_progress + 'HUMAN DECISION NEEDED' + NO human"    TASK_NOT_CLOSED '["model:opus"]' in_progress "HUMAN DECISION NEEDED -- pick a or b"
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"

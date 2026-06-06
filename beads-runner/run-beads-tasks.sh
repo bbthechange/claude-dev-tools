@@ -1239,14 +1239,20 @@ _bead_blocked_for_human() {
   # unfinished, not-blocked states qualify — a `closed` bead is a SUCCESS and
   # must NEVER be pinned back (classify_failure SUCCESS ⟺ closed).
   [[ "$status" == "open" || "$status" == "in_progress" ]] || return 1
-  # A NON-audit STUCK_NEEDS_HUMAN note (the worker's own ask; the `(?<!Runner: )`
+  # A NON-audit human-fork note (the worker's own ask; the `(?<!Runner: )`
   # lookbehind drops the runner's OWN audit/auto-flip residue — the dominant
   # uxvi4 over-trigger vector) distinguishes a genuine fork from a spurious bare
   # `human` label (the test-stuck-primary-relaxed negative posture: a bare label
-  # with NO stuck note still falls through). This does NOT reopen Fix-B: the
+  # with NO ask note still falls through). This does NOT reopen Fix-B: the
   # over-trigger was the preempt RE-ROUTING a dossier on a resolved bead; this
   # belt fires only while the label persists and its action (pin + §7.4-deduped
   # author) is idempotent.
+  # claude-tools-gqyp — match the protocol's ACTUAL ask shape, not just a machine
+  # token. The escalation protocol writes a structured ask HEADED `HUMAN DECISION
+  # NEEDED`; the v1 `--append-notes` fallback (:2050) writes STUCK_NEEDS_HUMAN@<ts>.
+  # Recognise BOTH (under the same Runner-residue guard) so a compliant fork the
+  # worker left NOT blocked is caught regardless of which producer path it took —
+  # 309l's token-only grep was dead for the canonical `HUMAN DECISION NEEDED` form.
   row="__ERR__"
   for _try in 1 2; do
     row=$(bd show "$task_id" --long --json 2>/dev/null) || row="__ERR__"
@@ -1258,7 +1264,7 @@ _bead_blocked_for_human() {
   [[ "$row" == "__ERR__" || -z "$row" ]] && return 1
   notes=$(printf '%s' "$row" | jq -r '.[0].notes // ""' 2>/dev/null) || return 1
   has_ask=$(printf '%s' "$notes" \
-    | jq -Rrs 'test("(?<!Runner: )STUCK_NEEDS_HUMAN")' 2>/dev/null) || has_ask="false"
+    | jq -Rrs 'test("(?<!Runner: )(STUCK_NEEDS_HUMAN|HUMAN DECISION NEEDED)")' 2>/dev/null) || has_ask="false"
   [[ "$has_ask" == "true" ]]
 }
 

@@ -324,19 +324,29 @@ was lost).
   (recency-refresh on every re-pickup — it fights uxvi4). Locked by `bc13-309l-…`/
   `bc13tree-309l-…` (plan `stuck_slipped_aged`) + `lib/test-belt-aged-human.sh`
   (pins the over-trigger boundary: runner-audit-only ⇒ no fire, `closed` ⇒ never pinned).
-- **…but that 309l backstop is keyed on a token the escalation protocol never emits
-  (claude-tools-gqyp, OPEN, P1).** `_bead_has_stuck_ask_note` greps the notes for the
-  LITERAL string `STUCK_NEEDS_HUMAN` (`runner.sh:1010`), but the human-fork escalation
-  PROTOCOL tells the worker to write a **"HUMAN DECISION NEEDED"** structured ask (TL;DR /
-  the ask / options / recommendation / reversibility) — NOT that token. Verified on the
-  casualty claude-tools-o0yq: its notes carry a full, well-formed ask but **0** occurrences
-  of `STUCK_NEEDS_HUMAN`, so Net 2 returns false and is effectively DEAD for every canonical
-  human fork. That leaves the whole human-escalation net resting on Net 1 (`status==blocked`
-  + `human`, the single `bd show` read at `runner.sh:1021/1053`); when that one read loses
-  the propagation race (or the worker slipped the flip), the fork still folds to
-  `TASK_NOT_CLOSED` → reset → analysis-child (the 1vnx thrash, residual). Fix in gqyp: align
-  the detector with the protocol's actual ask shape (and/or emit a canonical marker), plus
-  harden Net 1's status read. Until then a correctly-escalated human fork can STILL thrash.
+- **…and that 309l backstop was keyed on a token the escalation protocol never emits
+  (claude-tools-gqyp, FIXED, P1).** `_bead_has_stuck_ask_note` (and v1's
+  `_bead_blocked_for_human`) greped the notes for the LITERAL string `STUCK_NEEDS_HUMAN`,
+  but the human-fork escalation PROTOCOL tells the worker to write a **"HUMAN DECISION
+  NEEDED"** structured ask (TL;DR / the ask / options / recommendation / reversibility) —
+  NOT that token. Verified on casualty claude-tools-o0yq: its notes carried a full,
+  well-formed ask but **0** occurrences of `STUCK_NEEDS_HUMAN` at classify time, so Net 2
+  returned false and was effectively DEAD for every canonical human fork — leaving the whole
+  net resting on Net 1's single `status==blocked`+`human` `bd show` read, which folds to
+  `TASK_NOT_CLOSED` → reset → analysis-child (the 1vnx thrash, residual) whenever that one
+  read loses the propagation race / the worker slipped the flip. **The fix (three parts):**
+  (1) CONSUMER — both detectors now match `(?<!Runner: )(STUCK_NEEDS_HUMAN|HUMAN DECISION
+  NEEDED)`, recognising the protocol's actual ask header AND the legacy token under the same
+  Runner-residue guard (recency-independent; the `human` LABEL is still the freshness gate,
+  so uxvi4 over-trigger stays closed); (2) PRODUCER — v2 `build_worker_prompt` now mandates
+  the worker HEAD its `--append-notes` ask with the verbatim canonical marker `HUMAN DECISION
+  NEEDED`, making the contract guaranteed rather than incidental (locked by
+  `bc-38-worker-prompt-tree.sh`); (3) Net 1's status read in `classify_failure` now RETRIES a
+  degraded read once (mirrors v1's retried reads). Regression-lock: `lib/test-309l-v2-classify.sh`
+  + `lib/test-belt-aged-human.sh` (both pin the marker cases + the partial-phrase / no-label
+  negatives). The v1 `--append-notes` fallback (run-beads-tasks.sh:2050) still emits
+  `STUCK_NEEDS_HUMAN@<epoch>` (load-bearing for the §7.3 recency auto-flip) — both forms are
+  now detected.
 - **Never gate a lease decision on the transport `rc==4`** — it conflates a
   GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
   AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409

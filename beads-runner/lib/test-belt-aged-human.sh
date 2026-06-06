@@ -96,11 +96,28 @@ STUCK_NEEDS_HUMAN
 The ask: foo"
 
 echo ""
+echo "── gqyp (new): the PROTOCOL ask shape — 'HUMAN DECISION NEEDED', NO token ──"
+# The canonical escalation protocol writes a structured ask HEADED `HUMAN DECISION
+# NEEDED` and never the STUCK_NEEDS_HUMAN token (309l's belt grep was dead for it —
+# casualty claude-tools-o0yq). The v1 belt must catch this human + NOT-blocked form.
+run_case "human + in_progress + 'HUMAN DECISION NEEDED' ask (o0yq shape)" fire '["human"]' in_progress "=== HUMAN DECISION NEEDED (x) — amend authorization ===
+**TL;DR** ...
+**THE ASK** a or b?
+**REVERSIBILITY** option 1 reversible."
+run_case "human + open + 'HUMAN DECISION NEEDED -- title' header"         fire '["human"]' open        "HUMAN DECISION NEEDED -- pick the carrier
+TL;DR: ...
+The ask: A or B"
+
+echo ""
 echo "── over-trigger SAFETY (Fix-B must stay closed) ──"
 run_case "human + in_progress + ONLY runner audit line" no '["human"]'  in_progress "Runner: STUCK_NEEDS_HUMAN at 10:00:00Z — no stream preserved"
 run_case "human + in_progress + NO note"        no   '["human"]'        in_progress ""
 run_case "NO human label + in_progress + note"  no   '["model:opus"]'   in_progress "STUCK_NEEDS_HUMAN@${AGED}"
 run_case "human + CLOSED + note (a SUCCESS)"    no   '["human"]'        closed      "STUCK_NEEDS_HUMAN@${AGED}"
+# gqyp negatives: full marker required (a partial 'HUMAN DECISION —' resume-directive
+# header must NOT fire), and the `human` label is still mandatory for the new marker.
+run_case "human + in_progress + partial 'HUMAN DECISION' only" no '["human"]'    in_progress "═══ HUMAN DECISION — the parked fork on x"
+run_case "NO human + in_progress + 'HUMAN DECISION NEEDED'"    no '["model:opus"]' in_progress "HUMAN DECISION NEEDED -- pick a or b"
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"

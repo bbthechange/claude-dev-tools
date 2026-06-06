@@ -51,6 +51,19 @@ _need "then bd label add human"             contains "$p" "bd label add T1 human
 _need "then exit the stuck sentinel"        contains "$p" "Exit with status code 7"
 _emit
 
+# claude-tools-gqyp — the ask must be HEADED by the canonical machine marker
+# `HUMAN DECISION NEEDED`. The runner's recency-independent backstop (Net 2:
+# _bead_has_stuck_ask_note / _bead_blocked_for_human) keys on this marker; 309l
+# keyed on STUCK_NEEDS_HUMAN, which this protocol NEVER emits, so a correctly-
+# escalated fork could still thrash through TASK_NOT_CLOSED→reset→analysis when
+# Net 1's single status read lost the race (casualty claude-tools-o0yq). This pins
+# the PRODUCER side of the contract; the consumer side is locked by
+# lib/test-309l-v2-classify.sh + lib/test-belt-aged-human.sh.
+_expect "BC-38" "§7.2" "the human-fork ask is headed by the canonical HUMAN DECISION NEEDED marker (claude-tools-gqyp) (runner.sh)"
+_need "prompt names the HUMAN DECISION NEEDED marker"   contains "$p" "HUMAN DECISION NEEDED"
+_need "marker is in the --append-notes ask, kept verbatim" contains "$p" "keep that marker verbatim"
+_emit
+
 _expect "BC-38" "§7.6" "prompt prescribes debrief-then-close with honesty directive (runner.sh)"
 _need "debrief via --append-notes"          contains "$p" "bd update T1 --append-notes="
 _need "honesty directive present"           contains "$p" "Be honest"
