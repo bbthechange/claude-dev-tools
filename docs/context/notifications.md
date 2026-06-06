@@ -165,6 +165,17 @@ push for): evict + stamp ONLY when the marker ≠ the current scheduled_at, i.e.
 first surface of a fresh/re-scheduled appointment. A naive per-poll evict would
 storm — NEVER evict in a re-fires-every-poll path without a one-shot guard.
 
+> DEPLOY STATE (as of 2026-06-06): both `evictDelivery` callers above are
+> committed (`snoozeSurface` in f5adc96, `pairSurface` guard in a72887b) and
+> offline-green, but **NOT yet in the live coordinator-cf Worker** (live version
+> `80f44bf3` @ 10:59Z predates both). They ride the next engine deploy — additive
+> + dormant until then, so prod behaves as before (re-surface re-enters the
+> blocking lane but the phone stays silent). DISPOSITION: these engine-only
+> (`cf/src/*`, no `web/**`) fixes CLOSED on offline-green (the cf differential
+> drives the real Worker→DO→D1 runtime); the live deploy + real-device re-ping is
+> an OPTIONAL follow-up, not a blocking human fork. The bgw/2dk live-verify gate
+> is the WEB/Pages track, not the engine track. (h8e6/7n5c.)
+
 **Adding a push op:** follow the engine's add-an-op checklist (module guard +
 Pages proxy + the `cf/pages-dev/adapter.js` mapping — the layer 2dk forgot — see
 `engine-cloudflare.md`). The four `PUSH_OPS` already wire `push-subscribe`/
