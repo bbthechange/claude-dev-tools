@@ -119,11 +119,27 @@ record carries but the enricher ignores is dead weight. Live-verify (below).
 
 **Add a preset:** this is a cross-tier catalog change, **not** an Intake-only
 edit. Append a row to `agents/intake-presets.json`, mirror it in
-`_presets-catalog.js`, add the enricher resolution bullet, add it to
-`PRESET_ENUM` in `gate-policy.sh`, then run
+`_presets-catalog.js`, add the enricher resolution bullet, add one
+`value:gate_aggressiveness` row to `PRESET_ENUM` in `gate-policy.sh`
+(**no code branch** — `gate-policy.sh` derives the verdict generically from
+the gate token since claude-tools-uxgpre), then run
 `bash beads-runner/test-intake-presets.sh` (it fails with a `DRIFT:` line if any
-step is skipped). Full playbook in `worker-agents.md` / `agents/intake-presets.md`.
-No `index.html` edit — radios re-render from the catalog on next deploy.
+step is skipped). The harness now also asserts: no duplicate values,
+`schema_version` JSON↔mirror agreement, the `PRESET_ENUM` gate token matches
+the catalog, and `gate-policy.sh decide` resolves a correct non-empty verdict
+for every catalog preset (the "data shipped but not wired" guard). Full
+playbook in `worker-agents.md` / `agents/intake-presets.md`. No `index.html`
+edit — radios re-render from the catalog on next deploy.
+
+**Picker ownership (claude-tools-uxgpre):** the general "tap a named preset"
+affordance + extensibility is owned here. The picker UI was already
+catalog-driven from I4 (no UI bytes changed by uxgpre — `label`+`sublabel` is
+the deliberate phone altitude; `description` rides the API for wire/debug
+only). What uxgpre closed was the *extensibility* gap: the L2 verdict was
+per-preset code, and three lockstep axes were unchecked. A *special* preset
+that breaks the (entry_stage, gate) reductive contract — e.g. the
+enricher-bypassing `overview-request` — is a separate bead (L4 / uxvl4), not a
+catalog row.
 
 **The gate before `bd close` (the bgw lesson — web work is not done at commit):**
 ```bash
@@ -212,4 +228,5 @@ and didn't find here: a new form field + its downstream consumers, a moved
 proxy, a changed projection, a new preset-related invariant, a fresh scar. Keep
 it concise — this doc earns its keep only if agents read all of it. Delete lines
 that have gone stale; don't let it grow into a re-spec of the README or
-UX-DESIGN. Last substantive update: 2026-05-31.
+UX-DESIGN. Last substantive update: 2026-06-06 (uxgpre — generalized the
+preset picker: catalog-driven L2 verdict + hardened lockstep harness).

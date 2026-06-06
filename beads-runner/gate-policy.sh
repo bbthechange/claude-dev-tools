@@ -38,10 +38,18 @@
 
 set -uo pipefail
 
-# ── known preset enum ────────────────────────────────────────────────────────
-# Closed for v1, same as STAGE_ENUM in bd-stage.sh — adding a preset = adding
-# a row in agents/gate-policy.md and a branch in _decide_from_stage_preset.
-PRESET_ENUM=(autonomous-until-stuck collaborative-stage)
+# ── known preset enum (value:gate_aggressiveness) ────────────────────────────
+# Each entry is `<preset-value>:<gate_aggressiveness>` — self-describing, so the
+# verdict derivation in _decide_from_stage_preset is GENERIC (no per-preset code
+# branch). This is the L2 mirror of agents/intake-presets.json: every catalog
+# row must appear here with the SAME gate_aggressiveness, and
+# test-intake-presets.sh fails the PR if the two drift (value missing, or gate
+# token mismatched). So adding a preset is ONE data row here — NOT a code change
+# (claude-tools-uxgpre: generalize the named entry-stage+gate picker). Closed
+# for v1; the catalog is the single source of truth (agents/intake-presets.md,
+# the one-PR playbook). gate_aggressiveness ∈ { auto-advance, gate-human } —
+# the only two L2 verdicts (agents/gate-policy.md).
+PRESET_ENUM=(autonomous-until-stuck:auto-advance collaborative-stage:gate-human)
 
 # Same canonical stage enum as bd-stage.sh; duplicated here intentionally so
 # the gate script is consultable WITHOUT sourcing bd-stage (kept as two small
@@ -108,39 +116,48 @@ _decide_from_stage_preset() {
   # case kept quiet by the enricher — see agents/gate-policy.md).
   [[ -z "$preset" ]] && preset="autonomous-until-stuck"
 
-  # An unknown preset is a future-proofing fork the v1 script will NOT
-  # resolve silently. Fail-CLOSED with a typed verdict the runner can log
-  # and surface; treat as gate-human so a typo in the enricher cannot
-  # quietly skip Brian. (PRESET_ENUM is the closed v1 set.)
-  local known=0 p
-  for p in "${PRESET_ENUM[@]}"; do
-    [[ "$p" == "$preset" ]] && { known=1; break; }
+  # Resolve the preset's gate_aggressiveness from PRESET_ENUM (`value:gate`).
+  # The lookup is GENERIC: ANY catalog preset whose `value:gate` row is present
+  # resolves here without a per-preset code branch (claude-tools-uxgpre). An
+  # unrecognised preset is a future-proofing fork the v1 script will NOT resolve
+  # silently — fail-CLOSED with a typed verdict (treat as gate-human so a typo
+  # in the enricher cannot quietly skip Brian). PRESET_ENUM is the closed v1
+  # set, kept in lockstep with the catalog by test-intake-presets.sh.
+  local entry val ga="" found=0
+  for entry in "${PRESET_ENUM[@]}"; do
+    val="${entry%%:*}"
+    if [[ "$val" == "$preset" ]]; then ga="${entry#*:}"; found=1; break; fi
   done
-  if [[ $known -eq 0 ]]; then
+  if [[ $found -eq 0 ]]; then
     printf 'gate-human:unknown-preset\n'
     return 0
   fi
 
-  # The v1 table (agents/gate-policy.md):
-  #   autonomous-until-stuck → auto-advance at every stage, including
-  #     legacy/unstaged beads (so the runner does not strand them).
-  #   collaborative-stage    → gate-human at every stage (the human asked to
-  #     be IN the stage, not just approve its output).
+  # Map the gate_aggressiveness axis to the runner-facing verdict. This IS the
+  # whole v1 table (agents/gate-policy.md), now DERIVED rather than branched:
+  #   auto-advance → auto-advance        (runner picks it up at every stage,
+  #     including legacy/unstaged beads, so it does not strand them)
+  #   gate-human   → gate-human:<preset> (runner surfaces it to Brian; the
+  #     human asked to be IN the stage, not just approve its output)
+  # An empty verdict is NEVER emitted: a PRESET_ENUM row carrying a gate token
+  # outside the L2 verdict surface is a drift bug (the harness asserts against
+  # the catalog), but at runtime we fail-CLOSED to gate-human so the runner
+  # surfaces it rather than mis-auto-advancing.
   #
-  # `done` is terminal; a bead at `stage:done` should not be in `bd ready`
-  # (it is closed). If one does land here (corrupt state), we still answer
-  # honestly: auto-advance for autonomous, gate for collaborative — the
-  # runner will pick it up and the worker is supposed to recognize "already
-  # done" without further harm. Not a v1 gate's job to second-guess.
-  case "$preset" in
-    autonomous-until-stuck) printf 'auto-advance\n' ;;
-    collaborative-stage)    printf 'gate-human:collaborative-stage\n' ;;
+  # `done` is terminal; a bead at `stage:done` should not be in `bd ready` (it
+  # is closed). If one lands here (corrupt state) we still answer honestly per
+  # the table above — not a v1 gate's job to second-guess.
+  case "$ga" in
+    auto-advance) printf 'auto-advance\n' ;;
+    gate-human)   printf 'gate-human:%s\n' "$preset" ;;
+    *)            printf 'gate-human:%s\n' "$preset" ;;
   esac
 
-  # `stage` is read but not yet used to BRANCH the verdict — the v1 table is
-  # uniform across all stages. Kept in the signature (and asserted by the
-  # test harness) so a future row that varies by stage has the seam ready
-  # without a callsite refactor.
+  # `stage` is read but not yet used to BRANCH the verdict — the v1 reductive
+  # contract is one verdict per preset, uniform across the stages it touches
+  # (agents/intake-presets.md). Kept in the signature (and asserted by the test
+  # harness) so a future row that varies by stage has the seam ready without a
+  # callsite refactor.
   : "${stage:-}"
 }
 

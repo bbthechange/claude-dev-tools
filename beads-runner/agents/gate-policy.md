@@ -104,9 +104,12 @@ in-progress write. See `runner.sh` `st_reconcile`.
   L2 reads it and routes the bead to the Inbox via the existing
   `status=blocked` + `human` label channel.
 
-Adding a preset = adding a row here and a branch in the lookup script.
-The default-on-absence rule means a new preset that means "still
-autonomous" needs no script change.
+Adding a preset = adding a row here and ONE `value:gate` data row to
+`PRESET_ENUM` in the lookup script — **no code branch** (claude-tools-uxgpre
+generalized `_decide_from_stage_preset` to derive the verdict from the
+preset's `gate_aggressiveness`, so the enum is the only thing to touch). The
+default-on-absence rule means a new preset that means "still autonomous"
+needs no script change for beads that carry no `preset:*` label.
 
 ## Why this is `auto-advance | gate-human` and not richer
 
@@ -132,6 +135,11 @@ The closed stage enum is the L1 contract. To add a row:
 
 1. Make sure the stage exists in `STAGE_ENUM` in `bd-stage.sh`.
 2. Add the row to the table above (this doc is the source of truth).
-3. Add the case to `gate-policy.sh` `_decide_from_stage_preset`.
+3. Add the `value:gate_aggressiveness` data row to `gate-policy.sh`
+   `PRESET_ENUM` (the verdict is derived generically — no `case` branch to
+   add since claude-tools-uxgpre).
 4. Add the case to the L3 board rendering (claude-tools-2bf).
-5. Run `beads-runner/test-gate-policy.sh`.
+5. Run `beads-runner/test-gate-policy.sh` AND
+   `beads-runner/test-intake-presets.sh` (the latter asserts the
+   `PRESET_ENUM` gate token agrees with the catalog and that
+   `gate-policy.sh decide` resolves the new preset end-to-end).

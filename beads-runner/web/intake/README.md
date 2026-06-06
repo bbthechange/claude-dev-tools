@@ -68,9 +68,10 @@ table and the add-a-preset playbook):
 `beads-runner/agents/intake-presets.md` "Adding a preset — the one-PR
 playbook". The playbook is: one row in the JSON, one mirror row in
 `web/functions/api/intake/_presets-catalog.js`, one bullet in
-`agents/enricher.system.md`, (one entry in `gate-policy.sh` `PRESET_ENUM`).
-No edit to `index.html` is required — the radios re-render from the catalog
-on next deploy.
+`agents/enricher.system.md`, one `value:gate_aggressiveness` data row in
+`gate-policy.sh` `PRESET_ENUM` (no code branch — the verdict is derived,
+claude-tools-uxgpre). No edit to `index.html` is required — the radios
+re-render from the catalog on next deploy.
 
 ## Deliberately NOT here (anti-drift)
 

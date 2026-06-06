@@ -19,7 +19,20 @@
 #      (auto-advance | gate-human).
 #   4. The Pages-side mirror (_presets-catalog.js, via PRESETS[]) lists
 #      the same values in the same order as the canonical JSON.
-#   5. gate-policy.sh's PRESET_ENUM contains every catalog value.
+#   5. gate-policy.sh's PRESET_ENUM carries every catalog value WITH the
+#      same gate_aggressiveness (the `value:gate` self-describing enum —
+#      claude-tools-uxgpre). A missing value OR a mismatched gate token is
+#      DRIFT.
+#   6. schema_version agrees between the JSON (`schema_version`) and the
+#      mirror (`SCHEMA_VERSION`) — a frozen-schema lockstep axis.
+#   7. The catalog has no DUPLICATE preset `value`s (two radios / two
+#      allowlist entries with the same key is an extensibility footgun).
+#   8. gate-policy.sh actually RESOLVES a correct, non-empty verdict for
+#      every catalog preset (driven via a fake `bd` on PATH) — proving a
+#      preset that ships in the catalog + PRESET_ENUM is wired end-to-end
+#      through L2, not just present as data. This is the "added the data,
+#      forgot the wiring" failure this harness now owns (uxgpre).
+#   9. enricher.system.md names every catalog value (one-PR playbook step).
 #
 # Run: bash test-intake-presets.sh
 # Exit: 0 on ALL PASS, 1 on any failure (with a clear "DRIFT:" line).
@@ -61,6 +74,16 @@ if [[ "$rows" -lt 1 ]]; then
   bad "catalog has zero presets (v1 needs at least one)"
 else
   ok "catalog has $rows preset(s)"
+fi
+
+# No duplicate preset values: a repeated `value` would render two radios with
+# the same key and create two write-allowlist entries — an extensibility
+# footgun the catalog-driven UI cannot disambiguate (uxgpre).
+dup_vals="$(jq -r '.presets[].value' "$JSON" | sort | uniq -d)"
+if [[ -z "$dup_vals" ]]; then
+  ok "all preset values are unique"
+else
+  bad "DRIFT: duplicate preset value(s) in catalog: $(printf '%s' "$dup_vals" | tr '\n' ' ')"
 fi
 
 i=0
@@ -124,22 +147,99 @@ else
   printf '    mirror:\n%s\n' "$mirror_dump" | sed 's/^/      /' >&2
 fi
 
-echo "── gate-policy.sh PRESET_ENUM covers every catalog value"
+# schema_version is the frozen-shape contract; it must agree between the JSON
+# (`schema_version`) and the mirror (exported `SCHEMA_VERSION`). The PRESETS[]
+# diff above would not catch a schema bump on one side only (uxgpre).
+json_sv="$(jq -r '.schema_version // empty' "$JSON")"
+mirror_sv="$(cd "$(dirname "$MIRROR")" && node --input-type=module -e "
+import('./_presets-catalog.js').then(m => process.stdout.write(String(m.SCHEMA_VERSION)));
+" 2>/dev/null)"
+if [[ -n "$json_sv" && "$json_sv" == "$mirror_sv" ]]; then
+  ok "schema_version matches (JSON=$json_sv, mirror SCHEMA_VERSION=$mirror_sv)"
+else
+  bad "DRIFT: schema_version mismatch — JSON='$json_sv' vs mirror SCHEMA_VERSION='$mirror_sv'"
+fi
+
+echo "── gate-policy.sh PRESET_ENUM carries every catalog value:gate"
 
 [[ -f "$GATE" ]] || { bad "gate-policy.sh missing"; exit 1; }
 
+# PRESET_ENUM is now the self-describing `value:gate_aggressiveness` enum
+# (uxgpre). Parse the array body and assert every catalog row appears with the
+# SAME gate token — a missing value OR a mismatched gate is DRIFT.
 gate_enum_line="$(grep -E '^PRESET_ENUM=\(' "$GATE" | head -1)"
 if [[ -z "$gate_enum_line" ]]; then
   bad "gate-policy.sh has no PRESET_ENUM=(...) line — cannot check"
 else
-  while IFS= read -r v; do
+  enum_body="${gate_enum_line#PRESET_ENUM=(}"
+  enum_body="${enum_body%)}"
+  while IFS='|' read -r v ga; do
     [[ -n "$v" ]] || continue
-    if grep -qE "PRESET_ENUM=\([^)]*\<${v}\>" "$GATE"; then
-      ok "gate-policy.sh PRESET_ENUM contains '$v'"
+    want="$v:$ga"
+    found_exact=0 found_val=0 gate_in_enum=""
+    # NB: `$enum_body` is intentionally UNquoted here — it is a single-line,
+    # space-separated literal of safeKey-clean `value:gate` tokens (no glob
+    # chars, no embedded whitespace), so word-splitting is the parse. (The
+    # runtime gate-policy.sh iterates the real array `"${PRESET_ENUM[@]}"`
+    # quoted; only this harness re-parses the source line.)
+    for entry in $enum_body; do
+      [[ "$entry" == "$want" ]] && { found_exact=1; break; }
+      if [[ "${entry%%:*}" == "$v" ]]; then found_val=1; gate_in_enum="${entry#*:}"; fi
+    done
+    if [[ $found_exact -eq 1 ]]; then
+      ok "gate-policy.sh PRESET_ENUM has '$want' (value:gate matches catalog)"
+    elif [[ $found_val -eq 1 ]]; then
+      bad "DRIFT: gate-policy.sh PRESET_ENUM has '$v' but gate '$gate_in_enum' != catalog gate_aggressiveness '$ga'"
     else
-      bad "DRIFT: gate-policy.sh PRESET_ENUM is missing '$v' (catalog row, not in enum)"
+      bad "DRIFT: gate-policy.sh PRESET_ENUM is missing '$want' (catalog row, not in enum)"
     fi
-  done < <(jq -r '.presets[].value' "$JSON")
+  done < <(jq -r '.presets[] | "\(.value)|\(.gate_aggressiveness)"' "$JSON")
+fi
+
+echo "── gate-policy.sh resolves a correct verdict for every catalog preset"
+
+# The end-to-end proof (uxgpre): drive the REAL `decide` path with a minimal
+# fake `bd` on PATH (same precedent as test-gate-policy.sh) so a preset that
+# ships in the catalog + PRESET_ENUM but is NOT actually resolvable by
+# gate-policy.sh is caught here — not silently degraded to a fail-CLOSED
+# "unrecognized-verdict" at runtime. Expected verdict is derived from the
+# catalog's gate_aggressiveness: auto-advance → `auto-advance`; gate-human →
+# `gate-human:<value>`.
+if [[ ! -x "$GATE" ]]; then
+  bad "gate-policy.sh not executable — cannot drive decide"
+else
+  GPWORK="$(mktemp -d 2>/dev/null)" || { echo "test-intake-presets.sh: mktemp failed" >&2; exit 70; }
+  # Trap-based cleanup (matches test-gate-policy.sh) so the temp dir is removed
+  # even if a future check between here and the explicit rm adds an early exit.
+  trap 'rm -rf "$GPWORK"' EXIT
+  GPBIN="$GPWORK/bin"; mkdir -p "$GPBIN"
+  # Fake bd: `bd label list gp-<preset> --json` → ["preset:<preset>"]. The bead
+  # id encodes the preset value as the suffix after `gp-`.
+  cat > "$GPBIN/bd" <<'BDEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+if [[ "${1:-}" == "label" && "${2:-}" == "list" ]]; then
+  bead="${3:-}"; preset="${bead#gp-}"
+  printf '["preset:%s"]\n' "$preset"; exit 0
+fi
+exit 0
+BDEOF
+  chmod +x "$GPBIN/bd"
+  while IFS='|' read -r v ga; do
+    [[ -n "$v" ]] || continue
+    case "$ga" in
+      auto-advance) want="auto-advance" ;;
+      gate-human)   want="gate-human:$v" ;;
+      *)            want="__unsupported_gate:$ga" ;;
+    esac
+    got="$(PATH="$GPBIN:$PATH" "$GATE" decide "gp-$v" 2>/dev/null)"
+    if [[ -n "$got" && "$got" == "$want" ]]; then
+      ok "gate-policy decide preset:$v → '$got' (matches gate_aggressiveness=$ga)"
+    else
+      bad "DRIFT: gate-policy decide preset:$v → '$got' but catalog gate_aggressiveness=$ga expects '$want'"
+    fi
+  done < <(jq -r '.presets[] | "\(.value)|\(.gate_aggressiveness)"' "$JSON")
+  rm -rf "$GPWORK"
 fi
 
 echo "── enricher.system.md mentions every catalog value (one-PR playbook step 3)"

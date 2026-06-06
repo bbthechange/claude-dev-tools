@@ -16,6 +16,15 @@ gate aggressiveness)* — stays legible at a glance.
 Single source of truth: **`agents/intake-presets.json`** (this directory).
 Everything else is a downstream mirror or a documented consumer.
 
+The **general "tap a named preset" affordance** — the catalog-driven picker
+and the extensibility of the whole catalog *beyond* the seed two — is owned
+by **claude-tools-uxgpre** (it generalized the L2 verdict derivation so
+adding a preset is a pure-data, harness-enforced one-PR change; see the
+playbook below). A *specific* preset that breaks the reductive contract is
+its own bead — e.g. `overview-request` (claude-tools-uxvl4 / L4), which
+produces **no bd task** and routes to a Blueprint/FYI, lives on the daemon
+dispatch side, not here.
+
 ## The reductive contract
 
 Every preset reduces to exactly two axes — no more — so the runner's L1
@@ -54,9 +63,9 @@ wins** — that is the file every consumer reads.
    web/functions/api/     agents/enricher.system.md   gate-policy.sh
    intake/_presets-        (prompt-resolution           (L2 preset enum,
    catalog.js              table, §"Entry stage          PRESET_ENUM —
-   (Pages-side MIRROR;     label" bullet)               must agree with
-   imported by both        The enricher reads the       the catalog values)
-   intake/index.js [write] JSON at run-time and
+   (Pages-side MIRROR;     label" bullet)               `value:gate` rows
+   imported by both        The enricher reads the       must agree with the
+   intake/index.js [write] JSON at run-time and          catalog value+gate)
    and intake/presets.js   uses it to pick (stage,
    [read proxy].           gate). Adding a row here
    The browser fetches     means adding a bullet
@@ -108,18 +117,28 @@ files. Anything else is a hint that the spine is being violated.
    stage is an L1 spine change (see `bd-stage.sh`), not an I4 catalog
    change.
 
-6. **Append the preset value to `PRESET_ENUM` in `gate-policy.sh`** so
-   the L2 lookup recognizes it as a known preset (an unknown preset
-   currently fails-CLOSED with `gate-human:unknown-preset`).
+6. **Append a `<value>:<gate_aggressiveness>` row to `PRESET_ENUM` in
+   `gate-policy.sh`** (e.g. `my-preset:gate-human`). Since
+   claude-tools-uxgpre, `gate-policy.sh` derives the verdict GENERICALLY
+   from this gate token — `auto-advance` → `auto-advance`, `gate-human` →
+   `gate-human:<value>` — so there is **no `case` branch to add**. The enum
+   row is the only edit. (An unknown preset still fails-CLOSED with
+   `gate-human:unknown-preset`; the gate token must match the catalog row's
+   `gate_aggressiveness` exactly.)
 
 7. **Run `bash beads-runner/test-intake-presets.sh`.** The harness
-   enforces every step above (JSON↔mirror↔enricher↔PRESET_ENUM
-   agreement). If you skipped a step, this fails with a `DRIFT:` line
-   pointing to the file that needs updating.
+   enforces every step above: JSON schema + value enums, **no duplicate
+   values**, mirror PRESETS[] order/values, **schema_version JSON↔mirror**,
+   `PRESET_ENUM` carries each catalog `value:gate` (token must match), the
+   enricher names each value, AND — the end-to-end proof —
+   **`gate-policy.sh decide` resolves a correct, non-empty verdict for
+   every catalog preset** (so "added the data, forgot the wiring" is caught
+   here, not silently degraded at runtime). If you skipped a step, this
+   fails with a `DRIFT:` line pointing to the file that needs updating.
 
-That's it. One JSON row + one mirror row + one bullet + (if needed) one
-enum entry, all in one PR — and the harness fails the PR if any of
-those is missed.
+That's it. One JSON row + one mirror row + one bullet + one `value:gate`
+enum row, all in one PR — and the harness fails the PR if any of those is
+missed.
 
 ## What deliberately stays out
 
@@ -148,3 +167,18 @@ those is missed.
   the catalog.
 - Adding a new preset is the playbook above — verified by inspection
   that each step is local to one file.
+
+## Acceptance for uxgpre (generalize the picker — first-class + extensible)
+
+- `gate-policy.sh` derives the verdict GENERICALLY from the preset's
+  `gate_aggressiveness` (the `value:gate` `PRESET_ENUM`); adding a preset
+  needs **no per-preset `case` branch**, and an empty verdict can never be
+  emitted.
+- `test-intake-presets.sh` enforces, beyond I4's checks: no duplicate
+  values, `schema_version` JSON↔mirror agreement, `PRESET_ENUM`
+  value+gate agreement with the catalog, and — driven against a fake `bd`
+  — that `gate-policy.sh decide` returns the correct, non-empty verdict for
+  **every** catalog preset (the cross-tier "data shipped but not wired"
+  guard).
+- Adding a preset beyond the seed two is therefore a verified pure-data
+  one-PR change; the harness fails the PR if any tier is missed.
