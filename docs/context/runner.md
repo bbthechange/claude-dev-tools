@@ -303,6 +303,27 @@ was lost).
   negative posture). Regression-locked by the `bc13-1vnx-…`/`bc13tree-1vnx-…`
   rigs in `bc-13-14-retry-asymmetry{,-tree}.sh` (the new harness verb is the
   `stuck_primary_exit0` claude plan + a real `bd label add` in the fake bd).
+- **…and the AGED-OUT not-blocked residual it left (claude-tools-309l, both
+  runners).** 1vnx's belt (and v2's `classify_failure`) keyed on `status==blocked`
+  + `human`. But the §7.3 Case-3 RELAXED preempt catches a `human`+NOT-blocked slip
+  (worker set label+ask note but missed the status flip — the m3xi vector) ONLY
+  while the `STUCK_NEEDS_HUMAN` note is RECENT (uxvi4 window, 1800s); once it ages
+  out, a still-stuck bead fell back to `TASK_NOT_CLOSED` → reset+analysis. Fix: the
+  recognition is now RECENCY-INDEPENDENT, keyed on the **`human` LABEL** (a resolved
+  fork has it REMOVED by the answer consequence, so its persistence = still-stuck —
+  the label, not the clock, is the freshness signal) **+** the worker's OWN non-audit
+  note (the `(?<!Runner: )` lookbehind drops the runner's own residue — the uxvi4
+  over-trigger vector). v1: `_bead_blocked_for_human` also fires on `human` +
+  `open`/`in_progress` (never `closed` = SUCCESS) + a non-audit note, flips it blocked,
+  and — opted-IN only — authors the §7.4-deduped dossier (option **c**: a belt-caught
+  fork was otherwise invisible in the Inbox). v2 had **no Case-3 analogue at all** —
+  `classify_failure` now recognizes it (helper `_bead_has_stuck_ask_note`) and routes
+  through `_drive_blocked_for_human` (flips blocked + authors the 69u8 dossier).
+  Does NOT reopen uxvi4 (the over-trigger was the preempt RE-ROUTING on a *resolved*
+  bead; this fires only while the label persists, idempotently). Rejected option **a**
+  (recency-refresh on every re-pickup — it fights uxvi4). Locked by `bc13-309l-…`/
+  `bc13tree-309l-…` (plan `stuck_slipped_aged`) + `lib/test-belt-aged-human.sh`
+  (pins the over-trigger boundary: runner-audit-only ⇒ no fire, `closed` ⇒ never pinned).
 - **Never gate a lease decision on the transport `rc==4`** — it conflates a
   GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
   AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409

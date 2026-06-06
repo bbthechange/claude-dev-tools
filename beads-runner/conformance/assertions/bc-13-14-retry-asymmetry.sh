@@ -153,3 +153,28 @@ _need "breaker never tripped (exit != 2)"            test "$RUN_EXIT" -ne 2
 _need "no consecutive-failures breaker message"      bash -c '! grep -q "consecutive failures" "'"$HARNESS_OUT"'/runner.out"'
 _emit
 H_cleanup
+
+# ── claude-tools-309l: an AGED-OUT human+NOT-blocked fork is UN-THRASHABLE (v1) ─
+# The residual 1vnx left open. The worker SLIPPED step 1 of the stuck protocol
+# (human label + a structured ask carrying a STUCK_NEEDS_HUMAN marker, but NEVER
+# status=blocked — the m3xi run-note vector) and the marker has AGED past the §7.3
+# Case-3 recency window (uxvi4). So: the §7.3 preempt's relaxed Case-3 cannot see
+# it (note too old), AND 1vnx's belt could not (it only fired on blocked|unreadable
+# status) → the bead fell to TASK_NOT_CLOSED → reset + analysis (thrash). 309l
+# EXTENDS the belt to catch human + open|in_progress + a non-audit STUCK_NEEDS_HUMAN
+# note, RECENCY-INDEPENDENTLY (the `human` LABEL is the freshness signal, not the
+# clock), and flip it blocked-for-human. Runs with ASK_BRIAN_ENABLED OFF (preempt
+# skipped — the belt is the ONLY catcher), so this isolates the belt's new clause.
+H_init_test bc13-309l-aged-human-notblocked-unthrash
+bd_seed T1 "aged human fork" "x"
+claude_plan stuck_slipped_aged
+run_runner
+_expect "BC-13/14" "§7.5" "aged-out human+NOT-blocked fork ⇒ STUCK_NEEDS_HUMAN, pinned blocked, NO reset, NO analysis (claude-tools-309l)"
+_need "STUCK_NEEDS_HUMAN incident recorded"          inc_has T1 STUCK_NEEDS_HUMAN
+_need "ZERO analysis children (not thrashed)"        test "$(analysis_count)" -eq 0
+_need "belt FLIPPED bead to status=blocked"          test "$(bd_status T1)" = "blocked"
+_need "no TASK_NOT_CLOSED reset taken"               test "$(inc_count T1 TASK_NOT_CLOSED)" -eq 0
+_need "breaker never tripped (exit != 2)"            test "$RUN_EXIT" -ne 2
+_need "no consecutive-failures breaker message"      bash -c '! grep -q "consecutive failures" "'"$HARNESS_OUT"'/runner.out"'
+_emit
+H_cleanup

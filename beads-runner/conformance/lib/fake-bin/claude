@@ -192,6 +192,22 @@ case "$behavior" in
     emit '{"type":"result","result":"I left it status=blocked + human and wrote the A/B ask.","is_error":false,"stop_reason":"end_turn"}'
     exit 0 ;;
 
+  stuck_slipped_aged)  # claude-tools-309l: the aged-out NOT-blocked residual that
+    # 1vnx's belt left open. The worker SLIPPED step 1 of the stuck protocol — it
+    # set the `human` label + a structured ask carrying a STUCK_NEEDS_HUMAN marker,
+    # but NEVER status=blocked (the m3xi run-note vector). The marker is stamped
+    # with an AGED epoch (well past the §7.3 Case-3 recency window), so the §7.3
+    # preempt's relaxed Case 3 does NOT recognise it — only the recency-INDEPENDENT
+    # 309l belt (human label + the worker's own non-audit note) can catch it. The
+    # bead must be pinned blocked-for-human, NOT reset / analysed (no thrash).
+    if [[ -n "$bead_id" ]]; then
+      bd label add "$bead_id" human >/dev/null 2>&1
+      bd update "$bead_id" --append-notes="STUCK_NEEDS_HUMAN@$(( $(date +%s) - 99999 ))
+TL;DR: need a human decision. The ask: pick A or B." >/dev/null 2>&1
+    fi
+    emit '{"type":"result","result":"I set human + the aged stuck-ask note but slipped status=blocked.","is_error":false,"stop_reason":"end_turn"}'
+    exit 0 ;;
+
   # ── T1b additions (claude-tools-crq) ─────────────────────────────────────────
 
   subagent_err_then_success)

@@ -1139,7 +1139,7 @@ detect_worker_stuck_primary() {
 #     label alone is NOT the fork we pin (test-stuck-primary-relaxed.sh).
 # Returns 0 = pin blocked-for-human; 1 = not our case (let classify_failure run).
 _bead_blocked_for_human() {
-  local task_id="$1" labels status _try
+  local task_id="$1" labels status row notes has_ask _try
   command -v bd >/dev/null 2>&1 || return 1
   labels=""
   for _try in 1 2; do
@@ -1153,7 +1153,41 @@ _bead_blocked_for_human() {
              | jq -r '(if type == "array" then .[0] else . end) | (.status // "")' 2>/dev/null || true)
     if [[ -n "$status" ]]; then break; fi
   done
-  [[ "$status" == "blocked" || -z "$status" ]]
+  # Canonical fork state (blocked) or a fail-SAFE unreadable status ⇒ pin.
+  [[ "$status" == "blocked" || -z "$status" ]] && return 0
+  # claude-tools-309l — aged-out still-stuck residual. A human-labelled bead the
+  # worker left NOT blocked (slipped the status flip — the m3xi vector) whose
+  # STUCK_NEEDS_HUMAN note has aged past detect_worker_stuck_primary's recency
+  # window (uxvi4) is no longer caught by the §7.3 Case-3 preempt and falls to
+  # TASK_NOT_CLOSED → reset + analysis (thrash). Recognise it here, recency-
+  # INDEPENDENTLY, because the `human` LABEL — not the clock — is the freshness
+  # signal: a RESOLVED fork has its label REMOVED by the answer consequence
+  # (sr_reconcile only lifts the work-plane block; the consequence removes the
+  # label), so a bead that STILL carries it is still-stuck. Only the genuinely-
+  # unfinished, not-blocked states qualify — a `closed` bead is a SUCCESS and
+  # must NEVER be pinned back (classify_failure SUCCESS ⟺ closed).
+  [[ "$status" == "open" || "$status" == "in_progress" ]] || return 1
+  # A NON-audit STUCK_NEEDS_HUMAN note (the worker's own ask; the `(?<!Runner: )`
+  # lookbehind drops the runner's OWN audit/auto-flip residue — the dominant
+  # uxvi4 over-trigger vector) distinguishes a genuine fork from a spurious bare
+  # `human` label (the test-stuck-primary-relaxed negative posture: a bare label
+  # with NO stuck note still falls through). This does NOT reopen Fix-B: the
+  # over-trigger was the preempt RE-ROUTING a dossier on a resolved bead; this
+  # belt fires only while the label persists and its action (pin + §7.4-deduped
+  # author) is idempotent.
+  row="__ERR__"
+  for _try in 1 2; do
+    row=$(bd show "$task_id" --long --json 2>/dev/null) || row="__ERR__"
+    [[ "$row" != "__ERR__" && -n "$row" ]] && break
+  done
+  # A degraded/empty read ⇒ fail-CLOSED (never pin an unfinished bead on a read
+  # glitch). Checked on the RAW row BEFORE jq, so the sentinel is load-bearing —
+  # a future edit of the test() below can't turn a read failure into a false fire.
+  [[ "$row" == "__ERR__" || -z "$row" ]] && return 1
+  notes=$(printf '%s' "$row" | jq -r '.[0].notes // ""' 2>/dev/null) || return 1
+  has_ask=$(printf '%s' "$notes" \
+    | jq -Rrs 'test("(?<!Runner: )STUCK_NEEDS_HUMAN")' 2>/dev/null) || has_ask="false"
+  [[ "$has_ask" == "true" ]]
 }
 
 # Create an analysis task that blocks the failed task.
@@ -2545,14 +2579,44 @@ $PROMPT"
   # (if it already fired, SR_STUCK_HANDLED is set and this is skipped) and a strict
   # no-op for every non-human bead (the `human` label gate never matches them, so
   # the whole offline conformance suite is unaffected).
+  # claude-tools-309l EXTENDS this belt to ALSO catch the aged-out still-stuck case
+  # (human + open|in_progress + a non-audit STUCK_NEEDS_HUMAN note past the §7.3
+  # Case-3 recency window — the residual hole 1vnx's belt left open). For THAT case
+  # the bead is NOT yet blocked, so the belt now flips it (idempotent for the
+  # already-blocked 1vnx case) and, when opted-IN, authors the dossier so the
+  # pinned fork is visible in the Inbox — otherwise it sits blocked-but-invisible
+  # and is never answered.
   if [[ -z "$SR_STUCK_HANDLED" ]] && _bead_blocked_for_human "$TASK_ID"; then
+    # Pin OUT of the ready set (idempotent: an already-blocked 1vnx bead no-ops)
+    # so an aged-note not-blocked fork stops being re-picked; re-assert the
+    # `human` label the same way sr_reconcile does (restore a clobbered datum).
+    bd update "$TASK_ID" --status=blocked >/dev/null 2>&1 || true
+    bd label add "$TASK_ID" human >/dev/null 2>&1 || true
+    # (c) claude-tools-309l: a belt-only fork was invisible in the Inbox (the §7.3
+    # preempt authors the dossier; the belt did not). When opted-IN and the
+    # stuck-routing lib is present, author the §7.4 task_ref-keyed dossier + §4.3
+    # notification so the pinned fork actually surfaces for Brian. §7.4-deduped +
+    # no_emit-idempotent ⇒ a re-fire on a re-pickup is a safe no-op; gated on
+    # ASK_BRIAN_ENABLED so an opted-OUT workspace never leaks a dossier.
+    if [[ "${ASK_BRIAN_ENABLED:-0}" == "1" ]] && command -v sr_route_stuck >/dev/null 2>&1; then
+      : "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
+      SR_BELT_DID="$(
+        sr_route_stuck "${SR_BEARER:-bearer-runner-stuck}" "$TASK_ID" \
+          "worker_stuck" "$(sr_worker_ask "$TASK_ID" 2>/dev/null || true)" \
+          2>/dev/null || true
+      )"
+      if command -v no_emit >/dev/null 2>&1 && [[ -n "$SR_BELT_DID" ]]; then
+        no_emit "${SR_BEARER:-bearer-runner-stuck}" "$SR_BELT_DID" >/dev/null 2>&1 \
+          || echo "  STUCK_NEEDS_HUMAN: WARN belt dossier '$SR_BELT_DID' persisted but no_emit FAILED — observable, idempotent; a later re-emit is safe."
+      fi
+    fi
     append_runner_note "$TASK_ID" "STUCK_NEEDS_HUMAN" "-"
     record_incident    "$TASK_ID" "STUCK_NEEDS_HUMAN" "-"
     if command -v la_report_terminal_reason >/dev/null 2>&1; then
       la_report_terminal_reason STUCK_NEEDS_HUMAN "" "$TASK_ID" "${PROJECT_REF:-}" || true
     fi
     SR_STUCK_HANDLED=1
-    SR_REASON="blocked+human at exit (claude-tools-1vnx un-thrash guard — the §7.3 preempt did not fire; bead pinned blocked-for-human, NOT reset, NO analysis child)"
+    SR_REASON="blocked+human at exit (claude-tools-1vnx/309l un-thrash guard — the §7.3 preempt did not fire; bead pinned blocked-for-human, NOT reset, NO analysis child)"
   fi
 
   # Preserve the stream-json for serious failures so we can post-mortem what

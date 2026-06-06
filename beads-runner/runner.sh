@@ -975,6 +975,31 @@ _bead_has_human_label() {
   printf '%s' "$labels" | jq -e 'any(.[]?; . == "human")' >/dev/null 2>&1
 }
 
+# claude-tools-309l — true iff the bead carries the worker's OWN STUCK_NEEDS_HUMAN
+# ask note (bare or @epoch, RECENCY-INDEPENDENT). The `(?<!Runner: )` lookbehind
+# drops the runner's own audit/auto-flip residue (the dominant uxvi4 over-trigger
+# vector), so this is the honest worker-ask signal, not a self-echo. Paired with
+# _bead_has_human_label below, it distinguishes a genuine fork the worker left
+# NOT blocked (slipped the status flip — the m3xi vector) from a spurious bare
+# `human` label (the test-stuck-primary-relaxed negative posture). Reads via
+# `bd show --long --json` (the only form carrying `notes`), retried; a degraded
+# read ⇒ false (fail-CLOSED, never pin an unfinished bead on a read glitch).
+_bead_has_stuck_ask_note() {
+  local id="$1" row notes _try
+  row="__ERR__"
+  for _try in 1 2; do
+    row="$(safe_capture BD_UNAVAILABLE "__ERR__" -- bd show "$id" --long --json)"
+    [[ "$row" != "__ERR__" && -n "$row" ]] && break
+  done
+  # Degraded/empty read ⇒ fail-CLOSED. Checked on the RAW row BEFORE jq so the
+  # sentinel is load-bearing (safe_capture's __ERR__ fallback would otherwise be
+  # swallowed by jq's parse error into an empty string — a dead guard).
+  [[ "$row" == "__ERR__" || -z "$row" ]] && return 1
+  notes="$(printf '%s' "$row" | jq -r '.[0].notes // ""' 2>/dev/null)" || return 1
+  printf '%s' "$notes" | jq -Rrs 'test("(?<!Runner: )STUCK_NEEDS_HUMAN")' 2>/dev/null \
+    | grep -qx true
+}
+
 classify_failure() {
   local sig="$1" id="$2" ec="$3" raw status
   local stuck=0
@@ -1015,6 +1040,25 @@ classify_failure() {
     # reset, no analysis — BC-13/14/53) pins it. (A degraded bd-show at line 969
     # already fails SAFE to DEGRADED, which does not mutate work state.)
     if [[ "$status" == "blocked" ]] && _bead_has_human_label "$id"; then
+      echo "STUCK_NEEDS_HUMAN"; return
+    fi
+    # claude-tools-309l — the aged-out NOT-blocked residual 1vnx left open. The
+    # worker SLIPPED step 1 (human label + structured ask note, but never
+    # status=blocked — the m3xi run-note vector). v1's §7.3 Case-3 RELAXED preempt
+    # catches this only while the note is RECENT (uxvi4 window); once it ages out,
+    # a genuinely-still-stuck bead falls to TASK_NOT_CLOSED → reset + analysis
+    # (thrash). v2 had NO Case-3 analogue at all. Recognise it RECENCY-
+    # INDEPENDENTLY on the durable signals: the sticky `human` LABEL (resolution
+    # REMOVES it via the answer consequence, so its presence means still-stuck) +
+    # the worker's OWN non-audit STUCK_NEEDS_HUMAN note (distinguishes a genuine
+    # fork from a spurious bare label — the test-stuck-primary-relaxed negative
+    # posture). status here is already non-closed/non-empty/parseable and the
+    # blocked+human case returned above, so this is the open|in_progress
+    # complement. Reuses the SAME breaker/retry-EXEMPT STUCK dispatch
+    # (_drive_blocked_for_human: flips blocked + authors the §7.4/69u8 dossier),
+    # so it leaves the ready set AND is Inbox-visible. Does NOT reopen uxvi4: the
+    # lookbehind drops the runner's own residue and a resolved bead has no label.
+    if _bead_has_human_label "$id" && _bead_has_stuck_ask_note "$id"; then
       echo "STUCK_NEEDS_HUMAN"; return
     fi
     echo "TASK_NOT_CLOSED"; return

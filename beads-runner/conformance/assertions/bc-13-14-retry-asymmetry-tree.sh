@@ -19,6 +19,16 @@ trap H_cleanup EXIT
 RUNNER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/runner.sh"
 export RUNNER_TICK=1 CONTROL_POLL_INTERVAL=999 HEARTBEAT_INTERVAL=999 \
        RECLAIM_POLL_INTERVAL=1
+# claude-tools-309l: make this rig HERMETIC like bc-43/bc-49-50-…-tree.sh. v2
+# (runner.sh) gates task pickup on a §6.1 lease via `co_lease_acquire`; with a
+# leaked ambient COORDINATOR_URL/TOKEN + RUNNER_BACKEND=real (present on a live
+# fleet box — e.g. the daemon's own shell) the runner talks to the HOSTED
+# coordinator, can't lease the fake `T1`, and EVERY assertion below goes falsely
+# RED (lease unavailable ⇒ no claim ⇒ no incidents ⇒ empty `inc_count` ⇒
+# `test: integer expression expected`). Force the in-process stub backend (whose
+# lease always grants) so the rig tests the runner, not the box's environment.
+unset COORDINATOR_URL COORDINATOR_TOKEN 2>/dev/null || true
+export RUNNER_BACKEND=stub
 
 # RATE_LIMIT is invisible to the per-task retry counter and never escalates
 H_init_test bc13tree-ratelimit-invisible
@@ -148,6 +158,30 @@ _expect "BC-13/14" "§7.5" "blocked+human EXIT-0 fork ⇒ STUCK_NEEDS_HUMAN, NO 
 _need "STUCK_NEEDS_HUMAN incident recorded"          inc_has T1 STUCK_NEEDS_HUMAN
 _need "ZERO analysis children (not thrashed)"        test "$(analysis_count)" -eq 0
 _need "bead left status=blocked (NOT reset to open)" test "$(bd_status T1)" = "blocked"
+_need "no TASK_NOT_CLOSED reset taken"               test "$(inc_count T1 TASK_NOT_CLOSED)" -eq 0
+_need "breaker never tripped (exit != 2)"            test "$RUN_EXIT" -ne 2
+_emit
+H_cleanup
+
+# ── claude-tools-309l: an AGED-OUT human+NOT-blocked fork is UN-THRASHABLE (v2) ─
+# v2 had NO Case-3 analogue at ALL — its STUCK path is sig/exit-code + (1vnx)
+# blocked+human only. So a worker that slipped step 1 (human label + a structured
+# ask carrying a STUCK_NEEDS_HUMAN marker, but NEVER status=blocked — the m3xi
+# vector) folded straight to TASK_NOT_CLOSED → reset + analysis (thrash), and no
+# recency window even mattered. 309l extends classify_failure to recognise it on
+# the durable signals — the sticky `human` LABEL (resolution removes it) + the
+# worker's OWN non-audit STUCK_NEEDS_HUMAN note, RECENCY-INDEPENDENT — and route it
+# through the SAME breaker/retry-EXEMPT STUCK dispatch (_drive_blocked_for_human:
+# flips blocked + authors the §7.4/69u8 dossier). The marker is aged on purpose to
+# prove recency is irrelevant to the v2 recogniser.
+H_init_test bc13tree-309l-aged-human-notblocked-unthrash
+bd_seed T1 "aged human fork" "x"
+claude_plan stuck_slipped_aged
+run_runner
+_expect "BC-13/14" "§7.5" "aged-out human+NOT-blocked fork ⇒ STUCK_NEEDS_HUMAN, pinned blocked, NO reset, NO analysis (claude-tools-309l) (runner.sh)"
+_need "STUCK_NEEDS_HUMAN incident recorded"          inc_has T1 STUCK_NEEDS_HUMAN
+_need "ZERO analysis children (not thrashed)"        test "$(analysis_count)" -eq 0
+_need "dispatch FLIPPED bead to status=blocked"      test "$(bd_status T1)" = "blocked"
 _need "no TASK_NOT_CLOSED reset taken"               test "$(inc_count T1 TASK_NOT_CLOSED)" -eq 0
 _need "breaker never tripped (exit != 2)"            test "$RUN_EXIT" -ne 2
 _emit
