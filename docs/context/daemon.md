@@ -205,6 +205,22 @@ The drift check is the "done means verified" gate for any plist change.
   per-workspace function DIRECTLY (not in a subshell) so its `log` lines survive.
   Any new per-workspace poll that both logs and counts must do the same.
 
+- **The daemon is the SECOND reader of desired-state, and under local-first it becomes the
+  COLD-START change-request consumer (claude-tools-dky8).** M3 (`desired-state-poll.sh:121`
+  `daemon_m3_fetch_desired`, network read in its `_daemon_m3_fetch_desired_one` helper at `:140`)
+  polls the engine for `desired` on its 60s cadence — the runner's
+  `job_reconcile_desired` is the other reader. The local-first redesign (claude-tools-y6j9, P1)
+  makes `desired` LOCAL-authoritative in `.co-store/runner_state.desired`. The daemon is already
+  positioned for this: it points `CO_STORE` at the shared per-workspace path (`:146`) and already
+  has a daemon-writes/runner-reads `.co-store` rendezvous precedent
+  (`hosted-resolution-poll.sh:122` `.co-store/blocked-for-human-answer`). Because a STOPPED/dead
+  runner cannot apply a "running" change-request to itself, the DAEMON must be the consumer that
+  writes local desired + spawns on a cold-start "running" request (reuse the existing
+  `agent_actions` queue / `agent-action-poll.sh` executor pattern — do NOT invent a new §4
+  record). Flip the daemon and the runner in LOCKSTEP, or they will disagree on desired. The
+  daemon's existing observe-first / no-action-on-unreachable posture is already the correct
+  local-first behavior — keep it; the runner's fail-OPEN-to-running is the part that was wrong.
+
 ## Go deeper
 
 - `beads-runner/daemon/README.md` — on-disk layout, registry schema, operator
@@ -223,7 +239,9 @@ didn't find here: a new poll job + its cadence env, a changed liveness oracle, a
 moved/renamed helper, a fresh plist scar, a new invariant. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete lines that have gone
 stale; don't let it grow into a copy of DESIGN.md or the README. Last substantive
-update: 2026-06-05 (claude-tools-49rx added the blueprint-update `fyi-pending`
+update: 2026-06-06 (local-first: the daemon is the second desired-state reader + the
+cold-start change-request consumer — claude-tools-dky8 / P1 claude-tools-y6j9). Prior:
+2026-06-05 (claude-tools-49rx added the blueprint-update `fyi-pending`
 lane — a transient timed-fyi failure after the map write parks the gi and
 re-emits ONLY the FYI next cadence instead of re-running the now-idempotent hat;
 the write-then-notify scar above). Prior: 2026-06-04 (I5/`uxvi5` made the

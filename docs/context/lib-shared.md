@@ -188,6 +188,20 @@ the oracle/conformance runs deterministic and offline. The live-Worker probe
   claude-tools-u1pt). Offline tests pass (they use the in-process oracle, not this
   transport); only live-verify / a local-engine clause catches it. Write-side ops
   (e.g. `relay-log-append`) correctly stay ACK.
+- **The local `.co-store` §4 record store is INERT in PROD — and that is changing
+  (claude-tools-dky8, local-first).** When `COORDINATOR_URL` is set, `co-http-transport.sh:168`
+  redefines `co_request` wholesale, so `co__store_put`/`co__store_get` are NEVER called in
+  production (the store runs only in the offline oracle/conformance runs; `co_store_dir()`
+  defaults to `$TMPDIR` but both runner and daemon override `CO_STORE` to the per-workspace
+  `<ws>/.beads/runner-logs/.co-store`). The local-first direction makes the runner
+  LOCAL-AUTHORITATIVE for coordination state (desired/actual/lease-envelope) with the cloud as an
+  observation cache + change-request queue: P4 (claude-tools-cx7t) write-throughs successful 2xx
+  responses into `.co-store` from the transport's success arms; P1 (claude-tools-y6j9) reads local
+  desired first (the break-through-pause fix). Re-activating the store in PROD means it must stay
+  differential-equivalent to D1 (the §8bm invariant) — it is no longer "unused, don't worry about
+  it." The cloud→runner CHANGE-REQUEST substrate already exists: the `agent_actions` TRANSIENT
+  queue (`coordinator.sh:738-855`, ops agent-action/-pending/-ack) — reuse it for desired-state
+  change-requests; do NOT register a new §4 record. Lease-envelope cache is P2 (claude-tools-h9dl).
 - **Loop-hygiene libs guard recurring footguns:** the runner never branches, so
   `git-pin-main.sh` re-pins HEAD to trunk each iteration; a daemon-stripped PATH
   resolves `claude` to Node v25 which crashes it (`node25-prime.sh`); SIGKILL'd
@@ -209,4 +223,6 @@ When you finish a task in this area, append anything a future agent will need an
 didn't find here: a renamed/moved lib, a new env override, a fresh oracle clause,
 a new MUST-NOT boundary, a scar. **Keep it concise — this doc earns its keep only
 if agents read all of it.** Delete stale lines; never let it grow into a copy of
-INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-03 (co_http__op_is_data DATA-200 allowlist scar + relay-log-tail/notif-digest passthrough — claude-tools-u1pt).
+INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-06 (local-first:
+the `.co-store` §4 store is inert in PROD and the local-first epic re-activates it — claude-tools-dky8;
+reuse the `agent_actions` queue for change-requests, don't add a §4 record). Prior: 2026-06-03 (co_http__op_is_data DATA-200 allowlist scar + relay-log-tail/notif-digest passthrough — claude-tools-u1pt).

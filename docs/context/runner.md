@@ -330,6 +330,22 @@ was lost).
   is rc 1 (correctly distinct). For the AD2.2 unreachable-only posture use the
   `CO_HTTP_UNREACHABLE` sidecar (set 1 only on the curl-failed path), not the rc.
   (claude-tools-ylu2 — caught in review; a reachable 500 must fail CLOSED.)
+- **Desired-state is moving LOCAL-FIRST — the runner OWNS it; the cloud only queues Brian's
+  change-requests + caches the observation (claude-tools-dky8).** The motivating scar
+  (break-through-pause): `co_deliver_desired_state` (runner-backend-real.sh:125) does a live
+  `co_request poll` every reconcile and fail-OPENs to `running` on ANY failure — and that
+  fail-open is baked in TWICE: the adapter's own `|| echo running` returns rc 0, so the
+  `safe_capture COORD_UNREACHABLE running` degrade at :2307/:2755 NEVER fires, and the `running`
+  case is a no-op `:`, so the break-through is SILENT (no desired-state log line). One failed
+  poll discarded a 17h `desired=paused` history and spawned a worker. The fix
+  (claude-tools-y6j9, P1): read local `.co-store/runner_state.desired` FIRST, network only
+  refreshes the observation, gate any fallback on the precise `CO_HTTP_UNREACHABLE` sidecar (NOT
+  bare rc). Do NOT re-add a network-authoritative desired read. The cloud→runner change-request
+  channel ALREADY EXISTS — the `agent_actions` transient queue (reuse it; do NOT invent a new §4
+  record) — and the DAEMON (desired-state-poll.sh) is a SECOND network reader that must flip in
+  lockstep (it is the cold-start consumer: a stopped runner can't apply "running" to itself).
+  Sibling local-first beads: bd-ready TTL cache (claude-tools-4a2e), lease-envelope cache
+  (claude-tools-h9dl), `.co-store` write-through (claude-tools-cx7t).
 
 ## Go deeper
 
@@ -349,4 +365,5 @@ status change, a fresh scar, a changed spawn/selection rule. Update the v1-LIVE 
 v2-OFFLINE status the moment the cutover lands — that single fact reframes the
 whole doc. **Keep it concise — this doc earns its keep only if agents read all of
 it.** Delete lines that have gone stale; do not let it grow into a second copy of
-BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-05-31.
+BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-06 (local-first desired-state
+direction + the break-through-pause scar — claude-tools-dky8; impl P1 claude-tools-y6j9).
