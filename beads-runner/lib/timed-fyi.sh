@@ -413,14 +413,20 @@ pair_create() {
 #   timer-ack: per §4.3 timer-ack is the stop-re-surfacing primitive once Brian
 #   OPENS the session, so a re-surface (S-6 poll) is harmless — notif_fire is
 #   idempotent (one-per-Dossier) and N2's deliver-once ledger guarantees one
-#   push. (NB claude-tools-h8e6: unlike snooze_surface, pair_surface does NOT
-#   force a re-push — it re-fires every poll with no ack, so evicting the ledger
-#   here would push every poll; the JS twin pairSurface is left un-evicted too.)
-#   Echoes the fired notification id; a notif_fire failure is OBSERVABLE
-#   (a mis-tiered pair dossier the §10.2 guard rejects) and never crashes the
-#   poll (returns nonzero, sibling continues — AD7).
+#   push. ONE-SHOT RE-PING GUARD (claude-tools-7n5c): a RE-SCHEDULED pair (a new
+#   scheduled_at) must re-ping the phone exactly once — but pair_surface re-fires
+#   every poll with no ack, so it cannot evict the deliver-once ledger naively
+#   (that would push every poll). The guard is a `pair_surfaced_for` marker on
+#   the envelope = the scheduled_at we last re-armed a push for; we stamp it (and,
+#   in the JS twin, evict the ledger row) ONLY when it differs from the current
+#   scheduled_at — the first surface of a fresh appointment. The push ledger is
+#   CF-only (no bash twin — h8e6), so bash mirrors only the MARKER STAMP so the
+#   dossier record stays differentially equal; the evict is JS-only (below
+#   INTERFACE). Echoes the fired notification id; a notif_fire failure is
+#   OBSERVABLE (a mis-tiered pair dossier the §10.2 guard rejects) and never
+#   crashes the poll (returns nonzero, sibling continues — AD7).
 pair_surface() {
-  local bearer="${1:-}" did="${2:-}" rec kind nid
+  local bearer="${1:-}" did="${2:-}" rec kind at sf upd nid
   [[ -n "$did" ]] || { echo "ready-to-pair: surface — need <dossier_id>" >&2; return 2; }
   rec="$(do_dossier_get "$bearer" "$did")" \
     || { echo "ready-to-pair: surface — dossier '$did' not found OR not authorized (§9.1 collapses 401/absent — C4)" >&2; return 1; }
@@ -430,6 +436,19 @@ pair_surface() {
     # mirroring tf_fire's non-timed-fyi no-op; the §4.1 kind drives this).
     echo "ready-to-pair: surface — dossier '$did' kind='$kind' not 'pair'; nothing to surface — no-op" >&2
     return 0
+  fi
+  # ── ONE-SHOT re-ping marker (claude-tools-7n5c) ──
+  # Stamp pair_surfaced_for=<scheduled_at> the first time we surface for THIS
+  # appointment (marker ≠ scheduled_at). The JS twin pairSurface ALSO evicts the
+  # CF.9 deliver-once row here so the phone re-pings once; bash has no push ledger
+  # to evict (below INTERFACE — h8e6), so it mirrors only the marker, keeping the
+  # dossier record differentially equal. Best-effort: a failed stamp degrades to
+  # "no marker this poll, retry next" and never crashes the surface.
+  at=$(printf '%s' "$rec" | jq -r '.scheduled_at // ""' 2>/dev/null) || at=""
+  sf=$(printf '%s' "$rec" | jq -r '.pair_surfaced_for // ""' 2>/dev/null) || sf=""
+  if [[ -n "$at" && "$sf" != "$at" ]]; then
+    upd=$(printf '%s' "$rec" | jq -c --arg a "$at" '.pair_surfaced_for=$a' 2>/dev/null) \
+      && do_dossier_put "$bearer" "$upd" >/dev/null 2>&1 || true
   fi
   if nid="$(notif_fire "$bearer" ready_to_pair "$did")"; then
     printf '%s' "$nid"

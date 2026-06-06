@@ -419,6 +419,67 @@ it("h8e6 — snooze re-surface EVICTS the deliver-once row so the phone re-pings
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// claude-tools-7n5c — the PAIR half of the h8e6 re-push fix. A pair session
+// RE-SCHEDULED to a new scheduled_at must re-ping the phone EXACTLY once. Unlike
+// snooze, pairSurface has no timer-ack, so it re-fires on EVERY poll — a naive
+// evict would storm. The one-shot guard is the `pair_surfaced_for` marker: evict
+// + stamp only on the FIRST surface of a fresh appointment; a same-appointment
+// re-poll matches the marker and never evicts. This drives the REAL producer +
+// surface ops + the REAL notif-deliver sweep (not a seeded shortcut) and proves:
+// first delivery ledgers once; a same-appointment re-poll re-pushes NOTHING (no
+// storm); a re-schedule evicts → re-pushes exactly ONE fresh; then deliver-once
+// is restored (one-shot, not per-poll).
+it("7n5c — a RE-SCHEDULED pair re-pings once via the pair_surfaced_for guard (never a per-poll storm)", async () => {
+  reset();
+  await call(GOOD, "push-list", []); // ensure schema
+  await freshPushStore();
+  await env.DB.prepare("DELETE FROM records WHERE type IN ('notification','dossier')").run();
+
+  const BREF = "claude-tools-7n5c";
+  const DID = "pair-claude-tools-7n5c"; // the deterministic pair-<bead_ref> id
+  const SCHED1 = "2099-06-01T15:00:00Z";
+  const SCHED2 = "2099-06-02T15:00:00Z"; // a GENUINE re-schedule (a new appointment)
+  const { p256dh, auth } = await configurePushEnv();
+  await call(GOOD, "push-subscribe", ["https://fcm.googleapis.com/fcm/send/7n5c", p256dh, auth]);
+
+  // PRODUCE + ARM a kind:"pair" session card (the N10-10 producer).
+  ck("pair-create builds + arms the pair card", isOk(await call(GOOD, "pair-create", [BREF, SCHED1, "pair on 7n5c"])));
+
+  // FIRST surface — fires ready_to_pair; the guard evicts (a no-op, ledger empty)
+  // and stamps the marker to SCHED1.
+  ck("first pair-surface fires the blocking ready_to_pair notif", isOk(await call(GOOD, "pair-surface", [DID])));
+  const d1 = await call(GOOD, "notif-deliver", ["blocking"]);
+  ck("first blocking sweep pushes the pair notif", d1.body && d1.body.pushed === 1);
+  ck("the pair notif is now in the deliver-once ledger", (await ledgerCount()) === 1);
+
+  // RE-POLL the SAME appointment — marker matches ⇒ NO evict ⇒ NO storm.
+  ck("a same-appointment re-surface succeeds (idempotent re-poll)", isOk(await call(GOOD, "pair-surface", [DID])));
+  ck("the same-appointment re-poll did NOT evict (one-shot guard holds)", (await ledgerCount()) === 1);
+  ck("re-poll blocking sweep re-pushes NOTHING (deliver-once holds — no storm)", (await call(GOOD, "notif-deliver", ["blocking"])).body.pushed === 0);
+
+  // RE-SCHEDULE — pair-create with a NEW scheduled_at overwrites the card (wiping
+  // the stale marker) + re-arms the timer at SCHED2.
+  ck("pair-create RE-SCHEDULES to a new appointment", isOk(await call(GOOD, "pair-create", [BREF, SCHED2])));
+
+  // THE FIX: the re-scheduled surface sees marker(SCHED1) ≠ scheduled_at(SCHED2),
+  // so it EVICTS the deliver-once row ...
+  ck("re-scheduled pair-surface succeeds", isOk(await call(GOOD, "pair-surface", [DID])));
+  ck("re-schedule surface EVICTED the deliver-once ledger row (7n5c fix)", (await ledgerCount()) === 0);
+  // ... so the NEXT blocking sweep re-dispatches exactly ONE fresh push (re-pings).
+  const d2 = await call(GOOD, "notif-deliver", ["blocking"]);
+  ck("after the re-schedule the blocking sweep RE-PUSHES one fresh notif (the phone re-pings)", d2.body && d2.body.pushed === 1);
+  ck("the fresh push re-ledgered it (deliver-once restored to 1)", (await ledgerCount()) === 1);
+
+  // Steady-state holds again — the eviction is ONE-SHOT per (re)schedule, not per poll.
+  ck("a re-poll after the re-schedule push does NOT evict again", isOk(await call(GOOD, "pair-surface", [DID])));
+  ck("deliver-once holds again after the fresh push (no per-sweep storm)", (await call(GOOD, "notif-deliver", ["blocking"])).body.pushed === 0);
+  ck("the ledger remains 1 after the steady-state re-poll", (await ledgerCount()) === 1);
+
+  clearPushEnv();
+  expect(FAIL, `7n5c pair re-push failed: ${fails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 it("N2 anti-drift — push is NOT a §4 record; the §2 substrate is untouched", async () => {
   reset();
   ck("'push_subscription' is NOT a §4 record type (absent from schemaVersion)", schemaVersion("push_subscription") === null);

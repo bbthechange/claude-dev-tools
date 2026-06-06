@@ -150,13 +150,20 @@ its channel `scope` a SHORT opaque tag, never dossier content, or the guard fail
 `cf/test/push.spec.js` (it carries the RFC 8291 §5 known-answer vector + a VAPID
 JWT verify + the tier-keyed dry-run). Keep the payload triage-only.
 
-**Re-pushing a re-surfaced notification (claude-tools-h8e6):** the deliver-once
-ledger keeps a *re-fired* notif silent after its first delivery. A re-surface
-fire-action that must legitimately re-ping calls `evictDelivery(co, notifId(did))`
-(`push.js`, exported; `notifId` exported from `notification.js`) to drop that ONE
-ledger row, so the next `notif-deliver` blocking sweep re-dispatches exactly one
-fresh push. ONLY the §5.6 snooze re-surface (`timer.js snoozeSurface`) uses it —
-scope any new eviction to a ONE-SHOT re-surface (see the asymmetry scar below).
+**Re-pushing a re-surfaced notification (claude-tools-h8e6 / -7n5c):** the
+deliver-once ledger keeps a *re-fired* notif silent after its first delivery. A
+re-surface fire-action that must legitimately re-ping calls
+`evictDelivery(co, notifId(did))` (`push.js`, exported; `notifId` exported from
+`notification.js`) to drop that ONE ledger row, so the next `notif-deliver`
+blocking sweep re-dispatches exactly one fresh push. TWO callers, both scoped to
+fire exactly once per re-surface: (1) the §5.6 snooze re-surface
+(`timer.js snoozeSurface`) — one-shot because it acks the timer + clears
+`snoozed_until`; (2) the ready-to-pair re-surface (`timer.js pairSurface`,
+claude-tools-7n5c) — which has NO timer-ack and re-fires every poll, so it gates
+the evict behind a `pair_surfaced_for` marker (the scheduled_at last re-armed a
+push for): evict + stamp ONLY when the marker ≠ the current scheduled_at, i.e. the
+first surface of a fresh/re-scheduled appointment. A naive per-poll evict would
+storm — NEVER evict in a re-fires-every-poll path without a one-shot guard.
 
 **Adding a push op:** follow the engine's add-an-op checklist (module guard +
 Pages proxy + the `cf/pages-dev/adapter.js` mapping — the layer 2dk forgot — see
@@ -196,16 +203,22 @@ phone buzzes "Beads — a decision needs you" and the tap deep-links.
   the Worker. The daemon logs it and retries next cadence (the ledger makes retry
   safe); it never aborts the daemon loop. Blocking latency is bounded by the poll
   interval (~30s, `BEADS_DAEMON_NOTIF_DELIVERY_POLL_INTERVAL`), not literally at dispatch.
-- **Snooze re-pushes, pair must NOT (the eviction asymmetry, claude-tools-h8e6).**
-  `timer.js snoozeSurface` evicts the deliver-once row (`evictDelivery`) to force a
-  fresh push on re-surface — SAFE because it acks the §2.2 timer + clears
-  `snoozed_until`, so it runs ONCE per snooze. `pairSurface` has the same
-  deliver-once gap but is **deliberately left un-evicted**: it re-fires on EVERY
-  poll with no timer-ack (`ready-to-pair.spec.js` EXIT-D pins this), so evicting
-  there would re-push every poll — a notification storm. A legit pair re-ping
-  (a re-scheduled session) needs a distinct one-shot guard → claude-tools-7n5c.
-  The push ledger is CF-only (no bash twin), so the eviction is below INTERFACE —
-  `lib/timed-fyi.sh` carries comment-only parity, the differential stays equal.
+- **Snooze and pair both re-push, but by DIFFERENT one-shot mechanisms (the
+  eviction asymmetry, claude-tools-h8e6 + -7n5c).** `timer.js snoozeSurface` evicts
+  the deliver-once row (`evictDelivery`) unconditionally — SAFE because it acks the
+  §2.2 timer + clears `snoozed_until`, so it runs ONCE per snooze. `pairSurface`
+  has the same deliver-once gap but re-fires on EVERY poll with no timer-ack
+  (`ready-to-pair.spec.js` EXIT-D pins this), so it CANNOT evict unconditionally
+  (that would re-push every poll — a storm). Instead it gates the evict behind a
+  `pair_surfaced_for` marker on the dossier envelope (= the scheduled_at it last
+  re-armed a push for): evict + stamp ONLY when the marker ≠ the current
+  scheduled_at — the first surface of a fresh or RE-SCHEDULED appointment — so a
+  re-schedule re-pings exactly once and a same-appointment re-poll never does. The
+  push ledger is CF-only (no bash twin), so the EVICT is below INTERFACE
+  (`lib/timed-fyi.sh` comment-only parity); the MARKER is on the dossier record,
+  so bash `pair_surface` mirrors the STAMP and the differential stays equal.
+  The marker is wiped by the producer's re-put (a re-schedule carries a new
+  scheduled_at and no marker), which is exactly what re-arms the one push.
 
 ## Go deeper
 
@@ -230,5 +243,6 @@ a moved file, a fresh scar. This is a **thin thread** across four tiers — keep
 that way; it earns its keep only if agents read all of it, and the tier-internals
 belong in the sibling docs (`engine-cloudflare.md`, `web-inbox.md`, `daemon.md`,
 `lib-shared.md`), not here. Delete lines that have gone stale. Last substantive
-update: 2026-06-06 (h8e6: the `evictDelivery` re-push seam + the snooze/pair
-eviction asymmetry scar).
+update: 2026-06-06 (7n5c: the `pair_surfaced_for` one-shot guard closes the pair
+re-push gap — pairSurface now evicts on a re-schedule; h8e6: the `evictDelivery`
+re-push seam + the snooze/pair eviction asymmetry).

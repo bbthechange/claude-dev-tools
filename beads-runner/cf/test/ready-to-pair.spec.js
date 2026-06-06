@@ -264,6 +264,38 @@ it("N3 differential vs timed-fyi.sh pair_* + test-ready-to-pair.sh (DESIGN N §4
   ck("re-poll still applied NO consequence (surface never auto-proceeds)", (await BDN("create --title new p1")) === 0);
   ck("p1 still OPEN after re-poll (idempotent surface)", (await ISTATE("dP1", "p1")) === "open");
 
+  // ── EXIT-REPING (claude-tools-7n5c): the one-shot pair_surfaced_for marker ──
+  // The guard that lets a RE-SCHEDULED pair re-ping the phone exactly once
+  // without the per-poll storm a naive ledger eviction would cause. The marker =
+  // the scheduled_at we last re-armed a push for; the CF twin evicts the CF.9
+  // deliver-once row (tested in push.spec.js) ONLY when it changes. Here we pin
+  // the MARKER STATE MACHINE (the differential-equal, above-INTERFACE half):
+  // stamped on the first surface of an appointment, unchanged on a re-poll, wiped
+  // by a re-schedule (producer re-put), re-stamped on the next surface.
+  console.log("── EXIT-REPING: the one-shot pair_surfaced_for re-ping marker (7n5c) ──");
+  const PSF = async (id) => {
+    const r = await GET(id);
+    return r ? r.pair_surfaced_for : undefined;
+  };
+  await PUT(mkpair("dRP", SCHED, [item_obj("rp1")]));
+  await call(GOOD, "pair-arm", ["dRP"]);
+  ck("BEFORE any surface: NO pair_surfaced_for marker", (await PSF("dRP")) === undefined);
+  await call(GOOD, "pair-surface", ["dRP"]);
+  ck("first surface STAMPS pair_surfaced_for = scheduled_at (re-ping armed→consumed)", (await PSF("dRP")) === SCHED);
+  ck("first surface left rp1 OPEN (surface never auto-proceeds)", (await ISTATE("dRP", "rp1")) === "open");
+  // a same-appointment re-surface (the S-6 re-poll) must NOT re-arm — marker holds.
+  await call(GOOD, "pair-surface", ["dRP"]);
+  ck("a same-appointment re-poll keeps the SAME marker (no per-poll re-arm → no storm)", (await PSF("dRP")) === SCHED);
+  // RE-SCHEDULE: the producer re-puts with a NEW scheduled_at, which wipes the
+  // stale marker (mkpair carries no pair_surfaced_for) — the genuine re-ping case.
+  const SCHEDR = "2099-05-16T20:00:00Z";
+  await PUT(mkpair("dRP", SCHEDR, [item_obj("rp1")]));
+  ck("a re-schedule (producer re-put) WIPED the stale marker", (await PSF("dRP")) === undefined);
+  await call(GOOD, "pair-surface", ["dRP"]);
+  ck("the re-scheduled surface RE-STAMPS the marker to the new appointment", (await PSF("dRP")) === SCHEDR);
+  await call(GOOD, "pair-surface", ["dRP"]);
+  ck("steady-state re-poll at the new appointment keeps the new marker", (await PSF("dRP")) === SCHEDR);
+
   // ── EXIT-ALARM (CF superset): the REAL §2.2 setAlarm() callback routes pair→surface ──
   console.log("── EXIT-ALARM: the real DO alarm() surfaces a due pair (setAlarm path) ──");
   await resetBd();

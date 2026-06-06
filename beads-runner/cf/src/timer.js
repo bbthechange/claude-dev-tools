@@ -535,14 +535,25 @@ async function pairCreate(co, principal, beadRef, scheduledAt, tldr, fullDetail,
 // (S-6 poll) is harmless: notif-fire is idempotent (one-per-Dossier; the emit
 // no-ops) and N2's deliver-once ledger guarantees one push.
 //
-// NO LEDGER EVICTION here (claude-tools-h8e6 — deliberate). snoozeSurface evicts
-// the deliver-once row to force a fresh re-push, but pairSurface MUST NOT: it has
-// no timer-ack, so timer-due re-surfaces it on EVERY poll (ready-to-pair.spec.js
-// EXIT-D pins that idempotent re-poll). Evicting per poll would re-push every
-// poll — a notification storm, the opposite of "one fresh push". A legitimate
-// pair re-ping (e.g. a session re-scheduled to a new scheduled_at) would need a
-// distinct ONE-SHOT guard (pairSurface keeps no "already surfaced" state today);
-// that is a separate follow-up, not this bead's safe scope. Returns
+// ONE-SHOT RE-PING GUARD (claude-tools-7n5c — the pair half of the h8e6 fix).
+// pairSurface has the SAME deliver-once gap snoozeSurface had: a pair session
+// RE-SCHEDULED to a new scheduled_at would return to the blocking lane but the
+// phone would stay SILENT (notif.<did> is still in CF.9's push_deliveries from
+// the FIRST surface). snoozeSurface fixes its gap by evicting that row outright —
+// SAFE for snooze because it acks the timer + clears snoozed_until, so it runs
+// ONCE per snooze. pairSurface CANNOT evict unconditionally: it has no timer-ack,
+// so timer-due re-surfaces it on EVERY poll (ready-to-pair.spec.js EXIT-D pins
+// that idempotent re-poll) — a naive evict would re-push every poll (a storm).
+// The guard: a `pair_surfaced_for` marker on the envelope records the
+// scheduled_at we last re-armed a push for. We evict + stamp ONLY when the marker
+// ≠ the current scheduled_at — i.e. the FIRST surface of a fresh appointment (a
+// new arm OR a genuine re-schedule, which carries a new scheduled_at and wipes
+// the marker on the producer's re-put). Every subsequent poll for the SAME
+// appointment matches the marker ⇒ NO evict ⇒ deliver-once holds ⇒ no storm.
+// One fresh push per (re)schedule, never per poll. The push ledger is CF-only
+// (below INTERFACE — no bash twin); the MARKER is on the dossier record, so
+// lib/timed-fyi.sh pair_surface mirrors the STAMP (the differential stays equal)
+// and only the evict is comment-only there. Returns
 // { ok:true, surfaced:did, fired:bool, warned?:bool }.
 async function pairSurface(co, principal, did) {
   if (!neStr(did)) return { ok: false, msg: "ready-to-pair: surface — need <dossier_id>" };
@@ -556,6 +567,31 @@ async function pairSurface(co, principal, did) {
     // Not a pair session — nothing to surface (informational no-op success;
     // the §4.1 kind drives this, mirroring tf_fire's non-timed-fyi no-op).
     return { ok: true, surfaced: did, fired: false };
+
+  // ── ONE-SHOT re-ping guard (claude-tools-7n5c) ──────────────────────────────
+  // Re-arm a single FRESH push iff this is the first surface for the current
+  // appointment. STAMP the marker FIRST and gate the evict on its success: a
+  // failed stamp degrades to "no fresh push this poll, retry next" (the safe,
+  // h8e6-style direction) — never to a per-poll storm. A stamped-but-not-evicted
+  // outcome degrades to the prior no-fresh-push behavior. Both are best-effort;
+  // the load-bearing surface (the notif-fire below) runs regardless.
+  const at = typeof rec.scheduled_at === "string" ? rec.scheduled_at : "";
+  const surfacedFor = typeof rec.pair_surfaced_for === "string" ? rec.pair_surfaced_for : "";
+  if (neStr(at) && surfacedFor !== at) {
+    let stamped = false;
+    try {
+      stamped = await dossierPut(co, principal, { ...rec, pair_surfaced_for: at });
+    } catch {
+      stamped = false; /* non-fatal — retry next poll; no evict this time */
+    }
+    if (stamped) {
+      try {
+        await evictDelivery(co, notifId(did));
+      } catch {
+        /* non-fatal — re-push is best-effort; degrades to the prior no-fresh-push */
+      }
+    }
+  }
 
   // Fire the blocking ready_to_pair notification via the N1 spine (the C3
   // emit + §10.2 tier-guard). For a `blocking` trigger notif-fire leaves the
@@ -624,11 +660,13 @@ async function pairSurface(co, principal, did) {
 // re-firing, so the next notif-deliver blocking sweep re-dispatches exactly ONE
 // fresh push. This is SAFE for snooze because the re-surface is ONE-SHOT (it acks
 // the timer + clears snoozed_until, so it runs once per snooze, not per poll).
-// pairSurface has the SAME ledger property but is DELIBERATELY left un-evicted —
+// pairSurface has the SAME ledger property but CANNOT evict unconditionally —
 // it re-fires on EVERY poll with no ack (ready-to-pair.spec.js EXIT-D pins that),
-// so evicting there would re-push every poll (a notification storm). The pair
-// re-ping (e.g. a re-scheduled session) needs a distinct one-shot guard and is a
-// separate follow-up (see pairSurface).
+// so a naive evict would re-push every poll (a notification storm). Its re-ping
+// (a re-scheduled session) is now handled by a distinct ONE-SHOT guard — the
+// `pair_surfaced_for` marker (claude-tools-7n5c, see pairSurface): evict + stamp
+// only on the first surface of a fresh scheduled_at, so a re-schedule re-pings
+// exactly once and a same-appointment re-poll never does.
 // ════════════════════════════════════════════════════════════════════════════
 
 // dossierSnooze(co, principal, did, snoozeUntil) — the §5.6 SNOOZE ARM verb.

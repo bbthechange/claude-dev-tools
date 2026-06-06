@@ -76,6 +76,7 @@ NTIER()  { NOTIF "$1" | jq -r '.tier'       2>/dev/null; }
 NDISP()  { NOTIF "$1" | jq -r '.dispatched' 2>/dev/null; }
 BDN()    { local c; c=$(grep -c -- "$1" "$BD_LOG" 2>/dev/null); echo "${c:-0}"; }
 DUE()    { co_request "$GOOD" timer-due "${2:-}" 2>/dev/null | grep -Fxq -- "$1"; }      # DUE <id> [now]
+PSF()    { GET "$1" | jq -r '.pair_surfaced_for // ""' 2>/dev/null; }                    # the 7n5c one-shot re-ping marker
 
 CA="2026-05-16T00:00:00Z"
 SCHED="2026-05-16T15:00:00Z"   # the appointment
@@ -190,6 +191,32 @@ tf_poll "$GOOD" "$FAR" >/dev/null 2>&1
 ck  "re-poll still applied NO consequence (surface never auto-proceeds)" \
    eq "$(BDN 'create --title new p1')" "0"
 ck  "p1 still OPEN after re-poll (idempotent surface)"  eq "$(ISTATE dP1 p1)" "open"
+
+echo ""
+echo "── EXIT-REPING: the one-shot pair_surfaced_for re-ping marker (7n5c) ──"
+# The guard that lets a RE-SCHEDULED pair re-ping the phone EXACTLY once without
+# the per-poll storm a naive deliver-once eviction would cause. The push ledger
+# is CF-only (no bash twin — h8e6); bash mirrors only the MARKER state machine
+# (the above-INTERFACE half, so the differential stays equal): stamped on the
+# first surface, unchanged on a same-appointment re-poll, wiped by a re-schedule
+# (producer re-put), re-stamped on the next surface. The CF twin ALSO evicts the
+# CF.9 row on each (re)stamp — proven in cf/test/push.spec.js.
+do_dossier_put "$GOOD" "$(mkpair dRP "$SCHED" "[$(item_obj rp1)]")" >/dev/null
+pair_arm "$GOOD" dRP >/dev/null
+ck  "BEFORE any surface: NO pair_surfaced_for marker"   eq "$(PSF dRP)" ""
+pair_surface "$GOOD" dRP >/dev/null
+ck  "first surface STAMPS pair_surfaced_for = scheduled_at (re-ping armed→consumed)" eq "$(PSF dRP)" "$SCHED"
+ck  "first surface left rp1 OPEN (surface never auto-proceeds)" eq "$(ISTATE dRP rp1)" "open"
+pair_surface "$GOOD" dRP >/dev/null
+ck  "a same-appointment re-poll keeps the SAME marker (no per-poll re-arm → no storm)" eq "$(PSF dRP)" "$SCHED"
+# RE-SCHEDULE: the producer re-puts with a NEW scheduled_at, wiping the stale marker.
+SCHEDR="2026-05-16T20:00:00Z"
+do_dossier_put "$GOOD" "$(mkpair dRP "$SCHEDR" "[$(item_obj rp1)]")" >/dev/null
+ck  "a re-schedule (producer re-put) WIPED the stale marker"  eq "$(PSF dRP)" ""
+pair_surface "$GOOD" dRP >/dev/null
+ck  "the re-scheduled surface RE-STAMPS the marker to the new appointment" eq "$(PSF dRP)" "$SCHEDR"
+pair_surface "$GOOD" dRP >/dev/null
+ck  "steady-state re-poll at the new appointment keeps the new marker" eq "$(PSF dRP)" "$SCHEDR"
 
 echo ""
 echo "── EXIT-PROJ: a kind:'pair' card surfaces in the §4.5 lane (0 items) + scheduled_at ──"
