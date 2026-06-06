@@ -166,6 +166,17 @@ reference; NOT a 1-D strip, NOT top→bottom rows):
 - **Minimap** (`buildBpMiniMap`, top-right) — the whole world in miniature + a live
   viewport rect (`bpUpdateMiniViewport`, called from `applyBpWorldTransform`);
   click-to-recenter (`bpCenterOn`).
+- **Zoom controls** (`buildBpZoomControls`, bottom-right) — a vertical stack: **`⛶`
+  fullscreen toggle** (top), then `+` / `−` zoom, then `⤢` **fit-to-view**. `⛶`
+  (`bpToggleFullscreen`, claude-tools-e7p3) CSS-**maximizes** `#bp-map`
+  (`position:fixed;inset:0;z-index:120` via the `.bp-fullscreen` class — NOT the
+  browser Fullscreen API, which iOS only allows on `<video>`); the overlays ride
+  along (children of `#bp-map`), the class survives the 30s repaint (it's on the
+  persistent map element, and `buildBpZoomControls` reconciles `bpFullscreen` from
+  it), and **Esc exits** (lowest-priority in `bpOnKeyDown`: editor → focus →
+  fullscreen). `⤢` is distinct: it only re-fits — a near no-op when already
+  auto-framed (the original "the fit button does nothing" report → e7p3 added the
+  real fullscreen toggle alongside it).
 - **Auto-frame** — the map frames the whole world on every render **until the user
   pans/zooms** (`bpUserMovedView`), plus a **`ResizeObserver`** on `#bp-map`
   (`bpAutoReframe`) that re-fits when the viewport settles its size. This is the
@@ -241,6 +252,15 @@ light dotted "paper" canvas inside the dark app shell (CSS `.bp-map`).
   transform), masking a working fix — `curl` confirmed the new bytes were live
   (`cache-control: must-revalidate` rules out CDN staleness). **Live-verify a
   redeploy in a FRESH tab.** (bd memory `blueprint-live-verify-bfcache`.)
+- **The shared service worker serves stale `app.js` for ONE more load (e7p3).**
+  Even in a *fresh* tab, `/shared/sw.js` (cache `beads-shell-v1`) is
+  stale-while-revalidate: the first post-deploy page paint runs the OLD cached
+  `app.js` (the `⛶` button was absent) while the SW revalidates in the background;
+  a `fetch('/workspace/app.js')` already returns the NEW bytes. **Reload the fresh
+  tab once** (or the new feature looks un-deployed). `verify-pages-deploy.sh`
+  (`curl`, no SW) sees `mismatches=0` immediately — it can't catch this; only a
+  second in-browser load does. (Note: a JS `.length` of the served `app.js` reads
+  ~1.9KB *under* the byte count — multi-byte glyphs like `⛶`/`⤢`/`·`.)
 - **EXISTENCE != LEGIBILITY (bplayout).** The bpmap gate passed for a cramped 1-D
   strip with hidden edge slivers. A green DOM-existence test is not a legible map —
   the canvas test now asserts 2-D spread + non-degenerate edges; the final check is
@@ -286,4 +306,5 @@ moved gate, a new toggle, a fresh scar) and delete stale lines. Keep it the
 authoritative map doc; let `web-facets.md` stay the facet-shell view that points
 here. Last substantive update: 2026-06-05 (claude-tools-p5me — the redesign:
 left→right banding, the DETAIL panel, palette, minimap, auto-frame; this doc created
-to lift the diagram out of `web-facets.md`).
+to lift the diagram out of `web-facets.md`). 2026-06-05 also: claude-tools-e7p3 — the
+`⛶` fullscreen toggle (§5) + the service-worker stale-app.js live-verify scar (§9).

@@ -499,3 +499,46 @@ test('bplayout (d) — a SINGLE all-domains band still spreads in y (the 2-col p
       'a 3-domain single band wraps onto >1 row (distinct y) — NOT all at y:0');
   } finally { window.close(); }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// e7p3 — the DEDICATED ⛶ fullscreen toggle (distinct from the ⤢ fit control).
+// User report: "the full screen button doesn't work — tapping it does nothing." The
+// ⤢ button was only "fit to view" (a no-op when already auto-fitted). This adds a
+// real ⛶ toggle that CSS-maximizes #bp-map. The test pins: the button exists, a tap
+// adds .bp-fullscreen to #bp-map + flips its aria to "exit fullscreen", and a second
+// tap removes it — AND the ⤢ fit button is still present (we kept it).
+
+test('e7p3 (fullscreen) — the ⛶ toggle maximizes #bp-map and flips back, ⤢ fit kept', async () => {
+  const window = loadBlueprint('/ws/projA/blueprint', RECORD, SNAP);
+  try {
+    await flush();
+    const map = window.document.getElementById('bp-map');
+    assert.ok(map, '#bp-map renders');
+    const zoom = window.document.querySelector('.bp-zoom');
+    assert.ok(zoom, 'the zoom controls render');
+    const fsBtn = zoom.querySelector('.bp-zoom-fs');
+    assert.ok(fsBtn, 'a DEDICATED ⛶ fullscreen button exists in the zoom stack');
+    // the ⤢ fit control is KEPT (we added fullscreen, we did not replace fit).
+    const fitBtn = Array.prototype.slice.call(zoom.querySelectorAll('.bp-zoom-btn'))
+      .find((b) => /fit/i.test(b.getAttribute('aria-label') || ''));
+    assert.ok(fitBtn, 'the ⤢ "fit the whole map to view" button is still present');
+
+    // not maximized at first paint.
+    assert.ok(!map.classList.contains('bp-fullscreen'), 'starts non-fullscreen');
+    assert.equal(fsBtn.getAttribute('aria-label'), 'fullscreen', 'starts labelled "fullscreen"');
+
+    // tap → maximize. The button label flips to "exit fullscreen".
+    fsBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    assert.ok(map.classList.contains('bp-fullscreen'),
+      'tapping ⛶ adds .bp-fullscreen to #bp-map (CSS-maximize)');
+    // re-query: the controls persist, but the button may be the same node.
+    const fsBtn2 = window.document.querySelector('.bp-zoom-fs');
+    assert.equal(fsBtn2.getAttribute('aria-label'), 'exit fullscreen',
+      'the maximized button reads "exit fullscreen"');
+
+    // tap again → restore.
+    fsBtn2.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    assert.ok(!window.document.getElementById('bp-map').classList.contains('bp-fullscreen'),
+      'a second tap exits fullscreen');
+  } finally { window.close(); }
+});

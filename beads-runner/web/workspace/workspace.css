@@ -518,6 +518,15 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;
   box-shadow:0 2px 7px rgba(25,30,45,.16)}
 .bp-zoom-btn:hover{border-color:#cf6b4a;color:#000}
+/* active state for a toggle button (the ⛶ fullscreen control while maximized) */
+.bp-zoom-btn-on{border-color:#cf6b4a;color:#000;background:#ffe9df}
+/* ⛶ fullscreen: CSS-maximize the map over the app shell. position:fixed (NOT the
+ * browser Fullscreen API — iOS only allows that on <video>) so it works on phone.
+ * inset:0 + height:auto fills the viewport; z-index clears the sticky nav (40) and
+ * the offline badge (60). The panel/minimap/zoom overlays ride along (they are
+ * positioned relative to #bp-map). Esc or the ⛶ button (now "exit") steps out. */
+.bp-map.bp-fullscreen{position:fixed;inset:0;margin:0;height:auto;
+  border-radius:0;z-index:120}
 
 /* the H4 edit gestures FOLDED ONTO THE BOX (bpmap-3): an on-box ⋯ popover rendered
  * INSIDE the selected node card (REPLACES the old flat #bp-edit-panel below the

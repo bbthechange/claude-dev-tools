@@ -1122,6 +1122,7 @@
   // All default OFF so the macro view is clean — a dozen boxes + traceable arrows.
   var bpToggles = { apis: false, components: false, inflight: false };
   var bpPanelCollapsed = false;     // the detail panel's collapsed state (persists across re-render)
+  var bpFullscreen = false;         // the ⛶ toggle: map is CSS-maximized over the app shell
   var bpMini = {};                  // minimap scale/extent for the viewport-rect updater
   var bpUserMovedView = false;      // the user panned/zoomed → stop auto-framing the world
   var bpResizeObs = null;           // ResizeObserver that re-fits when the map settles its size
@@ -2185,13 +2186,24 @@
 
   function buildBpZoomControls() {
     var box = Dom.mk('div', 'bp-zoom');
-    function zb(label, aria, handler) {
-      var b = Dom.mk('button', 'bp-zoom-btn', label);
+    function zb(label, aria, handler, extraClass) {
+      var b = Dom.mk('button', 'bp-zoom-btn' + (extraClass ? ' ' + extraClass : ''), label);
       b.setAttribute('type', 'button');
       b.setAttribute('aria-label', aria);
+      b.setAttribute('title', aria);
       b.addEventListener('click', function (e) { e.stopPropagation(); handler(); });
       box.appendChild(b);
+      return b;
     }
+    // Reconcile the toggle with the (refresh-persistent) #bp-map class so a 30s
+    // repaint or a re-mount seeds the button's label/active state honestly.
+    var map0 = Dom.el('bp-map');
+    bpFullscreen = !!(map0 && map0.classList.contains('bp-fullscreen'));
+    // ⛶ — DEDICATED fullscreen toggle (distinct from ⤢ fit): CSS-maximizes the map
+    // over the app shell. Sits at the TOP of the stack so it reads as a mode switch.
+    var fsBtn = zb('⛶', bpFullscreen ? 'exit fullscreen' : 'fullscreen',
+      bpToggleFullscreen, 'bp-zoom-fs');
+    if (bpFullscreen) fsBtn.classList.add('bp-zoom-btn-on');
     zb('+', 'zoom in', function () { bpZoomBy(1.25); });
     zb('−', 'zoom out', function () { bpZoomBy(0.8); });
     zb('⤢', 'fit the whole map to view', function () {
@@ -2200,6 +2212,28 @@
       applyBpWorldTransform();
     });
     return box;
+  }
+
+  // ⛶ toggle: maximize #bp-map to fill the viewport (CSS position:fixed, NOT the
+  // browser Fullscreen API — iOS Safari only allows that on <video>, and a phone is
+  // the primary device). The class lives on the persistent #bp-map element so it
+  // survives the 30s repaint; reading clientWidth forces the layout to settle so the
+  // refit reads the new (full) viewport. A focus keeps its own framing; otherwise we
+  // reframe the whole world to USE the bigger space. Esc also exits (bpOnKeyDown).
+  function bpToggleFullscreen() {
+    var map = Dom.el('bp-map');
+    if (!map) return;
+    bpFullscreen = !map.classList.contains('bp-fullscreen');
+    map.classList.toggle('bp-fullscreen', bpFullscreen);
+    void map.clientWidth;              // flush layout so the fit reads the new size
+    if (!bpFocus) bpFit(bpView.worldW, bpView.worldH);
+    applyBpWorldTransform();
+    var btn = map.querySelector('.bp-zoom-fs');
+    if (btn) {
+      btn.classList.toggle('bp-zoom-btn-on', bpFullscreen);
+      btn.setAttribute('aria-label', bpFullscreen ? 'exit fullscreen' : 'fullscreen');
+      btn.setAttribute('title', bpFullscreen ? 'exit fullscreen' : 'fullscreen');
+    }
   }
 
   // ── pan/zoom math + transform (THE one transformed world) ────────────────────
@@ -2342,6 +2376,7 @@
     if (!Dom.el('bp-map')) return;
     if (bpSelected) { bpSelected = null; renderBlueprint(bpRecord); }
     else if (bpFocus) { clearFocus(); }
+    else if (bpFullscreen) { bpToggleFullscreen(); } // last: step out of fullscreen
   }
   function bpOnPointerMove(e) {
     if (!(e.pointerId in bpPointers)) return;
