@@ -99,21 +99,31 @@
   // makeNodeId composes/validates it; the renderer keys customization off it.
   var NODE_ID_RE = /^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]*$/;
 
-  // Grow-to-fit geometry constants ([free] — §3.5; not a contract). A leaf is a
-  // small box; an open parent packs its children in a near-square grid with
-  // padding and grows to fit (siblings reflow). H3 may swap this whole block for
-  // elk/dagre without touching the schema or the edge-IP.
-  var LEAF_W = 120, LEAF_H = 56, PAD = 14, GAP = 12, HEADER = 22;
+  // Grow-to-fit geometry constants ([free] — §3.5; not a contract). A CLOSED
+  // top-level box is a big readable CARD; a drill-in capability is a smaller LEAF;
+  // an open parent packs its children in a near-square grid with padding and grows
+  // to fit (siblings reflow). H3 may swap this whole block for elk/dagre without
+  // touching the schema or the edge-IP.
+  var LEAF_W = 176, LEAF_H = 52;        // a drill-in capability leaf
+  var CARD_W = 238, CARD_H = 112;       // a CLOSED top-level box (domain/client/store/vendor/ext)
+  var PAD = 16, GAP = 16, HEADER = 46;  // open-container header bar + inner padding/gap
+  var MARGIN = 72;                      // first band's left inset (> the §7 api half-overhang so a
+                                        // leftmost domain's straddle box lands at a non-negative x)
+  var BAND_GAP = 150;                   // left→right gap between bands (room for §7 api straddle + edges)
+  var API_PAD = 86;                     // width reserved in the domain lane's column gap for an api straddle
 
-  // §5 BANDING (claude-tools-bplayout). The top-level boxes are NOT a 1-D strip:
-  // they group into LANES by band — derived from the §3.1 node kind — and the lanes
-  // stack vertically in this mental-model order (client on top → product domains →
-  // data stores → external services → vendors). This is what turns the macro view
-  // into a 2-D map: top-level boxes differ in BOTH x and y, so the center-to-center
-  // edges (app.js renderBlueprintEdges) are no longer zero-height slivers hidden
-  // behind a single row of boxes (the bug this restores from). Geometry is still
-  // [free] (§3.5) — the CONTRACT is the 2-D spread + visible edges, not the numbers.
-  var BAND_ORDER = ['client', 'domain', 'store', 'ext', 'vendor'];
+  // §5/§13 BANDING — the macro map is a LEFT→RIGHT band layout (the Diagrammer
+  // reference), NOT a 1-D strip and NOT top→bottom rows: the client sits on the
+  // LEFT, the product domains pack in the middle (a 2-column grid), then the data
+  // stores, vendors, and any free-standing external service march off to the RIGHT
+  // — exactly the "caller → domains → stores/vendors" reading order, with each
+  // domain's §7 API boxes straddling its LEFT (caller-facing) border in the gap
+  // before it. Bands are vertically centered against the tallest lane. This is what
+  // makes the macro a true 2-D map (top-level boxes differ in BOTH x and y) so the
+  // edges read as traceable left→right arrows, never zero-height slivers hidden
+  // behind a column. Geometry stays [free] (§3.5) — the CONTRACT is the 2-D spread
+  // + visible edges, not the numbers.
+  var BAND_ORDER = ['client', 'domain', 'store', 'vendor', 'ext'];
   function bandOf(kind) {
     if (kind === 'external') return 'ext';
     if (kind === 'client' || kind === 'store' || kind === 'vendor') return kind;
@@ -679,13 +689,17 @@
   function layoutGrowToFit(idx, isVisible, openSource, scale) {
     var byId = idx.byId, size = Object.create(null);
     var k = (scale === 'thumb') ? 0.25 : 1;
+    function add(a, b) { return a + b; }
     function sizeOf(id) {
       var n = byId[id];
       var kids = n.children.filter(isVisible);
+      var isTop = (n.parent == null);
       if (!openSource[id] || kids.length === 0) {
-        size[id] = { w: LEAF_W * k, h: LEAF_H * k };
+        // CLOSED: a top-level box is a big readable card; a capability is a leaf.
+        size[id] = isTop ? { w: CARD_W * k, h: CARD_H * k } : { w: LEAF_W * k, h: LEAF_H * k };
         return size[id];
       }
+      // OPEN container: pack visible children in a near-square grid, grow to fit.
       var cols = Math.ceil(Math.sqrt(kids.length));
       var childSizes = kids.map(sizeOf);
       var colW = [], rowH = [];
@@ -694,16 +708,16 @@
         colW[col] = Math.max(colW[col] || 0, childSizes[i].w);
         rowH[row] = Math.max(rowH[row] || 0, childSizes[i].h);
       });
-      var innerW = colW.reduce(function (a, b) { return a + b; }, 0) + GAP * (colW.length - 1);
-      var innerH = rowH.reduce(function (a, b) { return a + b; }, 0) + GAP * (rowH.length - 1);
+      var innerW = colW.reduce(add, 0) + GAP * k * (colW.length - 1);
+      var innerH = rowH.reduce(add, 0) + GAP * k * (rowH.length - 1);
       size[id] = {
-        w: Math.max(LEAF_W * k, innerW + PAD * 2),
-        h: innerH + PAD * 2 + HEADER * k,
+        w: Math.max(CARD_W * k, innerW + PAD * k * 2),
+        h: innerH + PAD * k * 2 + HEADER * k,
         cols: cols, colW: colW, rowH: rowH, kids: kids
       };
       return size[id];
     }
-    // size every visible top-level box, then BAND them into a 2-D layout (§5).
+    // size every visible top-level box, then BAND them into a 2-D layout (§5/§13).
     var roots = idx.order.filter(function (id) { return byId[id].parent == null && isVisible(id); });
     roots.forEach(sizeOf);
     var place = Object.create(null);
@@ -711,48 +725,42 @@
       var s = size[id];
       place[id] = { x: x, y: y, w: s.w, h: s.h };
       if (!s.kids) return;
-      var startY = y + PAD + HEADER * k;
+      var startX = x + PAD * k, startY = y + PAD * k + HEADER * k;
       s.kids.forEach(function (ch, i) {
         var col = i % s.cols, row = Math.floor(i / s.cols);
-        var cx = x + PAD;
-        for (var c = 0; c < col; c++) cx += s.colW[c] + GAP;
+        var cx = startX;
+        for (var c = 0; c < col; c++) cx += s.colW[c] + GAP * k;
         var cy = startY;
-        for (var r = 0; r < row; r++) cy += s.rowH[r] + GAP;
+        for (var r = 0; r < row; r++) cy += s.rowH[r] + GAP * k;
         placeNode(ch, cx, cy);
       });
     }
 
-    // ── §5 BANDING (claude-tools-bplayout) — the ROOTS get 2-D placement ──────────
-    // Group the roots into lanes by band (bandOf(kind)) and stack the lanes as
-    // separate horizontal rows top→bottom in BAND_ORDER. The DOMAIN lane packs into
-    // ~2 columns (there are usually the most domains), so it ALONE spreads over ≥2
-    // rows once there are ≥3 domains; every other lane is a single row. Each lane is
-    // centered horizontally over the widest lane, and a left GUTTER is reserved so a
-    // domain's §7 API boundary box — which straddles the domain's LEFT border (app.js
-    // bpApiRects: x = L.x - BP_API_W/2) — has room without a negative-x overhang. The
-    // OPEN-container grow-to-fit (sizeOf/placeNode) is kept verbatim; only the
-    // formerly-1-D root walk (every root at y:0, cursorX rightward) is replaced. The
-    // numbers stay [free] (§3.5); the binding contract is the 2-D spread (distinct x
-    // AND y among top-level boxes) so the edges become legible — which holds whenever
-    // there are ≥2 bands OR ≥3 domains. A degenerate ≤2-box single band stays a tidy
-    // row, but with so few boxes the bowed center-to-center edges are still visible
-    // (the slivers-behind-a-strip pathology only bites at the macro scale of the bug).
-    var GUTTER = 44 * k;       // full-scale ≥ BP_API_W/2 (=37): reserved left lane for an
-                               // API straddle. (thumb scale draws no API boxes, so the
-                               // smaller k·44 gutter there is moot.)
-    var BAND_GAP = GAP * 3;    // a clear vertical break between bands
-    var bandGroups = Object.create(null);
+    // ── §5/§13 BANDING — LEFT→RIGHT lanes (client | domain | store | vendor | ext) ─
+    // Group the roots into lanes by band (bandOf(kind)); lay the lanes left→right in
+    // BAND_ORDER, each a vertical stack EXCEPT the domain lane, which packs into 2
+    // columns (the product domains are the bulk, and a 2-col grid reads better than a
+    // tall single file). The domain lane's column gap reserves API_PAD so each
+    // right-column domain's §7 api straddle box (which overhangs LEFT by ~half its
+    // width — app.js bpApiRects) clears the left column. The first band starts at
+    // MARGIN (> the api half-overhang) so a LEFTMOST domain's straddle still lands at
+    // a non-negative world x. Each lane is vertically CENTERED against the tallest
+    // lane. OPEN-container grow-to-fit (sizeOf/placeNode) is reused verbatim; only the
+    // root walk changed (top→bottom rows → left→right bands). Numbers are [free]
+    // (§3.5); the binding contract is the 2-D spread (distinct x AND y among
+    // top-level boxes) + legible edges.
+    var apiPad = API_PAD * k, bandGap = BAND_GAP * k;
+    var groups = Object.create(null);
     roots.forEach(function (id) {
       var b = bandOf(byId[id].kind);
-      (bandGroups[b] || (bandGroups[b] = [])).push(id);
+      (groups[b] || (groups[b] = [])).push(id);
     });
-    // Lay each non-empty band as a grid; collect per-band geometry first so a narrow
-    // band (e.g. a single client) can be centered over the widest band (the domains).
-    var laidBands = [];
+    // Measure each band first (so a short lane can be centered against the tallest).
+    var laid = [];
     BAND_ORDER.forEach(function (band) {
-      var ids = bandGroups[band];
+      var ids = groups[band];
       if (!ids || !ids.length) return;
-      var cols = (band === 'domain') ? Math.min(2, ids.length) : ids.length;
+      var cols = (band === 'domain') ? Math.min(2, ids.length) : 1;
       var colW = [], rowH = [];
       ids.forEach(function (id, i) {
         var s = size[id];
@@ -760,23 +768,24 @@
         colW[col] = Math.max(colW[col] || 0, s.w);
         rowH[row] = Math.max(rowH[row] || 0, s.h);
       });
-      var bandW = colW.reduce(function (a, b) { return a + b; }, 0) + GAP * (cols - 1);
-      var bandH = rowH.reduce(function (a, b) { return a + b; }, 0) + GAP * (rowH.length - 1);
-      laidBands.push({ ids: ids, cols: cols, colW: colW, rowH: rowH, w: bandW, h: bandH });
+      var colGap = (band === 'domain') ? (GAP * k + apiPad) : GAP * k;
+      var bandW = colW.reduce(add, 0) + colGap * (cols - 1);
+      var bandH = rowH.reduce(add, 0) + GAP * k * (rowH.length - 1);
+      laid.push({ band: band, ids: ids, cols: cols, colW: colW, rowH: rowH, colGap: colGap, w: bandW, h: bandH });
     });
-    var maxBandW = laidBands.reduce(function (m, b) { return Math.max(m, b.w); }, 0);
-    var bandY = 0;
-    laidBands.forEach(function (b) {
-      var bandLeft = GUTTER + (maxBandW - b.w) / 2;   // center this lane over the widest
+    var maxH = laid.reduce(function (m, b) { return Math.max(m, b.h); }, 0);
+    var cursorX = MARGIN * k;   // ≥ the §7 api half-overhang for the leftmost lane
+    laid.forEach(function (b) {
+      var top = (maxH - b.h) / 2;            // vertically center this lane
       b.ids.forEach(function (id, i) {
         var col = i % b.cols, row = Math.floor(i / b.cols);
-        var x = bandLeft;
-        for (var c = 0; c < col; c++) x += b.colW[c] + GAP;
-        var y = bandY;
-        for (var r = 0; r < row; r++) y += b.rowH[r] + GAP;
+        var x = cursorX;
+        for (var c = 0; c < col; c++) x += b.colW[c] + b.colGap;
+        var y = top;
+        for (var r = 0; r < row; r++) y += b.rowH[r] + GAP * k;
         placeNode(id, x, y);
       });
-      bandY += b.h + BAND_GAP;
+      cursorX += b.w + bandGap;
     });
     return place;
   }

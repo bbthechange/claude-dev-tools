@@ -197,8 +197,33 @@ When you finish a task here, append what a future agent will need and didn't fin
 a facet that graduated from placeholder to live (update the maturity table!), a new
 view-model field, a moved/renamed module, a fresh scar. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete stale lines; don't let
-it grow into a re-spec of Contract C. Last substantive update: 2026-06-04
-(bplayout claude-tools-bplayout — the LAYOUT half of the bpmap umbrella: bpmap-1/2/3
+it grow into a re-spec of Contract C. Last substantive update: 2026-06-05
+(claude-tools-p5me — the Blueprint diagram REDESIGN to match the `~/Downloads/HANDOFF.md`
+Diagrammer reference [bplayout had shipped a cramped, overlapping, top→bottom-band map
+with no toggle panel — "hot garbage" per Brian]. ONLY MODEL change: `blueprint-view.js
+layoutGrowToFit` rewritten to §13 LEFT→RIGHT banding [client | domain | store | vendor |
+ext as COLUMNS left→right; the domain lane a 2-col pack; lanes vertically centered;
+kind-aware sizes — big closed CARD_W/H top-level cards vs small LEAF_W/H capabilities;
+MARGIN > api half-overhang + an API_PAD column gap so §7 straddles never collide;
+geometry stays [free]]. `api.visible`/`opened` semantics deliberately UNCHANGED [lib test
+line 239 pins `api.visible==isVisible(domain)`] — the APIs/Internals toggles are
+RENDERER-side [APIs gated in `bpApiRects` via `bpShowApisFor`; Internals adds every
+top-level container id to `opts.opened`]. RENDERER (`app.js`): per-domain PALETTE
+[`bpAssignPalette` → `--bp-fill/border/ink`; capability = lightened domain tint]; three
+node modes [closed CARD title+capability-sub+`N parts` pill · open container colored
+header bar · leaf]; edges stroked by SOURCE-domain hue w/ `context-stroke` arrowheads;
+the §4 DETAIL toggle PANEL [APIs · Internals · Edge labels · In-flight — each re-derives]
++ a live MINIMAP [cells + viewport rect, click-to-recenter]. AUTO-FRAME: the one-shot
+`bpView.fitted` retry [floored zoom to 0.12 when the below-the-fold facet hadn't sized]
+was replaced by "fit every render UNTIL the user pans/zooms" [`bpUserMovedView`] + a
+`ResizeObserver` on `#bp-map` [`bpAutoReframe`] — bulletproof vs the §17 #8 first-paint
+race; `bpFitRect` reserves panel/minimap insets so the leftmost client box never hides
+under the panel. CSS: the map is now a LIGHT dotted "paper" canvas inside the dark shell.
+jsdom `blueprint-canvas.test.js`: RECORD_BANDS gained a 3rd domain so the 2-col pack
+wraps to ≥2 rows [two side-by-side domains share a y under left→right]. SCAR: a bfcache'd
+OLD tab replayed the buggy fit byte-identically across redeploys — live-verify a redeploy
+in a FRESH tab, never a reused one. On top of
+bplayout claude-tools-bplayout — the LAYOUT half of the bpmap umbrella: bpmap-1/2/3
 built the positioned canvas/edges/interactions but `blueprint-view.js layoutGrowToFit`
 still placed every ROOT at y:0 marching cursorX right — a 1-D STRIP, so the
 center-to-center edges collapsed to zero-height slivers hidden behind the boxes ["N

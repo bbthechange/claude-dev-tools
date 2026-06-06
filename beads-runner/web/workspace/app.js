@@ -1115,11 +1115,99 @@
   // repaint never yanks the viewport. bpSelected = the node whose H4 edit
   // affordances show in the panel below the canvas (the gestures, kept working).
   var bpView = { panX: 0, panY: 0, zoom: 1, fitted: false, worldW: 1, worldH: 1,
-    originX: 0, originY: 0, labelsHidden: false };
+    originX: 0, originY: 0, labelsHidden: true };
+  // §4 detail-panel global toggles (the Diagrammer reference): APIs (boundary
+  // boxes on each domain), Internals (open every domain to reveal its capabilities),
+  // Edge labels, and the In-flight overlay (light up domains the swarm is working).
+  // All default OFF so the macro view is clean — a dozen boxes + traceable arrows.
+  var bpToggles = { apis: false, components: false, inflight: false };
+  var bpPanelCollapsed = false;     // the detail panel's collapsed state (persists across re-render)
+  var bpMini = {};                  // minimap scale/extent for the viewport-rect updater
+  var bpUserMovedView = false;      // the user panned/zoomed → stop auto-framing the world
+  var bpResizeObs = null;           // ResizeObserver that re-fits when the map settles its size
   var bpSelected = null;            // node id whose edit panel is open (null = none)
-  var BP_MIN_ZOOM = 0.15, BP_MAX_ZOOM = 4;
+  var bpPal = Object.create(null);  // node id → {fill,border,ink}; set each render (bpAssignPalette)
+  var BP_MIN_ZOOM = 0.12, BP_MAX_ZOOM = 4;
   var SVG_NS = 'http://www.w3.org/2000/svg';   // bpmap-2 edge/api SVG namespace
-  var BP_API_W = 74, BP_API_H = 20, BP_API_GAP = 5;  // §7 boundary-box size (small, straddles the border)
+  var BP_API_W = 76, BP_API_H = 22, BP_API_GAP = 6;  // §7 boundary-box size (straddles the border)
+
+  // ── per-domain palette (§15.1) — color separates concepts. Each top-level domain
+  // gets a distinct pastel hue (cycled by appearance order, so it is stable across
+  // refreshes); the client / stores / vendors / externals get fixed hues; a drill-in
+  // capability inherits a LIGHTENED tint of its domain's hue. bpAssignPalette returns
+  // id → {fill,border,ink}; renderBlueprintNode sets them as --bp-* CSS vars.
+  var BP_PAL = [
+    { fill: '#cfe0f7', border: '#3b6fb0', ink: '#15325e' }, // blue
+    { fill: '#ded0f2', border: '#6b4ca8', ink: '#2e1a57' }, // violet
+    { fill: '#f6e2ad', border: '#9c7616', ink: '#4a3606' }, // amber
+    { fill: '#f4cabd', border: '#b8472c', ink: '#511507' }, // rust
+    { fill: '#bfe2cf', border: '#2f8159', ink: '#0d3a24' }, // teal
+    { fill: '#cfe6b4', border: '#4f8a35', ink: '#1f3a0e' }, // green
+    { fill: '#f0dcb6', border: '#8a6c1e', ink: '#3f3008' }, // sand
+    { fill: '#bfe0e6', border: '#2d7c8a', ink: '#0c3640' }, // cyan
+    { fill: '#f3cdda', border: '#b03f6a', ink: '#511025' }  // pink
+  ];
+  var BP_PAL_CLIENT = { fill: '#f6d2bf', border: '#c0531f', ink: '#5a2410' };
+  var BP_PAL_STORE = { fill: '#cfe6b4', border: '#4f8a35', ink: '#1f3a0e' };
+  var BP_PAL_VENDOR = { fill: '#e3d9ee', border: '#6a5a86', ink: '#2f2447' };
+  var BP_PAL_EXT = { fill: '#ded6e6', border: '#7a6a92', ink: '#2f2447' };
+  var BP_PAL_FALLBACK = { fill: '#dfe3ea', border: '#7f8794', ink: '#2b3038' };
+
+  function bpHexLighten(hex, t) {
+    var m = (hex || '').match(/^#?([0-9a-f]{6})$/i);
+    if (!m) return hex;
+    var n = parseInt(m[1], 16);
+    var r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    r = Math.round(r + (255 - r) * t);
+    g = Math.round(g + (255 - g) * t);
+    b = Math.round(b + (255 - b) * t);
+    return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  }
+
+  // Map every node id → its palette. Domains by appearance order; client/store/
+  // vendor/external fixed; a capability inherits its nearest domain ancestor's hue,
+  // lightened. Pure over the view's node list.
+  function bpAssignPalette(view) {
+    var byId = Object.create(null);
+    view.nodes.forEach(function (n) { byId[n.id] = n; });
+    var pal = Object.create(null), di = 0;
+    view.nodes.forEach(function (n) {
+      if (n.kind === 'domain') { pal[n.id] = BP_PAL[di % BP_PAL.length]; di++; }
+      else if (n.kind === 'client') pal[n.id] = BP_PAL_CLIENT;
+      else if (n.kind === 'store') pal[n.id] = BP_PAL_STORE;
+      else if (n.kind === 'vendor') pal[n.id] = BP_PAL_VENDOR;
+      else if (n.kind === 'external') pal[n.id] = BP_PAL_EXT;
+    });
+    view.nodes.forEach(function (n) {
+      if (pal[n.id]) return;
+      var cur = n, guard = 0, base = null;
+      while (cur && guard < 99) {
+        if (pal[cur.id]) { base = pal[cur.id]; break; }
+        cur = cur.parent ? byId[cur.parent] : null; guard++;
+      }
+      base = base || BP_PAL_FALLBACK;
+      pal[n.id] = { fill: bpHexLighten(base.fill, 0.5), border: base.border, ink: base.ink };
+    });
+    return pal;
+  }
+
+  // top-level container ids (parent==null AND parents a child) — used by the
+  // Internals toggle to open every domain at once. Tolerant of a null/odd record.
+  function bpTopLevelContainerIds(record) {
+    var d = record && record.derived;
+    var nodes = (d && Array.isArray(d.nodes)) ? d.nodes : [];
+    var hasChild = Object.create(null);
+    nodes.forEach(function (n) { if (n && n.parent) hasChild[n.parent] = true; });
+    return nodes.filter(function (n) { return n && n.parent == null && hasChild[n.id]; })
+      .map(function (n) { return n.id; });
+  }
+
+  // Whether to DRAW a domain's §7 api boundary boxes: the global APIs toggle, OR the
+  // domain is the focus target / was opened by focus (drilling a domain reveals its
+  // entry points). Independent of the Internals toggle so the two read separately.
+  function bpShowApisFor(d) {
+    return bpToggles.apis || !!d.focused_self || d.open_source === 'focus';
+  }
   // pointer pan/pinch bookkeeping (mouse + touch; jsdom never fires these — the
   // render test asserts the DOM, not the gestures).
   var bpPointers = Object.create(null); // pointerId → {x,y} in viewport coords
@@ -1218,7 +1306,7 @@
     mSec.id = 'bp-map-sec';
     var mHead = Dom.mk('div', 'bp-sl');
     mHead.id = 'bp-map-sl';
-    mHead.textContent = 'MAP · drag to pan · scroll / pinch / ± to zoom · tap a box to focus, ▸ to peek, ⋯ to edit';
+    mHead.textContent = 'MAP · drag to pan · scroll / pinch to zoom · click a domain to dive in · esc to step out · DETAIL panel reveals APIs / internals';
     mSec.appendChild(mHead);
     var mHost = Dom.mk('div', 'bp-map');
     mHost.id = 'bp-map';
@@ -1325,11 +1413,16 @@
   }
 
   function renderBlueprint(record) {
+    // Internals toggle (§4) opens EVERY top-level domain at once; the In-flight
+    // toggle gates whether the best-effort overlay lights the map.
+    var opened = Object.keys(bpOpened);
+    if (bpToggles.components) opened = opened.concat(bpTopLevelContainerIds(record));
+    var useOverlay = bpToggles.inflight && bpOverlay;
     var view = BlueprintView.deriveBlueprintView(record, Date.now(), {
-      opened: Object.keys(bpOpened),
+      opened: opened,
       focus: bpFocus || undefined,
-      active_domains: bpOverlay ? bpOverlay.active_domains : undefined,
-      activity: bpOverlay ? bpOverlay.activity : undefined
+      active_domains: useOverlay ? bpOverlay.active_domains : undefined,
+      activity: useOverlay ? bpOverlay.activity : undefined
     });
     // The one hard refusal (unknown-HIGHER schema_version) surfaces as an error.
     if (!view.ok) { showBlueprintError(view.error); return; }
@@ -1556,6 +1649,7 @@
 
     var byId = Object.create(null);
     view.nodes.forEach(function (n) { byId[n.id] = n; });
+    bpPal = bpAssignPalette(view);   // per-domain hue map for this paint (§15.1)
 
     // Visible, laid-out nodes only — sorted shallow→deep so a child box is
     // appended AFTER (and therefore paints OVER) its parent.
@@ -1627,12 +1721,19 @@
 
     mapHost.appendChild(world);
 
-    // Overlays — NOT in the transformed world (fixed in the viewport corners).
+    // Overlays — NOT in the transformed world (fixed in the viewport corners):
+    // the detail/toggle panel (top-left), the minimap (top-right), the legend
+    // (bottom-left), and the zoom controls (bottom-right).
+    mapHost.appendChild(buildBpDetailPanel());
+    mapHost.appendChild(buildBpMiniMap(view));
     mapHost.appendChild(buildBpLegend(view));
     mapHost.appendChild(buildBpZoomControls());
 
-    // Auto-fit ONCE; thereafter the pan/zoom is preserved across refresh + drill.
-    if (!bpView.fitted) { bpFit(worldW, worldH); bpView.fitted = true; }
+    // AUTO-FRAME the whole world on every paint UNTIL the user takes control
+    // (pans/zooms) — this self-corrects as the facet's viewport settles its size
+    // (the §17 #8 race) and a ResizeObserver (attachBpPanZoom) catches the 0→real
+    // resize. A focus owns its own framing (applyFocusViewport), so skip then.
+    if (!bpUserMovedView && !bpFocus) bpFit(worldW, worldH);
     applyBpWorldTransform();
   }
 
@@ -1645,11 +1746,62 @@
   // forbids). bpmap-3 INTERACTIONS: tap the box body = FOCUS it (zoom-to-fit + dim
   // the unconnected); the ▸ caret = PEEK (manual drill, no zoom); the ⋯ button =
   // open the per-node EDIT menu folded onto the box (rename/regroup/pin/hide).
+  // strip a trailing "(parenthetical)" and trim — a tighter label for a card sub.
+  function bpShortLabel(label) {
+    return String(label || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  }
+  // append the renamed/regrouped/pin badges to a name/title element.
+  function bpAppendBadges(el, n) {
+    if (n.renamed) el.appendChild(Dom.mk('span', 'bp-badge', 'renamed'));
+    if (n.regrouped) el.appendChild(Dom.mk('span', 'bp-badge', 'regrouped'));
+    if (n.pinned) el.appendChild(Dom.mk('span', 'bp-badge bp-badge-pin', '📌'));
+  }
+  // the ▸/▾ drill caret (collapse when open) — no zoom.
+  function bpCaretBtn(n) {
+    var caret = Dom.mk('button', 'bp-caret', n.open ? '▾' : '▸');
+    caret.setAttribute('type', 'button');
+    caret.setAttribute('aria-label', (n.open ? 'collapse ' : 'drill into ') + n.label);
+    caret.addEventListener('click', function (e) {
+      e.stopPropagation(); if (bpJustPanned) return; toggleOpen(n.id);
+    });
+    return caret;
+  }
+  // the ⋯ edit-menu button (opens the on-box H4 popover via selectNode).
+  function bpMenuBtn(n) {
+    var menu = Dom.mk('button', 'bp-node-menu', '⋯');
+    menu.setAttribute('type', 'button');
+    menu.setAttribute('aria-label', 'edit ' + n.label);
+    menu.addEventListener('click', function (e) {
+      e.stopPropagation(); if (bpJustPanned) return; selectNode(n.id);
+    });
+    return menu;
+  }
+  // a closed domain's sub-line — the first few capability names inside it (the
+  // reference "create · feed · reactions" caption). Empty if it has no children.
+  function bpDomainSub(n, byId) {
+    var kids = (n.children || []).filter(function (id) { return byId[id] && byId[id].visible !== false; });
+    if (!kids.length) return '';
+    var names = kids.slice(0, 3).map(function (id) { return bpShortLabel(byId[id].label); })
+      .filter(function (s) { return !!s; });
+    var more = kids.length - names.length;
+    return names.join('  ·  ') + (more > 0 ? '  · +' + more : '');
+  }
+
+  // A positioned node box, absolutely placed at its world layout{x,y,w,h}, in one of
+  // three render modes: a CLOSED top-level CARD (big title + capability sub + a parts
+  // pill — the macro readable unit), an OPEN container (a colored header bar; its
+  // children paint as separate boxes over its body), or a capability LEAF (compact
+  // label). Each box sets the §15.1 --bp-fill/border/ink palette vars. INTERACTIONS:
+  // tap the body = FOCUS (zoom-to-fit + dim the unconnected); the ▸ caret / pill =
+  // PEEK (drill, no zoom); the ⋯ button = the on-box H4 EDIT menu.
   function renderBlueprintNode(n, byId) {
     var kids = (n.children || []).filter(function (id) { return byId[id] && byId[id].visible; });
     var isOpen = n.open && kids.length > 0;
+    var isTop = !!n.top_level;
     var cls = 'bp-node bp-kind-' + (n.kind_known ? n.kind : 'unknown');
     if (isOpen) cls += ' bp-open';
+    else if (isTop) cls += ' bp-card';
+    else cls += ' bp-leaf';
     if (n.dimmed) cls += ' bp-dim';
     if (n.active) cls += ' bp-active';
     if (n.collision) cls += ' bp-collision';
@@ -1665,35 +1817,52 @@
     card.style.width = L.w + 'px';
     card.style.height = L.h + 'px';
 
-    var head = Dom.mk('div', 'bp-node-head');
-    if (kids.length) {
-      var caret = Dom.mk('button', 'bp-caret', n.open ? '▾' : '▸');
-      caret.setAttribute('type', 'button');
-      caret.setAttribute('aria-label', (n.open ? 'collapse ' : 'drill into ') + n.label);
-      caret.addEventListener('click', function (e) {
-        e.stopPropagation();
-        if (bpJustPanned) return;
-        toggleOpen(n.id);
-      });
-      head.appendChild(caret);
-    }
-    var nameEl = Dom.mk('span', 'bp-name', n.label);
-    if (n.renamed) nameEl.appendChild(Dom.mk('span', 'bp-badge', 'renamed'));
-    if (n.regrouped) nameEl.appendChild(Dom.mk('span', 'bp-badge', 'regrouped'));
-    if (n.pinned) nameEl.appendChild(Dom.mk('span', 'bp-badge bp-badge-pin', '📌'));
-    head.appendChild(nameEl);
-    if (kids.length) head.appendChild(Dom.mk('span', 'bp-count', String(kids.length)));
+    var pal = bpPal[n.id] || BP_PAL_FALLBACK;
+    card.style.setProperty('--bp-fill', pal.fill);
+    card.style.setProperty('--bp-border', pal.border);
+    card.style.setProperty('--bp-ink', pal.ink);
 
-    var menu = Dom.mk('button', 'bp-node-menu', '⋯');
-    menu.setAttribute('type', 'button');
-    menu.setAttribute('aria-label', 'edit ' + n.label);
-    menu.addEventListener('click', function (e) {
-      e.stopPropagation();
-      if (bpJustPanned) return;
-      selectNode(n.id);
-    });
-    head.appendChild(menu);
-    card.appendChild(head);
+    if (isOpen) {
+      // OPEN container: a colored header bar (caret · name · count · ⋯). Children
+      // render as their own positioned boxes over the (transparent) body.
+      var head = Dom.mk('div', 'bp-node-head');
+      head.appendChild(bpCaretBtn(n));
+      var nameEl = Dom.mk('span', 'bp-name', n.label);
+      bpAppendBadges(nameEl, n);
+      head.appendChild(nameEl);
+      head.appendChild(Dom.mk('span', 'bp-count', String(kids.length)));
+      head.appendChild(bpMenuBtn(n));
+      card.appendChild(head);
+    } else if (isTop) {
+      // CLOSED top-level CARD: ⋯ in the corner, a big centered title + capability
+      // sub, and a "N parts" pill that drills in (the reference look).
+      card.appendChild(bpMenuBtn(n));
+      var body = Dom.mk('div', 'bp-card-body');
+      var title = Dom.mk('div', 'bp-card-title', n.label);
+      bpAppendBadges(title, n);
+      body.appendChild(title);
+      var sub = bpDomainSub(n, byId);
+      if (sub) body.appendChild(Dom.mk('div', 'bp-card-sub', sub));
+      card.appendChild(body);
+      if (kids.length) {
+        var pill = Dom.mk('button', 'bp-card-pill', String(kids.length) + ' parts');
+        pill.setAttribute('type', 'button');
+        pill.setAttribute('aria-label', 'drill into ' + n.label);
+        pill.addEventListener('click', function (e) {
+          e.stopPropagation(); if (bpJustPanned) return; toggleOpen(n.id);
+        });
+        card.appendChild(pill);
+      }
+    } else {
+      // capability LEAF: compact label (+ a caret if it nests) + ⋯.
+      var lhead = Dom.mk('div', 'bp-node-head');
+      if (kids.length) lhead.appendChild(bpCaretBtn(n));
+      var lname = Dom.mk('span', 'bp-name', n.label);
+      bpAppendBadges(lname, n);
+      lhead.appendChild(lname);
+      lhead.appendChild(bpMenuBtn(n));
+      card.appendChild(lhead);
+    }
 
     // The H4 edit affordances FOLDED ONTO THE BOX (bpmap-3): when this is the
     // selected node, its ⋯ editor is an on-box popover (NOT the old flat panel
@@ -1729,13 +1898,19 @@
   // defaults to strokeWidth so the head scales with the line (and so with zoom).
   function bpArrowDefs() {
     var defs = svgEl('defs');
-    [['bp-arrow', 'bp-arrow-head'], ['bp-arrow-api', 'bp-arrow-head bp-arrow-head-api']]
-      .forEach(function (pair) {
+    // The edge arrowhead uses fill:context-stroke so it inherits each path's
+    // (per-source-domain) stroke color — the "traceable colored arrows" of the
+    // reference. The api arrowhead keeps its class color.
+    [['bp-arrow', 'bp-arrow-head', 'context-stroke'],
+     ['bp-arrow-api', 'bp-arrow-head bp-arrow-head-api', 'context-stroke']]
+      .forEach(function (t) {
         var m = svgEl('marker', {
-          id: pair[0], viewBox: '0 0 10 10', refX: '8.5', refY: '5',
+          id: t[0], viewBox: '0 0 10 10', refX: '8.5', refY: '5',
           markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse'
         });
-        m.appendChild(svgEl('path', { d: 'M0,0 L10,5 L0,10 z', 'class': pair[1] }));
+        var p = svgEl('path', { d: 'M0,0 L10,5 L0,10 z', 'class': t[1] });
+        if (t[2]) p.setAttribute('fill', t[2]);
+        m.appendChild(p);
         defs.appendChild(m);
       });
     return defs;
@@ -1789,9 +1964,10 @@
       var curve = bpCurve(p1, p2);
       var isAsync = (e.kind === 'queue');
       var cls = 'bp-edge bp-edge-' + (e.kind || 'call') + (isAsync ? ' bp-edge-async' : '');
-      svg.appendChild(svgEl('path', {
-        'class': cls, d: curve.d, 'marker-end': 'url(#bp-arrow)'
-      }));
+      var fromPal = bpPal[e.from] || BP_PAL_FALLBACK;   // color the arrow by its source domain
+      var path = svgEl('path', { 'class': cls, d: curve.d, 'marker-end': 'url(#bp-arrow)' });
+      path.setAttribute('stroke', fromPal.border);
+      svg.appendChild(path);
       // the via/queue name as label (edge labels toggle). No queue NAME lives in the
       // §3.2 schema (from/to/kind/bundle_key), so the kind is the via descriptor; a
       // bundle of N collapsed duplicates is annotated ·N.
@@ -1816,6 +1992,7 @@
       if (!api.visible) return;
       var d = byId[api.domain];
       if (!d || !d.layout) return;
+      if (!bpShowApisFor(d)) return;   // §4 APIs toggle / focus gates the draw
       var L = d.layout;
       var idx = perDomain[api.domain] || 0;
       perDomain[api.domain] = idx + 1;
@@ -1838,6 +2015,7 @@
   function renderBlueprintApis(svg, boxLayer, byId, apiRects) {
     apiRects.forEach(function (r) {
       var api = r.api, d = r.domain, rect = r.rect;
+      var dp = bpPal[api.domain] || BP_PAL_FALLBACK;   // tint the box to its domain
       var box = Dom.mk('div', 'bp-api');
       box.setAttribute('data-id', api.id);
       box.setAttribute('data-domain', api.domain);
@@ -1846,6 +2024,8 @@
       box.style.top = rect.y + 'px';
       box.style.width = rect.w + 'px';
       box.style.height = rect.h + 'px';
+      box.style.setProperty('--bp-border', dp.border);
+      box.style.setProperty('--bp-ink', dp.border);
       box.title = api.route_label + '  →  ' + api.domain;
       box.appendChild(Dom.mk('span', 'bp-api-label', api.route_label));
       boxLayer.appendChild(box);
@@ -1859,9 +2039,11 @@
         var ar = { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
         var p1 = bpBorderPoint(rect, cc.x, cc.y);
         var p2 = bpBorderPoint(c.layout, ar.x, ar.y);
-        svg.appendChild(svgEl('path', {
+        var arrow = svgEl('path', {
           'class': 'bp-api-arrow', d: bpCurve(p1, p2).d, 'marker-end': 'url(#bp-arrow-api)'
-        }));
+        });
+        arrow.setAttribute('stroke', dp.border);
+        svg.appendChild(arrow);
       });
     });
   }
@@ -1872,6 +2054,116 @@
     var svg = Dom.el('bp-edge-layer');
     if (!svg) return;
     svg.classList.toggle('bp-hide-labels', bpView.labelsHidden);
+  }
+
+  // ── the detail/toggle panel (top-left) — global progressive disclosure (§4) ───
+  // The Diagrammer reference's DETAIL card: switches to globally reveal a class of
+  // detail at once — APIs (boundary boxes), Internals (open every domain), Edge
+  // labels, and the In-flight overlay. Each flips a bpToggles/bpView flag and
+  // re-renders (the map preserves pan/zoom across a re-render). The panel rebuilds
+  // each paint; bpPanelCollapsed persists its collapsed state.
+  function bpToggleRow(label, hint, isOn, setOn) {
+    var row = Dom.mk('div', 'bp-tog-row');
+    var sw = Dom.mk('button', 'bp-switch' + (isOn ? ' on' : ''));
+    sw.setAttribute('type', 'button');
+    sw.setAttribute('role', 'switch');
+    sw.setAttribute('aria-checked', isOn ? 'true' : 'false');
+    sw.setAttribute('aria-label', label);
+    sw.appendChild(Dom.mk('span', 'bp-switch-knob'));
+    sw.addEventListener('click', function (e) { e.stopPropagation(); setOn(!isOn); });
+    row.appendChild(sw);
+    var txt = Dom.mk('div', 'bp-tog-txt');
+    txt.appendChild(Dom.mk('div', 'bp-tog-label', label));
+    if (hint) txt.appendChild(Dom.mk('div', 'bp-tog-hint', hint));
+    row.appendChild(txt);
+    return row;
+  }
+
+  function buildBpDetailPanel() {
+    var panel = Dom.mk('div', 'bp-panel' + (bpPanelCollapsed ? ' bp-panel-collapsed' : ''));
+    var head = Dom.mk('div', 'bp-panel-head');
+    head.appendChild(Dom.mk('span', 'bp-panel-title', 'DETAIL'));
+    var col = Dom.mk('button', 'bp-panel-collapse', bpPanelCollapsed ? '+' : '×');
+    col.setAttribute('type', 'button');
+    col.setAttribute('aria-label', bpPanelCollapsed ? 'expand detail panel' : 'collapse detail panel');
+    col.addEventListener('click', function (e) {
+      e.stopPropagation();
+      bpPanelCollapsed = !bpPanelCollapsed;
+      if (bpRecord !== undefined) renderBlueprint(bpRecord);
+    });
+    head.appendChild(col);
+    panel.appendChild(head);
+
+    var bodyT = Dom.mk('div', 'bp-panel-body');
+    bodyT.appendChild(bpToggleRow('APIs', 'entry points on each domain',
+      bpToggles.apis, function (v) { bpToggles.apis = v; renderBlueprint(bpRecord); }));
+    bodyT.appendChild(bpToggleRow('Internals', 'services inside each domain',
+      bpToggles.components, function (v) { bpToggles.components = v; renderBlueprint(bpRecord); }));
+    bodyT.appendChild(bpToggleRow('Edge labels', 'how things connect',
+      !bpView.labelsHidden, function (v) { bpView.labelsHidden = !v; renderBlueprint(bpRecord); }));
+    bodyT.appendChild(bpToggleRow('In-flight overlay', 'where the swarm is working',
+      bpToggles.inflight, function (v) { bpToggles.inflight = v; renderBlueprint(bpRecord); }));
+    panel.appendChild(bodyT);
+    return panel;
+  }
+
+  // ── the minimap (top-right) — the whole world in miniature + a viewport box ───
+  function buildBpMiniMap(view) {
+    var W = bpView.worldW || 1, H = bpView.worldH || 1;
+    var BOX = 150;
+    var s = Math.min(BOX / W, BOX / H, 0.5);
+    bpMini.s = s; bpMini.W = W; bpMini.H = H;
+    var mm = Dom.mk('div', 'bp-minimap');
+    var inner = Dom.mk('div', 'bp-minimap-inner');
+    inner.id = 'bp-minimap-inner';
+    inner.style.width = (W * s) + 'px';
+    inner.style.height = (H * s) + 'px';
+    var ox = bpView.originX || 0, oy = bpView.originY || 0;
+    view.nodes.forEach(function (n) {
+      if (!n.visible || !n.layout || !n.top_level) return;
+      var pal = bpPal[n.id] || BP_PAL_FALLBACK;
+      var cell = Dom.mk('div', 'bp-mm-cell' + (n.active ? ' on' : ''));
+      cell.style.left = ((ox + n.layout.x) * s) + 'px';
+      cell.style.top = ((oy + n.layout.y) * s) + 'px';
+      cell.style.width = Math.max(4, n.layout.w * s) + 'px';
+      cell.style.height = Math.max(4, n.layout.h * s) + 'px';
+      cell.style.background = pal.fill;
+      cell.style.borderColor = pal.border;
+      inner.appendChild(cell);
+    });
+    var vp = Dom.mk('div', 'bp-mm-view');
+    vp.id = 'bp-mm-view';
+    inner.appendChild(vp);
+    inner.addEventListener('click', function (e) {
+      var r = inner.getBoundingClientRect();
+      bpCenterOn((e.clientX - r.left) / s, (e.clientY - r.top) / s);
+    });
+    mm.appendChild(inner);
+    bpUpdateMiniViewport();
+    return mm;
+  }
+
+  // Move the world so (localX,localY) — a point in #bp-world local coords — is centred.
+  function bpCenterOn(localX, localY) {
+    bpUserMovedView = true;            // recentering via the minimap = user control
+    var map = Dom.el('bp-map');
+    var vw = (map && map.clientWidth) || 800, vh = (map && map.clientHeight) || 480;
+    bpView.panX = vw / 2 - localX * bpView.zoom;
+    bpView.panY = vh / 2 - localY * bpView.zoom;
+    applyBpWorldTransform();
+  }
+
+  // Position the minimap's viewport rectangle from the current pan/zoom.
+  function bpUpdateMiniViewport() {
+    var vp = Dom.el('bp-mm-view');
+    if (!vp || !bpMini.s) return;
+    var map = Dom.el('bp-map');
+    var vw = (map && map.clientWidth) || 800, vh = (map && map.clientHeight) || 480;
+    var s = bpMini.s, z = bpView.zoom || 1;
+    var left = (-bpView.panX / z) * s, top = (-bpView.panY / z) * s;
+    var w = (vw / z) * s, h = (vh / z) * s;
+    vp.style.left = left + 'px'; vp.style.top = top + 'px';
+    vp.style.width = w + 'px'; vp.style.height = h + 'px';
   }
 
   // ── the legend + zoom controls (viewport overlays, NOT transformed) ──────────
@@ -1903,13 +2195,9 @@
     zb('+', 'zoom in', function () { bpZoomBy(1.25); });
     zb('−', 'zoom out', function () { bpZoomBy(0.8); });
     zb('⤢', 'fit the whole map to view', function () {
+      bpUserMovedView = true;          // an explicit fit is the user's choice — keep it
       bpFit(bpView.worldW, bpView.worldH);
       applyBpWorldTransform();
-    });
-    // bpmap-2: toggle the edge labels (the via/queue names + bundle counts).
-    zb('🏷', 'toggle edge labels', function () {
-      bpView.labelsHidden = !bpView.labelsHidden;
-      applyBpLabelVisibility();
     });
     return box;
   }
@@ -1920,6 +2208,7 @@
     if (!world) return;
     world.style.transform =
       'translate(' + bpView.panX + 'px,' + bpView.panY + 'px) scale(' + bpView.zoom + ')';
+    bpUpdateMiniViewport();   // keep the minimap's viewport box in sync with pan/zoom
   }
 
   function bpClampZoom(z) {
@@ -1932,6 +2221,7 @@
   function bpZoomAt(cx, cy, factor) {
     var nz = bpClampZoom(bpView.zoom * factor);
     if (nz === bpView.zoom) return;
+    bpUserMovedView = true;            // the user took control of the viewport
     var wx = (cx - bpView.panX) / bpView.zoom;
     var wy = (cy - bpView.panY) / bpView.zoom;
     bpView.panX = cx - wx * nz;
@@ -1960,13 +2250,26 @@
     var map = Dom.el('bp-map');
     var vw = (map && map.clientWidth) || 800;
     var vh = (map && map.clientHeight) || 480;
-    var margin = 28;
+    // Reserve the chrome insets so the fit never tucks content under the detail
+    // panel (top-left) or the minimap (top-right) — centre in the FREE region.
+    var padL = (bpPanelCollapsed || vw < 620) ? 56 : 264;   // detail panel width + gap (responsive)
+    var padR = 28, padT = 26, padB = 26;
+    var availW = Math.max(80, vw - padL - padR);
+    var availH = Math.max(80, vh - padT - padB);
     w = w || 1; h = h || 1;
-    var z = Math.min((vw - margin * 2) / w, (vh - margin * 2) / h, 1.4);
+    var z = Math.min(availW / w, availH / h, 1.4);
     z = bpClampZoom((isFinite(z) && z > 0) ? z : 1);
     bpView.zoom = z;
-    bpView.panX = vw / 2 - (x + w / 2) * z;   // centre the rect's centre in the viewport
-    bpView.panY = vh / 2 - (y + h / 2) * z;
+    bpView.panX = padL + availW / 2 - (x + w / 2) * z;   // centre in the free region
+    bpView.panY = padT + availH / 2 - (y + h / 2) * z;
+  }
+
+  // Re-frame the whole world whenever it's safe to (user hasn't grabbed it, no
+  // focus is being framed). Called by the ResizeObserver when the map settles size.
+  function bpAutoReframe() {
+    if (bpUserMovedView || bpFocus) return;
+    bpFit(bpView.worldW, bpView.worldH);
+    applyBpWorldTransform();
   }
 
   // ── pointer pan + pinch zoom (mouse + touch) ─────────────────────────────────
@@ -1989,6 +2292,14 @@
   // Attached ONCE per facet mount: wheel + pointerdown on the viewport, the
   // pointer move/up/cancel on window (so a drag continues outside the box).
   function attachBpPanZoom(map) {
+    // Re-fit when the map element settles its real size (0→full at mount, or a
+    // window resize) — the bulletproof fix for the first-paint fit race (§17 #8).
+    // Stops auto-framing the moment the user pans/zooms (bpAutoReframe guards).
+    if (window.ResizeObserver) {
+      if (bpResizeObs) bpResizeObs.disconnect();
+      bpResizeObs = new window.ResizeObserver(function () { bpAutoReframe(); });
+      bpResizeObs.observe(map);
+    }
     map.addEventListener('wheel', function (e) {
       e.preventDefault();
       var p = bpViewportPos(e, map);
@@ -2036,6 +2347,7 @@
       bpPinchDist = d;
       bpJustPanned = true;
     } else if (bpPanLast) {
+      bpUserMovedView = true;          // a drag-pan = the user took control
       bpView.panX += p.x - bpPanLast.x;
       bpView.panY += p.y - bpPanLast.y;
       bpPanLast = p;

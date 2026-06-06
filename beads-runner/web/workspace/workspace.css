@@ -344,7 +344,7 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .bp-narr-p{font-size:13px;color:var(--faint);line-height:1.6;margin:0}
 
 /* a ?focus target node — a clear ring distinct from the active/collision overlay */
-.bp-node.bp-focus{border-color:var(--sky);box-shadow:0 0 0 2px rgba(110,180,255,.32)}
+.bp-node.bp-focus{box-shadow:0 0 0 3px rgba(47,95,160,.55),0 12px 30px rgba(20,30,50,.22)}
 
 /* empty state */
 .bp-emptybox{margin:24px 18px;border:1px dashed var(--line-2);border-radius:14px;
@@ -361,10 +361,11 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
   background:var(--ink);padding:1px 5px;border-radius:5px}
 .bp-conflict-note{font-size:12px;color:var(--faint);margin-top:5px;line-height:1.5}
 
-/* ── the positioned-canvas map (bpmap-1, claude-tools-bpmap1) ──────────────────
+/* ── the positioned-canvas map (bpmap-1) — a bright "paper" design surface ──────
  * THE SHARED RENDER CONTRACT (bpmap-2/3 bind to it — see app.js):
- *  • #bp-map is the VIEWPORT — clips (overflow:hidden), fixed height, grab cursor +
- *    touch-action:none so a drag pans instead of scrolling the page.
+ *  • #bp-map is the VIEWPORT — clips (overflow:hidden), grab cursor + touch-action:
+ *    none so a drag pans instead of scrolling the page. It is its own LIGHT canvas
+ *    (a dotted paper) inside the dark app shell, like a design tool's artboard.
  *  • .bp-world is the ONE transformed container (transform-origin 0 0) carrying
  *    translate(pan) scale(zoom); it holds BOTH layers in the SAME coordinate space
  *    so edges (bpmap-2) align with boxes:
@@ -372,78 +373,151 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
  *      .bp-box-layer   — the absolutely-positioned node boxes (OVER the edges)
  *  • a .bp-node is absolutely placed at the model's layout{x,y,w,h} (world px). */
 .bp-map{position:relative;overflow:hidden;margin:0 18px;
-  height:clamp(360px,56vh,640px);border:1px solid var(--line);border-radius:14px;
-  background:var(--ink-2);cursor:grab;touch-action:none;user-select:none}
+  height:clamp(440px,66vh,780px);border:1px solid rgba(0,0,0,.14);border-radius:18px;
+  background-color:#f1ece1;
+  background-image:radial-gradient(rgba(70,58,36,.10) 1px, transparent 1.4px);
+  background-size:24px 24px;background-position:-12px -12px;
+  cursor:grab;touch-action:none;user-select:none;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 1px 4px rgba(0,0,0,.3)}
 .bp-map.bp-panning{cursor:grabbing}
 .bp-world{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
 #bp-edge-layer{position:absolute;top:0;left:0;overflow:visible;pointer-events:none}
 .bp-box-layer{position:absolute;top:0;left:0}
 
-/* ── edges + API boundary boxes (bpmap-2, claude-tools-bpmap2; §3.2/§3.3) ───────
- * Resolved/bundled edges and api→target arrows are SVG paths in #bp-edge-layer
- * (under the boxes); api boundary boxes are positioned divs in the box layer. All
- * live in the SAME transformed world, so they pan/zoom with — and align to — the
- * boxes. kind=queue is the ASYNC edge (dashed). The label halo (paint-order:stroke)
- * keeps the via/queue text legible where it crosses an edge. */
-.bp-edge{fill:none;stroke:var(--slate);stroke-width:2.4;stroke-linecap:round}
-.bp-edge-data{stroke:var(--sky)}
-.bp-edge-depends{stroke:var(--slate);opacity:.8}
-.bp-edge-async{stroke:var(--amber);stroke-dasharray:8 6}      /* queue = async */
-.bp-arrow-head{fill:var(--slate)}
-.bp-arrow-head-api{fill:var(--sky)}
-.bp-edge-label{fill:var(--dim);font-family:var(--mono);font-size:10px;
-  paint-order:stroke;stroke:var(--ink-2);stroke-width:3px;stroke-linejoin:round}
+/* ── edges + API boundary boxes (bpmap-2; §3.2/§3.3) ───────────────────────────
+ * Edges + api→target arrows are SVG paths in #bp-edge-layer (under the boxes), each
+ * stroked inline with its SOURCE domain's hue (the arrowheads inherit it via
+ * fill:context-stroke); api boundary boxes are positioned divs in the box layer.
+ * All live in the SAME transformed world, so they pan/zoom with the boxes.
+ * kind=queue is the ASYNC edge (dashed). The label halo keeps text legible. */
+.bp-edge{fill:none;stroke:#7c8594;stroke-width:2.2;stroke-linecap:round;opacity:.82}
+.bp-edge-async{stroke-dasharray:7 6}      /* queue = async */
+.bp-arrow-head{fill:#7c8594}
+.bp-arrow-head-api{fill:#3b6fb0}
+.bp-edge-label{fill:#6b6356;font-family:var(--mono);font-size:10px;
+  paint-order:stroke;stroke:#f1ece1;stroke-width:3px;stroke-linejoin:round}
 #bp-edge-layer.bp-hide-labels .bp-edge-label{display:none}
-.bp-api-arrow{fill:none;stroke:var(--sky);stroke-width:1.8;stroke-dasharray:3 3}
-/* a route straddling its domain's left border: out (caller) | in (domain) */
+.bp-api-arrow{fill:none;stroke:#3b6fb0;stroke-width:1.6;stroke-dasharray:4 4;opacity:.85}
+/* a route straddling its domain's left border — a white chip, domain-colored */
 .bp-api{box-sizing:border-box;display:flex;align-items:center;justify-content:center;
-  border:1px solid var(--sky);border-radius:6px;overflow:hidden;cursor:default;z-index:1;
-  background:linear-gradient(90deg,var(--ink) 0,var(--ink) 50%,rgba(116,168,255,.16) 50%,rgba(116,168,255,.16) 100%)}
-.bp-api-label{font-family:var(--mono);font-size:9px;color:var(--sky);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px;line-height:1}
+  border:1.5px solid var(--bp-border,#3b6fb0);border-radius:7px;overflow:hidden;
+  cursor:default;z-index:2;background:#fffdf7;box-shadow:0 2px 6px rgba(20,30,50,.16)}
+.bp-api-label{font-family:var(--mono);font-size:9px;color:var(--bp-ink,#3b6fb0);
+  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 5px;line-height:1}
 
-.bp-node{position:absolute;box-sizing:border-box;border:1px solid var(--line);
-  border-radius:11px;background:var(--panel);padding:6px 8px;overflow:hidden;
-  display:flex;flex-direction:column}
-.bp-node.bp-open{background:rgba(20,26,38,.55);overflow:visible}
-.bp-node.bp-dim{opacity:.4}
-.bp-node.bp-active{border-color:var(--mint)}
-.bp-node.bp-collision{border-color:var(--coral);box-shadow:0 0 0 1px rgba(255,107,107,.3)}
-.bp-kind-domain{border-left:3px solid var(--sky)}
-.bp-kind-client{border-left:3px solid var(--mint)}
-.bp-kind-store{border-left:3px solid var(--amber)}
-.bp-kind-vendor{border-left:3px solid var(--slate)}
-.bp-kind-capability{border-left:3px solid var(--line-2)}
-.bp-kind-unknown{border-left:3px solid var(--line-2)}
+/* ── nodes — squircles colored by the per-domain palette (§15.1) ───────────────
+ * Every box sets --bp-fill / --bp-border / --bp-ink inline (renderBlueprintNode).
+ * Three modes: a CLOSED top-level CARD, an OPEN container (colored header bar), and
+ * a capability LEAF. */
+.bp-node{position:absolute;box-sizing:border-box;
+  border:1.5px solid var(--bp-border,#9aa1ad);border-radius:18px;
+  background:var(--bp-fill,#e7e2d6);color:var(--bp-ink,#26303f);overflow:hidden;
+  display:flex;flex-direction:column;
+  box-shadow:0 2px 5px rgba(25,30,45,.12),0 8px 20px rgba(25,30,45,.07);
+  transition:box-shadow .14s ease}
+.bp-node:hover{box-shadow:0 5px 12px rgba(25,30,45,.2),0 14px 30px rgba(25,30,45,.13)}
+
+/* CLOSED top-level CARD — big centered title + capability sub + a "N parts" pill */
+.bp-node.bp-card{align-items:center;justify-content:center;text-align:center;
+  padding:16px 18px;cursor:pointer}
+.bp-card-body{display:flex;flex-direction:column;gap:6px;align-items:center;max-width:100%}
+.bp-card-title{font-family:var(--font-display);font-size:18px;font-weight:650;
+  color:var(--bp-ink);line-height:1.14;letter-spacing:.004em}
+.bp-card-sub{font-family:var(--mono);font-size:10px;line-height:1.4;color:var(--bp-ink);
+  opacity:.62;max-width:100%;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bp-card-pill{margin-top:10px;font:inherit;font-size:10px;letter-spacing:.05em;
+  font-weight:700;text-transform:uppercase;color:var(--bp-ink);
+  background:rgba(255,255,255,.55);border:1px solid var(--bp-border);border-radius:999px;
+  padding:3px 12px;cursor:pointer;opacity:.92}
+.bp-card-pill:hover{background:#fff;opacity:1}
+
+/* OPEN container — lightened body + a solid colored header bar (children paint over) */
+.bp-node.bp-open{overflow:visible;padding:0;
+  background:color-mix(in srgb, var(--bp-fill) 40%, #fffdf7)}
+.bp-node.bp-open>.bp-node-head{flex:0 0 auto;height:38px;gap:7px;padding:0 8px 0 10px;
+  background:var(--bp-border);border-radius:16px 16px 0 0}
+.bp-node.bp-open>.bp-node-head .bp-name{color:#fff;font-weight:650;font-size:13px}
+.bp-node.bp-open>.bp-node-head .bp-count{color:rgba(255,255,255,.82)}
+.bp-node.bp-open>.bp-node-head .bp-caret,
+.bp-node.bp-open>.bp-node-head .bp-node-menu{color:rgba(255,255,255,.92);opacity:1}
+
+/* capability LEAF — a compact label box */
+.bp-node.bp-leaf{justify-content:center;padding:0 6px 0 10px}
+.bp-node.bp-leaf .bp-node-head{height:100%}
+
+.bp-node.bp-dim{opacity:.3;filter:saturate(.55)}
+.bp-node.bp-active{box-shadow:0 0 0 2.5px rgba(47,140,90,.65),0 8px 20px rgba(25,30,45,.12)}
+.bp-node.bp-collision{box-shadow:0 0 0 2.5px rgba(190,60,40,.72),0 8px 20px rgba(25,30,45,.12)}
+
 .bp-node-head{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;min-width:0}
-.bp-node.bp-open>.bp-node-head{flex:0 0 auto}
-.bp-caret{font:inherit;font-size:13px;color:var(--amber);background:none;border:none;
-  cursor:pointer;min-width:24px;min-height:24px;padding:0;line-height:1;flex:0 0 auto;
-  display:inline-flex;align-items:center;justify-content:center}
-.bp-name{font-size:12px;color:var(--text);font-weight:500;white-space:nowrap;
+.bp-caret{font:inherit;font-size:12px;color:var(--bp-ink);background:none;border:none;
+  cursor:pointer;min-width:22px;min-height:22px;padding:0;line-height:1;flex:0 0 auto;
+  display:inline-flex;align-items:center;justify-content:center;opacity:.78}
+.bp-name{font-size:12px;color:var(--bp-ink);font-weight:560;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;min-width:0}
-.bp-badge{font-size:8px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink);
-  background:var(--amber);border-radius:4px;padding:0 4px;margin-left:5px;vertical-align:middle}
-.bp-badge-pin{background:var(--sky)}
-.bp-count{font-size:10px;color:var(--faint);flex:0 0 auto}
-.bp-node-menu{font:inherit;font-size:15px;color:var(--faint);background:none;border:none;
-  cursor:pointer;min-width:26px;min-height:24px;padding:0;line-height:1;flex:0 0 auto;
-  margin-left:auto;display:inline-flex;align-items:center;justify-content:center}
-.bp-node-menu:hover{color:var(--amber)}
+.bp-badge{font-size:8px;letter-spacing:.05em;text-transform:uppercase;color:#fff;
+  background:rgba(0,0,0,.42);border-radius:4px;padding:0 4px;margin-left:5px;vertical-align:middle}
+.bp-badge-pin{background:transparent;padding:0;margin-left:3px}
+.bp-count{font-size:10px;color:var(--bp-ink);opacity:.58;flex:0 0 auto}
+.bp-node-menu{font:inherit;font-size:15px;color:var(--bp-ink);background:none;border:none;
+  cursor:pointer;min-width:24px;min-height:22px;padding:0;line-height:1;flex:0 0 auto;
+  margin-left:auto;display:inline-flex;align-items:center;justify-content:center;opacity:.5}
+.bp-node-menu:hover{opacity:1}
+.bp-node.bp-card>.bp-node-menu{position:absolute;top:7px;right:9px;margin:0}
+
+/* ── detail / toggle panel (top-left) — global progressive disclosure (§4) ────── */
+.bp-panel{position:absolute;left:14px;top:14px;z-index:8;width:238px;
+  background:rgba(255,253,247,.93);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+  border:1px solid rgba(0,0,0,.1);border-radius:18px;
+  box-shadow:0 10px 30px rgba(25,30,45,.2);padding:13px 15px}
+.bp-panel.bp-panel-collapsed{width:auto}
+.bp-panel-head{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.bp-panel-title{font-size:10px;letter-spacing:.2em;color:#8a8276;font-weight:700}
+.bp-panel-collapse{font:inherit;font-size:16px;color:#9a9286;background:none;border:none;
+  cursor:pointer;line-height:1;min-width:24px;min-height:24px;display:inline-flex;
+  align-items:center;justify-content:center}
+.bp-panel-collapse:hover{color:#2b2b2b}
+.bp-panel.bp-panel-collapsed .bp-panel-body{display:none}
+.bp-panel-body{margin-top:8px;display:flex;flex-direction:column}
+.bp-tog-row{display:flex;align-items:flex-start;gap:12px;padding:10px 2px;
+  border-top:1px solid rgba(0,0,0,.07)}
+.bp-tog-row:first-child{border-top:none}
+.bp-tog-txt{min-width:0}
+.bp-tog-label{font-size:13.5px;color:#2b2b2b;font-weight:560;line-height:1.1}
+.bp-tog-hint{font-size:11px;color:#9a9286;margin-top:2px;line-height:1.25}
+.bp-switch{position:relative;flex:0 0 auto;width:40px;height:23px;border-radius:999px;
+  border:none;cursor:pointer;background:#d9d2c4;transition:background .15s ease;margin-top:1px}
+.bp-switch.on{background:#cf6b4a}
+.bp-switch-knob{position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.32);transition:transform .15s ease}
+.bp-switch.on .bp-switch-knob{transform:translateX(17px)}
+
+/* ── minimap (top-right) — the whole world in miniature + a viewport rect ──────── */
+.bp-minimap{position:absolute;right:14px;top:14px;z-index:7;padding:9px;
+  background:rgba(255,253,247,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+  border:1px solid rgba(0,0,0,.1);border-radius:15px;box-shadow:0 8px 24px rgba(25,30,45,.18)}
+.bp-minimap-inner{position:relative;cursor:pointer}
+.bp-mm-cell{position:absolute;border:1px solid;border-radius:3px;opacity:.95}
+.bp-mm-cell.on{box-shadow:0 0 0 1.5px rgba(47,140,90,.9)}
+.bp-mm-view{position:absolute;border:1.5px solid rgba(40,50,70,.6);border-radius:3px;
+  background:rgba(60,90,150,.13);pointer-events:none;min-width:6px;min-height:6px}
 
 /* legend + zoom controls — overlays, NOT transformed (fixed in the viewport) */
-.bp-legend{position:absolute;left:12px;bottom:10px;color:var(--faint);font-size:11px;
+.bp-legend{position:absolute;left:14px;bottom:12px;color:#6b6356;font-size:11px;
   display:flex;gap:12px;flex-wrap:wrap;pointer-events:none;z-index:4;
-  background:rgba(10,14,22,.6);padding:4px 8px;border-radius:8px}
-.bp-legend-hidden{color:var(--slate)}
-.bp-legend-active{color:var(--mint)}
-.bp-legend-collision{color:var(--coral)}
-.bp-zoom{position:absolute;right:10px;bottom:10px;display:flex;flex-direction:column;
-  gap:6px;z-index:5}
-.bp-zoom-btn{font:inherit;font-size:16px;line-height:1;color:var(--text);
-  background:var(--ink-2);border:1px solid var(--line-2);border-radius:8px;
-  width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center}
-.bp-zoom-btn:hover{border-color:var(--amber)}
+  background:rgba(255,253,247,.85);padding:5px 11px;border-radius:9px;
+  border:1px solid rgba(0,0,0,.08)}
+.bp-legend-hidden{color:#9a9286}
+.bp-legend-active{color:#2f8c5a}
+.bp-legend-collision{color:#c0432c}
+.bp-zoom{position:absolute;right:14px;bottom:12px;display:flex;flex-direction:column;
+  gap:7px;z-index:5}
+.bp-zoom-btn{font:inherit;font-size:17px;line-height:1;color:#3a3a3a;
+  background:rgba(255,253,247,.95);border:1px solid rgba(0,0,0,.13);border-radius:10px;
+  width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 7px rgba(25,30,45,.16)}
+.bp-zoom-btn:hover{border-color:#cf6b4a;color:#000}
 
 /* the H4 edit gestures FOLDED ONTO THE BOX (bpmap-3): an on-box ⋯ popover rendered
  * INSIDE the selected node card (REPLACES the old flat #bp-edit-panel below the
@@ -452,18 +526,20 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 /* anchored just UNDER the head row (not below the whole card) so a TALL focused
  * domain — whose grown rect can fill the viewport after zoom-to-fit — still shows
  * its menu near the top, never clipped off the bottom of the overflow:hidden map. */
-.bp-node-pop{position:absolute;top:32px;left:0;min-width:184px;z-index:60;
-  background:var(--panel);border:1px solid var(--line-2);border-radius:11px;
-  padding:9px 10px;box-shadow:0 12px 32px rgba(0,0,0,.5);cursor:default;
-  white-space:normal}
+.bp-node-pop{position:absolute;top:38px;left:8px;min-width:188px;z-index:60;
+  background:#fffdf7;border:1px solid rgba(0,0,0,.16);border-radius:13px;
+  padding:10px 11px;box-shadow:0 14px 36px rgba(20,30,50,.32);cursor:default;
+  white-space:normal;color:#2b2b2b}
 .bp-pop-h{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.bp-pop-id{font-family:var(--mono);font-size:11px;color:var(--amber-soft);
-  background:var(--ink);padding:1px 5px;border-radius:5px;
+.bp-pop-id{font-family:var(--mono);font-size:11px;color:#7a5a1e;
+  background:rgba(0,0,0,.06);padding:1px 5px;border-radius:5px;
   overflow:hidden;text-overflow:ellipsis;max-width:120px}
 .bp-pop-close{margin-left:auto;min-height:auto;padding:3px 8px}
 .bp-node-pop .bp-edit-row{flex-direction:column;align-items:stretch;gap:6px}
-.bp-node-pop .bp-act{text-align:left}
-.bp-edit-panel-t{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate)}
+.bp-node-pop .bp-act{text-align:left;color:#2b2b2b;background:rgba(0,0,0,.04);
+  border:1px solid rgba(0,0,0,.14)}
+.bp-node-pop .bp-act:hover{border-color:#cf6b4a}
+.bp-edit-panel-t{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:#8a8276}
 
 /* back-to-system — step out of a focus (§3.4.4), shown in the focus banner */
 .bp-focus-back{font:inherit;font-size:11px;color:var(--sky);background:var(--ink-2);

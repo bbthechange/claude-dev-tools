@@ -117,10 +117,13 @@ const RECORD_API = {
 };
 
 // A multi-BAND record (claude-tools-bplayout): top-level nodes span THREE bands —
-// a client, two product domains (one with a drill-in capability), and a store — plus
-// CROSS-BAND edges (client→domain, domain→store). Banding stacks the lanes
-// vertically, so the top-level boxes differ in both x and y and the cross-band edges
-// have real vertical extent (the 2-D-spread + visible-edge contract this bead restores).
+// a client, three product domains (one with a drill-in capability), and a store —
+// plus CROSS-BAND edges (client→domain, domain→store). The §13 LEFT→RIGHT banding
+// lays the lanes horizontally and packs the domain lane into 2 columns, so ≥3
+// domains wrap onto ≥2 rows: the top-level boxes differ in both x and y and the
+// cross-band edges have real vertical extent (the 2-D-spread + visible-edge contract
+// this bead restores). (Three domains, not two, so the 2-col domain pack actually
+// wraps — two side-by-side domains alone would share a y under the left→right layout.)
 const RECORD_BANDS = {
   schema_version: 1, project_ref: 'projB',
   derived: {
@@ -128,6 +131,7 @@ const RECORD_BANDS = {
       { id: 'client:web', label: 'Web App', kind: 'client', parent: null },
       { id: 'domain:posts-feed', label: 'Posts & Feed', kind: 'domain', parent: null },
       { id: 'domain:messaging', label: 'Messaging', kind: 'domain', parent: null },
+      { id: 'domain:profiles', label: 'Profiles', kind: 'domain', parent: null },
       { id: 'capability:send-dm', label: 'Send a DM', kind: 'capability', parent: 'domain:messaging' },
       { id: 'store:postgres', label: 'Postgres', kind: 'store', parent: null },
     ],
