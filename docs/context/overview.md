@@ -67,6 +67,7 @@ project `claude-wrangler`).
 | The Inbox page (dossiers, Mermaid, PWA push) | `web-inbox.md` |
 | The Intake page (file new work from phone) | `web-intake.md` |
 | The workspace hub / workspaces list / capacity / cross-ws views | `web-facets.md` |
+| The Blueprint **diagram** — the system map, layout, edges, toggles, drill-in | `web-blueprint.md` |
 | Running tests, the regression gate, conformance, close hooks | `testing.md` |
 | Filing/reviewing beads, the frozen A/B/C/D contracts, the design canon | `contracts-and-design.md` |
 
