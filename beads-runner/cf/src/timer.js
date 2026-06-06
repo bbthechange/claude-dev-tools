@@ -60,7 +60,16 @@ import { handleDossierOp, boundSv } from "./dossier.js";
 // timer.js. This is the ONLY new edge: the §2.2 timer's pair fire-action is
 // "surface + ping" (DESIGN N §4.3), and the ping IS firing the catalog's
 // `ready_to_pair` notification through the N1 spine.
-import { handleNotificationOp } from "./notification.js";
+import { handleNotificationOp, notifId } from "./notification.js";
+// L1 follow-up (claude-tools-h8e6) — the §5.6 SNOOZE re-surface re-fires the
+// blocking new_dossier notif, but its deterministic notif id (notif.<did>) is
+// ALREADY in CF.9's deliver-once ledger from the ORIGINAL delivery, so without a
+// targeted eviction the card returns to the blocking lane but the phone stays
+// SILENT. push.js OWNS that ledger; `evictDelivery` is its narrow seam to remove
+// ONE row so the next notif-deliver sweep re-dispatches one FRESH push. This is
+// the ONLY new edge timer.js → push.js — push.js imports notification.js only
+// (not timer.js), so no cycle.
+import { evictDelivery } from "./push.js";
 
 // ── the CF.7 op surface. Kept OUT of CF.1's CAPABILITIES (anti-drift: the
 //    differential asserts tf_arm/tf_fire/tf_poll are NOT §2 capability lines,
@@ -524,7 +533,16 @@ async function pairCreate(co, principal, beadRef, scheduledAt, tldr, fullDetail,
 // per §4.3 the §2.2 timer has no disarm and timer-ack is the
 // stop-re-surfacing primitive once Brian OPENS the session — so a re-surface
 // (S-6 poll) is harmless: notif-fire is idempotent (one-per-Dossier; the emit
-// no-ops) and N2's deliver-once ledger guarantees one push. Returns
+// no-ops) and N2's deliver-once ledger guarantees one push.
+//
+// NO LEDGER EVICTION here (claude-tools-h8e6 — deliberate). snoozeSurface evicts
+// the deliver-once row to force a fresh re-push, but pairSurface MUST NOT: it has
+// no timer-ack, so timer-due re-surfaces it on EVERY poll (ready-to-pair.spec.js
+// EXIT-D pins that idempotent re-poll). Evicting per poll would re-push every
+// poll — a notification storm, the opposite of "one fresh push". A legitimate
+// pair re-ping (e.g. a session re-scheduled to a new scheduled_at) would need a
+// distinct ONE-SHOT guard (pairSurface keeps no "already surfaced" state today);
+// that is a separate follow-up, not this bead's safe scope. Returns
 // { ok:true, surfaced:did, fired:bool, warned?:bool }.
 async function pairSurface(co, principal, did) {
   if (!neStr(did)) return { ok: false, msg: "ready-to-pair: surface — need <dossier_id>" };
@@ -596,14 +614,21 @@ async function pairSurface(co, principal, did) {
 // card whose bead resolves OUTSIDE still auto-closes (drops the dead card) instead
 // of being mistaken for a Flow-F auto-proceeder.
 //
-// RE-PUSH CAVEAT (honest, claude-tools-653d follow-up): snoozeSurface's notif-fire
-// restores the foreground TIER and is idempotent, but a `new_dossier` notification
-// already in CF.9's push_deliveries deliver-once ledger will NOT generate a FRESH
-// phone push on re-surface (the SAME property pairSurface relies on — timer.js
-// pairSurface: "N2's deliver-once ledger guarantees one push"). The re-surface is
-// real (the card returns to the blocking Inbox lane); a brand-new push on
-// re-surface is a documented follow-up (a targeted ledger eviction in CF.9/push.js,
-// a sibling segment kept out of this MVP).
+// RE-PUSH (claude-tools-h8e6, the 653d follow-up — now FIXED): snoozeSurface's
+// notif-fire restores the foreground TIER and is idempotent, but the `new_dossier`
+// notification is the SAME deterministic id (notif.<did>) that is ALREADY in CF.9's
+// push_deliveries deliver-once ledger from its ORIGINAL delivery — so a re-surface
+// would return the card to the blocking Inbox lane while the phone stayed SILENT
+// (the user snoozed to 9am and expects a 9am PING, not just a silent lane re-entry).
+// snoozeSurface now EVICTS that one ledger row (push.js evictDelivery) right before
+// re-firing, so the next notif-deliver blocking sweep re-dispatches exactly ONE
+// fresh push. This is SAFE for snooze because the re-surface is ONE-SHOT (it acks
+// the timer + clears snoozed_until, so it runs once per snooze, not per poll).
+// pairSurface has the SAME ledger property but is DELIBERATELY left un-evicted —
+// it re-fires on EVERY poll with no ack (ready-to-pair.spec.js EXIT-D pins that),
+// so evicting there would re-push every poll (a notification storm). The pair
+// re-ping (e.g. a re-scheduled session) needs a distinct one-shot guard and is a
+// separate follow-up (see pairSurface).
 // ════════════════════════════════════════════════════════════════════════════
 
 // dossierSnooze(co, principal, did, snoozeUntil) — the §5.6 SNOOZE ARM verb.
@@ -697,10 +722,24 @@ async function snoozeSurface(co, principal, did) {
   // mechanism, since the snooze fields are already cleared).
   await timerAck(co, did);
 
+  // RE-PUSH (claude-tools-h8e6): evict this dossier's deliver-once ledger row so
+  // the re-fired blocking new_dossier ping generates a FRESH phone push instead
+  // of being suppressed as "already delivered" (the user snoozed to 9am and
+  // expects a 9am ping). Best-effort: a failed evict degrades to the prior
+  // no-fresh-push behavior — never crashes the poll/alarm path (the file-wide
+  // "observable, never fatal" discipline, like timerAck above). SAFE here because
+  // snooze re-surface is ONE-SHOT (timer acked + snoozed_until cleared above), so
+  // this runs once per snooze — NOT every poll (the reason pairSurface can't).
+  try {
+    await evictDelivery(co, notifId(did));
+  } catch {
+    /* non-fatal — re-push is best-effort; the re-tier (the load-bearing part) already landed */
+  }
+
   // Best-effort re-fire the blocking new_dossier ping. The card is tier=blocking
   // after the re-tier write, so the §10.2 tier-guard passes (new_dossier binds
-  // [blocking]). RE-PUSH CAVEAT (above): a notif already in the push_deliveries
-  // deliver-once ledger will NOT re-push — observable, never crashes the poll.
+  // [blocking]); with the ledger row evicted above, the next notif-deliver
+  // blocking sweep re-dispatches exactly ONE fresh push.
   const res = await handleNotificationOp(co, "notif-fire", ["new_dossier", did], principal);
   let body = null;
   try {

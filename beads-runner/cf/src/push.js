@@ -354,6 +354,31 @@ async function ledgerMark(co, notifId, kind) {
     .run();
 }
 
+// ── targeted deliver-once EVICTION (claude-tools-h8e6) ───────────────────────
+// Remove ONE notification's deliver-once row so the NEXT notif-deliver sweep
+// re-dispatches a single FRESH push for it. The deliver-once ledger (INSERT OR
+// IGNORE on notif_id) is precisely what keeps a re-fired notification SILENT
+// after its first delivery — the property pairSurface relies on, and the
+// property a §5.6 SNOOZE re-surface must DEFEAT: the user snoozed to 9am and
+// expects a 9am ping, not a silent re-entry into the blocking lane. This is the
+// ONE narrow seam that re-arms a fresh push without touching normal dedup — it
+// is called ONLY by the re-surface fire-action (timer.js snoozeSurface), so the
+// ordinary "push at most once" guarantee for every other notification is
+// unchanged. Idempotent + best-effort: evicting a notif that was never
+// delivered removes 0 rows (a harmless no-op). ensurePushSchema first so a
+// re-surface that runs before any delivery sweep still finds the table. Returns
+// the rows removed. EXPORTED for the sibling re-surface handler to call (the
+// dossierTldr / blockingWirePayload cross-module-export precedent).
+export async function evictDelivery(co, notifId) {
+  if (!neStr(notifId)) return 0;
+  await ensurePushSchema(co);
+  const r = await co.db
+    .prepare("DELETE FROM push_deliveries WHERE notif_id = ?")
+    .bind(notifId)
+    .run();
+  return (r && r.meta && r.meta.changes) || 0;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // THE WIRE TRIAGE PAYLOAD builders — the SINGLE place each phone-bound payload is
 // constructed (consumed by deliverBlocking/deliverDigest below). Extracted +

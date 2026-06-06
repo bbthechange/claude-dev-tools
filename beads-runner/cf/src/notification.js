@@ -84,8 +84,13 @@ function dossierBoundSv() {
 // never a per-Item row and never a duplicate — this IS "exactly one
 // Notification per Dossier" by construction, not by a count. Verbatim port of
 // bash `no__notif_id` (`printf 'notif.%s'`); `notif.` + a safe dossier id is
-// a safe store key.
-function notifId(did) {
+// a safe store key. EXPORTED (claude-tools-h8e6) so a re-surface fire-action
+// (timer.js snoozeSurface) can derive the deliver-once ledger key from the
+// dossier id for the targeted eviction — single-sourcing the one-per-Dossier
+// derivation rather than restating `notif.<did>` at the call site. It is already
+// effectively public via the pure `notif-id` op; exporting the function adds the
+// same value with no new write path.
+export function notifId(did) {
   return `notif.${did == null ? "" : did}`;
 }
 

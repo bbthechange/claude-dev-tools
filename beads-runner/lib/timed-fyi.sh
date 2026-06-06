@@ -413,7 +413,10 @@ pair_create() {
 #   timer-ack: per §4.3 timer-ack is the stop-re-surfacing primitive once Brian
 #   OPENS the session, so a re-surface (S-6 poll) is harmless — notif_fire is
 #   idempotent (one-per-Dossier) and N2's deliver-once ledger guarantees one
-#   push. Echoes the fired notification id; a notif_fire failure is OBSERVABLE
+#   push. (NB claude-tools-h8e6: unlike snooze_surface, pair_surface does NOT
+#   force a re-push — it re-fires every poll with no ack, so evicting the ledger
+#   here would push every poll; the JS twin pairSurface is left un-evicted too.)
+#   Echoes the fired notification id; a notif_fire failure is OBSERVABLE
 #   (a mis-tiered pair dossier the §10.2 guard rejects) and never crashes the
 #   poll (returns nonzero, sibling continues — AD7).
 pair_surface() {
@@ -492,8 +495,13 @@ do_dossier_snooze() {
 #   item applied, NO §5.3 consequence (the OPPOSITE of tf_fire's auto-apply). A
 #   card no longer snoozed is an informational no-op success (mirroring
 #   pair_surface's non-pair no-op). Echoes the fired notification id. JS twin:
-#   snoozeSurface. RE-PUSH CAVEAT: a notif already in N2's deliver-once ledger
-#   will NOT re-push (the pair_surface property) — observable, never crashes.
+#   snoozeSurface. RE-PUSH (claude-tools-h8e6): the JS twin snoozeSurface now
+#   EVICTS this dossier's row from N2's deliver-once ledger so the re-fired
+#   new_dossier ping yields a FRESH phone push (the user snoozed to 9am, expects a
+#   9am ping). That ledger is a CF-only A.2 transient (cf/src/push.js — there is
+#   NO bash push-delivery twin; the daemon merely RINGS the CF notif-deliver), so
+#   the bash side has nothing to evict and just re-fires notif_fire (unchanged) —
+#   the eviction is BELOW INTERFACE, so the differential stays equal.
 snooze_surface() {
   local bearer="${1:-}" did="${2:-}" rec snz upd nid
   [[ -n "$did" ]] || { echo "snooze: surface — need <dossier_id>" >&2; return 2; }

@@ -355,6 +355,70 @@ it("N2 notif-deliver — tier-keyed cadence, deliver-once ledger, honest no-VAPI
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// claude-tools-h8e6 — a §5.6 SNOOZE re-surface must DEFEAT deliver-once so the
+// phone re-pings. snoozeSurface evicts THIS dossier's deliver-once ledger row so
+// the next blocking sweep re-dispatches exactly ONE fresh push (the user snoozed
+// to 9am and expects a 9am ping, not a silent re-entry into the blocking lane).
+// Drives the REAL re-surface ops (dossier-snooze / snooze-surface) + the REAL
+// notif-deliver sweep — NOT a seeded shortcut — so it proves the eviction is
+// wired into the live fire-action and that normal deliver-once is restored after
+// (one fresh push, never a per-sweep storm). 200/JSON-ok or text/plain 200.
+const isOk = (r) => (r.status === 200 && r.body === null ? true : !!(r.body && r.body.ok === true));
+// a v2 blocking decision dossier (one open item) — the snooze.spec.js mkFor shape;
+// dossier-snooze/snooze-surface round-trip it through the real §4.1 write gate.
+const mkBlockingDossier = (id, bref) => ({
+  id, schema_version: 2, kind: "decide", trigger: "worker_stuck",
+  bead_ref: bref, tier: "blocking", created_at: "2026-05-30T00:00:00Z",
+  timer_fire_at: null,
+  body: { dossier_schema_version: 2, tldr: "Decide the deploy window.", sections: [], diagrams: [], full_detail: "f" },
+  items: [{
+    id: "open1", kind: "approve-reject", framing: {},
+    context_anchor: { where: "x", expansion: "y" },
+    consequence_block: { cb_schema_version: 2, creates: [{ title: "new open1", type: "task", priority: 2, labels: [], description: "d" }], unblocks: [], labels: [], status_changes: [] },
+    reversible: "r", state: "open", response: null, consequence_applied: false, applied_at: null,
+  }],
+});
+
+it("h8e6 — snooze re-surface EVICTS the deliver-once row so the phone re-pings", async () => {
+  reset();
+  await call(GOOD, "push-list", []); // ensure schema
+  await freshPushStore();
+  await env.DB.prepare("DELETE FROM records WHERE type IN ('notification','dossier')").run();
+
+  const DID = "snz-h8e6";
+  const SNZ = "2099-06-01T00:00:00Z"; // far future — the re-surface timer never fires spontaneously
+  const { p256dh, auth } = await configurePushEnv();
+  await call(GOOD, "push-subscribe", ["https://fcm.googleapis.com/fcm/send/h8e6", p256dh, auth]);
+
+  // A real blocking decision dossier + its new_dossier §4.3 notification.
+  ck("plant a v2 blocking decision dossier", isOk(await call(GOOD, "dossier-put", [mkBlockingDossier(DID, "thirsty-h8e6")])));
+  ck("fire new_dossier emits the blocking §4.3 notification", isOk(await call(GOOD, "notif-fire", ["new_dossier", DID])));
+
+  // FIRST delivery: one push, ledgered (the original delivery).
+  const b1 = await call(GOOD, "notif-deliver", ["blocking"]);
+  ck("first blocking sweep pushes the new_dossier notif", b1.body && b1.body.pushed === 1);
+  ck("the notif is now in the deliver-once ledger", (await ledgerCount()) === 1);
+  // deliver-once holds: a re-run before any re-surface pushes nothing.
+  ck("re-run does NOT re-push (deliver-once holds pre-re-surface)", (await call(GOOD, "notif-deliver", ["blocking"])).body.pushed === 0);
+
+  // SNOOZE then SURFACE (the re-surface fire-action).
+  ck("dossier-snooze defers + arms the re-surface timer", isOk(await call(GOOD, "dossier-snooze", [DID, SNZ])));
+  ck("snooze-surface re-tiers to blocking + re-fires the ping", isOk(await call(GOOD, "snooze-surface", [DID])));
+
+  // THE FIX: the re-surface evicted the deliver-once row ...
+  ck("snooze re-surface EVICTED the deliver-once ledger row (h8e6 fix)", (await ledgerCount()) === 0);
+  // ... so the NEXT blocking sweep re-dispatches exactly ONE fresh push.
+  const b3 = await call(GOOD, "notif-deliver", ["blocking"]);
+  ck("after re-surface the blocking sweep RE-PUSHES one fresh notif (the phone re-pings)", b3.body && b3.body.pushed === 1);
+  ck("the fresh push re-ledgered it (deliver-once restored to 1)", (await ledgerCount()) === 1);
+  // deliver-once is restored — the eviction is one-shot, NOT a per-sweep storm.
+  ck("deliver-once holds again after the fresh push (no per-sweep storm)", (await call(GOOD, "notif-deliver", ["blocking"])).body.pushed === 0);
+
+  clearPushEnv();
+  expect(FAIL, `h8e6 snooze re-push failed: ${fails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 it("N2 anti-drift — push is NOT a §4 record; the §2 substrate is untouched", async () => {
   reset();
   ck("'push_subscription' is NOT a §4 record type (absent from schemaVersion)", schemaVersion("push_subscription") === null);
