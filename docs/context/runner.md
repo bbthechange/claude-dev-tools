@@ -196,9 +196,19 @@ was lost).
   `next_task()` is always called as `TASK_JSON=$(next_task)` — a command-sub
   SUBSHELL — so any global it writes is discarded with the subshell (this is also
   why v1's in-`next_task` `ORPHANED_IDS` narrowing is effectively per-call). The
-  file lives at `$LOG_DIR/.ready-cache.json` (`<epoch>\n<json>`). **v2 uses an
-  in-memory global** (`READY_CACHE_JSON/TIME`) because `st_reconcile`/`st_claim`
-  are dispatched DIRECTLY (no subshell), so globals persist. BOTH bust the cache at
+  file lives at `$LOG_DIR/.ready-cache.json` (`<epoch>\n<json>`). **That file
+  SURVIVES the process, so v1 ALSO busts it ONCE at startup (claude-tools-iu53,
+  right after the `BEADS_RUNNER_TEST_MODE` source-guard, before the main loop)** —
+  a fresh process must not trust a prior process's last poll. Without that startup
+  bust a respawn (or any 2nd invocation in the same workspace) within
+  `READY_CACHE_SECONDS` serves a STALE cross-process ready set and hides work filed
+  in the gap; it surfaced as BC-24 cross-run-append RED — a 2nd `run_runner` read
+  the 1st's final empty `[]` poll and never picked up the newly-seeded bead.
+  **v2 uses an in-memory global** (`READY_CACHE_JSON/TIME`) because
+  `st_reconcile`/`st_claim` are dispatched DIRECTLY (no subshell), so globals
+  persist — and it is cold at process start by construction, so v2 needs NO startup
+  bust; that asymmetry is why `bc-24-incidents-log-tree.sh` (v2) stayed GREEN while
+  the v1 rig went RED. BOTH bust the cache at
   commit-to-run (`ready_cache_bust` where `CURRENT_TASK_ID` is set) so a bead this
   runner just closed is never re-presented stale → re-claimed → reopened (bd ready
   itself never returns a closed bead; only a warm cache could). **The BC-06 `bd
@@ -493,3 +503,8 @@ st_reconcile — claude-tools-yuwe, regression-lock `lib/test-paused-consumer-v1
 the `bd ready` TTL cache in BOTH runners (claude-tools-4a2e) — v1 file-backed (the `$(next_task)`
 subshell), v2 in-memory global, both busted at commit-to-run, BC-06 re-check left uncached
 (see the new scar above; locks `lib/test-ready-cache.sh` + `bc-06-blocked-recheck-tree.sh`).
+FOLLOW-UP (claude-tools-iu53): v1's file cache SURVIVES the process, so v1 now also busts it ONCE at
+startup (after the `BEADS_RUNNER_TEST_MODE` guard, before the main loop) — a respawn within
+`READY_CACHE_SECONDS` was serving a prior process's stale ready set and hiding freshly-filed work
+(BC-24 cross-run-append RED on `run-beads-tasks.sh`; v2 stayed GREEN — its global is cold per process).
+Locked by the new startup-bust assertion in `lib/test-ready-cache.sh` PART B.

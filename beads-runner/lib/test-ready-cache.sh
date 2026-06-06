@@ -134,12 +134,32 @@ func_body "$V1" next_task | grep -q 'bd blocked' \
   || ok "v1 next_task contains no bd blocked (BC-06 re-check is in validate_task, uncached)"
 
 # v1: the bust is invoked at commit-to-run (after the CURRENT_TASK_ID set).
+# A SEPARATE startup bust now precedes it (claude-tools-iu53), so pick the first
+# bare ready_cache_bust AFTER the commit line — not simply head -1.
 v1_commit="$(grep -n 'CURRENT_TASK_ID="\$TASK_ID"' "$V1" | head -1 | cut -d: -f1)"
-v1_bust="$(grep -nE '^[[:space:]]*ready_cache_bust[[:space:]]*$' "$V1" | head -1 | cut -d: -f1)"
+v1_bust="$(grep -nE '^[[:space:]]*ready_cache_bust[[:space:]]*$' "$V1" \
+            | awk -F: -v c="$v1_commit" '$1+0 > c+0 {print $1; exit}')"
 if [[ -n "$v1_commit" && -n "$v1_bust" && "$v1_bust" -gt "$v1_commit" ]]; then
   ok "v1 ready_cache_bust ($v1_bust) fires AFTER commit-to-run ($v1_commit)"
 else
   bad "v1 bust not found after commit-to-run (commit=$v1_commit bust=$v1_bust)"
+fi
+
+# v1 (claude-tools-iu53): a FRESH process discards a prior process's leftover
+# ready-cache file at startup. The cache file lives under LOG_DIR and survives
+# the process; without a startup bust a respawn (or a second invocation in the
+# same workspace) within the TTL serves a STALE cross-process ready set, hiding
+# work filed in the gap (BC-24 cross-run append RED). Assert a bare
+# ready_cache_bust exists BEFORE the main `while true` loop (and after the
+# BEADS_RUNNER_TEST_MODE source-guard, so a test-mode source never busts).
+v1_mainloop="$(grep -nE '^while true; do' "$V1" | head -1 | cut -d: -f1)"
+v1_guard="$(grep -n 'BEADS_RUNNER_TEST_MODE:-0' "$V1" | head -1 | cut -d: -f1)"
+v1_startup_bust="$(grep -nE '^[[:space:]]*ready_cache_bust[[:space:]]*$' "$V1" \
+            | awk -F: -v g="$v1_guard" -v m="$v1_mainloop" '$1+0 > g+0 && $1+0 < m+0 {print $1; exit}')"
+if [[ -n "$v1_mainloop" && -n "$v1_startup_bust" ]]; then
+  ok "v1 busts the leftover ready cache at startup (line $v1_startup_bust, after the test-mode guard, before the main loop at $v1_mainloop)"
+else
+  bad "v1 has no startup ready_cache_bust before the main loop — a respawn serves a stale cross-process ready set (guard=$v1_guard loop=$v1_mainloop)"
 fi
 
 # v2: the ready cache wraps st_reconcile's bd ready; the BC-06 re-check in

@@ -1729,6 +1729,20 @@ if [[ "${BEADS_RUNNER_TEST_MODE:-0}" == "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# claude-tools-iu53: discard any ready-cache file a PRIOR process left behind.
+# The bd-ready TTL cache (claude-tools-4a2e) lives at LOG_DIR/.ready-cache.json —
+# under LOG_DIR, so it SURVIVES the process (BC-27 self-gitignored, but on disk).
+# The cache exists to collapse rapid re-polls WITHIN one spinning runner's life;
+# a brand-new process has done zero polls, so it must not trust the last poll a
+# previous process wrote. Without this, a respawn (or any second invocation in
+# the same workspace) within READY_CACHE_SECONDS serves the prior process's
+# stale ready set — hiding work filed in the gap (BC-24 cross-run append went RED:
+# run2 read run1's final empty `[]` poll and never picked up the newly-seeded
+# bead). This mirrors v2 (runner.sh), whose in-memory READY_CACHE_* global is
+# empty at process start — a fresh process is cold by construction there. Sits
+# after the source-mode guard so a BEADS_RUNNER_TEST_MODE load never busts.
+ready_cache_bust
+
 # §4.2 `starting`: the very first registration line — a freshly (re)launched
 # runner appears in the hosted engine under its project_ref before it claims
 # any work (the I2 "appears as a live runner via the deployed read path").
