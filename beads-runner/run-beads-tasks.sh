@@ -793,6 +793,47 @@ read -ra ORPHANED_IDS <<< "$(bd list --status=in_progress --json 2>/dev/null | j
 # Clear if the only element is empty string (no orphans)
 [[ ${#ORPHANED_IDS[@]} -eq 1 && -z "${ORPHANED_IDS[0]}" ]] && ORPHANED_IDS=()
 
+# ── bd ready TTL cache (claude-tools-4a2e) ───────────────────────────────────
+# next_task() is the ONE bd-ready poll, reached from BOTH the active loop top
+# and the idle re-poll — and v1's active loop has NO inter-iteration sleep, so a
+# lease-deny / capacity-deny / validate-skip spin re-queries `bd ready` (and
+# re-takes the dolt lock) every few seconds while NOTHING has changed. Memoize
+# the ready ARRAY for a short window so those rapid re-polls serve from cache.
+#
+# FILE-based, NOT an in-memory global — load-bearing: next_task() is ALWAYS called
+# as `TASK_JSON=$(next_task)` (a command-substitution SUBSHELL), so any global it
+# assigns is discarded with the subshell and never reaches the parent loop. A
+# disk file persists across the subshell; ready_cache_bust (run in the PARENT)
+# rm's it. The file lives under LOG_DIR (BC-27 self-gitignored, a per-runner OWN
+# artifact — never a daemon rendezvous path), holding `<epoch>\n<json>`.
+#
+# SAFE: the lease acquire precedes the in_progress write (BC-48/AD2.1), so a stale
+# cached bead another claimant already took simply FAILS the lease acquire — a
+# wasted, fail-closed poll, never a double-claim. And the cache is BUSTED the
+# instant THIS runner commits to running a worker (ready_cache_bust at the
+# CURRENT_TASK_ID set, below), so the post-task poll is always fresh: a bead this
+# runner just closed can never be re-presented from a stale cache (which would
+# otherwise re-claim → reopen it — bd ready itself never returns a closed bead).
+#
+# DELIBERATELY NOT cached: the BC-06 `bd blocked` re-check in validate_task — a
+# freshness guard for a dep added AFTER the ready snapshot that MUST stay live
+# (conformance/assertions/bc-06-blocked-recheck-tree.sh). Only the ready ARRAY is
+# memoized here; validate_task still hits dolt FRESH per candidate (label/blocked/
+# show), so most per-loop lock traffic is unchanged — this collapses the spin.
+#
+# Sized SMALL (a stale window briefly hides freshly-filed high-priority work, ≤
+# READY_CACHE_SECONDS): the idle re-poll already paces at IDLE_POLL_INTERVAL=60s
+# (always > this window ⇒ idle polls stay fresh); the target is the sub-window
+# spins (LEASE_DENY_BACKOFF=3s, SKIP_BACKOFF). Mirrors check_usage()'s USAGE_CACHE_*.
+READY_CACHE_SECONDS=${READY_CACHE_SECONDS:-10}
+# Path is computed lazily (LOG_DIR is read at call time, so this is robust to
+# module-load ordering and to a LOG_DIR reparent).
+_ready_cache_file() { printf '%s' "${LOG_DIR:-.beads/runner-logs}/.ready-cache.json"; }
+# Force the next next_task() to re-query. Called in the PARENT shell when this
+# runner commits to a task (CURRENT_TASK_ID set) so the post-worker poll never
+# serves a just-closed bead from a still-warm cache.
+ready_cache_bust() { rm -f "$(_ready_cache_file)" 2>/dev/null || true; }
+
 # Pick up orphaned tasks first (one per loop), then fall through to ready tasks
 next_task() {
   if [[ ${#ORPHANED_IDS[@]} -gt 0 ]]; then
@@ -827,9 +868,33 @@ next_task() {
   # no-op). We pass it anyway so the intent is documented and a future
   # bd fix takes over, AND we jq-filter the JSON client-side so the
   # starvation is actually fixed today regardless of bd behavior.
-  bd ready --exclude-type=epic --json 2>/dev/null \
+  #
+  # claude-tools-4a2e: served through the file-backed TTL cache (above). A recent
+  # snapshot is re-emitted without re-taking the dolt lock; busted at
+  # commit-to-run so the post-task poll is fresh. The cache file holds
+  # `<epoch>\n<json>`; a non-empty `[]` (a real drain) is itself a cacheable
+  # result. A `date` failure (now=0) forces a MISS both ways: the read guards on
+  # `now>0`, and a write stamps ts=0 which the next read rejects (ts>0 guard).
+  local _rc_file _rc_now _rc_ts _rc_age
+  _rc_file="$(_ready_cache_file)"
+  _rc_now=$(date +%s 2>/dev/null || echo 0)
+  if [[ "$_rc_now" -gt 0 ]] && [[ -r "$_rc_file" ]]; then
+    _rc_ts=$(head -1 "$_rc_file" 2>/dev/null || echo 0)
+    [[ "$_rc_ts" =~ ^[0-9]+$ ]] || _rc_ts=0
+    _rc_age=$(( _rc_now - _rc_ts ))
+    if [[ "$_rc_ts" -gt 0 ]] && [[ "$_rc_age" -lt "$READY_CACHE_SECONDS" ]]; then
+      tail -n +2 "$_rc_file" 2>/dev/null
+      return
+    fi
+  fi
+  local _rc_json
+  _rc_json=$(bd ready --exclude-type=epic --json 2>/dev/null \
     | jq '[.[] | select((.issue_type // .type // "") != "epic")]' 2>/dev/null \
-    || echo "[]"
+    || echo "[]")
+  # Best-effort write-through (a failed write just re-queries next call).
+  mkdir -p "${LOG_DIR:-.beads/runner-logs}" 2>/dev/null || true
+  printf '%s\n%s\n' "$_rc_now" "$_rc_json" > "$_rc_file" 2>/dev/null || true
+  printf '%s\n' "$_rc_json"
 }
 
 # Check if a task is actually workable (deps resolved, not a parent container)
@@ -1990,6 +2055,11 @@ while true; do
   esac
 
   CURRENT_TASK_ID="$TASK_ID"
+  # claude-tools-4a2e: we have now COMMITTED to running a worker for this bead
+  # (lease held + capacity passed). Bust the bd-ready TTL cache so the NEXT loop's
+  # poll (after the worker closes/fails this bead) re-queries fresh — a bead this
+  # runner just closed must never be re-presented from a still-warm cache.
+  ready_cache_bust
   # claude-tools-td0y: surface CURRENT_TASK_ID to hook scripts. Export so the
   # claude-p worker (and its hook subprocesses) inherit it; also write a file
   # as fallback for the case where a hook lands in a subshell that dropped

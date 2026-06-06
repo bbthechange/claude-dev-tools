@@ -189,6 +189,23 @@ was lost).
   takes effect on the **next respawn**. (This is also the ir7 self-modification
   discipline: a runner editing its own running script is fine; just know the change
   is deferred.)
+- **The `bd ready` poll is TTL-cached, and the two runners cache DIFFERENTLY
+  (claude-tools-4a2e).** A short window (`READY_CACHE_SECONDS`) memoizes the ready
+  ARRAY so a spinning runner (lease-deny 3s / gate-human / skip backoffs) stops
+  re-taking the dolt lock every pass. **v1 MUST use a FILE cache, not a global:**
+  `next_task()` is always called as `TASK_JSON=$(next_task)` — a command-sub
+  SUBSHELL — so any global it writes is discarded with the subshell (this is also
+  why v1's in-`next_task` `ORPHANED_IDS` narrowing is effectively per-call). The
+  file lives at `$LOG_DIR/.ready-cache.json` (`<epoch>\n<json>`). **v2 uses an
+  in-memory global** (`READY_CACHE_JSON/TIME`) because `st_reconcile`/`st_claim`
+  are dispatched DIRECTLY (no subshell), so globals persist. BOTH bust the cache at
+  commit-to-run (`ready_cache_bust` where `CURRENT_TASK_ID` is set) so a bead this
+  runner just closed is never re-presented stale → re-claimed → reopened (bd ready
+  itself never returns a closed bead; only a warm cache could). **The BC-06 `bd
+  blocked` re-check (validate_task / `_validate_workable`) is LEFT UNCACHED** — it
+  is a freshness guard for a dep added after the snapshot; caching it would claim a
+  late-blocked bead. Locks: `lib/test-ready-cache.sh` (v1 behavioral + both
+  structural) + `conformance/assertions/bc-06-blocked-recheck-tree.sh` (v2 e2e).
 - **Queue starvation by a no-claim bead at `ready[0]`** (uxqj, fixed): a single
   `human-action`/`human-triage` TASK at the top of `bd ready` once starved every
   workable bead below it for ~25 min. Epics are query-filtered (BC-52) but tasks
@@ -472,4 +489,7 @@ ported — `workspace_desired_state` reads `.co-store` runner_state FIRST + CO_S
 v1 startup; closes the cache-bounded v1 twin of break-through-pause — claude-tools-efu3; sibling of
 the v2/daemon claude-tools-y6j9). The v1 paused-CONSUMER gap is now closed too: the loop-top
 `runner_should_hold_paused` gate holds a paused v1 runner at idle (never claims), mirroring v2's
-st_reconcile — claude-tools-yuwe, regression-lock `lib/test-paused-consumer-v1.sh`.
+st_reconcile — claude-tools-yuwe, regression-lock `lib/test-paused-consumer-v1.sh`. Also landed:
+the `bd ready` TTL cache in BOTH runners (claude-tools-4a2e) — v1 file-backed (the `$(next_task)`
+subshell), v2 in-memory global, both busted at commit-to-run, BC-06 re-check left uncached
+(see the new scar above; locks `lib/test-ready-cache.sh` + `bc-06-blocked-recheck-tree.sh`).

@@ -98,6 +98,18 @@ RUNNER_TRACKING_ONLY_LABELS="${RUNNER_TRACKING_ONLY_LABELS:-tracking-only}"
 CONTROL_POLL_INTERVAL="${CONTROL_POLL_INTERVAL:-60}"   # §0.5 (60 s) desired-state poll DURING a task; stop honored ≤ this
 HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-60}"         # §0.5 (60 s) actual-state+liveness heartbeat; lease renew
 RECLAIM_POLL_INTERVAL="${RECLAIM_POLL_INTERVAL:-60}"   # §0.5 (60 s) re-poll cadence after a clean drain (relaunch itself is T3)
+# bd ready TTL cache (claude-tools-4a2e). st_reconcile's bd-ready poll re-takes
+# the dolt lock every reconcile; the sub-interval spins (lease-deny / gate-human,
+# LEASE_DENY_BACKOFF=3s) re-poll far faster than the idle cadence with nothing
+# changed. Memoize the ready snapshot for a window BOUNDED BY RECLAIM_POLL_INTERVAL
+# (the idle re-poll cadence) so it only ever collapses those sub-interval spins,
+# never hides work past the runner's own steady idle poll. BUSTED at commit-to-run
+# (st_claim) so a just-closed bead is never re-presented stale. The BC-06 `bd
+# blocked` re-check (_validate_workable) stays UNcached — it is a freshness guard.
+READY_CACHE_SECONDS="${READY_CACHE_SECONDS:-$RECLAIM_POLL_INTERVAL}"
+READY_CACHE_JSON=""
+READY_CACHE_TIME=0
+ready_cache_bust() { READY_CACHE_TIME=0; READY_CACHE_JSON=""; }   # force a fresh bd-ready poll next reconcile
 RUNNER_TICK="${RUNNER_TICK:-1}"                        # during-task poll granularity (s); test-tunable
 # I1 (claude-tools-uxvi1) — how often the during-task loop classifies the worker
 # stream + (throttled) reports agent_activity. [free] per ARCH §8 (any cadence
@@ -2412,12 +2424,26 @@ st_reconcile() {
   #     `type`). It does NOT cover a bd that HARD-REJECTS the flag (nonzero exit):
   #     the safe_capture below degrades that to a retry-spin (NOT a drain) before
   #     the belt runs — acceptable (no false drain, no epic claim), just noisier.
-  local ready_json
-  ready_json="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd ready --exclude-type=epic --json)"
-  if [[ "$ready_json" == "__DEGRADED__" ]]; then
-    echo "runner: bd ready degraded — NOT treating as drain; retry in ${RECLAIM_POLL_INTERVAL}s"
-    sleep "$RECLAIM_POLL_INTERVAL"
-    transition RECONCILE; return
+  # claude-tools-4a2e: serve a recent ready snapshot from the READY_CACHE_* TTL
+  # so the sub-interval spins don't re-take the dolt lock each pass. A non-empty
+  # `[]` (a real drain) is itself cacheable; only "" (never populated) or a bust
+  # misses. A DEGRADED poll is NEVER cached (handled before the store), so the
+  # last good snapshot survives a transient bd hiccup. The candidate WALK below
+  # (incl. the BC-06 `bd blocked` re-check in _validate_workable) stays UNcached.
+  local ready_json _rc_now _rc_age
+  _rc_now="$(date +%s 2>/dev/null || echo 0)"
+  _rc_age=$(( _rc_now - READY_CACHE_TIME ))
+  if [[ "$_rc_now" -gt 0 ]] && [[ -n "$READY_CACHE_JSON" ]] && [[ "$_rc_age" -lt "$READY_CACHE_SECONDS" ]]; then
+    ready_json="$READY_CACHE_JSON"
+  else
+    ready_json="$(safe_capture BD_UNAVAILABLE "__DEGRADED__" -- bd ready --exclude-type=epic --json)"
+    if [[ "$ready_json" == "__DEGRADED__" ]]; then
+      echo "runner: bd ready degraded — NOT treating as drain; retry in ${RECLAIM_POLL_INTERVAL}s"
+      sleep "$RECLAIM_POLL_INTERVAL"
+      transition RECONCILE; return
+    fi
+    READY_CACHE_JSON="$ready_json"
+    READY_CACHE_TIME="$_rc_now"
   fi
 
   # Select the FIRST workable NON-EPIC candidate at the ONE reconcile point (no
@@ -2596,6 +2622,12 @@ st_claim() {
   # transition — this reorder is in this child's BC-35/BC-36 surface, not the
   # T2.1 state machine's.)
   CURRENT_TASK_ID="$CANDIDATE_ID"
+  # claude-tools-4a2e: committed to running a worker for this bead (lease held +
+  # capacity passed). Bust the bd-ready TTL cache so the next st_reconcile (after
+  # this bead closes/fails) re-queries fresh — a just-closed bead must never be
+  # re-presented from a still-warm cache. Covers the orphan-resume path too (it
+  # also reaches st_claim and sets CURRENT_TASK_ID here).
+  ready_cache_bust
   # claude-tools-2fkp: surface CURRENT_TASK_ID to the close-discipline hook —
   # export so the `claude -p` worker (and its hook subprocesses) inherit it, and
   # write a file fallback for a hook that lands in a subshell that dropped env
