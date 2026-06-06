@@ -528,9 +528,10 @@ _drain_outbox() {
 # unsynchronised claim, so a Coordinator blip cannot reintroduce the BC-04 two-
 # runners-one-orphan race). Same backend swap as the §3 jobs (stub: no-op holds
 # nothing ⇒ unreachable always refuses; real: file-backed $LOG_DIR/lease-cache).
-job_lease_note_held()      { la_lease_note_held "$1" "${2:-}"; }                       # record/refresh a locally-held lease (bounded-fallback INPUT)
-job_lease_release_local()  { la_lease_release_local "$1"; }                            # forget the local hold (pairs note_held at every release site)
-job_lease_fallback_allows(){ la_lease_fallback_allows "$1" "${2:-reachable}"; }        # 0 may | 1 must-not — the degraded-CLOSED verdict (consulted ONLY when unreachable)
+job_lease_note_held()         { la_lease_note_held "$1" "${2:-}" "${3:-}"; }              # record/refresh the local lease ENVELOPE (gen+ttl+expires; bounded-fallback INPUT, claude-tools-h9dl)
+job_lease_release_local()     { la_lease_release_local "$1"; }                            # forget the local hold (pairs note_held at every release site)
+job_lease_recover_generation(){ la_lease_recover_generation "$1"; }                       # recover the cached §4.4 fence token across a restart/blip (claude-tools-h9dl)
+job_lease_fallback_allows()   { la_lease_fallback_allows "$1" "${2:-reachable}"; }        # 0 may | 1 must-not — the degraded-CLOSED verdict (consulted ONLY when unreachable)
 
 # ── Mechanism A (claude-tools-uxc1) — per-task PID claim files ─────────────────
 # inbox-lifecycle §8.3.3. The startup orphan snapshot (st_starting, BC-02) used to
@@ -2546,7 +2547,16 @@ st_claim() {
     # unsynchronised claim ⇒ no BC-04 two-runners-one-orphan regression.
     if [[ "${CO_HTTP_UNREACHABLE:-0}" == "1" ]] && job_lease_fallback_allows "$CANDIDATE_ID" unreachable; then
       echo "runner: Coordinator unreachable — bounded local fallback CONTINUES $CANDIDATE_ID (still-valid local lease held; §6.2/AD2.2)"
-      LEASE_GENERATION=""   # no fresh Coordinator generation; the locally-cached hold is the authority while unreachable
+      # claude-tools-h9dl (P2 / ylu2 follow-up #1): seed the §4.4 fencing token
+      # from the locally-cached lease ENVELOPE instead of sending an EMPTY one.
+      # An empty generation means the renew that rides the next heartbeat is
+      # SKIPPED (la_heartbeat only renews when gen is non-empty) — so once the
+      # Coordinator recovers mid-task the lease silently lapses and a sibling
+      # could double-claim. With the cached token the renew is ATTEMPTED: if no
+      # takeover happened during the outage it still matches and the lease is
+      # renewed; if one did, the renew is correctly denied (we lost the lease —
+      # which offline self-verify cannot detect, hence the reachable re-validate).
+      LEASE_GENERATION="$(job_lease_recover_generation "$CANDIDATE_ID" 2>/dev/null || true)"
     else
       echo "runner: lease unavailable for $CANDIDATE_ID — not claiming (no lease ⇒ no run)"
       sleep "${LEASE_DENY_BACKOFF:-3}"
@@ -2559,7 +2569,9 @@ st_claim() {
     # THIS task (and only this task). Paired by job_lease_release_local at every
     # release site; a SIGKILL (no teardown) deliberately leaves the cache entry as
     # the crash-orphan resume signal. Best-effort (BC-43): never aborts the claim.
-    job_lease_note_held "$CANDIDATE_ID" >/dev/null 2>&1 || true
+    # claude-tools-h9dl: forward the §4.4 generation so the cached envelope carries
+    # the fence token (recovered on a restart/blip via job_lease_recover_generation).
+    job_lease_note_held "$CANDIDATE_ID" "" "$LEASE_GENERATION" >/dev/null 2>&1 || true
   fi
 
   # Job 2 — ask-capacity (§6.3). Failure posture is fail-OPEN (§6.2): the stub
@@ -2835,6 +2847,32 @@ st_run_task() {
       # a fix; decoupling liveness from lease-renewal would be a §3 job-surface
       # change (v2c2/§11), out of this port-forward's scope.
       job_heartbeat running "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null  # renews held lease (§3 j3)
+      # claude-tools-h9dl (P2): refresh the local lease ENVELOPE on each renew so
+      # the §6.2 bounded-fallback self-verify tracks the ACTIVELY-renewed
+      # Coordinator lease. note_held was previously called ONLY on the fresh grant,
+      # so on a task longer than LEASE_TTL (900s) the local hold drifted STALE and
+      # under-reported validity while the engine lease was fine. Gated on:
+      #   • non-empty LEASE_GENERATION — there is a fenced lease to carry forward
+      #     (the empty-gen unreachable-continuation case has nothing to refresh);
+      #   • LA_LEASE_RENEW_RC == 0 — the renew that just rode the heartbeat was
+      #     actually GRANTED by the engine (la_heartbeat sets this sidecar; "" or
+      #     nonzero ⇒ no renew / denied / unreachable). STRICTER than mere
+      #     reachability: a reachable-but-DENIED renew (a mid-outage takeover bumped
+      #     the generation, then connectivity returned) must NOT re-stamp — we lost
+      #     the lease, and advancing the local expiry would extend a stale hold a
+      #     later SIGKILL+restart would wrongly resume on. An outage (rc nonzero)
+      #     likewise does not advance, so the BOUNDED property holds: a bounded
+      #     outage still eventually expires the local hold and stops the task. The
+      #     ":-1" default (a backend that never set it, e.g. the stub) ⇒ skip.
+      #     Best-effort; never aborts the loop.
+      # The refresh passes only the generation (no §4.4 record — la_heartbeat
+      # discards the renew's returned record), so note_held RE-DERIVES the local
+      # expiry as now+ttl. That mirrors the Coordinator's own renew (engine_now+ttl
+      # on the same beat) within clock skew — the cached expires_epoch is thus
+      # runner-recomputed after the first renew, NOT the engine's echoed value.
+      if [[ -n "$LEASE_GENERATION" && "${LA_LEASE_RENEW_RC:-1}" == "0" ]]; then
+        job_lease_note_held "$CURRENT_TASK_ID" "" "$LEASE_GENERATION" >/dev/null 2>&1 || true
+      fi
       # §1.1/§2.4 drain (BC-45, claude-tools-zyxz): SHIP that running heartbeat
       # NOW. st_reconcile is NOT re-entered during a task, so without an in-loop
       # drain a task longer than the engine's STALE_AFTER (≈180s) freezes the

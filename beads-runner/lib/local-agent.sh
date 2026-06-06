@@ -782,20 +782,80 @@ la_report_terminal_reason() {
 # It does NOT grant leases (no arbitration — that is T4); it only decides
 # whether *this* runner may keep going when the Coordinator is unreachable.
 #
-# Local lease cache: one file per held lease under $LOG_DIR/lease-cache/<task>,
-# whose mtime (or recorded acquired-at) bounds validity by LEASE_TTL. T4's
-# arbitration writes/refreshes these on grant/renew; T3 only reads & TTL-checks.
+# Local lease cache: one file per held lease under $LOG_DIR/lease-cache/<task>.
+# Its CONTENT is a §4.4-subset JSON ENVELOPE (claude-tools-h9dl, P2; was a bare
+# acquired_at epoch) so a restart/blip can self-verify validity AND recover the
+# fencing token WITHOUT a network call:
+#   {generation, owner, acquired_epoch, ttl_seconds, expires_epoch}
+# The runner writes/refreshes these on grant + each (reachable) renew; T3 only
+# reads & validates against the STORED expiry. Legacy bare-epoch files (written
+# by pre-P2 code, or the T3 unit test's bare-epoch form) are still honoured.
 la__lease_cache_dir() { printf '%s/lease-cache' "$(la__ensure_logdir)"; }
 
-# la_lease_note_held <task_ref> [acquired_at_epoch]
-#   Record/refresh a locally-held lease (called by T4's grant/renew path, and
-#   by the T3 test). acquired_at defaults to now.
+# la_lease_note_held <task_ref> [acquired_at_epoch | §4.4-record-json] [generation]
+#   Record/refresh a locally-held lease as the JSON envelope above. Arg 2 is
+#   EITHER a §4.4 Lease record JSON object (take its authoritative fields) OR a
+#   bare acquired_at epoch (the legacy/T3 form; generation then comes from arg 3).
+#   acquired defaults to now; ttl to la__LEASE_TTL; expires to acquired+ttl. The
+#   generation is the §4.4 FENCING TOKEN — caching it is the whole point of P2:
+#   without it a restarted runner that still legitimately holds the lease could
+#   not RENEW/RELEASE it (and the unreachable-fallback path sent an EMPTY fence
+#   token, which a recovered Coordinator silently denies — ylu2 follow-up #1).
 la_lease_note_held() {
-  local task="$1" at="${2:-}"
+  local task="$1" arg2="${2:-}" gen="${3:-}"
   [[ -n "$task" ]] || return 0
   local dir; dir="$(la__lease_cache_dir)"; mkdir -p "$dir" 2>/dev/null || true
-  [[ -z "$at" ]] && at=$(date +%s 2>/dev/null || echo 0)
-  printf '%s' "$at" > "$dir/$task" 2>/dev/null || true
+  local at owner ttl exp=""
+  owner="$(la_runner_id 2>/dev/null || true)"
+  ttl="$(la__LEASE_TTL)"
+  if printf '%s' "$arg2" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    # §4.4 record — prefer the server's own fields (generation + expiry are the
+    # authoritative bound; the runner does not have to recompute them).
+    at=$(printf '%s'  "$arg2" | jq -r '.acquired_epoch // empty' 2>/dev/null)
+    local rec_gen rec_owner rec_ttl rec_exp
+    rec_gen=$(printf '%s'   "$arg2" | jq -r '.generation // empty'    2>/dev/null)
+    rec_owner=$(printf '%s' "$arg2" | jq -r '.owner // empty'         2>/dev/null)
+    rec_ttl=$(printf '%s'   "$arg2" | jq -r '.ttl_seconds // empty'   2>/dev/null)
+    rec_exp=$(printf '%s'   "$arg2" | jq -r '.expires_epoch // empty' 2>/dev/null)
+    [[ -n "$rec_gen" ]]            && gen="$rec_gen"
+    [[ -n "$rec_owner" ]]         && owner="$rec_owner"
+    [[ "$rec_ttl" =~ ^[0-9]+$ ]]  && ttl="$rec_ttl"
+    [[ "$rec_exp" =~ ^[0-9]+$ ]]  && exp="$rec_exp"
+  else
+    at="$arg2"
+  fi
+  [[ "$at" =~ ^[0-9]+$ ]] || at=$(date +%s 2>/dev/null || echo 0)
+  [[ -n "$exp" ]]         || exp=$(( at + ttl ))
+  local rec
+  rec=$(jq -cn --arg ow "$owner" --arg g "$gen" \
+     --argjson ae "$at" --argjson te "$ttl" --argjson ee "$exp" \
+     '{acquired_epoch:$ae, ttl_seconds:$te, expires_epoch:$ee, owner:$ow,
+       generation:(if $g=="" then null else ($g|tonumber? // $g) end)}' 2>/dev/null) \
+    || rec=""
+  if [[ -n "$rec" ]]; then
+    printf '%s' "$rec" > "$dir/$task" 2>/dev/null || true
+  else
+    # jq unavailable/failed ⇒ degrade to the legacy bare-epoch content so the
+    # cache still records a TTL-checkable hold (loses only the cached generation).
+    printf '%s' "$at" > "$dir/$task" 2>/dev/null || true
+  fi
+}
+
+# la_lease_recover_generation <task_ref>
+#   Echo the cached §4.4 fencing generation for a locally-held lease (empty if
+#   there is no cache entry, or it is a legacy bare-epoch file with no generation).
+#   On a restart/blip during a Coordinator outage the runner seeds LEASE_GENERATION
+#   from this so the next renew/release carries the LAST grant/renew's fence token
+#   instead of an EMPTY one (ylu2 follow-up #1). NB it CANNOT prove the generation
+#   is still current — orphan recovery may have bumped it during the outage, which
+#   is invisible offline — so the reachable path must still re-validate (§6.2).
+la_lease_recover_generation() {
+  local task="$1"; [[ -n "$task" ]] || return 0
+  local f; f="$(la__lease_cache_dir)/$task"
+  [[ -f "$f" ]] || return 0
+  cat "$f" 2>/dev/null \
+    | jq -r 'if type=="object" then (.generation // empty) else empty end' 2>/dev/null \
+    || true
 }
 
 # la_lease_release_local <task_ref> — drop the local cache entry (lease
@@ -815,10 +875,16 @@ la_lease_release_local() {
 #                     the reachable path — it only owns the unreachable
 #                     fallback.
 #   unreachable ⇒ continue ONLY a task whose lease we ALREADY hold AND is
-#                 STILL VALID (now − acquired_at < LEASE_TTL). A missing OR
-#                 expired local lease ⇒ refuse: no NEW unsynchronised claim
-#                 (this is exactly what keeps a brief outage from stranding
-#                 in-flight work without reintroducing BC-04).
+#                 STILL VALID. Validity is checked against the STORED expiry
+#                 (the §4.4 envelope's expires_epoch, re-stamped on each renew —
+#                 claude-tools-h9dl), so a long actively-renewed task no longer
+#                 under-reports as a bare-grant acquired_at + env-default TTL did.
+#                 A missing OR expired local lease ⇒ refuse: no NEW unsynchronised
+#                 claim (this is what keeps a brief outage from stranding in-flight
+#                 work without reintroducing BC-04). Note: this cannot detect a
+#                 takeover (orphan recovery re-leasing + bumping generation) that
+#                 happened during the outage — that residual is closed only by the
+#                 reachable-path re-validation, not here.
 la_lease_fallback_allows() {
   local task="$1" reach="${2:-reachable}"
   [[ -n "$task" ]] || return 1
@@ -827,11 +893,28 @@ la_lease_fallback_allows() {
   fi
   local f; f="$(la__lease_cache_dir)/$task"
   [[ -f "$f" ]] || return 1                  # no held lease ⇒ no new claim
-  local acquired now ttl age
-  acquired=$(cat "$f" 2>/dev/null || echo "")
-  [[ "$acquired" =~ ^[0-9]+$ ]] || return 1  # unparseable ⇒ refuse (safe)
+  local raw now exp acquired ttl age
+  raw=$(cat "$f" 2>/dev/null || echo "")
+  [[ -n "$raw" ]] || return 1
   now=$(date +%s 2>/dev/null || echo 0)
-  ttl="$(la__LEASE_TTL)"
+  if printf '%s' "$raw" | jq -e 'type=="object"' >/dev/null 2>&1; then
+    # §4.4 envelope (P2): validate against the STORED expiry — the engine's own
+    # bound, re-stamped on each reachable renew — not just the env-default TTL.
+    exp=$(printf '%s' "$raw" | jq -r '.expires_epoch // empty' 2>/dev/null)
+    if [[ "$exp" =~ ^[0-9]+$ ]]; then
+      [[ "$now" -lt "$exp" ]] || return 1    # past the stored expiry ⇒ refuse
+      return 0                                # held + still valid ⇒ continue
+    fi
+    # Envelope without a usable expires ⇒ fall back to acquired_epoch + ttl.
+    acquired=$(printf '%s' "$raw" | jq -r '.acquired_epoch // empty' 2>/dev/null)
+    ttl=$(printf '%s'      "$raw" | jq -r '.ttl_seconds // empty'    2>/dev/null)
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl="$(la__LEASE_TTL)"
+  else
+    # Legacy bare-epoch content (pre-P2 cache file, or the T3 bare-epoch form).
+    acquired="$raw"
+    ttl="$(la__LEASE_TTL)"
+  fi
+  [[ "$acquired" =~ ^[0-9]+$ ]] || return 1  # unparseable ⇒ refuse (safe)
   age=$(( now - acquired ))
   [[ "$age" -lt "$ttl" ]] || return 1        # expired locally ⇒ refuse
   return 0                                    # held + still valid ⇒ continue

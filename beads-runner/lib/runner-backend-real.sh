@@ -188,11 +188,20 @@ co_store_put() {
 # runner has no separate per-tick job_renew_lease call site; renewal rides the
 # heartbeat). Renew is best-effort (a stale/expired-gen renew is a no-op the
 # next acquire heals); it must never abort the loop.
+# claude-tools-h9dl: surface the renew's rc in the LA_LEASE_RENEW_RC sidecar (0 ⇒
+# GRANTED, nonzero ⇒ denied/unreachable, "" ⇒ no renew attempted) so the runner's
+# §6.2 lease-cache refresh re-stamps the local envelope ONLY on a renew the engine
+# actually GRANTED — a reachable-but-DENIED renew (a mid-outage takeover bumped the
+# generation, then connectivity returned) must NOT extend the local hold for a
+# lease we just lost. The loop still never sees this rc (la_heartbeat returns 0).
 la_heartbeat() {
   local proj="${1:-}" actual="${2:-}" task="${3:-}" gen="${4:-}"
   PROJECT_REF="$proj" la_report_heartbeat "$actual" "$task"
   if [[ -n "$task" && -n "$gen" ]]; then
-    co_request "$RB_BEARER" lease-renew "$task" "${RUNNER_ID:-$(la_runner_id)}" "$gen" >/dev/null 2>&1 || true
+    co_request "$RB_BEARER" lease-renew "$task" "${RUNNER_ID:-$(la_runner_id)}" "$gen" >/dev/null 2>&1
+    LA_LEASE_RENEW_RC=$?
+  else
+    LA_LEASE_RENEW_RC=""   # no renew attempted this beat (no held lease / no gen)
   fi
   return 0
 }

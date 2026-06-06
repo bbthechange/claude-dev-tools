@@ -117,13 +117,19 @@ la_report_capacity() {
 # in-flight work without reintroducing BC-04). The stub holds nothing, so the
 # `reachable` path returns 0 (Coordinator arbitrates) and the `unreachable`
 # path with no cached lease returns 1 (degraded-CLOSED) — the real posture.
-# la_lease_note_held    <task_ref> [acquired_at_epoch]   → record/refresh hold
+# la_lease_note_held    <task_ref> [acquired_at|§4.4-json] [gen] → record/refresh
 # la_lease_release_local <task_ref>                      → forget local hold
+# la_lease_recover_generation <task_ref>                 → cached §4.4 fence token
 # la_lease_fallback_allows <task_ref> <reachable|unreachable> → 0 may | 1 must-not
 la_lease_note_held() {
-  local task_ref="${1:-}" at="${2:-}"
+  local task_ref="${1:-}" arg2="${2:-}" gen="${3:-}"
   [[ -n "$task_ref" ]] || return 0
   return 0
+}
+la_lease_recover_generation() {
+  local task_ref="${1:-}"
+  [[ -n "$task_ref" ]] || return 0
+  return 0   # the stub holds nothing ⇒ no cached generation to recover
 }
 la_lease_release_local() {
   local task_ref="${1:-}"

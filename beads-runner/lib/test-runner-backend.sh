@@ -108,6 +108,21 @@ ck "heartbeat carries actual=running"             grep -q '"actual":"running"' "
 # further renew with the SAME generation still succeeds.
 ck "lease still valid after heartbeat-renew"      co_lease_renew T1 "$RUNNER_ID" "$GEN"
 
+echo "── §4.4 renew-rc sidecar: la_heartbeat surfaces grant/deny/none (claude-tools-h9dl) ──"
+# The runner's §6.2 lease-cache refresh re-stamps the local envelope ONLY on a
+# GRANTED renew (LA_LEASE_RENEW_RC==0), so a reachable-but-DENIED renew (mid-outage
+# takeover) cannot extend a stale local hold. Predicates are SHELL functions (a
+# `bash -c` subshell would not see the non-exported sidecar global).
+renew_rc_is()      { [[ "$LA_LEASE_RENEW_RC" == "$1" ]]; }
+renew_rc_nonzero() { [[ -n "$LA_LEASE_RENEW_RC" && "$LA_LEASE_RENEW_RC" != 0 ]]; }
+renew_rc_empty()   { [[ -z "$LA_LEASE_RENEW_RC" ]]; }
+la_heartbeat "$PROJECT_REF" running T1 "$GEN" >/dev/null
+ck "GRANTED heartbeat-renew ⇒ LA_LEASE_RENEW_RC=0"          renew_rc_is 0
+la_heartbeat "$PROJECT_REF" running T1 999999 >/dev/null
+ck "DENIED heartbeat-renew (stale gen) ⇒ RENEW_RC nonzero"  renew_rc_nonzero
+la_heartbeat "$PROJECT_REF" idle "" "" >/dev/null
+ck "no task/gen ⇒ RENEW_RC empty (no renew attempted)"      renew_rc_empty
+
 echo "── §3 j5 / §4.5 + §3 j6 / §8.2: snapshot + terminal-reason records ──"
 ck "la_publish_work_snapshot rc 0 (best-effort)"  la_publish_work_snapshot "$PROJECT_REF"
 ck "snapshot appended workspace_inventory UP"     grep -q '"report":"workspace_inventory"' "$OUTBOX"

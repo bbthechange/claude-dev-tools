@@ -167,3 +167,39 @@ _need "release sites drop the local hold (job_lease_release_local) — pairs not
       grep -qE 'job_lease_release_local' "$RUNNER"
 _emit
 H_cleanup
+
+# ── P2 (claude-tools-h9dl) — the lease cache stores the §4.4 ENVELOPE so a
+# restart/blip recovers the FENCING TOKEN without a network call. Three wirings:
+#   • the unreachable-fallback path seeds LEASE_GENERATION from the cached
+#     envelope (job_lease_recover_generation) instead of an EMPTY fence token
+#     (ylu2 follow-up #1 — an empty gen makes the next renew a no-op, so once the
+#     Coordinator recovers the lease silently lapses and a sibling can double-claim);
+#   • the grant note_held FORWARDS $LEASE_GENERATION into the envelope;
+#   • the renew tick REFRESHES note_held (so a task longer than LEASE_TTL does not
+#     under-report local validity) — GATED on a GRANTED renew (LA_LEASE_RENEW_RC
+#     == 0, set by la_heartbeat) so neither a prolonged outage NOR a reachable-but-
+#     DENIED renew (mid-outage takeover) can advance the local expiry and defeat
+#     the bounded property.
+# Source-structural: the stub coordinator grants unconditionally, so the recover
+# path is not black-box exercisable here — the BEHAVIOUR is covered by
+# lib/test-local-agent.sh (§4.4 envelope clauses). These lock the v2 wiring.
+H_init_test ad22tree-h9dl-envelope-recovers-fence-token
+_expect "AD2.2" "§6.2/§4.4" "lease cache stores the §4.4 envelope; a restart/blip recovers the fencing generation without the network"
+_need "the unreachable-fallback path seeds LEASE_GENERATION from the cached envelope (not an empty fence token)" \
+      grep -qE 'LEASE_GENERATION="\$\(job_lease_recover_generation' "$RUNNER"
+_need "the grant note_held forwards the §4.4 generation into the cached envelope" \
+      grep -qE 'job_lease_note_held "\$CANDIDATE_ID" "" "\$LEASE_GENERATION"' "$RUNNER"
+_need "the renew tick (st_run_task) refreshes the local hold so a >LEASE_TTL task does not under-report" \
+      bash -c 'awk "/^st_run_task\(\) \{/{f=1} f{print} /^\}/{if(f) exit}" "'"$RUNNER"'" | grep -qE "job_lease_note_held .*LEASE_GENERATION"'
+_need "the renew refresh is GATED on a GRANTED renew (LEASE_GENERATION non-empty AND LA_LEASE_RENEW_RC == 0), not mere reachability" \
+      grep -qE '\[\[ -n "\$LEASE_GENERATION" && "\$\{LA_LEASE_RENEW_RC:-1\}" == "0" \]\]' "$RUNNER"
+_need "la_heartbeat surfaces the renew rc in the LA_LEASE_RENEW_RC sidecar (granted vs denied/unreachable)" \
+      grep -qE 'LA_LEASE_RENEW_RC=' "$REPO/lib/runner-backend-real.sh"
+_need "runner.sh exposes the recover wrapper (job_lease_recover_generation → la_lease_recover_generation)" \
+      grep -qE 'job_lease_recover_generation\(\).*\{.*la_lease_recover_generation' "$RUNNER"
+_need "real local-agent.sh defines la_lease_recover_generation" \
+      grep -qE '^la_lease_recover_generation\(\)' "$REPO/lib/local-agent.sh"
+_need "the LA stub keeps la_lease_recover_generation in parity (signature-conformant no-op)" \
+      grep -qE '^la_lease_recover_generation\(\)' "$STUB"
+_emit
+H_cleanup

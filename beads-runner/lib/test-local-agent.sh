@@ -162,6 +162,40 @@ ck "unreachable + held EXPIRED lease ⇒ refuse (TTL)" expired_refused
 la_lease_release_local FALL
 ck "released local lease ⇒ refuse again"             nott la_lease_fallback_allows FALL unreachable
 
+echo "── §4.4 lease ENVELOPE: cache the fence token + validate vs STORED expiry (claude-tools-h9dl) ──"
+# Predicates kept as SHELL functions (not `bash -c`, which would not see the
+# sourced la_* functions). The cache dir is $LOG_DIR/lease-cache/<task>.
+is_json_obj() { printf '%s' "$(cat "$1" 2>/dev/null)" | jq -e 'type=="object"' >/dev/null 2>&1; }
+gen_is()      { [[ "$(la_lease_recover_generation "$1")" == "$2" ]]; }
+gen_empty()   { [[ -z "$(la_lease_recover_generation "$1")" ]]; }
+LC="$LOG_DIR/lease-cache"
+H9_NOW="$(date +%s)"
+# (a) note_held with an explicit generation (arg3): JSON envelope + round-trip.
+la_lease_note_held G1 "" 42
+ck "note_held writes a JSON envelope (not a bare epoch)" is_json_obj "$LC/G1"
+ck "recover_generation round-trips the cached fence token (gen 42)" gen_is G1 42
+ck "unreachable + freshly-noted envelope ⇒ continue"  la_lease_fallback_allows G1 unreachable
+# (b) a full §4.4 record (arg2): take its generation + STORED expiry.
+h9_rec="$(jq -cn --argjson ce "$H9_NOW" --argjson ee "$((H9_NOW + 900))" \
+  '{task_ref:"G2",generation:7,owner:"test-runner-7",acquired_epoch:$ce,ttl_seconds:900,expires_epoch:$ee}')"
+la_lease_note_held G2 "$h9_rec"
+ck "§4.4 record envelope ⇒ recover its generation (gen 7)"  gen_is G2 7
+ck "§4.4 record with a future expiry ⇒ continue"            la_lease_fallback_allows G2 unreachable
+# (c) validity is bounded by the STORED expiry, NOT the env-default TTL: a past
+#     expires_epoch refuses even though acquired+LEASE_TTL would still be "valid".
+h9_recx="$(jq -cn --argjson ce "$((H9_NOW - 10))" --argjson ee "$((H9_NOW - 1))" \
+  '{generation:9,owner:"test-runner-7",acquired_epoch:$ce,ttl_seconds:900,expires_epoch:$ee}')"
+la_lease_note_held G3 "$h9_recx"
+ck "STORED expiry in the past ⇒ refuse (not env-TTL)"       nott la_lease_fallback_allows G3 unreachable
+# (d) legacy bare-epoch cache files (pre-P2 / an external writer) still honoured.
+printf '%s' "$H9_NOW" > "$LC/LEG"
+ck "legacy bare-epoch file (recent) ⇒ continue"             la_lease_fallback_allows LEG unreachable
+ck "legacy bare-epoch file ⇒ no recoverable generation"     gen_empty LEG
+printf '%s' "$((H9_NOW - 1000))" > "$LC/LEGX"
+ck "legacy bare-epoch file (aged past TTL) ⇒ refuse"        nott la_lease_fallback_allows LEGX unreachable
+ck "recover_generation on a missing entry ⇒ empty"          gen_empty NOPE
+la_lease_release_local G1; la_lease_release_local G2; la_lease_release_local G3
+
 echo "── §9.2 Coordinator bearer token storage (Keychain, fail-OPEN) ──"
 tok_present="$(T3T_COORD_TOKEN=coord-bearer-abc123 la_coordinator_token)"
 ck "token read from distinct Keychain service"       test "$tok_present" = "coord-bearer-abc123"

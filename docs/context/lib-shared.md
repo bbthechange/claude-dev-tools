@@ -202,9 +202,28 @@ the oracle/conformance runs deterministic and offline. The live-Worker probe
   — keep them differential-equivalent). The daemon's `agent-action-poll.sh` is the SINGLE consumer
   → `co__set_desired` writes the local record (apply-local-before-ack). Do NOT register a new §4
   record for change-requests; do NOT re-add a network-authoritative desired read. Still pending:
-  P4 (claude-tools-cx7t) `.co-store` write-through of 2xx responses, P2 (claude-tools-h9dl)
-  lease-envelope cache — those re-activate MORE of the store and must stay differential-equivalent
-  to D1 (the §8bm invariant).
+  P4 (claude-tools-cx7t) `.co-store` write-through of 2xx responses — that one DOES re-activate the
+  `.co-store` §4 store and must stay differential-equivalent to D1 (the §8bm invariant).
+- **The local-agent LEASE-CACHE stores a §4.4 ENVELOPE, NOT the `.co-store` (claude-tools-h9dl,
+  P2 SHIPPED).** Distinct mechanism from the `.co-store` desired-state store above: the bounded-
+  local-fallback cache (`local-agent.sh` `la__lease_cache_dir` = `$LOG_DIR/lease-cache/<task>`, a
+  T3 artifact) now holds a JSON envelope `{generation, owner, acquired_epoch, ttl_seconds,
+  expires_epoch}` MIRRORING the §4.4 Lease record's load-bearing subset — it was a bare acquired_at
+  epoch. It does NOT touch coordinator.sh, the `.co-store`, or D1, so there is NO CF mirror and NO
+  differential-equivalence obligation (local-agent.sh is the per-machine LA, not the oracle). Why:
+  (1) `la_lease_recover_generation` lets the runner re-seed `LEASE_GENERATION` from cache on a
+  restart/blip so the unreachable-fallback path no longer sends an EMPTY fence token (ylu2 follow-up
+  #1 — an empty gen makes the next heartbeat's renew a no-op, so the lease silently lapses once the
+  Coordinator recovers); (2) `la_lease_fallback_allows` now validates against the STORED expiry, and
+  the runner refreshes `note_held` on each renew tick GATED on a GRANTED renew (`LA_LEASE_RENEW_RC
+  == 0`, a sidecar `la_heartbeat` sets from the renew's rc), so a task longer than `LEASE_TTL` no
+  longer under-reports validity — but neither a prolonged OUTAGE nor a reachable-but-DENIED renew (a
+  mid-outage takeover bumped the generation, then connectivity returned) advances the local expiry,
+  preserving the bounded property. Gating on mere reachability would let a denied renew extend a
+  stale hold a SIGKILL+restart could wrongly resume on. Still cannot DETECT a takeover offline — the
+  reachable path must re-validate. Clauses: `lib/test-local-agent.sh` (§4.4 envelope) +
+  `conformance/assertions/bc-ad2-lease-posture-tree.sh` (`ad22tree-h9dl-…`). Legacy bare-epoch cache
+  files (pre-P2 / external writers) are still honoured.
 - **Loop-hygiene libs guard recurring footguns:** the runner never branches, so
   `git-pin-main.sh` re-pins HEAD to trunk each iteration; a daemon-stripped PATH
   resolves `claude` to Node v25 which crashes it (`node25-prime.sh`); SIGKILL'd
@@ -226,6 +245,8 @@ When you finish a task in this area, append anything a future agent will need an
 didn't find here: a renamed/moved lib, a new env override, a fresh oracle clause,
 a new MUST-NOT boundary, a scar. **Keep it concise — this doc earns its keep only
 if agents read all of it.** Delete stale lines; never let it grow into a copy of
-INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-06 (local-first:
-the `.co-store` §4 store is inert in PROD and the local-first epic re-activates it — claude-tools-dky8;
-reuse the `agent_actions` queue for change-requests, don't add a §4 record). Prior: 2026-06-03 (co_http__op_is_data DATA-200 allowlist scar + relay-log-tail/notif-digest passthrough — claude-tools-u1pt).
+INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-06 (local-agent
+lease-cache now stores a §4.4 ENVELOPE — generation+ttl+expires — so a restart/blip recovers the
+fencing token without the network; distinct from the `.co-store` store, no CF mirror —
+claude-tools-h9dl). Prior: local-first `.co-store` §4 store re-activated for desired-state — claude-tools-dky8;
+reuse the `agent_actions` queue for change-requests, don't add a §4 record. Prior: 2026-06-03 (co_http__op_is_data DATA-200 allowlist scar + relay-log-tail/notif-digest passthrough — claude-tools-u1pt).

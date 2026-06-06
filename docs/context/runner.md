@@ -106,7 +106,17 @@ patch live v1. See HANDOFF-UX-V2 §2.
   `la_lease_fallback_allows` confirms a still-valid locally-held lease
   (`job_lease_note_held` on grant; `job_lease_release_local` at every release
   site; a SIGKILL keeps the cache as the orphan-resume signal). A reachable deny
-  fails CLOSED — no new unsynchronised claim, no BC-04 regression.
+  fails CLOSED — no new unsynchronised claim, no BC-04 regression. **The cache now
+  stores a §4.4 ENVELOPE, not a bare epoch (claude-tools-h9dl, P2):** the fallback
+  path re-seeds `LEASE_GENERATION` from `job_lease_recover_generation` so a
+  restart/blip no longer sends an EMPTY fence token (ylu2 follow-up #1 — an empty
+  gen makes the next heartbeat's renew a no-op, lapsing the lease once the
+  Coordinator recovers). `la_lease_fallback_allows` validates vs the STORED expiry,
+  and the renew tick refreshes `note_held` ONLY on a GRANTED renew (`LA_LEASE_RENEW_RC
+  == 0`, a sidecar `la_heartbeat` sets) so neither an outage NOR a reachable-but-DENIED
+  renew (mid-outage takeover) can extend the local hold past the engine lease. Offline
+  self-verify still cannot DETECT a takeover — the reachable path must re-validate.
+  Lib detail: `lib-shared.md`.
 - **`LOG_DIR` is a self-gitignoring SECURITY boundary** (BC-27): raw model
   output / stream files must never reach git. The dirty-tree close audit excludes
   `.beads/issues.jsonl` (bd writes it as a side-effect — BC-56/u4ms). All per-task
