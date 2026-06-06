@@ -386,6 +386,17 @@ was lost).
   `lib/test-stuck-routing.sh` (the claude-tools-2z14 section + the preserved
   open-clobber re-assert). The fix is in a SOURCED lib ⇒ live runners get it on the
   next respawn; clean a live zombie by deleting its `<ref>.json` + re-closing.
+  **DEFENSE-IN-DEPTH follow-up (claude-tools-d752):** the §7.9 close-branch also now
+  FOLDS the bead's work-plane ask — `sr__fold_ask_on_close` appends ONE idempotent
+  `FORK-FOLDED-ON-CLOSE …` marker note BEFORE the record delete, so a LEGITIMATE
+  later reopen + a fresh worker re-reading the stale body (e.g. uxg1's "needs Brian
+  to deploy") can't re-derive the same fork. This guards the OTHER vector (worker
+  re-read), NOT the 2z14 one (pure control-plane re-assert, no worker). Best-effort
+  (BC-43) + bash-only (the CF reconcile has no live-`bd`/notes plane, so no
+  differential twin). The marker text carries NEITHER classify token
+  (`STUCK_NEEDS_HUMAN`/`HUMAN DECISION NEEDED`) so the 309l/gqyp net never reads the
+  fold itself as a fresh ask. Lock: the `claude-tools-d752` section of
+  `lib/test-stuck-routing.sh`.
 - **Never gate a lease decision on the transport `rc==4`** — it conflates a
   GENUINE unreachable (curl-fail / no HTTP code) with a REACHABLE 5xx/4xx-other
   AND local jq/mktemp faults (`lib/co-http-transport.sh`). A contended-lease 409

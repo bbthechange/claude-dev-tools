@@ -74,6 +74,16 @@ if ! declare -F dg_from_worker_ask >/dev/null 2>&1; then
   . "$(sr__lib_dir)/dossier-gen.sh"          # → dossier.sh → coordinator.sh
 fi
 
+# ── §7.9 close-hygiene marker (claude-tools-d752) ────────────────────────────
+# The unique, greppable token `sr__fold_ask_on_close` stamps onto a closed bead
+# when it folds the bead's stale "ask" (below). A NAME (not a bare literal) so
+# the lib test can assert on it without re-hardcoding the string, and so a
+# hermetic test can override it. `:=` under `set -u` makes it always-defined
+# after sourcing. DELIBERATELY contains NO classify trigger token
+# (STUCK_NEEDS_HUMAN / "HUMAN DECISION NEEDED") so a reopened bead's §7.2/309l/
+# gqyp net can never read the fold note ITSELF as a fresh ask.
+: "${SR_FOLD_MARKER:=FORK-FOLDED-ON-CLOSE}"
+
 # ── §0.4 the dossier-level dedup KEY model ───────────────────────────────────
 # §0.4: the dossier-level double-trigger dedup key = `task_ref` (the per-Item
 # key is the Item `id`, T5.3 — a DISTINCT latch on a DISTINCT child). The
@@ -190,6 +200,34 @@ sr__bead_status() {
   out="$(bd show "$tref" --json 2>/dev/null)" || return 1
   [[ -n "$out" ]] || return 1
   printf '%s' "$out" | jq -r '(if type=="array" then .[0].status else .status end) // empty' 2>/dev/null
+}
+
+# sr__fold_ask_on_close <task_ref> — work-plane companion to the §7.9
+#   control-plane auto-close (claude-tools-d752, DEFENSE-IN-DEPTH for the
+#   claude-tools-2z14 zombie). When a forked bead is CLOSED, its body
+#   (description) and earlier notes can still carry the original "ask" (e.g.
+#   uxg1's 2026-05-30 "needs Brian to deploy + device-verify") which, on a
+#   LEGITIMATE later reopen, a fresh worker could re-read and re-derive the SAME
+#   human fork off — a false fork. (NB: this was NOT the 2z14 vector — there NO
+#   worker ever re-claimed; that zombie was a pure control-plane re-assert the
+#   §7.9 guard above already kills. This folds the OTHER, hypothetical
+#   reopen→re-read path.) Folds it by appending ONE durable marker note that
+#   makes the stale ask read as RESOLVED/historical. Idempotent (skips if the
+#   marker is already present). Best-effort: `bd` absent / a read or write hiccup
+#   ⇒ no-op, never blocks the reconcile — the record hard-delete is the
+#   load-bearing 2z14 fix; this is purely additive hygiene. `--long --json` is
+#   the only `bd show` form that carries `.notes` (verified against current bd;
+#   the G2 analysis dossier reads it the same way).
+sr__fold_ask_on_close() {
+  local tref="${1:-}" notes ts
+  [[ -n "$tref" ]] || return 0
+  command -v bd >/dev/null 2>&1 || return 0
+  notes="$(bd show "$tref" --long --json 2>/dev/null \
+            | jq -r '(if type=="array" then .[0].notes else .notes end) // ""' 2>/dev/null)" || notes=""
+  case "$notes" in *"$SR_FOLD_MARKER"*) return 0 ;; esac   # already folded ⇒ idempotent
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+  bd update "$tref" --append-notes="$SR_FOLD_MARKER @$ts — this bead is CLOSED; the decision / original ask described in its body and any earlier notes is RESOLVED and historical. If it is ever reopened, treat that ask as already-answered and re-establish current evidence before re-deriving any human fork off the stale body. (close-hygiene claude-tools-d752; work-plane complement to the claude-tools-2z14 §7.9 reconcile auto-close.)" >/dev/null 2>&1 || true
+  return 0
 }
 
 # sr_drive_bead_blocked <task_ref>  (§7.3)
@@ -419,8 +457,14 @@ sr_reconcile_blocked_for_human() {
     # unconditional re-assert, so a transient bd hiccup never auto-closes a live
     # fork). The fork is over: hard-delete the record so it stops re-asserting.
     if [[ "$(sr__bead_status "$tref")" == "closed" ]]; then
+      # claude-tools-d752 — work-plane close-hygiene (DEFENSE-IN-DEPTH): fold the
+      # bead's stale "ask" so a LEGITIMATE later reopen + worker re-read cannot
+      # re-derive the fork off the stale body. Runs BEFORE the delete; best-
+      # effort + idempotent, so it never affects the load-bearing 2z14 fix (the
+      # record hard-delete) below.
+      sr__fold_ask_on_close "$tref"
       rm -f "$f" 2>/dev/null || true
-      echo "stuck-routing: reconcile — $tref is CLOSED; auto-closing the stale blocked-for-human record (work→control §7.9) instead of resurrecting it to blocked/open (claude-tools-2z14)" >&2
+      echo "stuck-routing: reconcile — $tref is CLOSED; auto-closing the stale blocked-for-human record (work→control §7.9) instead of resurrecting it to blocked/open (claude-tools-2z14); folded the stale work-plane ask (claude-tools-d752)" >&2
       n=$((n+1))
       continue
     fi

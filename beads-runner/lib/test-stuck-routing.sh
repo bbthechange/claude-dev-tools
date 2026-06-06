@@ -72,6 +72,7 @@ unset CO_EXPECTED_TOKEN PRINCIPAL_V1 \
 # every `bd human <id>` to $BD_HUMAN (one id per line). Fail-open like real bd.
 FAKEBIN="$WORK/bin"; mkdir -p "$FAKEBIN"
 export BDST="$WORK/bdst"; mkdir -p "$BDST"
+export BDNOTES="$WORK/bdnotes"; mkdir -p "$BDNOTES"   # claude-tools-d752: --append-notes sink
 export BD_HUMAN="$WORK/bd-human.log"; : > "$BD_HUMAN"
 export BD_LOG="$WORK/bd.log"; : > "$BD_LOG"
 cat > "$FAKEBIN/bd" <<'EOF'
@@ -85,6 +86,10 @@ case "$cmd" in
       case "$1" in
         --status=*) printf '%s' "${1#--status=}" > "${BDST}/$id"; shift;;
         --status)   printf '%s' "${2:-}"        > "${BDST}/$id"; shift 2;;
+        # claude-tools-d752: persist --append-notes so the fold's idempotency
+        # read (bd show --long --json | .notes) round-trips through the fake.
+        --append-notes=*) printf '%s\n' "${1#--append-notes=}" >> "${BDNOTES}/$id"; shift;;
+        --append-notes)   printf '%s\n' "${2:-}"               >> "${BDNOTES}/$id"; shift 2;;
         *) shift;;
       esac
     done ;;
@@ -101,7 +106,8 @@ case "$cmd" in
     fi ;;
   show)
     id="${1:-}"; s="open"; [[ -f "${BDST}/$id" ]] && s="$(cat "${BDST}/$id")"
-    jq -cn --arg id "$id" --arg s "$s" '[{id:$id,status:$s}]' ;;
+    nt=""; [[ -f "${BDNOTES}/$id" ]] && nt="$(cat "${BDNOTES}/$id")"   # d752: notes for --long --json
+    jq -cn --arg id "$id" --arg s "$s" --arg nt "$nt" '[{id:$id,status:$s,notes:$nt}]' ;;
   *) : ;;
 esac
 exit 0
@@ -235,6 +241,46 @@ eq   "non-closed lag STILL re-asserts blocked (S-2 anti-lag preserved)" \
        "$(BDSTATUS "$P")" "blocked"
 ck   "non-closed bfh record KEPT (only a closed bead auto-closes — fork must not rot)" \
        sr_bfh_get "$P"
+
+# ── claude-tools-d752 — CLOSE-HYGIENE: fold the stale work-plane "ask" ────────
+# DEFENSE-IN-DEPTH companion to the §7.9 auto-close above. When the reconcile
+# auto-closes a CLOSED forked bead's stale record, it ALSO folds the bead's
+# work-plane ask (an idempotent marker note) so a LEGITIMATE later reopen + a
+# fresh worker re-reading the body can't re-derive the SAME fork. (NOT the 2z14
+# vector — that was a pure control-plane re-assert with no worker; this guards
+# the OTHER, hypothetical reopen→re-read path the 2z14 description weighed.)
+echo ""
+echo "── claude-tools-d752 — closed bead's stale ask is FOLDED on auto-close ───────"
+FOLD_HITS() {  # FOLD_HITS <tref> → count of fold-marker lines in the bead notes
+  local f="$BDNOTES/$1" c
+  [[ -f "$f" ]] || { echo 0; return 0; }
+  c=$(grep -c -F -- "$SR_FOLD_MARKER" "$f" 2>/dev/null); [[ -n "$c" ]] || c=0
+  echo "$c"
+}
+D=stuck-fold-on-close
+DIDD="$(sr_route_stuck "$GOOD" "$D" worker_stuck "$ASK_JSON" 2>/dev/null)"
+eq   "fold fixture: bead raised blocked-for-human"        "$(BDSTATUS "$D")" "blocked"
+eq   "NOT folded while still LIVE (blocked, not closed)"  "$(FOLD_HITS "$D")" "0"
+# The human CLOSES the bead out of band (the uxg1 shape) — then a reconcile.
+printf 'closed' > "$BDST/$D"
+sr_reconcile_blocked_for_human "$GOOD" "$D" >/dev/null 2>&1 || true
+eq   "CLOSED bead's stale ask is FOLDED exactly once on auto-close" "$(FOLD_HITS "$D")" "1"
+ckn  "the stale bfh record is STILL hard-deleted (2z14 unchanged)"  sr_bfh_get "$D"
+eq   "fold never resurrects the bead (stays closed)"               "$(BDSTATUS "$D")" "closed"
+# CRITICAL: the fold note must carry NO classify trigger token — else a reopened
+# bead's §7.2/309l/gqyp net would read the fold ITSELF as a fresh ask (the very
+# false fork this defends against).
+ck   "fold note carries the greppable FORK marker"                grep -qF -- "$SR_FOLD_MARKER" "$BDNOTES/$D"
+ckn  "fold note contains NO STUCK_NEEDS_HUMAN trigger token"      grep -qF -- "STUCK_NEEDS_HUMAN" "$BDNOTES/$D"
+ckn  "fold note contains NO 'HUMAN DECISION NEEDED' trigger token" grep -qF -- "HUMAN DECISION NEEDED" "$BDNOTES/$D"
+# Idempotent: a second fold pass (e.g. a re-trigger before the delete landed)
+# never double-appends — the marker stays exactly once.
+sr__fold_ask_on_close "$D" >/dev/null 2>&1 || true
+eq   "re-fold is idempotent (marker count stays 1)"               "$(FOLD_HITS "$D")" "1"
+# Negative: a NON-closed (lagged/clobbered) bead is NEVER folded — fold rides
+# ONLY the §7.9 closed-bead branch, so a live fork's body is left intact ($P is
+# the 2z14 anti-lag fixture above: re-asserted blocked, record kept, NOT closed).
+eq   "non-closed lagged bead is NOT folded (fold rides closed-branch only)" "$(FOLD_HITS "$P")" "0"
 
 # ── EXIT 5 — §7.4 DOSSIER-level (task_ref) DISTINCT from T5.3 per-Item latch ──
 ne   "a DIFFERENT task_ref ⇒ an INDEPENDENT dossier id" \
