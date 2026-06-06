@@ -717,12 +717,12 @@ daemon_ask_capacity() {
 # bootstrap). Standalone runs without the coordinator.sh store primitives skip
 # straight to the legacy network/empty path (BC-43 guarded-optional).
 #
-# NOTE (consumer-side gap, tracked separately): v1's pickup path honors
-# `spare-cycles` (daemon_ask_capacity) and `stopped` (idle/skip + the daemon
-# SIGTERM), but does NOT yet hold itself at idle on `paused` the way runner.sh's
-# st_reconcile does — so a local `paused` is now READ reliably but not yet acted
-# on at the v1 gate. This local-first READ is the prerequisite; wiring the v1
-# paused consumer is a follow-up (see the bead filed from efu3).
+# CONSUMER (claude-tools-yuwe, closes the efu3 follow-up): v1's pickup path now
+# honors all three non-running desireds — `spare-cycles` (daemon_ask_capacity),
+# `stopped` (idle/skip + the daemon SIGTERM), AND `paused` (the loop-top
+# runner_should_hold_paused gate below, which holds at idle and never claims,
+# mirroring runner.sh's st_reconcile). The local-first READ above was the
+# prerequisite; the gate is its consumer.
 DESIRED_STATE_CACHE_SECONDS=${DESIRED_STATE_CACHE_SECONDS:-30}
 DESIRED_STATE_CACHE_VALUE=""
 DESIRED_STATE_CACHE_TIME=0
@@ -762,6 +762,25 @@ workspace_desired_state() {
   DESIRED_STATE_CACHE_VALUE="$desired"
   DESIRED_STATE_CACHE_TIME="$now"
   printf '%s' "$desired"
+}
+
+# ── BC-50 consumer (claude-tools-yuwe) — v1 paused-pickup gate predicate ──────
+# Mirrors runner.sh st_reconcile's `paused) … hold` arm. v1 READS a local
+# desired=paused reliably (workspace_desired_state, claude-tools-efu3) but its
+# CONSUMER path used to ignore it: the pickup only blocked `spare-cycles`
+# (daemon_ask_capacity) and the idle/skip loops only exit on `stopped` — so a v1
+# runner with desired=paused AND a workable bead would CLAIM and spawn (the
+# daemon delegates paused-honoring to the runner and no-ops on paused+alive, so
+# nothing else covered it). This predicate is the missing consumer: the main loop
+# calls it BEFORE select/lease and, when it returns 0, heartbeats idle, sleeps,
+# and re-loops — it NEVER claims. PAUSED-ONLY by design: `stopped` stays the
+# daemon SIGTERM + the idle/skip loops; `spare-cycles` stays daemon_ask_capacity's
+# cost-class gate; only `paused` was uncovered. An empty/unrecognized desired
+# (the bootstrap-to-running posture, BC-50) is NOT a hold — proceed to the gates.
+#   0 — desired=paused: HOLD AT IDLE (caller: hb idle; sleep; continue)
+#   1 — any other desired: proceed to the lease/capacity gates
+runner_should_hold_paused() {
+  [[ "$(workspace_desired_state)" == "paused" ]]
 }
 
 # ── Task selection ───────────────────────────────────────────────────────────
@@ -1731,6 +1750,30 @@ while true; do
       fi
     fi
   fi
+
+  # BC-50 consumer (claude-tools-yuwe): honor desired=paused at the PICKUP GATE.
+  # Checked at the loop top — AFTER the feedback-return reconcile (an answered
+  # fork still lifts to `open`, matching v2 where the daemon lifts continuously)
+  # but BEFORE select_workable_task / lease_acquire — so a paused runner never
+  # claims, never churns acquire/release, and never pops a crash-orphan off
+  # ORPHANED_IDS only to drop it. Mirrors runner.sh st_reconcile (hb idle; sleep;
+  # re-reconcile). PAUSED-ONLY: `stopped` is the daemon SIGTERM + the idle/skip
+  # loops' job; this closes the has-workable-bead path that used to CLAIM through
+  # a pause. A STOP_FILE present at the loop top (checked at :1654) still wins over
+  # paused; a `.stop-beads` that arrives DURING the paused sleep is honored on the
+  # next iteration's loop-top check (≤ IDLE_POLL_INTERVAL latency), matching v2's
+  # st_reconcile paused arm (which likewise sleeps without a mid-sleep stop check).
+  if runner_should_hold_paused; then
+    if [[ "${PAUSED_NOTIFIED:-0}" != "1" ]]; then
+      echo ""
+      echo "Coordinator desired=paused observed — holding at idle (not claiming new work; re-check every ${IDLE_POLL_INTERVAL:-60}s)."
+      PAUSED_NOTIFIED=1
+    fi
+    hb idle   # §4.2: actual=idle — the engine sees an idle, alive, paused runner
+    sleep "${IDLE_POLL_INTERVAL:-60}"
+    continue
+  fi
+  PAUSED_NOTIFIED=0
 
   # claude-tools-uxqj: select the first WORKABLE bead, skip-CONTINUE past
   # unworkable ones (no-claim label / parent w/ open children / late-blocked /

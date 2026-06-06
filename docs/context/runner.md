@@ -366,10 +366,15 @@ was lost).
   the main-loop read hits the daemon-written store, not the `/tmp` scratch default (the same
   CO_STORE-export hole y6j9 closed for runner.sh). Regression-lock:
   `lib/test-desired-local-first-v1.sh` (sources the runner with `BEADS_RUNNER_TEST_MODE=1`).
-  **CONSUMER GAP still open:** v1's pickup path acts on `spare-cycles` (the gate) and `stopped`
-  (idle/skip + the daemon SIGTERM) but does NOT yet hold itself at idle on `paused` the way v2's
-  `st_reconcile` does — so v1 now READS a local paused reliably but does not yet ACT on it at the
-  gate (a tracked follow-up; the local-first read is its prerequisite). See BC-50.
+  **CONSUMER GAP now CLOSED (claude-tools-yuwe):** v1's pickup path acts on all three non-running
+  desireds — `spare-cycles` (daemon_ask_capacity), `stopped` (idle/skip + the daemon SIGTERM), AND
+  `paused`. The paused consumer is the loop-top `runner_should_hold_paused` predicate + gate (called
+  AFTER the feedback-return reconcile but BEFORE `select_workable_task`/`lease_acquire`): on
+  `desired=paused` it `hb idle`s, sleeps `IDLE_POLL_INTERVAL`, and re-loops, NEVER claiming —
+  mirroring v2's `st_reconcile` `paused) … hold` arm. Placed before select so a paused runner never
+  pops a crash-orphan off `ORPHANED_IDS` only to drop it, and never churns lease acquire/release.
+  PAUSED-ONLY (stopped stays the idle/skip loops + daemon SIGTERM; spare-cycles stays the capacity
+  gate). Regression-lock: `lib/test-paused-consumer-v1.sh`. See BC-50.
 
 ## Go deeper
 
@@ -391,5 +396,7 @@ whole doc. **Keep it concise — this doc earns its keep only if agents read all
 it.** Delete lines that have gone stale; do not let it grow into a second copy of
 BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-06 (v1 desired-state local-first
 ported — `workspace_desired_state` reads `.co-store` runner_state FIRST + CO_STORE exported at
-v1 startup; closes the cache-bounded v1 twin of break-through-pause; v1 paused-consumer gap
-noted as a follow-up — claude-tools-efu3; sibling of the v2/daemon claude-tools-y6j9).
+v1 startup; closes the cache-bounded v1 twin of break-through-pause — claude-tools-efu3; sibling of
+the v2/daemon claude-tools-y6j9). The v1 paused-CONSUMER gap is now closed too: the loop-top
+`runner_should_hold_paused` gate holds a paused v1 runner at idle (never claims), mirroring v2's
+st_reconcile — claude-tools-yuwe, regression-lock `lib/test-paused-consumer-v1.sh`.
