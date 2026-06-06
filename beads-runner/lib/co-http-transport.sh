@@ -156,6 +156,35 @@ co_http__rc_from_422() {
   esac
 }
 
+# ── §4 WRITE-THROUGH CACHE (claude-tools-cx7t, P4 of the local-first arch) ─────
+# co_http__cache_record <type> <id> <json> — best-effort write-through of a
+# successful 2xx §4 record into the LOCAL .co-store. The 2xx DATA arms call this
+# AFTER emitting the verbatim body so the runner always keeps a FRESH local copy
+# that a read-local-first fallback (P1) / a lease-envelope read (P2) can consult
+# on a network miss. This RE-ACTIVATES the §4 record round-trip of the local
+# store in PROD (under COORDINATOR_URL the override replaces co_request but NOT
+# the store primitives), so the cached copy MUST stay differential-equivalent to
+# the hosted D1 row (the §8bm requirement).
+#
+# STRICTLY best-effort & non-blocking — the in-process contract this transport
+# preserves: ALL output is suppressed and the function ALWAYS returns 0, so a
+# cache miss/reject NEVER changes the rc or stdout co_request hands its caller.
+#
+# Re-stamps co__store_put with the record's OWN server-resolved `.principal` so
+# the §9.1 stamp is IDEMPOTENT and the cached copy stays byte-equivalent to the
+# D1 row. co__store_put still runs the §0.3 schema gate (+ the §5.1 dossier body
+# gate), so a malformed body is simply NOT cached — never a false-success. No-op
+# unless coordinator.sh is sourced (co__store_put defined) — which it always is
+# when this override is live (the override REPLACES coordinator.sh's co_request).
+co_http__cache_record() {
+  local type="$1" id="$2" json="$3" principal
+  declare -F co__store_put >/dev/null 2>&1 || return 0
+  [[ -n "$type" && -n "$id" && -n "$json" ]] || return 0
+  principal="$(printf '%s' "$json" | jq -r 'if type=="object" then (.principal // "") else "" end' 2>/dev/null)" || principal=""
+  co__store_put "$principal" "$type" "$id" "$json" >/dev/null 2>&1 || true
+  return 0
+}
+
 # ── THE OVERRIDE: HTTP co_request, FROZEN in-process contract preserved ───────
 # Signature IDENTICAL to lib/coordinator.sh co_request:
 #     co_request <bearer> <op> [args…]
@@ -233,6 +262,17 @@ co_request() {
       #    lease consumer (the I0 D2/D4 class, on the lease op).
       if [[ "$op" == "lease-acquire" || "$op" == "lease-renew" ]]; then
         printf '%s' "$resp" | jq -ce 'if type=="object" and (.lease!=null) then .lease else empty end' 2>/dev/null
+        # write-through (claude-tools-cx7t): cache the §4.4 Lease record keyed by
+        # (lease, task_ref). The unwrapped `.lease` IS the bare §4.4 record
+        # (carries schema_version:1 + principal), so co__store_put accepts it.
+        # Best-effort — never changes the rc/stdout emitted above.
+        local _lease_json _lease_id
+        _lease_json="$(printf '%s' "$resp" | jq -c 'if type=="object" and (.lease!=null) then .lease else empty end' 2>/dev/null)" || _lease_json=""
+        if [[ -n "$_lease_json" ]]; then
+          _lease_id="$(printf '%s' "$_lease_json" | jq -r '.task_ref // empty' 2>/dev/null)" || _lease_id=""
+          [[ -n "$_lease_id" ]] || _lease_id="${1:-}"
+          co_http__cache_record lease "$_lease_id" "$_lease_json"
+        fi
         rm -f "$tmp" 2>/dev/null
         return 0
       fi
@@ -252,6 +292,21 @@ co_request() {
         # the SAME trailing newline as bash co__timer_due; poll/reconcile/
         # work-snapshot ⇒ the JSON projection.
         cat "$tmp"; rm -f "$tmp" 2>/dev/null
+        # write-through (claude-tools-cx7t): cache ONLY `get` — the one DATA op
+        # whose 2xx body IS a single §4 record keyed (type=args[0], id=args[1]).
+        # The OTHER DATA ops are DELIBERATELY NOT cached:
+        #   • poll/reconcile — composite/derived; poll's runner_state portion is
+        #     LOCAL-AUTHORITATIVE (break-through-pause, dky8/y6j9): the daemon is the
+        #     SOLE writer of local desired, so the transport MUST NEVER seed it.
+        #   • work-snapshot — a read-only DERIVED projection (S-1 liveness is never
+        #     stored); caching it would persist a stale, time-varying snapshot.
+        #   • timer-due/capabilities/forensic-*/intake-pending/agent-action-pending/
+        #     relay-log-tail/notif-digest — lists/projections, not a single §4 record.
+        # `get runner_state` is carved out for the SAME break-through-pause reason —
+        # the transport is not a writer of local desired (resp is the captured body).
+        if [[ "$op" == "get" && "${1:-}" != "runner_state" ]]; then
+          co_http__cache_record "${1:-}" "${2:-}" "$resp"
+        fi
         return 0
       fi
       rm -f "$tmp" 2>/dev/null

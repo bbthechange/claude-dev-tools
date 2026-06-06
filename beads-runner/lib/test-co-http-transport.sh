@@ -226,6 +226,12 @@ else
       echo "BREC_PR=$(printf '%s' "$rec" | jq -r 'has("principal")|tostring' 2>/dev/null)"
       echo "BREC_ITEMS=$(printf '%s' "$rec" | jq -r '.items|length' 2>/dev/null)"
 
+      # claude-tools-cx7t — the get above is over the HTTP override (the PUT went
+      # to the ENGINE, NOT the local store), so a HIT here proves the 2xx
+      # write-through cached the dossier into the LOCAL .co-store from a REAL
+      # engine response (the §4 record round-trip RE-ACTIVATED in the PROD path).
+      echo "BCACHE=$(co__store_get dossier dCT >/dev/null 2>&1 && echo hit || echo miss)"
+
       do_dossier_get "$PLACEHOLDER" dABSENT >/dev/null 2>&1; echo "BGETA rc=$?"
 
       BAD="$(jq -cn '{id:"dBAD",schema_version:"1",kind:"decide",items:[]}')"
@@ -255,6 +261,7 @@ else
     eq "$(grep -o 'BREC_SV=[0-9]*' "$B" | cut -d= -f2)" "2" "get-present record: schema_version is integer 2 (v2 §11 Mermaid amend; §0.3 binds — D2 record passes through verbatim)"
     eq "$(grep -o 'BREC_PR=[a-z]*' "$B" | cut -d= -f2)" "true" "get-present record: §9.1 principal stamped by the engine"
     eq "$(grep -o 'BREC_ITEMS=[0-9]*' "$B" | cut -d= -f2)" "2" "get-present record: items[] round-tripped (2)"
+    eq "$(grep -o 'BCACHE=[a-z]*' "$B" | cut -d= -f2)" "hit" "get-present over HTTP WRITE-THROUGH caches the dossier into the LOCAL .co-store (P4: a hosted 2xx now seeds the local fallback — cx7t)"
     eq "$(g 'BGETA rc')" "$oracle_rc_getA" "do_dossier_get ABSENT over HTTP ≡ oracle rc ($oracle_rc_getA) — D2 §0.3-misclassification CLOSED"
     eq "$(g 'BBAD rc')"  "$oracle_rc_bad"  "do_dossier_put REJECT over HTTP ≡ oracle rc ($oracle_rc_bad) — D1 status→rc"
     eq "$(g 'BTARM rc')" "0" "timer-arm over HTTP ⇒ rc 0 (ack suppressed, D2/D4)"
@@ -505,6 +512,108 @@ eq "$(peg E_WS)"  "data" "co_http__op_is_data work-snapshot ⇒ DATA (existing a
 eq "$(peg E_RLA)" "ack"  "co_http__op_is_data relay-log-append ⇒ ACK (write side stays suppressed — no over-broadening)"
 eq "$(peg E_PUT)" "ack"  "co_http__op_is_data put ⇒ ACK (canonical ack op unaffected)"
 rm -f "$PARTE_OUT" 2>/dev/null || true
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART F — OFFLINE §4 write-through cache (claude-tools-cx7t, P4). No network, no
+#          engine, no token — runs ALWAYS (curl is STUBBED), so the write-through
+#          behaviour is regression-guarded even where wrangler is absent and PART
+#          B SKIPs. Proves: a 2xx `get`/`lease-acquire` is written THROUGH to the
+#          local .co-store keyed (kind,id); the carve-outs (runner_state via get,
+#          poll, work-snapshot) are NOT cached (the break-through-pause + read-only
+#          projection invariants); and a cache reject is BEST-EFFORT — it never
+#          changes the rc/stdout co_request returns (the in-process contract).
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART F — OFFLINE §4 write-through cache (stubbed curl, no network) ──"
+PARTF_OUT="$(mktemp)"
+PARTF_STORE="$(mktemp -d)"
+(
+  set +u
+  export COORDINATOR_URL="https://unit.invalid"   # gate only — curl is stubbed
+  export COORDINATOR_TOKEN="ctF"                   # resolve a bearer (with-bearer path)
+  export CO_STORE="$PARTF_STORE/store"
+  unset CO_EXPECTED_TOKEN 2>/dev/null || true
+  source "$HERE/coordinator.sh"          # co__store_put / co__store_get + bash co_request
+  source "$HERE/co-http-transport.sh"    # OVERRIDE: co_request → HTTP (curl stub below)
+
+  # Stub curl: write the canned body to the `-o <file>` target, echo the canned
+  # HTTP code on stdout (exactly what co_request's `-w '%{http_code}'` reads).
+  curl() {
+    local out="" capture=0 a
+    for a in "$@"; do
+      if [[ "$capture" == 1 ]]; then out="$a"; capture=0; continue; fi
+      [[ "$a" == "-o" ]] && capture=1
+    done
+    [[ -n "$out" ]] && printf '%s' "${CURL_STUB_BODY:-}" > "$out"
+    printf '%s' "${CURL_STUB_CODE:-200}"
+    return 0
+  }
+  export CURL_STUB_CODE=200
+
+  # ── get (the canonical single-§4-record DATA op): cached, principal preserved.
+  DREC="$(mk dCACHE 2 "[$(item i1 open)]" | jq -c '.principal="brian"')"
+  export CURL_STUB_BODY="$DREC"
+  gout="$(co_request ctF get dossier dCACHE 2>/dev/null)"; echo "F_GET_RC=$?"
+  echo "F_GET_OUT_EQ=$([[ "$gout" == "$DREC" ]] && echo yes || echo no)"
+  echo "F_GET_CACHE=$(co__store_get dossier dCACHE >/dev/null 2>&1 && echo hit || echo miss)"
+  echo "F_GET_PRIN=$(co__store_get dossier dCACHE 2>/dev/null | jq -r '.principal // "none"' 2>/dev/null)"
+
+  # ── get runner_state: carved out — the transport must NEVER seed local desired.
+  RSREC='{"schema_version":1,"project_ref":"projX","desired":"paused","principal":"brian"}'
+  export CURL_STUB_BODY="$RSREC"
+  rsout="$(co_request ctF get runner_state projX 2>/dev/null)"; echo "F_RS_RC=$?"
+  echo "F_RS_OUT_EQ=$([[ "$rsout" == "$RSREC" ]] && echo yes || echo no)"
+  echo "F_RS_CACHE=$(co__store_get runner_state projX >/dev/null 2>&1 && echo hit || echo miss)"
+
+  # ── lease-acquire: the unwrapped §4.4 record cached keyed (lease, task_ref).
+  LREC='{"ok":true,"lease":{"task_ref":"ctTASK","schema_version":1,"principal":"brian","owner":"ownerX","generation":3,"acquired_at":"x","ttl_seconds":900,"expires_at":"y","renewed_at":"x","acquired_epoch":1,"renewed_epoch":1,"expires_epoch":901}}'
+  export CURL_STUB_BODY="$LREC"
+  lout="$(co_request ctF lease-acquire ctTASK ownerX 2>/dev/null)"; echo "F_L_RC=$?"
+  echo "F_L_HASGEN=$(printf '%s' "$lout" | jq -e '.generation==3' >/dev/null 2>&1 && echo yes || echo no)"
+  echo "F_L_CACHE=$(co__store_get lease ctTASK >/dev/null 2>&1 && echo hit || echo miss)"
+  echo "F_L_CACHE_GEN=$(co__store_get lease ctTASK 2>/dev/null | jq -r '.generation // "none"' 2>/dev/null)"
+
+  # ── poll: composite — its runner_state portion must NOT be seeded locally.
+  POLLREC='{"principal":"brian","desired":"running","lease":null}'
+  export CURL_STUB_BODY="$POLLREC"
+  pout="$(co_request ctF poll projP 2>/dev/null)"; echo "F_P_RC=$?"
+  echo "F_P_OUT_EQ=$([[ "$pout" == "$POLLREC" ]] && echo yes || echo no)"
+  echo "F_P_RS_CACHE=$(co__store_get runner_state projP >/dev/null 2>&1 && echo hit || echo miss)"
+
+  # ── work-snapshot: a read-only DERIVED projection — never cached.
+  WSREC='{"project_ref":"projW","liveness":"green","cards":[]}'
+  export CURL_STUB_BODY="$WSREC"
+  wout="$(co_request ctF work-snapshot projW 2>/dev/null)"; echo "F_W_RC=$?"
+  echo "F_W_OUT_EQ=$([[ "$wout" == "$WSREC" ]] && echo yes || echo no)"
+  echo "F_W_CACHE=$(co__store_get work_snapshot projW >/dev/null 2>&1 && echo hit || echo miss)"
+
+  # ── BEST-EFFORT: a body co__store_put REJECTS (schema_version 99 > bound) must
+  #    NOT change the rc/stdout co_request returns, and must NOT be cached.
+  BADREC='{"schema_version":99,"id":"badrec","principal":"brian"}'
+  export CURL_STUB_BODY="$BADREC"
+  bout="$(co_request ctF get notification badrec 2>/dev/null)"; echo "F_B_RC=$?"
+  echo "F_B_OUT_EQ=$([[ "$bout" == "$BADREC" ]] && echo yes || echo no)"
+  echo "F_B_CACHE=$(co__store_get notification badrec >/dev/null 2>&1 && echo hit || echo miss)"
+) > "$PARTF_OUT" 2>/dev/null || true
+pfg(){ grep -o "$1=[A-Za-z0-9_-]*" "$PARTF_OUT" 2>/dev/null | head -1 | cut -d= -f2; }
+eq "$(pfg F_GET_RC)"     "0"     "get over HTTP ⇒ rc 0 (write-through never changes the caller rc)"
+eq "$(pfg F_GET_OUT_EQ)" "yes"   "get over HTTP ⇒ stdout is the verbatim body (write-through never changes stdout)"
+eq "$(pfg F_GET_CACHE)"  "hit"   "get WRITE-THROUGH: the §4 record is cached into local .co-store keyed (type,id)"
+eq "$(pfg F_GET_PRIN)"   "brian" "get WRITE-THROUGH: the record's OWN principal is PRESERVED (idempotent §9.1 re-stamp ⇒ differential-equivalent to D1)"
+eq "$(pfg F_RS_OUT_EQ)"  "yes"   "get runner_state ⇒ stdout still verbatim"
+eq "$(pfg F_RS_CACHE)"   "miss"  "get runner_state is CARVED OUT — the transport is NOT a writer of local desired (break-through-pause, dky8/y6j9)"
+eq "$(pfg F_L_RC)"       "0"     "lease-acquire over HTTP ⇒ rc 0"
+eq "$(pfg F_L_HASGEN)"   "yes"   "lease-acquire over HTTP ⇒ stdout is the bare §4.4 record (generation fencing intact)"
+eq "$(pfg F_L_CACHE)"    "hit"   "lease-acquire WRITE-THROUGH: the §4.4 Lease record is cached keyed (lease, task_ref)"
+eq "$(pfg F_L_CACHE_GEN)" "3"    "lease-acquire WRITE-THROUGH: the cached lease carries the granted generation (3)"
+eq "$(pfg F_P_OUT_EQ)"   "yes"   "poll over HTTP ⇒ stdout still verbatim"
+eq "$(pfg F_P_RS_CACHE)" "miss"  "poll is EXCLUDED — its runner_state portion never seeds local desired (no network-authoritative desired read)"
+eq "$(pfg F_W_OUT_EQ)"   "yes"   "work-snapshot over HTTP ⇒ stdout still verbatim"
+eq "$(pfg F_W_CACHE)"    "miss"  "work-snapshot is EXCLUDED — a read-only DERIVED projection is never cached (S-1 liveness never stored)"
+eq "$(pfg F_B_RC)"       "0"     "BEST-EFFORT: a cache REJECT leaves the caller rc unchanged (0)"
+eq "$(pfg F_B_OUT_EQ)"   "yes"   "BEST-EFFORT: a cache REJECT leaves stdout the verbatim body (non-blocking contract)"
+eq "$(pfg F_B_CACHE)"    "miss"  "BEST-EFFORT: a malformed body (bad schema_version) is NOT cached — never a false-success"
+rm -rf "$PARTF_OUT" "$PARTF_STORE" 2>/dev/null || true
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════════"

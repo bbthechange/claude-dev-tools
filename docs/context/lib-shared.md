@@ -201,9 +201,23 @@ the oracle/conformance runs deterministic and offline. The live-Worker probe
   branch; the CF twin is `cf/src/agent-action.js` `AGENT_ACTION_INTENTS` + `intentRequirementError`
   — keep them differential-equivalent). The daemon's `agent-action-poll.sh` is the SINGLE consumer
   → `co__set_desired` writes the local record (apply-local-before-ack). Do NOT register a new §4
-  record for change-requests; do NOT re-add a network-authoritative desired read. Still pending:
-  P4 (claude-tools-cx7t) `.co-store` write-through of 2xx responses — that one DOES re-activate the
-  `.co-store` §4 store and must stay differential-equivalent to D1 (the §8bm invariant).
+  record for change-requests; do NOT re-add a network-authoritative desired read.
+- **§4 WRITE-THROUGH cache of 2xx hosted responses is now LIVE in PROD (claude-tools-cx7t, P4
+  SHIPPED).** The §4 record round-trip of the local store — inert under the HTTP override until now
+  — is RE-ACTIVATED: in `co-http-transport.sh` the 2xx DATA arms call `co_http__cache_record`
+  (best-effort `co__store_put`) AFTER emitting the verbatim body, so a hosted read seeds the local
+  fallback P1/P2 consult on a miss. STRICTLY best-effort & non-blocking — it suppresses all output
+  and always returns 0, so a cache miss/reject NEVER changes the rc/stdout the caller sees (the
+  in-process contract). It re-stamps with the record's OWN server `.principal` so co__store_put's
+  §9.1 stamp is idempotent (the cached copy stays byte-equal to the D1 row — §8bm). **Only genuine
+  single-§4-record bodies are cached:** `get` (keyed type=args[0],id=args[1]) and `lease-acquire`/
+  `lease-renew` (the unwrapped `.lease`, keyed `lease`,task_ref). **DELIBERATELY NOT cached** (would
+  break a shipped invariant, NOT an omission): `get runner_state` AND `poll` — the transport must
+  never seed local desired (the break-through-pause invariant above; the daemon is the SOLE writer);
+  and `work-snapshot`/`reconcile` — read-only DERIVED projections (S-1 liveness is never stored).
+  co__store_put is already the differential-equivalent §4 write chokepoint, so the cache inherits D1
+  equivalence (no CF twin — the transport IS the bash↔engine bridge). Tests: `test-co-http-transport.sh`
+  PART F (always-run, stubbed curl) + the PART B BCACHE assertion (live byte-identical engine).
 - **The local-agent LEASE-CACHE stores a §4.4 ENVELOPE, NOT the `.co-store` (claude-tools-h9dl,
   P2 SHIPPED).** Distinct mechanism from the `.co-store` desired-state store above: the bounded-
   local-fallback cache (`local-agent.sh` `la__lease_cache_dir` = `$LOG_DIR/lease-cache/<task>`, a
@@ -245,8 +259,10 @@ When you finish a task in this area, append anything a future agent will need an
 didn't find here: a renamed/moved lib, a new env override, a fresh oracle clause,
 a new MUST-NOT boundary, a scar. **Keep it concise — this doc earns its keep only
 if agents read all of it.** Delete stale lines; never let it grow into a copy of
-INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-06 (local-agent
+INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-06 (§4 write-through
+cache of 2xx hosted responses RE-ACTIVATED in PROD — `get`/`lease-*` cached, `runner_state`/`poll`/
+`work-snapshot` carved out; best-effort, differential-equivalent — claude-tools-cx7t). Prior: local-agent
 lease-cache now stores a §4.4 ENVELOPE — generation+ttl+expires — so a restart/blip recovers the
 fencing token without the network; distinct from the `.co-store` store, no CF mirror —
-claude-tools-h9dl). Prior: local-first `.co-store` §4 store re-activated for desired-state — claude-tools-dky8;
+claude-tools-h9dl. Prior: local-first `.co-store` §4 store re-activated for desired-state — claude-tools-dky8;
 reuse the `agent_actions` queue for change-requests, don't add a §4 record. Prior: 2026-06-03 (co_http__op_is_data DATA-200 allowlist scar + relay-log-tail/notif-digest passthrough — claude-tools-u1pt).
