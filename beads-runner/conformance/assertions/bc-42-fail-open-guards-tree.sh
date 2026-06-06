@@ -55,8 +55,8 @@ _need "at least one bare 'command -v ... ; then' guarded seam" \
 # safe_capture is actually USED at the load-bearing bd/coordination seams, not just defined.
 _need "safe_capture used to guard a bd update (reset-to-open seam)" \
       grep -qE 'safe_capture BD_UNAVAILABLE "" -- bd update' "$RUNNER"
-_need "safe_capture used to guard the desired-state reconcile seam" \
-      grep -qE 'safe_capture COORD_UNREACHABLE running -- job_reconcile_desired' "$RUNNER"
+_need "safe_capture used to guard the desired-state reconcile seam (FAIL-CLOSED to paused — claude-tools-y6j9 local-first)" \
+      grep -qE 'safe_capture COORD_UNREACHABLE paused -- job_reconcile_desired' "$RUNNER"
 # `${arr[@]+"${arr[@]}"}` — the set -u-safe expansion of a possibly-empty array.
 _need "unset-safe array expansion idiom present" \
       grep -qE '\$\{[A-Za-z_]+\[@\]\+"\$\{[A-Za-z_]+\[@\]\}"\}' "$RUNNER"

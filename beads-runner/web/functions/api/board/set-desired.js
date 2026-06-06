@@ -38,6 +38,19 @@
 
 const COORDINATOR_OP = 'set-desired'; // §2.4 C4-seam captured-actor — FROZEN here.
 
+// local-first desired-state (claude-tools-y6j9): a Stop/Run tap ALSO enqueues a
+// `set-desired` change-request into the engine's transient agent_actions queue.
+// The daemon consumes it and applies the value to the LOCAL .co-store
+// RunnerState; the runner/daemon then read local FIRST, so an unreachable engine
+// can no longer break through a pause (the dky8 break-through-pause bug). The
+// legacy `set-desired` write above is KEPT for GUI display (it shows the
+// REQUESTED value) and for live OLD-code runners/daemons during the rollout
+// window (they still poll RunnerState.desired over the network until they respawn
+// on new code) — so this is a purely ADDITIVE, backward-compatible change. The
+// applied-value-as-observation upgrade (heartbeat carries desired) is a separate
+// INTERFACE §1.1 amendment (split per the y6j9 plan).
+const CHANGE_REQUEST_OP = 'agent-action';
+
 // The four legal desired-states, per UX-DESIGN Flow D + INTERFACE §4.2.
 // Pinned as a frozen literal so a UI typo is a 422 here, BEFORE the engine
 // burns a round-trip; the engine's store/schema gate is still authoritative.
@@ -184,16 +197,76 @@ export async function onRequestPost(context) {
   }
 
   const text = await resp.text();
-  // Pass the Coordinator's outcome through verbatim. On success the engine
-  // returns {ok:true} and the new RunnerState lives in D1; the daemon's M3
-  // poll picks it up on its next tick and converges actual→desired. The
-  // Board re-fetches /api/board to render the new desired alongside the
-  // (lagging) actual — honest state, never optimistic.
-  return new Response(text, {
-    status: resp.ok ? 200 : 502,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store'
+  if (!resp.ok) {
+    // The legacy desired write failed — surface it verbatim; do NOT attempt the
+    // change-request enqueue (the tap visibly failed).
+    return new Response(text, {
+      status: 502,
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
+    });
+  }
+
+  // local-first delivery (claude-tools-y6j9): ALSO enqueue the `set-desired`
+  // change-request the daemon consumes + applies to the LOCAL .co-store. The
+  // intent rides the existing `agent-action` op (the prod adapter maps the
+  // {action} named body to the engine envelope — same shape as
+  // control/agent-action.js). BEST-EFFORT: a failed enqueue does NOT fail the
+  // response (the legacy write already recorded the request + the GUI shows it,
+  // and an old-code runner still converges via RunnerState.desired); the
+  // outcome is attached as `change_request` for observability. The new-code
+  // daemon reads local FIRST, so this enqueue is the canonical delivery once the
+  // fleet has respawned on new code.
+  let changeRequest;
+  try {
+    const aaUrl = new URL(base.replace(/\/+$/, '') + '/request');
+    aaUrl.searchParams.set('op', CHANGE_REQUEST_OP);
+    const aaResp = await fetch(aaUrl.toString(), {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer ' + token,
+        'content-type': 'application/json',
+        accept: 'application/json'
+      },
+      // {action:{…}} named body — the prod adapter (cf-prod-adapter-front)
+      // stringifies `.action` into the engine's envelope arg. target carries no
+      // bead_ref (acts on the runner LOOP); args.state is the §4.2 wire enum;
+      // owner is the captured-not-enforced C4 actor.
+      body: JSON.stringify({
+        action: {
+          intent: 'set-desired',
+          workspace: projectRef,
+          target: {},
+          args: { state: WIRE_STATE[state] },
+          owner: 'you'
+        }
+      })
+    });
+    const aaText = await aaResp.text();
+    try {
+      changeRequest = JSON.parse(aaText);
+    } catch (_e) {
+      changeRequest = { ok: aaResp.ok, raw: aaText };
     }
-  });
+  } catch (e) {
+    changeRequest = {
+      ok: false,
+      error: 'change-request enqueue failed (legacy desired write succeeded): ' +
+        (e && e.message ? e.message : String(e))
+    };
+  }
+
+  // Pass the Coordinator's desired-write outcome through, attaching the
+  // change-request result. `ok` still reflects the (authoritative-for-GUI)
+  // desired write so existing callers are unchanged; the Board re-fetches
+  // /api/board to render the new desired alongside the (lagging) actual.
+  let outcome;
+  try {
+    outcome = JSON.parse(text);
+  } catch (_e) {
+    outcome = { ok: true, raw: text };
+  }
+  if (outcome && typeof outcome === 'object' && !Array.isArray(outcome)) {
+    outcome.change_request = changeRequest;
+  }
+  return json(outcome, 200);
 }

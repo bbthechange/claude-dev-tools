@@ -170,6 +170,24 @@ it("I4 agent-action queue is contract-faithful to design/agent-action.md §2/§3
   const gl = await enqueue(GOOD, envelope({ intent: "gate-lift", target: { gate_id: "g1" }, args: {} }));
   ck("gate-lift with gate_id (no date needed) enqueues", gl.status === 200 && gl.body.ok === true);
 
+  // ── set-desired intent (claude-tools-y6j9, local-first desired-state) ───────
+  // The cloud→runner change-request: the daemon consumes it and applies the
+  // requested state to the LOCAL .co-store/runner_state.desired. args.state must
+  // be the §4.2 wire enum; target carries NO bead_ref (acts on the runner loop).
+  await freshStore();
+  for (const st of ["running", "paused", "spare-cycles", "stopped"]) {
+    const sd = await enqueue(GOOD, envelope({ intent: "set-desired", target: {}, args: { state: st } }));
+    ck(`set-desired args.state='${st}' enqueues ⇒ 200`, sd.status === 200 && sd.body && sd.body.ok === true);
+    const sdRow = await env.DB.prepare("SELECT intent, args_json FROM agent_actions WHERE action_id = ?").bind(sd.body && sd.body.action_id).first();
+    ck(`set-desired '${st}' row preserves intent + args.state`, sdRow && sdRow.intent === "set-desired" && JSON.parse(sdRow.args_json).state === st);
+  }
+  const sdPend = await pending(GOOD, "rhythmGame");
+  ck("pending surfaces set-desired with args.state intact", sdPend.body && sdPend.body.actions.some((a) => a.intent === "set-desired" && a.args && a.args.state === "stopped"));
+  ck("set-desired missing args.state ⇒ rejected", await rejects(envelope({ intent: "set-desired", target: {}, args: {} })));
+  ck("set-desired bad args.state ⇒ rejected", await rejects(envelope({ intent: "set-desired", target: {}, args: { state: "halt" } })));
+  ck("set-desired UI 'spare-only' (un-normalized) ⇒ rejected (proxy must map to spare-cycles)", await rejects(envelope({ intent: "set-desired", target: {}, args: { state: "spare-only" } })));
+  ck("set-desired still requires a safe workspace", await rejects(envelope({ intent: "set-desired", workspace: "../etc", target: {}, args: { state: "paused" } })));
+
   // ── owner default + agent-declared owner ───────────────────────────────────
   await freshStore();
   const noOwner = await enqueue(GOOD, envelope({ owner: undefined }));

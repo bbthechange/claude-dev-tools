@@ -330,22 +330,33 @@ was lost).
   is rc 1 (correctly distinct). For the AD2.2 unreachable-only posture use the
   `CO_HTTP_UNREACHABLE` sidecar (set 1 only on the curl-failed path), not the rc.
   (claude-tools-ylu2 — caught in review; a reachable 500 must fail CLOSED.)
-- **Desired-state is moving LOCAL-FIRST — the runner OWNS it; the cloud only queues Brian's
-  change-requests + caches the observation (claude-tools-dky8).** The motivating scar
-  (break-through-pause): `co_deliver_desired_state` (runner-backend-real.sh:125) does a live
-  `co_request poll` every reconcile and fail-OPENs to `running` on ANY failure — and that
-  fail-open is baked in TWICE: the adapter's own `|| echo running` returns rc 0, so the
-  `safe_capture COORD_UNREACHABLE running` degrade at :2307/:2755 NEVER fires, and the `running`
-  case is a no-op `:`, so the break-through is SILENT (no desired-state log line). One failed
-  poll discarded a 17h `desired=paused` history and spawned a worker. The fix
-  (claude-tools-y6j9, P1): read local `.co-store/runner_state.desired` FIRST, network only
-  refreshes the observation, gate any fallback on the precise `CO_HTTP_UNREACHABLE` sidecar (NOT
-  bare rc). Do NOT re-add a network-authoritative desired read. The cloud→runner change-request
-  channel ALREADY EXISTS — the `agent_actions` transient queue (reuse it; do NOT invent a new §4
-  record) — and the DAEMON (desired-state-poll.sh) is a SECOND network reader that must flip in
-  lockstep (it is the cold-start consumer: a stopped runner can't apply "running" to itself).
-  Sibling local-first beads: bd-ready TTL cache (claude-tools-4a2e), lease-envelope cache
-  (claude-tools-h9dl), `.co-store` write-through (claude-tools-cx7t).
+- **Desired-state is LOCAL-FIRST — the runner OWNS it; the cloud only queues Brian's
+  change-requests + caches the observation (claude-tools-dky8/y6j9 — P1 SHIPPED).** The
+  motivating scar (break-through-pause): `co_deliver_desired_state` (runner-backend-real.sh)
+  USED to do a live `co_request poll` every reconcile and fail-OPEN to `running` on ANY failure —
+  baked in TWICE: the adapter's own `|| echo running` returned rc 0, so the
+  `safe_capture COORD_UNREACHABLE running` degrade NEVER fired, and the `running` case was a
+  no-op `:`, so the break-through was SILENT. One failed poll discarded a 17h `desired=paused`
+  history and spawned a worker. **The fix (claude-tools-y6j9):** `co_deliver_desired_state`
+  reads local `.co-store/runner_state.desired` FIRST via `co__store_get` (offline — the HTTP
+  transport overrides `co_request`, NOT the store primitives); the network is demoted to a
+  cold-start SEED used ONLY when there is no local record; the two `safe_capture` fallbacks at
+  :2307/:2755 are now FAIL-CLOSED (`paused`, not `running`) and the `*)` unrecognized-desired arm
+  HOLDS instead of claiming. runner.sh now `export`s `CO_STORE` at startup (it was set ONLY in
+  the :730 stuck subshell — without it the main-loop store read hit the `/tmp` scratch path). A
+  present local paused/stopped can no longer be flipped to running by an unreachable/5xx engine.
+  **Do NOT re-add a network-authoritative desired read.** Brian's Stop/Run taps ride the
+  `agent_actions` transient queue's NEW `set-desired` intent (target `{workspace}`, args
+  `{state}`); the DAEMON is the SINGLE consumer (`agent-action-poll.sh`) — it applies the value
+  to the same local record (apply-local-before-ack), and both runner + daemon
+  (`desired-state-poll.sh`, the cold-start second reader) read local FIRST. The web
+  `board/set-desired.js` ALSO keeps the legacy `set-desired` op write (GUI display + live
+  old-code back-compat) — purely additive. SPLIT: heartbeat-carries-desired (report the applied
+  value as observation) is an INTERFACE §1.1 amendment in its own bead. Regression-lock:
+  `lib/test-desired-local-first.sh` + PART H of `daemon/test-m3-desired-state.sh` + the
+  set-desired arm of `daemon/test-agent-action-poll.sh`. Sibling local-first beads: bd-ready TTL
+  cache (claude-tools-4a2e), lease-envelope cache (claude-tools-h9dl), `.co-store` write-through
+  (claude-tools-cx7t).
 
 ## Go deeper
 
@@ -366,4 +377,5 @@ v2-OFFLINE status the moment the cutover lands — that single fact reframes the
 whole doc. **Keep it concise — this doc earns its keep only if agents read all of
 it.** Delete lines that have gone stale; do not let it grow into a second copy of
 BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-06 (local-first desired-state
-direction + the break-through-pause scar — claude-tools-dky8; impl P1 claude-tools-y6j9).
+P1 SHIPPED — break-through-pause fixed: local-first read + fail-closed fallback + CO_STORE
+export + the agent_actions `set-desired` change-request intent — claude-tools-y6j9).

@@ -104,6 +104,31 @@ st="$(daemon_aa_dispatch_one "$WS" '{"action_id":"a-amo","intent":"kill-retry","
 [[ "$st" == "done" ]] && ok "re-dispatch of a handled action ⇒ done (ack re-attempt)" || bad "re-dispatch wrong status (got '$st')"
 [[ "$(markers_in "$WS")" == "0" ]] && ok "re-dispatch did NOT re-drop the kill marker (local marker short-circuits)" || bad "marker re-dropped — NOT at-most-once"
 
+# ── set-desired: applies the requested state to the LOCAL .co-store ──────────
+# claude-tools-y6j9 local-first: the daemon is the SINGLE writer of local
+# desired (a stopped/dead runner can't apply "running" to itself). Brian's tap
+# rides the agent_actions queue as a set-desired intent; the daemon consumes it
+# and writes the LOCAL runner_state record the runner/daemon read FIRST.
+echo "── set-desired (local-first change-request) ──"
+WS="$(mk_ws setdesired)"
+st="$(daemon_aa_dispatch_one "$WS" '{"action_id":"a-sd","intent":"set-desired","workspace":"sdProj","target":{},"args":{"state":"paused"},"owner":"you"}')"
+[[ "$st" == "done" ]] && ok "set-desired ⇒ done" || bad "set-desired should be done (got '$st')"
+SD_REC="$WS/.beads/runner-logs/.co-store/records/runner_state.sdProj.json"
+[[ -f "$SD_REC" ]] && ok "set-desired wrote the LOCAL runner_state record" || bad "local runner_state record not written ($SD_REC)"
+[[ "$(jq -r '.desired // ""' "$SD_REC" 2>/dev/null)" == "paused" ]] \
+  && ok "local runner_state.desired = paused (the runner/daemon read THIS first)" || bad "local desired not paused ($(cat "$SD_REC" 2>/dev/null))"
+[[ "$(markers_in "$WS")" == "0" ]] && ok "set-desired dropped NO control marker (loop-level, not a worker kill)" || bad "set-desired dropped a marker"
+# A later set-desired(running) overwrites it (FIFO transitions converge locally).
+daemon_aa_dispatch_one "$WS" '{"action_id":"a-sd2","intent":"set-desired","workspace":"sdProj","target":{},"args":{"state":"running"}}' >/dev/null
+[[ "$(jq -r '.desired // ""' "$SD_REC" 2>/dev/null)" == "running" ]] \
+  && ok "a later set-desired(running) overwrites local desired" || bad "local desired not updated to running"
+# A bad/missing state ⇒ failed, NO write.
+WS2="$(mk_ws setdesiredbad)"
+st="$(daemon_aa_dispatch_one "$WS2" '{"action_id":"a-sdb","intent":"set-desired","workspace":"sdProj","target":{},"args":{"state":"halt"}}')"
+[[ "$st" == "failed" ]] && ok "set-desired bad state ⇒ failed" || bad "bad state should be failed (got '$st')"
+[[ ! -f "$WS2/.beads/runner-logs/.co-store/records/runner_state.sdProj.json" ]] \
+  && ok "bad state wrote NO local record" || bad "bad state wrote a record"
+
 # ── END-TO-END through the bash oracle ───────────────────────────────────────
 echo "── end-to-end (oracle → poll → ack) ──"
 E2E_STORE="$TMP/e2e-store"; mkdir -p "$E2E_STORE"

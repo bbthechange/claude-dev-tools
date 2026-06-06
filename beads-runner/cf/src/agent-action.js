@@ -52,14 +52,27 @@ export const AGENT_ACTION_OPS = new Set([
   "agent-action-ack", // §2.2 daemon write — terminal status (done|failed) for one action_id
 ]);
 
-// §3 the CLOSED, host-effecting intent enum. Frozen.
+// §3 the CLOSED, host-effecting intent enum. Frozen — widened ONCE for
+// claude-tools-y6j9 (local-first desired-state): `set-desired` is the
+// cloud→runner change-request the daemon consumes and applies to the LOCAL
+// `.co-store/runner_state.desired` (the runner/daemon then read local FIRST, so
+// an unreachable engine can no longer break through a pause). This COMPLETES the
+// generalization agent_actions was designed for — design/agent-action.md §0:
+// "generalizing it from one verb (set-desired) to a small closed set." Distinct
+// from the legacy `set-desired` OP (opSetDesired, the engine-direct desired
+// write the GUI keeps for display); this is an agent-action INTENT value.
 export const AGENT_ACTION_INTENTS = new Set([
   "nudge",
   "kill-retry",
   "kill-gate",
   "gate-apply",
   "gate-lift",
+  "set-desired",
 ]);
+
+// §4.2 RunnerState.desired closed enum — the WIRE values (spare-cycles, not the
+// UI-facing spare-only; the web proxy normalizes spare-only→spare-cycles).
+const DESIRED_STATES = new Set(["running", "paused", "spare-cycles", "stopped"]);
 
 // Terminal ack states (§2.2): the daemon reports exactly one of these.
 const ACK_STATES = new Set(["done", "failed"]);
@@ -129,6 +142,16 @@ function intentRequirementError(intent, t, a) {
     case "gate-lift":
       if (!gateId) return "gate-lift requires target.gate_id";
       return null;
+    case "set-desired": {
+      // local-first desired-state change-request (claude-tools-y6j9). The
+      // requested state rides in args.state; target carries no bead_ref (this
+      // acts on the runner LOOP, not an inner worker). workspace identifies the
+      // runner (validated at the envelope level in agentActionEnqueue).
+      const state = strOk(a.state) ? a.state : "";
+      if (!DESIRED_STATES.has(state))
+        return `set-desired requires args.state ∈ {${[...DESIRED_STATES].join(", ")}}`;
+      return null;
+    }
     default:
       return `unknown intent '${intent}'`;
   }

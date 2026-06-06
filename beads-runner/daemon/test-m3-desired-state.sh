@@ -31,6 +31,15 @@
 # Run: bash beads-runner/daemon/test-m3-desired-state.sh
 set -u
 
+# Hermetic: this offline tier must use the IN-PROCESS bash oracle, never an
+# ambient hosted endpoint. co-http-transport.sh overrides co_request when
+# COORDINATOR_URL is set, so a dev machine with the daemon configured would
+# otherwise leak its live URL into PART B's fetch subshell (returning empty for
+# every stored record). Mirror test-agent-action-poll.sh's hermetic guard.
+# (run-tests.sh already unsets these for the whole gate; this makes the test
+# hermetic STANDALONE too — claude-tools-y6j9.)
+unset COORDINATOR_URL COORDINATOR_TOKEN 2>/dev/null || true
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 LIB_DIR="$REPO_ROOT/lib"
@@ -60,6 +69,7 @@ bash -n "$M3_LIB" 2>/dev/null && ok "desired-state-poll.sh parses (bash -n clean
 bash -n "$DAEMON_SH" 2>/dev/null && ok "daemon.sh parses (bash -n clean) with M3 wiring" || bad "daemon.sh syntax"
 
 for fn in daemon_m3_runner_pid daemon_m3_runner_pidfile daemon_m3_fetch_desired \
+          daemon_m3_read_local_desired \
           daemon_m3_spawn daemon_m3_stop \
           daemon_m3_reconcile_workspace daemon_m3_reconcile_all \
           daemon_m3_reset_state_memory; do
@@ -391,6 +401,59 @@ grep -q 'daemon_m3_reconcile_all' "$DAEMON_SH" \
 grep -q 'daemon_m3_reset_state_memory' "$DAEMON_SH" \
   && ok "F4: daemon.sh SIGHUP-reload drops the per-workspace last-desired memory (registry reload hygiene)" \
   || bad "F4: daemon.sh must call daemon_m3_reset_state_memory on SIGHUP reload"
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART H — LOCAL-FIRST desired read (claude-tools-y6j9). The daemon reads the
+#          local .co-store RunnerState FIRST; a present paused/stopped can NEVER
+#          be flipped by a stale/unreachable network poll (the break-through-pause
+#          fix, daemon half). The network is demoted to a COLD-START seed.
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART H — local-first desired read (break-through-pause, daemon half) ──"
+
+WH="$(mktemp -d)"; WSH="$WH/workspace"
+trap 'rm -rf "$WA" "${WB:-}" "${WC:-}" "${WD:-}" "${WE:-}" "${WH:-}" 2>/dev/null || true' EXIT
+mkdir -p "$WSH/.beads/runner-logs/.co-store/records"
+REGISTRY_PROJECT_REFS=("tools-m3test-h"); REGISTRY_DIRS=("$WSH")
+REGISTRY_COORDINATOR_URLS=(""); REGISTRY_TOKEN_KEYCHAIN_ITEMS=("")
+REGISTRY_LOADED=1
+daemon_m3_reset_state_memory
+WS_STORE_H="$WSH/.beads/runner-logs/.co-store"
+write_runner_state_h() {
+  jq -cn --arg p "tools-m3test-h" --arg d "$1" \
+    '{schema_version:1,project_ref:$p,desired:$d,actual:"running"}' \
+    > "$WS_STORE_H/records/runner_state.tools-m3test-h.json"
+}
+
+# H1 — daemon_m3_read_local_desired reads the local record directly (offline).
+write_runner_state_h "paused"
+eq "$(daemon_m3_read_local_desired "$WSH" "tools-m3test-h")" "paused" \
+  "H1: daemon_m3_read_local_desired reads the local .co-store record directly"
+
+# H2 — local=paused WINS over a network fetch that says running (THE bug: an
+# unreachable engine fail-opened to running and broke through the pause). Stub
+# the network fetch to 'running'; reconcile must read LOCAL and NOT spawn.
+export DAEMON_M3_DISABLED=1
+daemon_m3_fetch_desired() { echo "running"; }   # simulate stale / fail-open network
+rm -f "$WSH/.beads/runner-logs/detached-runner.pid"
+: > "$M3_LOGS"
+daemon_m3_reconcile_workspace 0
+logs="$(cat "$M3_LOGS")"
+nothas "$logs" "spawning" "H2: local=paused WINS over a 'running' network fetch (NO break-through spawn)"
+has    "$logs" "→ paused"  "H2: reconcile acted on the LOCAL paused value (not the network's running)"
+unset -f daemon_m3_fetch_desired
+
+# H3 — cold-start: NO local record ⇒ the network seed supplies desired.
+rm -f "$WS_STORE_H/records/runner_state.tools-m3test-h.json"
+daemon_m3_fetch_desired() { echo "stopped"; }   # cold-start network seed
+echo "$$" > "$WSH/.beads/runner-logs/detached-runner.pid"
+daemon_m3_reset_state_memory
+: > "$M3_LOGS"
+daemon_m3_reconcile_workspace 0
+logs="$(cat "$M3_LOGS")"
+has "$logs" "would SIGTERM pid=$$" "H3: cold-start (no local record) falls back to the network seed (stopped ⇒ SIGTERM)"
+unset -f daemon_m3_fetch_desired
+unset DAEMON_M3_DISABLED
 
 # ────────────────────────────────────────────────────────────────────────────
 echo ""

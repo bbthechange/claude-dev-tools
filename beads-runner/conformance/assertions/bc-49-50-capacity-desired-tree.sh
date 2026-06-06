@@ -4,8 +4,8 @@
 #
 # Binds BEHAVIORAL-CONTRACT.md BC-49 (per-pickup ask-capacity gate: deny ⇒
 # release lease + backoff + continue; unreachable ⇒ local fallback ⇒ proceed)
-# and BC-50 (workspace desired-state resolver: fail-open `running`, cached,
-# `stopped` ends the runner). In v2 the moving parts are:
+# and BC-50 (workspace desired-state resolver: LOCAL-FIRST read, FAIL-CLOSED to
+# hold, `stopped` ends the runner — claude-tools-y6j9). In v2 the moving parts are:
 #   • job_ask_capacity (runner.sh:364) → la_capacity_check  — the per-pickup gate
 #   • job_reconcile_desired (runner.sh:366) → co_deliver_desired_state — desired
 # Under RUNNER_BACKEND=stub la_capacity_check ALWAYS returns `ok` (fail-open
@@ -18,9 +18,13 @@
 # is also driven end-to-end.
 #
 # SCAR (silent-when-wrong): a capacity DENY that strands the bead `in_progress`
-# (no lease release) reintroduces the BC-04 double-claim race; a desired-state
-# resolver that fails CLOSED (garbled ⇒ stop) would silently halt a healthy
-# runner on one bad coordinator read.
+# (no lease release) reintroduces the BC-04 double-claim race. For desired-state
+# the scar INVERTED (claude-tools-dky8/y6j9): the OLD posture fail-OPENed to
+# `running` on any failure, so one unreachable/garbled read BROKE THROUGH a pause
+# and claimed work (the break-through-pause bug). The runner is now LOCAL-FIRST —
+# co_deliver_desired_state reads `.co-store/runner_state.desired` first — and the
+# resolver FAILS CLOSED to `paused` (hold + re-reconcile), never to `running`. A
+# present local paused/stopped survives a Coordinator-unreachable window.
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 trap H_cleanup EXIT
 
@@ -70,7 +74,7 @@ H_cleanup
 # The deny/stop branches are unreachable under the stub (always ok/running), so
 # the load-bearing posture is asserted source-structurally against runner.sh.
 H_init_test bc4950tree-source-posture
-_expect "BC-49" "§6.3" "capacity DENY releases lease + sleeps + continues (bead stays open); desired=stopped is OBSERVED in the control loop and ends the runner; the resolver fails OPEN to running"
+_expect "BC-49" "§6.3" "capacity DENY releases lease + sleeps + continues (bead stays open); desired=stopped is OBSERVED in the control loop and ends the runner; the resolver reads LOCAL-FIRST and fails CLOSED to hold (claude-tools-y6j9)"
 # BC-49 — capacity deny path is clean (release + backoff + continue)
 _need "deny path releases the held lease"             grep -qE 'job_release_lease "\$CANDIDATE_ID" "\$LEASE_GENERATION"' "$RUNNER"
 _need "deny path backs off (sleep) before continuing" \
@@ -86,10 +90,18 @@ _need "desired=stopped at reconcile ends the runner (transition STOPPING)" \
       bash -c 'grep -A2 "stopped)" "$1" | grep -qE "transition STOPPING; return"' _ "$RUNNER"
 _need "stop is honored AFTER the current task (§2.5 no mid-task kill)" \
       grep -qF 'honoring AFTER current task' "$RUNNER"
-# BC-50 — resolver fail-OPEN to running (empty/garbled ⇒ running)
-_need "desired-state captured via safe_capture with 'running' fallback (fail-OPEN)" \
-      grep -qE 'safe_capture COORD_UNREACHABLE running -- job_reconcile_desired' "$RUNNER"
-_need "unrecognized desired ⇒ fail-OPEN to running (the * case degrades, does not stop)" \
-      bash -c 'grep -A2 "running\|spare-cycles) :" "$1" | grep -qE "fail-OPEN to running"' _ "$RUNNER"
+# BC-50 — LOCAL-FIRST + resolver fail-CLOSED (claude-tools-y6j9). The runner reads
+# its own .co-store desired first; the safe_capture fallback is `paused` (HOLD),
+# never `running`, and the unrecognized-desired `*)` case HOLDS + re-reconciles
+# instead of claiming. This is the break-through-pause fix — an unreachable/garbled
+# read can no longer manufacture a `running` that breaks through a local pause.
+_need "co_deliver_desired_state reads the LOCAL .co-store RunnerState first (real backend adapter)" \
+      grep -qE 'co__store_get runner_state' "$(dirname "$RUNNER")/lib/runner-backend-real.sh"
+_need "desired-state captured via safe_capture with FAIL-CLOSED 'paused' fallback" \
+      grep -qE 'safe_capture COORD_UNREACHABLE paused -- job_reconcile_desired' "$RUNNER"
+_need "unrecognized desired ⇒ FAIL-CLOSED to hold (the * case re-reconciles, does not claim)" \
+      grep -qF 'fail-CLOSED to hold' "$RUNNER"
+_need "the runner exports CO_STORE so the main-loop local read hits the per-workspace store" \
+      grep -qE 'CO_STORE:=.*\.beads/runner-logs/\.co-store' "$RUNNER"
 _emit
 H_cleanup

@@ -347,6 +347,17 @@ if [[ "$RUNNER_BACKEND" == "stub" && -n "${COORDINATOR_URL:-}" ]]; then
   echo "════════════════════════════════════════════════════════════════════" >&2
 fi
 
+# ── §4.2 local-first desired-state store path (claude-tools-y6j9) ─────────────
+# The runner is AUTHORITATIVE for `desired`: co_deliver_desired_state reads the
+# LOCAL .co-store RunnerState first (the break-through-pause fix). The MAIN loop
+# had NO CO_STORE export — only the :730 stuck-routing subshell set it — so an
+# unset CO_STORE would point co__store_get at the /tmp scratch store and read the
+# WRONG file. Pin it ONCE at startup to the per-workspace path the daemon also
+# uses (daemon/desired-state-poll.sh CO_STORE default + the :730 subshell): the
+# daemon WRITES this record (change-request consume + cold-start seed), the runner
+# READS it. Workspace-relative ($PWD is the workspace root under launch-detached).
+: "${CO_STORE:=$PWD/.beads/runner-logs/.co-store}"; export CO_STORE
+
 # ── Node v25 PATH prime (claude-tools-18c; shared lib at lib/node25-prime.sh,
 #    pattern proven in specialist.sh = claude-tools-3kd and run-beads-tasks.sh
 #    = claude-tools-4tj). The body lives in the shared helper because the same
@@ -2302,9 +2313,17 @@ st_reconcile() {
   # no-op on the common already-on-main path. Best-effort: never aborts reconcile.
   pin_head_to_main "${RUNNER_SKIP_PIN_MAIN:-0}"
 
-  # Job 4 — reconcile desired-state (§2.4/§3). The Coordinator owns `desired`.
+  # Job 4 — reconcile desired-state (§2.4/§3). LOCAL-FIRST (claude-tools-y6j9):
+  # the RUNNER owns `desired` — job_reconcile_desired reads the local .co-store
+  # RunnerState first (the cloud only queues Brian's change-requests, which the
+  # daemon applies locally). The safe_capture fallback is FAIL-CLOSED (`paused`,
+  # not the old `running`): if the local read itself errors, HOLD rather than
+  # break through a pause. This closes the second half of the break-through-pause
+  # bug — the old `running` fallback (paired with the adapter's `|| echo running`
+  # rc-0, so this degrade never even fired) is exactly what let one failed poll
+  # discard a 17h paused history and CLAIM (dky8).
   local desired
-  desired="$(safe_capture COORD_UNREACHABLE running -- job_reconcile_desired)"
+  desired="$(safe_capture COORD_UNREACHABLE paused -- job_reconcile_desired)"
   case "$desired" in
     stopped)
       echo "runner: desired=stopped"
@@ -2317,8 +2336,14 @@ st_reconcile() {
       transition RECONCILE; return ;;
     running|spare-cycles) : ;;     # spare-cycles cost-class mapping is T2.2's
     *)
-      degrade COORD_UNREACHABLE "unrecognized desired='$desired' — fail-OPEN to running (§6.2 capacity-side posture)"
-      ;;
+      # An UNRECOGNIZED desired now FAILS CLOSED (hold), not open: under
+      # local-first an unreachable engine can no longer manufacture a value here
+      # (the read is local), so a non-enum value is a genuine anomaly — holding
+      # is safe, claiming is not. Mirror the paused hold.
+      degrade COORD_UNREACHABLE "unrecognized desired='$desired' — fail-CLOSED to hold (re-reconcile in ${RECLAIM_POLL_INTERVAL}s)"
+      job_heartbeat idle "" "" >/dev/null
+      sleep "$RECLAIM_POLL_INTERVAL"
+      transition RECONCILE; return ;;
   esac
 
   # ── BC-04 crash-orphan drain — BEFORE the bd ready poll ────────────────────
@@ -2752,7 +2777,12 @@ st_run_task() {
     if [[ $since_ctl -ge $CONTROL_POLL_INTERVAL ]]; then
       since_ctl=0
       local d
-      d="$(safe_capture COORD_UNREACHABLE running -- job_reconcile_desired)"
+      # local-first (claude-tools-y6j9): job_reconcile_desired reads local
+      # .co-store first; FAIL-CLOSED fallback `paused` (not the old `running`) —
+      # during a task only a `stopped` triggers the §2.5 after-task honor, so a
+      # transient local-read error must not be read as `stopped` NOR manufacture
+      # a `running` that masks a real local pause for the NEXT reconcile.
+      d="$(safe_capture COORD_UNREACHABLE paused -- job_reconcile_desired)"
       if [[ "$d" == "stopped" ]] || [[ -f "$STOP_FILE" ]]; then
         STOP_REQUESTED=1
         job_heartbeat stopping "$CURRENT_TASK_ID" "$LEASE_GENERATION" >/dev/null

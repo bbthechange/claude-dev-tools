@@ -177,6 +177,33 @@ _daemon_m3_fetch_desired_one() {
   )
 }
 
+# daemon_m3_read_local_desired <ws> <project_ref>
+#   LOCAL-FIRST read (claude-tools-y6j9). The RUNNER is authoritative for
+#   `desired`; the cloud only QUEUES Brian's change-requests (the agent_actions
+#   `set-desired` intent), which daemon_aa_* consumes and applies to THIS local
+#   RunnerState record. Read it DIRECTLY off disk — offline, no network, no
+#   co_request — and echo the validated §4.2 enum (empty if absent/unparseable).
+#   This is the daemon half of the break-through-pause fix: a present local
+#   paused/stopped survives a Coordinator-unreachable window. Mirrors
+#   co__rec_path keying (records/<type>.<id>.json) + the CO_STORE default used by
+#   _daemon_m3_fetch_desired_one and runner.sh's startup export.
+daemon_m3_read_local_desired() {
+  local ws="$1" pref="$2" rec d
+  [[ -n "$ws" && -n "$pref" ]] || return 0
+  # Always derive the store PER-WORKSPACE — this runs in the daemon's MAIN process
+  # (not a subshell), and the daemon supervises many workspaces, so it must NEVER
+  # honor an ambient CO_STORE (a leaked global would make every workspace read one
+  # store and silently mis-reconcile all of them). The runner.sh / subshell pollers
+  # use CO_STORE because each is scoped to a single workspace; this read is not.
+  rec="$ws/.beads/runner-logs/.co-store/records/runner_state.$pref.json"
+  [[ -f "$rec" ]] || return 0
+  d="$(jq -r 'if type=="object" then (.desired // "") else "" end' "$rec" 2>/dev/null)" || d=""
+  case "$d" in
+    running|paused|spare-cycles|stopped) printf '%s' "$d" ;;
+    *) printf '' ;;
+  esac
+}
+
 # ── v2 staged cutover (claude-tools-v2c4) ──────────────────────────────────
 # A per-workspace, MACHINE-LOCAL opt-in flips that workspace's runner from v1
 # (run-beads-tasks.sh, the launch-detached default) to the v2 state-machine
@@ -285,16 +312,25 @@ daemon_m3_reconcile_workspace() {
   pref="${REGISTRY_PROJECT_REFS[$idx]:-}"
   [[ -n "$ws" && -n "$pref" ]] || return 0
 
-  desired="$(daemon_m3_fetch_desired "$idx")"
+  # LOCAL-FIRST (claude-tools-y6j9): read the local .co-store RunnerState.desired
+  # FIRST; the network `poll` is demoted to a COLD-START seed, consulted ONLY when
+  # there is no local desired yet (a truly fresh workspace, or one last set via
+  # the legacy direct set-desired op). daemon_agent_action_poll consumes Brian's
+  # `set-desired` change-requests and WRITES this local record (the single local
+  # writer), so after cold-start the local value is authoritative — and a present
+  # local paused/stopped can NEVER be flipped to running by an unreachable engine
+  # (the break-through-pause fix, daemon half).
+  desired="$(daemon_m3_read_local_desired "$ws" "$pref")"
   if [[ -z "$desired" ]]; then
-    # Coordinator-unreachable or empty stored RunnerState. Per the runner's
-    # §6.2 fail-OPEN posture (safe_capture COORD_UNREACHABLE running), we
-    # would treat this as `running`. The DAEMON's posture is more
-    # conservative: NO ACTION on a poll failure — we will neither spawn
-    # nor kill on uncertainty. The next cadence retries; if the engine
-    # stays unreachable indefinitely a runner already up keeps running,
-    # and a runner already down stays down. This matches the daemon's
-    # observe-first contract — we are not the source of truth.
+    desired="$(daemon_m3_fetch_desired "$idx")"
+  fi
+  if [[ -z "$desired" ]]; then
+    # No local desired AND the network is unreachable/empty/unset. The daemon's
+    # posture is observe-first: NO ACTION on uncertainty — neither spawn nor kill.
+    # The next cadence retries; a runner already up keeps running, a runner
+    # already down stays down. (The runner's OWN fail-OPEN-to-running was the bug;
+    # the daemon was already conservative here. We are not the source of truth —
+    # a present local desired now is.)
     return 0
   fi
 

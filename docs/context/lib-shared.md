@@ -188,20 +188,23 @@ the oracle/conformance runs deterministic and offline. The live-Worker probe
   claude-tools-u1pt). Offline tests pass (they use the in-process oracle, not this
   transport); only live-verify / a local-engine clause catches it. Write-side ops
   (e.g. `relay-log-append`) correctly stay ACK.
-- **The local `.co-store` §4 record store is INERT in PROD — and that is changing
-  (claude-tools-dky8, local-first).** When `COORDINATOR_URL` is set, `co-http-transport.sh:168`
-  redefines `co_request` wholesale, so `co__store_put`/`co__store_get` are NEVER called in
-  production (the store runs only in the offline oracle/conformance runs; `co_store_dir()`
-  defaults to `$TMPDIR` but both runner and daemon override `CO_STORE` to the per-workspace
-  `<ws>/.beads/runner-logs/.co-store`). The local-first direction makes the runner
-  LOCAL-AUTHORITATIVE for coordination state (desired/actual/lease-envelope) with the cloud as an
-  observation cache + change-request queue: P4 (claude-tools-cx7t) write-throughs successful 2xx
-  responses into `.co-store` from the transport's success arms; P1 (claude-tools-y6j9) reads local
-  desired first (the break-through-pause fix). Re-activating the store in PROD means it must stay
-  differential-equivalent to D1 (the §8bm invariant) — it is no longer "unused, don't worry about
-  it." The cloud→runner CHANGE-REQUEST substrate already exists: the `agent_actions` TRANSIENT
-  queue (`coordinator.sh:738-855`, ops agent-action/-pending/-ack) — reuse it for desired-state
-  change-requests; do NOT register a new §4 record. Lease-envelope cache is P2 (claude-tools-h9dl).
+- **The local `.co-store` store is now LIVE in PROD for desired-state (claude-tools-dky8/y6j9
+  P1 SHIPPED).** When `COORDINATOR_URL` is set, `co-http-transport.sh:168` redefines `co_request`
+  wholesale — but it overrides ONLY `co_request`, NOT the store primitives, so `co__store_get`/
+  `co__store_put` read/write the local file directly even in PROD. `co_store_dir()` defaults to
+  `$TMPDIR` but the runner (`runner.sh` startup `export CO_STORE`, y6j9 — was the :730 subshell
+  ONLY) and daemon both pin `CO_STORE` to `<ws>/.beads/runner-logs/.co-store`. **The runner is
+  now LOCAL-AUTHORITATIVE for `desired`:** `runner-backend-real.sh co_deliver_desired_state` reads
+  `co__store_get runner_state` FIRST (network is a cold-start seed only — the break-through-pause
+  fix), and Brian's Stop/Run taps ride the `agent_actions` TRANSIENT queue's NEW `set-desired`
+  intent (`co__agent_action_enqueue` enum at coordinator.sh:773 + the per-intent `args.state`
+  branch; the CF twin is `cf/src/agent-action.js` `AGENT_ACTION_INTENTS` + `intentRequirementError`
+  — keep them differential-equivalent). The daemon's `agent-action-poll.sh` is the SINGLE consumer
+  → `co__set_desired` writes the local record (apply-local-before-ack). Do NOT register a new §4
+  record for change-requests; do NOT re-add a network-authoritative desired read. Still pending:
+  P4 (claude-tools-cx7t) `.co-store` write-through of 2xx responses, P2 (claude-tools-h9dl)
+  lease-envelope cache — those re-activate MORE of the store and must stay differential-equivalent
+  to D1 (the §8bm invariant).
 - **Loop-hygiene libs guard recurring footguns:** the runner never branches, so
   `git-pin-main.sh` re-pins HEAD to trunk each iteration; a daemon-stripped PATH
   resolves `claude` to Node v25 which crashes it (`node25-prime.sh`); SIGKILL'd

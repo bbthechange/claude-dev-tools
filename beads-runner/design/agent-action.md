@@ -191,8 +191,21 @@ principal-derived without a table change.)
 `intent` is a **closed set**. Each row says exactly which **host mechanism** the
 daemon uses and which **existing seam** it reuses — nothing here is new ground.
 
+> **AMENDMENT (2026-06-06, claude-tools-y6j9 — local-first desired-state):** the
+> enum is widened by ONE: **`set-desired`**. This is the cloud→runner
+> change-request the local-first redesign (claude-tools-dky8) needs — it COMPLETES
+> the generalization §0 anticipated ("generalizing it from one verb (`set-desired`)
+> to a small closed set"). It is the agent_actions INTENT, distinct from the legacy
+> `set-desired` OP (`opSetDesired`/`co__set_desired`, the direct RunnerState.desired
+> write the GUI keeps for display). Unlike the other intents it causes NO worker/
+> watchdog host effect — the daemon writes the LOCAL `.co-store/runner_state.desired`
+> (apply-local-before-ack) so the runner/daemon read it FIRST. No new §4 record, no
+> DDL, no new adapter mapping (the generic `target_json`/`args_json` columns + the
+> existing `agent-action` mapping carry it).
+
 | `intent` | What the daemon does on the host | Reuses | Required `target` / `args` | Reversible? |
 |---|---|---|---|---|
+| **`set-desired`** | write the requested state to the LOCAL `.co-store` RunnerState (`daemon_aa_set_local_desired` → in-process `co__set_desired`); NO marker, NO gate, NO worker kill. The runner/daemon read local desired FIRST (the break-through-pause fix). | `co__set_desired` (local store write) + the daemon being the always-alive cold-start consumer | `workspace`, `args.state ∈ {running,paused,spare-cycles,stopped}` | yes (a later set-desired) |
 | **`nudge`** | drop a **grace marker** in `<ws>/.beads/runner-logs/agent-action/`; the runner watchdog reads it next tick and extends its kill-grace one soft window (poke, don't terminate). v1 has no live channel into `claude -p`, so "send *continue*" is deferred (like Attach). | the file-signal idiom (`ACTIVITY_FILE`/`TASK_INFLIGHT_FILE` at `:1713-1718` already stretch the timeout) + watchdog `:1857-1958` | `workspace`, `bead_ref`; `reason?` | yes (pure grace extension) |
 | **`kill-retry`** | drop a **worker-kill marker**; the watchdog (which owns `CLAUDE_PID`, spawned at `:1709`, and already does the staged SIGINT→SIGKILL at `:1953-1958`) terminates the **worker**, the loop re-dispatches a fresh worker on the **same** bead. | watchdog kill path `:1857-1958`; loop re-pickup | `workspace`, `bead_ref`; `reason?` | partly (work lost, bead intact) |
 | **`kill-gate`** | **apply the gate first** (`gate-defer.sh apply` — so the label is present), **then** drop the worker-kill marker. J4's `gate:*` pickup-refusal then blocks re-dispatch, so the bead stops retrying until the gate lifts. | `gate-defer.sh apply` + watchdog kill + J4 gate-respect | `workspace`, `bead_ref`, `gate_id`, `args.date`; `reason?` | yes (lift the gate) |

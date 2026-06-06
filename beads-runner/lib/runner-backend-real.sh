@@ -116,18 +116,52 @@ co_lease_release() {
   co_request "$RB_BEARER" lease-release "${1:-}" "${2:-}" "${3:-}" >/dev/null
 }
 
-# ── §3 j4 / §2.4 — reconcile-desired-state ───────────────────────────────────
+# ── §3 j4 / §2.4 — reconcile-desired-state (LOCAL-FIRST, claude-tools-y6j9) ───
 # Runner call: co_deliver_desired_state <project_ref> → echo the §4.2 `desired`
-# enum (running|paused|spare-cycles|stopped). The real path is co_request poll,
-# whose JSON carries `.desired` (or null on a fresh project). Fail-OPEN to
-# "running" (§2.4 default for a live project; §6.2 — the runner additionally
-# wraps this in `safe_capture COORD_UNREACHABLE running`).
+# enum (running|paused|spare-cycles|stopped).
+#
+# THE FIX (break-through-pause, dky8/y6j9): the runner is AUTHORITATIVE for
+# desired. Read the LOCAL `.co-store/runner_state.desired` FIRST — a present
+# paused/stopped MUST survive a Coordinator-unreachable window. The old body did
+# a live `co_request poll` every reconcile and fail-OPENed to "running" on ANY
+# failure (and `|| echo running` returned rc 0, so the runner's
+# `safe_capture COORD_UNREACHABLE running` degrade NEVER fired) — one failed poll
+# discarded a 17h paused history and broke through to CLAIM. Now the cloud only
+# QUEUES Brian's change-requests (the agent_actions `set-desired` intent); the
+# daemon consumes them and applies the value to this same local record. The
+# runner NEVER re-derives desired from a live network read when a local value
+# exists, so an unreachable (or 5xx) engine can no longer flip a local pause to
+# running.
+#
+# co__store_get reads the local store file DIRECTLY — the HTTP transport
+# (co-http-transport.sh) overrides `co_request`, NOT the store primitives — so
+# this read is offline and authoritative (CO_STORE is exported by runner.sh at
+# startup to the per-workspace .beads/runner-logs/.co-store path).
+#
+# Network is consulted ONLY on cold-start (no local record yet) as a best-effort
+# seed; if the engine is unreachable or returns no usable desired, fall to the
+# EXPLICIT bootstrap default "running" (a runner was LAUNCHED ⇒ its implicit
+# desired is running; there is no local pause to break through in the absent
+# case). The runner does NOT persist here — the daemon is the single writer of
+# local desired (change-request consume + cold-start seed).
 co_deliver_desired_state() {
-  local proj="${1:-}" out d
-  out="$(co_request "$RB_BEARER" poll "$proj" 2>/dev/null)" || { echo "running"; return 0; }
-  d="$(printf '%s' "$out" | jq -r '.desired // "running"' 2>/dev/null)" || d="running"
-  [[ -n "$d" && "$d" != "null" ]] || d="running"
-  echo "$d"
+  local proj="${1:-}" rec out d
+  rec="$(co__store_get runner_state "$proj" 2>/dev/null)" || rec=""
+  if [[ -n "$rec" ]]; then
+    d="$(printf '%s' "$rec" | jq -r 'if type=="object" then (.desired // "") else "" end' 2>/dev/null)" || d=""
+    case "$d" in
+      running|paused|spare-cycles|stopped) echo "$d"; return 0 ;;
+    esac
+  fi
+  # Cold-start: no usable local desired. Best-effort network seed, else bootstrap.
+  out="$(co_request "$RB_BEARER" poll "$proj" 2>/dev/null)" || out=""
+  if [[ -n "$out" ]]; then
+    d="$(printf '%s' "$out" | jq -r 'if type=="object" then (.desired // "") else "" end' 2>/dev/null)" || d=""
+    case "$d" in
+      running|paused|spare-cycles|stopped) echo "$d"; return 0 ;;
+    esac
+  fi
+  echo "running"
   return 0
 }
 

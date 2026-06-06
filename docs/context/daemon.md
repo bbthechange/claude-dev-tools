@@ -205,21 +205,24 @@ The drift check is the "done means verified" gate for any plist change.
   per-workspace function DIRECTLY (not in a subshell) so its `log` lines survive.
   Any new per-workspace poll that both logs and counts must do the same.
 
-- **The daemon is the SECOND reader of desired-state, and under local-first it becomes the
-  COLD-START change-request consumer (claude-tools-dky8).** M3 (`desired-state-poll.sh:121`
-  `daemon_m3_fetch_desired`, network read in its `_daemon_m3_fetch_desired_one` helper at `:140`)
-  polls the engine for `desired` on its 60s cadence — the runner's
-  `job_reconcile_desired` is the other reader. The local-first redesign (claude-tools-y6j9, P1)
-  makes `desired` LOCAL-authoritative in `.co-store/runner_state.desired`. The daemon is already
-  positioned for this: it points `CO_STORE` at the shared per-workspace path (`:146`) and already
-  has a daemon-writes/runner-reads `.co-store` rendezvous precedent
-  (`hosted-resolution-poll.sh:122` `.co-store/blocked-for-human-answer`). Because a STOPPED/dead
-  runner cannot apply a "running" change-request to itself, the DAEMON must be the consumer that
-  writes local desired + spawns on a cold-start "running" request (reuse the existing
-  `agent_actions` queue / `agent-action-poll.sh` executor pattern — do NOT invent a new §4
-  record). Flip the daemon and the runner in LOCKSTEP, or they will disagree on desired. The
-  daemon's existing observe-first / no-action-on-unreachable posture is already the correct
-  local-first behavior — keep it; the runner's fail-OPEN-to-running is the part that was wrong.
+- **The daemon is the SECOND desired-state reader AND the SINGLE change-request consumer
+  (claude-tools-dky8/y6j9 P1 SHIPPED).** M3 `daemon_m3_reconcile_workspace` now reads
+  `daemon_m3_read_local_desired` (a direct `.co-store/records/runner_state.<pref>.json` read)
+  FIRST; the old network `daemon_m3_fetch_desired` is demoted to a cold-start SEED used ONLY when
+  the local read is empty — so a present local paused/stopped survives a Coordinator-unreachable
+  window (the break-through-pause fix, daemon half; the daemon's observe-first no-action-on-empty
+  posture is unchanged and was always correct — it was the RUNNER's fail-OPEN that was wrong).
+  Brian's Stop/Run taps ride the `agent_actions` queue's NEW `set-desired` intent (NOT a new §4
+  record): `agent-action-poll.sh` `daemon_aa_dispatch_one` gains a `set-desired` arm →
+  `daemon_aa_set_local_desired` writes the LOCAL record via the in-process `co__set_desired`
+  (apply-local-BEFORE-ack; deliberately does NOT source co-http-transport, so the write lands
+  locally not on the cloud; `co__ensure_store` first since the store was inert in PROD). The
+  daemon is the SINGLE local-desired writer (a STOPPED/dead runner can't apply "running" to
+  itself) — the live runner just READS local on its own reconcile, so they cannot disagree. Both
+  pin `CO_STORE` to the shared `<ws>/.beads/runner-logs/.co-store` (the
+  `hosted-resolution-poll.sh:122` rendezvous precedent). Regression-lock: PART H of
+  `test-m3-desired-state.sh` (also made hermetic — it now `unset`s COORDINATOR_URL like
+  test-agent-action-poll.sh) + the set-desired arm of `test-agent-action-poll.sh`.
 
 ## Go deeper
 

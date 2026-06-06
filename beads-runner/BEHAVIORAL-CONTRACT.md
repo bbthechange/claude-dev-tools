@@ -429,6 +429,7 @@ where `MAX_OUTPUT_TOKENS` matches any of three markers: `MAX_OUTPUT_TOKENS=`, `R
 **Repro:** With a coordinator returning `desired=stopped`, an idling runner exits within one poll interval. With no `co_request` seam, the runner never observes a remote stop.
 **Source:** 640–662.
 **Classification:** **SCAR (posture).** Fail-open-to-running mirrors the rewrite's `st_reconcile` posture (engine-unreachable ⇒ keep working); the cache shields the coordinator from per-pickup hammering. Characterized as current observable behavior; no coordinator design implied.
+> **v2 DIVERGENCE (claude-tools-dky8/y6j9 — local-first desired-state).** This fail-OPEN-to-running posture turned out to be the **break-through-pause BUG**: a single failed poll discarded a long `desired=paused` history and CLAIMED. v2 (`runner.sh` + `runner-backend-real.sh co_deliver_desired_state`) is now **LOCAL-FIRST**: it reads `.co-store/runner_state.desired` FIRST (network is a cold-start seed only), and the `safe_capture` fallback + the unrecognized-desired arm both **FAIL CLOSED to `paused`/hold**, never `running`. Brian's taps ride the `agent_actions` `set-desired` change-request (daemon consumes → local). The `-tree` probe `bc-49-50-capacity-desired-tree.sh` asserts the v2 fail-closed realization. **v1 `run-beads-tasks.sh` STILL fails open** (it reads network desired with a 30s cache, no local read) — per the v2cut "don't patch live v1" policy this clause stays accurate for v1; a v1 local-first port is a tracked follow-up.
 
 ---
 

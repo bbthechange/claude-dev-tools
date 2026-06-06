@@ -770,7 +770,7 @@ co__agent_action_enqueue() {
     if type != "object" then empty
     else
       (.intent) as $i
-      | (["nudge","kill-retry","kill-gate","gate-apply","gate-lift"]|index($i)) as $known
+      | (["nudge","kill-retry","kill-gate","gate-apply","gate-lift","set-desired"]|index($i)) as $known
       | if $known==null then empty
         elif (.workspace|safews|not) then empty
         else
@@ -779,11 +779,13 @@ co__agent_action_enqueue() {
           | ($t.bead_ref // "") as $bead
           | ($t.gate_id // "") as $gate
           | ($a.date // "") as $date
+          | ($a.state // "") as $state
           | ((($t.bead_refs // []) | map(select(type=="string" and length>0)))) as $refs
           | (if   ($i=="nudge" or $i=="kill-retry") then (($bead|type=="string") and ($bead|length>0))
              elif ($i=="kill-gate") then (($bead|length>0) and ($gate|length>0) and ($date|length>0))
              elif ($i=="gate-apply") then (($gate|length>0) and ($date|length>0) and (($bead|length>0) or ($refs|length>0)))
              elif ($i=="gate-lift") then ($gate|length>0)
+             elif ($i=="set-desired") then (["running","paused","spare-cycles","stopped"]|index($state)) != null
              else false end) as $ok
           | if ($ok|not) then empty
             else {intent:$i, workspace:.workspace, target:$t, args:$a,

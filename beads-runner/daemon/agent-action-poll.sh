@@ -162,6 +162,34 @@ daemon_aa_gate_defer() {
     bash "$DAEMON_GATE_DEFER" "$@" >/dev/null 2>&1 )
 }
 
+# daemon_aa_set_local_desired <ws_dir> <project_ref> <state> <actor>
+#   The cold-start half of local-first desired-state (claude-tools-y6j9): apply a
+#   `set-desired` change-request to the LOCAL .co-store RunnerState so the runner
+#   (and daemon M3) read it FIRST. The daemon is the SINGLE local-desired writer —
+#   a STOPPED/dead runner cannot apply a "running" request to itself, so the
+#   always-alive daemon consumes it here. Uses the IN-PROCESS co__set_desired
+#   (which merges desired/last_desired_actor onto the prior record via
+#   co__store_put → the local file) — deliberately does NOT source
+#   co-http-transport.sh, so the write lands LOCALLY, never on the cloud. Returns
+#   0 on a successful local write. A thin override seam for the unit test.
+daemon_aa_set_local_desired() {
+  local ws="${1:-}" pref="${2:-}" state="${3:-}" actor="${4:-you}"
+  [[ -n "$ws" && -n "$pref" && -n "$state" ]] || return 1
+  ( set +e
+    export CO_STORE="${CO_STORE:-$ws/.beads/runner-logs/.co-store}"
+    # shellcheck source=/dev/null
+    . "$DAEMON_REPO_LIB_DIR/coordinator.sh" 2>/dev/null || exit 1
+    command -v co__set_desired >/dev/null 2>&1 || exit 1
+    # The local store was INERT in PROD (co_request was HTTP-overridden), so the
+    # records/ dir may not exist yet — ensure it before the first write or
+    # co__store_write's temp+mv fails (rc 4) on a fresh workspace.
+    co__ensure_store >/dev/null 2>&1 || exit 1
+    local principal
+    principal="$(co__PRINCIPAL_V1 2>/dev/null || echo brian)"
+    co__set_desired "$principal" "$pref" "$state" "$actor" >/dev/null 2>&1
+  )
+}
+
 # daemon_aa_dispatch_one <ws> <action_json> → perform the host effect for ONE
 # pending action. Echoes the ack status ("done"|"failed"); returns 0 always.
 # Honors the at-most-once local marker. Pure dispatch — the caller does the
@@ -235,6 +263,27 @@ daemon_aa_dispatch_one() {
       daemon_aa_mark_handled "$aid" "$intent" "$ws"
       if [[ -z "$gate" ]]; then echo "failed"; return 0; fi
       if daemon_aa_gate_defer "$ws" lift "$gate" --commit; then
+        echo "done"
+      else
+        echo "failed"
+      fi
+      ;;
+    set-desired)
+      # local-first desired-state change-request (claude-tools-y6j9). Apply the
+      # requested state to the LOCAL .co-store RunnerState (the runner/daemon read
+      # it FIRST). APPLY-LOCAL-BEFORE-mark: only mark handled after a successful
+      # local write, so a failed write is NOT marked (retried next poll); a
+      # re-dispatch after a lost ack short-circuits via already_handled above
+      # (idempotent — re-writing the same value is a no-op). project_ref rides the
+      # envelope `.workspace` (the daemon filter key); owner is the C4 actor.
+      local _pref _state _owner
+      _pref="$(printf '%s' "$aj"  | jq -r '.workspace // ""' 2>/dev/null)"
+      _state="$(printf '%s' "$aj" | jq -r '.args.state // ""' 2>/dev/null)"
+      _owner="$(printf '%s' "$aj" | jq -r '.owner // "you"' 2>/dev/null)"
+      case "$_state" in running|paused|spare-cycles|stopped) ;; *) echo "failed"; return 0 ;; esac
+      [[ -n "$_pref" ]] || { echo "failed"; return 0; }
+      if daemon_aa_set_local_desired "$ws" "$_pref" "$_state" "$_owner"; then
+        daemon_aa_mark_handled "$aid" "$intent" "$ws"
         echo "done"
       else
         echo "failed"
