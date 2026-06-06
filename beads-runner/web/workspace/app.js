@@ -1114,7 +1114,7 @@
   // PRESERVED across the 30s refresh + drill — auto-fit runs ONCE (fitted), so a
   // repaint never yanks the viewport. bpSelected = the node whose H4 edit
   // affordances show in the panel below the canvas (the gestures, kept working).
-  var bpView = { panX: 0, panY: 0, zoom: 1, fitted: false, worldW: 1, worldH: 1,
+  var bpView = { panX: 0, panY: 0, zoom: 1, worldW: 1, worldH: 1,
     originX: 0, originY: 0, labelsHidden: true };
   // §4 detail-panel global toggles (the Diagrammer reference): APIs (boundary
   // boxes on each domain), Internals (open every domain to reveal its capabilities),
@@ -1142,7 +1142,7 @@
     { fill: '#f6e2ad', border: '#9c7616', ink: '#4a3606' }, // amber
     { fill: '#f4cabd', border: '#b8472c', ink: '#511507' }, // rust
     { fill: '#bfe2cf', border: '#2f8159', ink: '#0d3a24' }, // teal
-    { fill: '#cfe6b4', border: '#4f8a35', ink: '#1f3a0e' }, // green
+    { fill: '#cdd2f0', border: '#5566b0', ink: '#1e2a5e' }, // periwinkle (NOT store-green — domains must stay distinct from the store hue)
     { fill: '#f0dcb6', border: '#8a6c1e', ink: '#3f3008' }, // sand
     { fill: '#bfe0e6', border: '#2d7c8a', ink: '#0c3640' }, // cyan
     { fill: '#f3cdda', border: '#b03f6a', ink: '#511025' }  // pink
@@ -2096,9 +2096,9 @@
 
     var bodyT = Dom.mk('div', 'bp-panel-body');
     bodyT.appendChild(bpToggleRow('APIs', 'entry points on each domain',
-      bpToggles.apis, function (v) { bpToggles.apis = v; renderBlueprint(bpRecord); }));
+      bpToggles.apis, function (v) { bpToggles.apis = v; renderBlueprint(bpRecord); bpReframeAfterToggle(); }));
     bodyT.appendChild(bpToggleRow('Internals', 'services inside each domain',
-      bpToggles.components, function (v) { bpToggles.components = v; renderBlueprint(bpRecord); }));
+      bpToggles.components, function (v) { bpToggles.components = v; renderBlueprint(bpRecord); bpReframeAfterToggle(); }));
     bodyT.appendChild(bpToggleRow('Edge labels', 'how things connect',
       !bpView.labelsHidden, function (v) { bpView.labelsHidden = !v; renderBlueprint(bpRecord); }));
     bodyT.appendChild(bpToggleRow('In-flight overlay', 'where the swarm is working',
@@ -2268,6 +2268,17 @@
   // focus is being framed). Called by the ResizeObserver when the map settles size.
   function bpAutoReframe() {
     if (bpUserMovedView || bpFocus) return;
+    bpFit(bpView.worldW, bpView.worldH);
+    applyBpWorldTransform();
+  }
+
+  // A ONE-TIME re-frame after a toggle that changes the world EXTENT (Internals
+  // opens every domain; APIs adds the left straddle). The user explicitly asked to
+  // reveal a class of detail, so frame the new world even if they had panned — but
+  // do NOT re-arm continuous auto-framing (leave bpUserMovedView alone), and never
+  // override a focus (which owns its own viewport).
+  function bpReframeAfterToggle() {
+    if (bpFocus) return;
     bpFit(bpView.worldW, bpView.worldH);
     applyBpWorldTransform();
   }

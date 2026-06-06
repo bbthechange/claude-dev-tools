@@ -680,9 +680,10 @@
   /* ── layoutGrowToFit — ALGORITHM 1 ([free] geometry; §3.4.2/§3.5/§5) ───────────
    * A bottom-up nested pack: a collapsed box is a leaf; an OPEN box grows to fit
    * its visible children in a near-square grid + padding (siblings reflow). The
-   * ROOTS are then placed by §5 BANDING — grouped into lanes by band (client →
-   * domain → store → ext → vendor) stacked vertically, the domain lane a ~2-col
-   * pack — so the macro view is a 2-D map (distinct x AND y), not a 1-D strip whose
+   * ROOTS are then placed by §5/§13 BANDING — grouped into lanes by band and laid
+   * out LEFT→RIGHT as columns (client | domain | store | vendor | ext), the domain
+   * lane a 2-col pack, lanes vertically centered — so the macro view is a 2-D map
+   * (distinct x AND y), not a 1-D strip whose
    * center-to-center edges collapse to hidden slivers (claude-tools-bplayout). The
    * coordinates are NOT a contract — the test asserts the 2-D spread + edge
    * legibility, never the numbers. Returns size{w,h} per node and absolute x/y. */
