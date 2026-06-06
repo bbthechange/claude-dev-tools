@@ -282,6 +282,20 @@ export DG_AUTHOR_BRIDGE_WORKSPACE="${DG_AUTHOR_BRIDGE_WORKSPACE:-$PWD}"
 # Coordinator owns desired-state, never the LA (§1.1).
 PROJECT_REF="${PROJECT_REF:-$(basename "$(pwd)")}"
 
+# ── Local-first desired-state store path (claude-tools-efu3; sibling y6j9) ────
+# Export CO_STORE ONCE at startup so workspace_desired_state()'s local-first read
+# (co__store_get runner_state "$PROJECT_REF") hits the per-workspace store the
+# DAEMON writes — .beads/runner-logs/.co-store/records/runner_state.<pref>.json
+# (daemon/{desired-state,agent-action}-poll.sh use the same $ws/.beads/runner-
+# logs/.co-store default; we run with CWD=the workspace root, so the relative
+# $LOG_DIR/.co-store resolves to the identical file). Without this the store
+# primitives default co_store_dir() to a /tmp scratch path and the main-loop
+# read would miss the daemon's record entirely — the exact CO_STORE-export hole
+# y6j9 closed for runner.sh. `:=` respects an env/config override; the later
+# in-function `: "${CO_STORE:=...}"` sites (post_close_audit, the §7.3 stuck
+# drive) then become no-ops, so the whole process shares one store path.
+: "${CO_STORE:=$LOG_DIR/.co-store}"; export CO_STORE
+
 # ── §4.2 actual-state heartbeat → per-workspace registration (I2; epic 8bm) ──
 # The runner is the §1.1 caller of job-3 (heartbeat-actual-state). hb() emits
 # one §4.2 actual line keyed by PROJECT_REF and, when a hosted COORDINATOR_URL
@@ -676,18 +690,57 @@ daemon_ask_capacity() {
 }
 
 # ── C2 (claude-tools-oil) — workspace desired-state resolver ─────────────────
-# Resolves the workspace's current desired-state for the spare-only gate.
-# Best-effort, fail-OPEN (empty echo ⇒ caller treats as `running` — same
-# posture runner.sh's st_reconcile takes when the engine is unreachable).
-# Cached for DESIRED_STATE_CACHE_SECONDS so a per-pickup gate does not hammer
-# the coordinator the way the loop-top check_usage cache shields the usage
-# API. Sources coordinator.sh + co-http-transport.sh only if available
-# (standalone runs without a coordinator return empty ⇒ no spare-only gate
-# applies, which is the correct posture).
+# Resolves the workspace's current desired-state (running|paused|spare-cycles|
+# stopped) for the spare-only gate (BC-49) and the idle/skip stop checks (BC-05).
+#
+# LOCAL-FIRST (claude-tools-efu3 — ports the y6j9 fix to v1; BC-50). The runner
+# is AUTHORITATIVE for `desired`. Read the LOCAL .co-store RunnerState.desired
+# FIRST (co__store_get runner_state "$PROJECT_REF" — an offline file read; the
+# co-http-transport.sh override replaces co_request, NOT the store primitives),
+# so a present paused/stopped/spare-cycles SURVIVES a Coordinator-unreachable
+# window. The OLD body did a live `co_request poll` every call and fail-OPENed to
+# empty (⇒ caller treats as `running`) on ANY failure once the 30s cache aged out
+# — the break-through-pause bug, milder in v1 only because the cache bounded it.
+# Brian's Stop/Run/spare taps now ride the agent_actions `set-desired` change-
+# request; the DAEMON consumes them and WRITES this same local record (the single
+# local writer — desired-state-poll.sh / agent-action-poll.sh), so after cold-
+# start the local value is authoritative and an unreachable/5xx engine can no
+# longer flip it. The runner NEVER persists desired here (read-only).
+#
+# Network is consulted ONLY on cold-start (no local record yet — a truly fresh
+# workspace) as a best-effort seed, cached for DESIRED_STATE_CACHE_SECONDS so a
+# record-less workspace does not hammer the coordinator per pickup. On a cold-
+# start network miss the echo stays EMPTY: v1's callers treat empty as `running`,
+# which is the correct bootstrap posture in the ABSENT case — a runner was
+# LAUNCHED, so its implicit desired is running and there is no local pause to
+# break through (mirrors runner.sh co_deliver_desired_state's explicit `running`
+# bootstrap). Standalone runs without the coordinator.sh store primitives skip
+# straight to the legacy network/empty path (BC-43 guarded-optional).
+#
+# NOTE (consumer-side gap, tracked separately): v1's pickup path honors
+# `spare-cycles` (daemon_ask_capacity) and `stopped` (idle/skip + the daemon
+# SIGTERM), but does NOT yet hold itself at idle on `paused` the way runner.sh's
+# st_reconcile does — so a local `paused` is now READ reliably but not yet acted
+# on at the v1 gate. This local-first READ is the prerequisite; wiring the v1
+# paused consumer is a follow-up (see the bead filed from efu3).
 DESIRED_STATE_CACHE_SECONDS=${DESIRED_STATE_CACHE_SECONDS:-30}
 DESIRED_STATE_CACHE_VALUE=""
 DESIRED_STATE_CACHE_TIME=0
 workspace_desired_state() {
+  local desired=""
+  # LOCAL-FIRST: a present, valid local desired wins outright (offline read; the
+  # network is never consulted while a local record exists ⇒ no break-through).
+  if command -v co__store_get >/dev/null 2>&1 && [[ -n "${PROJECT_REF:-}" ]]; then
+    local rec
+    rec="$(co__store_get runner_state "$PROJECT_REF" 2>/dev/null)" || rec=""
+    if [[ -n "$rec" ]]; then
+      desired="$(printf '%s' "$rec" | jq -r 'if type=="object" then (.desired // "") else "" end' 2>/dev/null)" || desired=""
+      case "$desired" in
+        running|paused|spare-cycles|stopped) printf '%s' "$desired"; return 0 ;;
+      esac
+    fi
+  fi
+  # COLD-START ONLY (no usable local record): best-effort NETWORK seed, cached.
   local now age
   now=$(date +%s 2>/dev/null || echo 0)
   age=$(( now - DESIRED_STATE_CACHE_TIME ))
@@ -697,7 +750,7 @@ workspace_desired_state() {
   fi
   command -v co_request >/dev/null 2>&1 || { printf ''; return 0; }
   [[ -n "${PROJECT_REF:-}" ]] || { printf ''; return 0; }
-  local bearer resp desired
+  local bearer resp
   bearer="${COORDINATOR_TOKEN:-bearer-runner-c2}"
   resp="$(co_request "$bearer" poll "$PROJECT_REF" 2>/dev/null)" || resp=""
   [[ -n "$resp" ]] || { printf ''; return 0; }

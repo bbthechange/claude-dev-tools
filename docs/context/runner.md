@@ -357,6 +357,19 @@ was lost).
   set-desired arm of `daemon/test-agent-action-poll.sh`. Sibling local-first beads: bd-ready TTL
   cache (claude-tools-4a2e), lease-envelope cache (claude-tools-h9dl), `.co-store` write-through
   (claude-tools-cx7t).
+  **v1 PORTED (claude-tools-efu3):** v1 `run-beads-tasks.sh` has its OWN resolver
+  `workspace_desired_state()` (the C2 spare-only gate's input) which used to read network desired
+  with a 30s cache and fail-OPEN to empty (⇒ callers treat as running) once the cache aged out —
+  the milder, cache-bounded twin of the same break-through. It now reads the local
+  `.co-store/records/runner_state.<pref>.json` FIRST via `co__store_get` (network demoted to a
+  cold-start seed), and v1 now `export`s `CO_STORE` ONCE at startup (right after `PROJECT_REF`) so
+  the main-loop read hits the daemon-written store, not the `/tmp` scratch default (the same
+  CO_STORE-export hole y6j9 closed for runner.sh). Regression-lock:
+  `lib/test-desired-local-first-v1.sh` (sources the runner with `BEADS_RUNNER_TEST_MODE=1`).
+  **CONSUMER GAP still open:** v1's pickup path acts on `spare-cycles` (the gate) and `stopped`
+  (idle/skip + the daemon SIGTERM) but does NOT yet hold itself at idle on `paused` the way v2's
+  `st_reconcile` does — so v1 now READS a local paused reliably but does not yet ACT on it at the
+  gate (a tracked follow-up; the local-first read is its prerequisite). See BC-50.
 
 ## Go deeper
 
@@ -376,6 +389,7 @@ status change, a fresh scar, a changed spawn/selection rule. Update the v1-LIVE 
 v2-OFFLINE status the moment the cutover lands — that single fact reframes the
 whole doc. **Keep it concise — this doc earns its keep only if agents read all of
 it.** Delete lines that have gone stale; do not let it grow into a second copy of
-BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-06 (local-first desired-state
-P1 SHIPPED — break-through-pause fixed: local-first read + fail-closed fallback + CO_STORE
-export + the agent_actions `set-desired` change-request intent — claude-tools-y6j9).
+BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-06 (v1 desired-state local-first
+ported — `workspace_desired_state` reads `.co-store` runner_state FIRST + CO_STORE exported at
+v1 startup; closes the cache-bounded v1 twin of break-through-pause; v1 paused-consumer gap
+noted as a follow-up — claude-tools-efu3; sibling of the v2/daemon claude-tools-y6j9).
