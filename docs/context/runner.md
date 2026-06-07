@@ -476,6 +476,34 @@ was lost).
   PAUSED-ONLY (stopped stays the idle/skip loops + daemon SIGTERM; spare-cycles stays the capacity
   gate). Regression-lock: `lib/test-paused-consumer-v1.sh`. See BC-50.
 
+- **The close-discipline dirty-tree check is BEAD-SCOPED, not whole-tree
+  (claude-tools-f4ub).** The working tree is SHARED — a concurrent sibling
+  runner / aux/triage session / stray human edit leaves FOREIGN uncommitted
+  files this worker never touched. Both checks (the `hooks/close-checklist.sh`
+  Stop+PreToolUse hook AND `post_close_audit` in BOTH runners) used to flag ANY
+  non-scratch dirty path, so a foreign file caused (1) a false P1
+  `DISCIPLINE_BYPASS` regression bead (the claude-tools-uxgpre false positive —
+  uxgpre committed clean but a sibling's churn + a stray HANDOFF-UX-V2.md edit
+  tripped the audit) AND (2) the hook BLOCKING the close advising "commit it
+  under the bead / git restore" — both HARMFUL (commit smuggles a foreign diff
+  into this bead's commit; `git restore` DESTROYS another actor's uncommitted
+  work). Now a dirty path is the worker's OWN iff it appeared DURING the session
+  (absent from the spawn-time baseline the runner snapshots at **claim** to
+  `$LOG_DIR/dirty-baseline.txt`, exported ABSOLUTE as `BEADS_DIRTY_BASELINE` so
+  the hook subprocess reads the exact file) OR it is in the bead's own commit set
+  (`git log --grep=<id> --name-only`). FOREIGN-only dirt ⇒ the audit DOWNGRADES
+  to a `FOREIGN_DIRT_AT_CLOSE` forensic incident (no P1 bead, no `Runner:
+  DISCIPLINE_BYPASS` marker note) and the hook does NOT block / never
+  restore-advises it (option C). No baseline file ⇒ `base_paths` empty ⇒ every
+  dirty path is OWN ⇒ the OLD whole-tree behavior, so existing focused rigs are
+  unchanged. The classification is TRIPLICATED (hook + v1 + v2) and must stay
+  identical (the same deliberate copy-paste as the original dirty grep).
+  Residuals (bash-unsolvable, both fail SAFE = keep the net): a foreign file
+  dirtied MID-session by a concurrent sibling is absent from the baseline ⇒
+  counted OWN; the commit-set rescue is space-blind (porcelain quotes spaced
+  paths, `git log` doesn't). Locks: `hooks/test-close-checklist.sh` T25–T28,
+  `test-post-close-audit.sh` T9–T10, `conformance/assertions/bc-56-post-close-audit-tree.sh` C7.
+
 ## Go deeper
 
 - `beads-runner/BEHAVIORAL-CONTRACT.md` — the full BC-NN contract (read the clause
@@ -494,7 +522,11 @@ status change, a fresh scar, a changed spawn/selection rule. Update the v1-LIVE 
 v2-OFFLINE status the moment the cutover lands — that single fact reframes the
 whole doc. **Keep it concise — this doc earns its keep only if agents read all of
 it.** Delete lines that have gone stale; do not let it grow into a second copy of
-BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-06 (v1 desired-state local-first
+BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-07 (close-discipline dirty-tree
+check is now BEAD-SCOPED, not whole-tree — a FOREIGN uncommitted file no longer trips a false
+P1 DISCIPLINE_BYPASS or a harmful hook block; spawn-time `BEADS_DIRTY_BASELINE` snapshot at
+claim + bead-commit-set attribution + `FOREIGN_DIRT_AT_CLOSE` downgrade — claude-tools-f4ub;
+see the new scar above). Prior: 2026-06-06 (v1 desired-state local-first
 ported — `workspace_desired_state` reads `.co-store` runner_state FIRST + CO_STORE exported at
 v1 startup; closes the cache-bounded v1 twin of break-through-pause — claude-tools-efu3; sibling of
 the v2/daemon claude-tools-y6j9). The v1 paused-CONSUMER gap is now closed too: the loop-top

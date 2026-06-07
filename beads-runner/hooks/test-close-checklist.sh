@@ -72,7 +72,9 @@ run_hook() {  # run_hook <input_json> <env-prefix-line> → stdout + stderr; exi
   # BEADS_RUNNER_SESSION=1 + CURRENT_TASK_ID=<live bead> into the hook, so the
   # "not-a-runner-session" / "no-task-id" gates (T1/T2) resolve the live in-flight
   # bead and block — a false RED that depends on ambient session state, not code.
-  bash -c "unset BEADS_RUNNER_SESSION CURRENT_TASK_ID; $envs '$HOOK'" <<<"$input"
+  # Also scrub BEADS_DIRTY_BASELINE so an ambient runner-session value can't leak
+  # into the dirty-tree scoping (claude-tools-f4ub); tests set it explicitly.
+  bash -c "unset BEADS_RUNNER_SESSION CURRENT_TASK_ID BEADS_DIRTY_BASELINE; $envs '$HOOK'" <<<"$input"
 }
 
 assert_allow() {  # assert_allow <name> <stdout>
@@ -398,6 +400,71 @@ write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{
 tp=$(write_transcript "$ws" "$(skill_line myplugin:wrapup)")
 out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
 assert_allow "T24 namespaced Skill(myplugin:wrapup) + default pattern → allow" "$out"
+rm -rf "$ws" "$shim"
+
+echo "[Foreign-dirt scoping — claude-tools-f4ub]"
+
+# GOOD_NOTES: long debrief + wrapup marker so checks 4 & 5 pass — isolating the
+# dirty-tree check as the only variable. status=open so close_without_commit
+# (Stop+closed only) stays out of the picture.
+GOOD_NOTES="a sufficiently long debrief here describing what was done; wrapup-reviewed: 2026-01-01 sha=abc clean=0"
+
+# T25: a FOREIGN uncommitted file (present at spawn ⇒ listed in the baseline,
+# outside this bead's commit set) is NOT this worker's — the hook must ALLOW the
+# close, never block. BEADS_DIRTY_BASELINE points at the runner's snapshot.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$GOOD_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+echo "a sibling/aux session owns this" > "$ws/foreign.txt"
+printf '%s\n' '?? foreign.txt' > "$ws/.beads/runner-logs/dirty-baseline.txt"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws BEADS_DIRTY_BASELINE=$ws/.beads/runner-logs/dirty-baseline.txt")
+assert_allow "T25 foreign-only dirt (in baseline) → allow" "$out"
+rm -rf "$ws" "$shim"
+
+# T26: same, but BEADS_DIRTY_BASELINE empty ⇒ the hook falls back to the default
+# $project_dir/.beads/runner-logs/dirty-baseline.txt path. Locks the fallback.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$GOOD_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+echo "a sibling/aux session owns this" > "$ws/foreign.txt"
+printf '%s\n' '?? foreign.txt' > "$ws/.beads/runner-logs/dirty-baseline.txt"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws BEADS_DIRTY_BASELINE=")
+assert_allow "T26 foreign-only dirt via default baseline path → allow" "$out"
+rm -rf "$ws" "$shim"
+
+# T27: MIXED — an OWN new file (appeared during the session ⇒ absent from the
+# baseline) AND a FOREIGN file (in the baseline). The hook must BLOCK on the OWN
+# file only, and the foreign path must be left for its owner — NEVER given
+# commit-under-bead / git-restore advice (claude-tools-f4ub acceptance #3).
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$GOOD_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+echo "a sibling owns this"   > "$ws/foreign.txt"
+echo "package main"          > "$ws/own.go"
+printf '%s\n' '?? foreign.txt' > "$ws/.beads/runner-logs/dirty-baseline.txt"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws BEADS_DIRTY_BASELINE=$ws/.beads/runner-logs/dirty-baseline.txt")
+assert_block_stop "T27 mixed → blocks on own.go" "$out" "own.go"
+# acceptance #3: foreign.txt must sit under the "leave them" note, never advised
+# to be committed-under-bead or git-restore'd.
+if printf '%s' "$out" | jq -r '.reason' 2>/dev/null | grep -qF "do NOT 'git restore' them" \
+   && printf '%s' "$out" | jq -r '.reason' 2>/dev/null | grep -qF "foreign.txt"; then
+  PASS=$((PASS+1)); echo "  PASS: T27b foreign path left for owner (no restore/commit advice)"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES+=("T27b")
+  echo "  FAIL: T27b expected foreign 'leave them' note for foreign.txt, got:"; echo "$out" | head -8 | sed 's/^/    /'
+fi
+rm -rf "$ws" "$shim"
+
+# T28: commit-set rescue — a file that WAS dirty at spawn (in baseline) but is in
+# this bead's OWN commit set is OWN, not foreign, so it still blocks. Guards the
+# "or are in the bead's commit" clause: a worker that committed a file under its
+# bead then left it dirty is genuine smuggling, baseline notwithstanding.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+write_shim "$shim" bd "case \"\$*\" in 'show foo --long --json') printf '%s' '[{\"status\":\"open\",\"notes\":\"$GOOD_NOTES\"}]'; ;; 'show foo --json') printf '%s' '[{\"status\":\"open\"}]' ;; esac"
+echo "orig" > "$ws/tracked.txt"
+git -C "$ws" add tracked.txt 2>/dev/null
+git -C "$ws" -c user.email=t@t -c user.name=t commit -q -m "work on foo bead" tracked.txt 2>/dev/null
+echo "changed by this worker" >> "$ws/tracked.txt"   # now dirty (modified)
+printf '%s\n' ' M tracked.txt' > "$ws/.beads/runner-logs/dirty-baseline.txt"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws BEADS_DIRTY_BASELINE=$ws/.beads/runner-logs/dirty-baseline.txt")
+assert_block_stop "T28 baseline-but-in-commit-set → still blocks (own)" "$out" "tracked.txt"
 rm -rf "$ws" "$shim"
 
 echo

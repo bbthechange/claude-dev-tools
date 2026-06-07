@@ -102,6 +102,7 @@ run_audit() {
     set -uo pipefail
     cd '$ws'
     unset RUNNER_SKIP_POST_CLOSE_AUDIT 2>/dev/null || true
+    unset BEADS_DIRTY_BASELINE 2>/dev/null || true  # claude-tools-f4ub: force \$LOG_DIR fallback
     $skipline
     INCIDENTS=()
     INCIDENTS_LOG='$log_dir/incidents.log'
@@ -217,6 +218,35 @@ inc="$ws/.beads/runner-logs/incidents.log"; crl="$ws/.beads/runner-logs/bd-creat
 _expect "BC-56" "02ec" "full bead id in commit BODY (Refs:) ⇒ clean close, no fire (agrees with the Stop hook)"
 _need "no incident"        bash -c '[[ ! -s "'"$inc"'" ]]'
 _need "no regression bead" bash -c '[[ ! -s "'"$crl"'" ]]'
+_emit
+
+# ── C7: foreign-only dirt → downgraded incident, NOT a P1 bead (claude-tools-f4ub)
+# The bead closed clean of its OWN work; a concurrent sibling / aux session / a
+# stray human edit left a FOREIGN uncommitted file (present in the spawn-time
+# baseline, outside the bead's commit set). The v2 audit must NOT file a
+# discipline-bypass bead — only a forensic FOREIGN_DIRT_AT_CLOSE incident
+# (option C). This is the claude-tools-uxgpre false positive, regression-locked.
+ws=$(mkfixture); shim=$(mkshim)
+printf '%s\n' "This is a properly long debrief explaining what happened in detail." \
+              "wrapup-reviewed: 2026-05-31T10:00:00Z sha=abc clean=0" \
+  > "$ws/.beads/runner-logs/notes.txt"
+write_bd_shim "$shim" "$ws" "foreign-1" "closed" "$ws/.beads/runner-logs/notes.txt"
+mkdir -p "$ws/.claude/skills/wrapup"; echo stub > "$ws/.claude/skills/wrapup/SKILL.md"
+( cd "$ws" && git init -q \
+  && git -c user.email=t@t -c user.name=t add . \
+  && git -c user.email=t@t -c user.name=t commit -q -m 'work on foreign-1 — closing it out' )
+# foreign file in the shared tree + the spawn-time baseline that records it as
+# pre-existing (outside foreign-1's commit set). run_audit unsets
+# BEADS_DIRTY_BASELINE so the audit reads $LOG_DIR/dirty-baseline.txt here.
+echo 'a concurrent sibling owns this' > "$ws/foreign.txt"
+printf '%s\n' '?? foreign.txt' > "$ws/.beads/runner-logs/dirty-baseline.txt"
+run_audit "$ws" "foreign-1" "$shim" 0
+inc="$ws/.beads/runner-logs/incidents.log"; crl="$ws/.beads/runner-logs/bd-create-calls.log"
+_expect "BC-56" "f4ub" "foreign-only dirt (outside change set, in spawn baseline) ⇒ downgraded FOREIGN_DIRT incident, never a P1 discipline-bypass bead"
+_need "FOREIGN_DIRT_AT_CLOSE incident row"   contains "$(rd "$inc")" "FOREIGN_DIRT_AT_CLOSE"
+_need "no DISCIPLINE_BYPASS classification"  notcontains "$(rd "$inc")" "DISCIPLINE_BYPASS"
+_need "no dirty_tree finding"                notcontains "$(rd "$inc")" "dirty_tree"
+_need "no regression bead filed"             bash -c '[[ ! -s "'"$crl"'" ]]'
 _emit
 
 _bc56_cleanup

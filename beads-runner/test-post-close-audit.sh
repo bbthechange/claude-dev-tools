@@ -56,6 +56,7 @@ run_audit() {  # run_audit <ws-dir> <task_id> <shim-dir>
   bash -c "
     set -uo pipefail
     cd '$ws'
+    unset BEADS_DIRTY_BASELINE 2>/dev/null || true  # claude-tools-f4ub: force \$LOG_DIR fallback
     INCIDENTS=()
     INCIDENTS_LOG='$log_dir/incidents.log'
     LOG_DIR='$log_dir'
@@ -366,6 +367,92 @@ else
     echo "    incident:"; cat "$ws/.beads/runner-logs/incidents.log" | sed 's/^/      /' 2>/dev/null
   [[ -s "$ws/.beads/runner-logs/bd-create-calls.log" ]] && \
     echo "    bd create:"; cat "$ws/.beads/runner-logs/bd-create-calls.log" | sed 's/^/      /' 2>/dev/null
+fi
+rm -rf "$ws" "$shim"
+
+# T9: Closed bead, clean of its OWN work, but a FOREIGN uncommitted file sits in
+#     the shared tree (a concurrent sibling / aux session / stray human edit). It
+#     is present in the spawn-time baseline and outside the bead's commit set, so
+#     it must NOT file a P1 discipline-bypass bead — only a downgraded
+#     FOREIGN_DIRT_AT_CLOSE forensic incident (claude-tools-f4ub option C). This
+#     is the uxgpre false-positive, regression-locked.
+ws=$(mkfixture); shim=$(mkshim)
+write_shim "$shim" bd "
+case \"\$*\" in
+  'show foo-9 --json')
+    printf '%s' '[{\"status\":\"closed\"}]' ;;
+  'show foo-9 --long --json')
+    printf '%s' '[{\"status\":\"closed\",\"notes\":\"Proper debrief content that is over forty characters long.\nwrapup-reviewed: 2026-05-28T00:00:00Z sha=abc clean=0\"}]' ;;
+  create*) echo \"\$*\" >> '$ws/.beads/runner-logs/bd-create-calls.log' ;;
+esac
+exit 0
+"
+mkdir -p "$ws/.claude/skills/wrapup" && echo stub > "$ws/.claude/skills/wrapup/SKILL.md"
+( cd "$ws" \
+  && git init -q 2>/dev/null \
+  && git -c user.email=t@t -c user.name=t add . \
+  && git -c user.email=t@t -c user.name=t commit -q -m 'work on foo-9 — closing it out' )
+# A FOREIGN uncommitted file + the spawn-time baseline that records it as
+# pre-existing (outside foo-9's commit set). LOG_DIR (the audit's baseline dir) is
+# $ws/.beads/runner-logs in run_audit.
+echo 'sibling churn this worker never touched' > "$ws/foreign.txt"
+printf '%s\n' '?? foreign.txt' > "$ws/.beads/runner-logs/dirty-baseline.txt"
+
+run_audit "$ws" "foo-9" "$shim" >/dev/null 2>&1
+
+inc_log="$ws/.beads/runner-logs/incidents.log"
+create_log="$ws/.beads/runner-logs/bd-create-calls.log"
+if [[ -s "$inc_log" ]] && grep -q "FOREIGN_DIRT_AT_CLOSE" "$inc_log" \
+   && ! grep -q "DISCIPLINE_BYPASS" "$inc_log" \
+   && ! grep -q "dirty_tree" "$inc_log" \
+   && [[ ! -s "$create_log" ]]; then
+  PASS=$((PASS+1)); echo "  PASS: T9 foreign-only dirt → downgraded incident, NO P1 regression bead"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES+=("T9")
+  echo "  FAIL: T9 expected FOREIGN_DIRT_AT_CLOSE only + no bd create, got:"
+  [[ -s "$inc_log" ]] && cat "$inc_log" | sed 's/^/    incident: /' || echo "    (no incident)"
+  [[ -s "$create_log" ]] && cat "$create_log" | sed 's/^/    create: /'
+fi
+rm -rf "$ws" "$shim"
+
+# T10: Closed bead with BOTH a foreign file (in baseline) AND a genuine OWN new
+#      uncommitted file (absent from baseline, outside the commit set ⇒ this
+#      worker's own smuggling-in-waiting). The own file MUST still fire dirty_tree
+#      + a P1 regression bead — the foreign-dirt softening must not suppress
+#      detection of real own dirt (claude-tools-f4ub acceptance / regression of T6).
+ws=$(mkfixture); shim=$(mkshim)
+write_shim "$shim" bd "
+case \"\$*\" in
+  'show foo-10 --json')
+    printf '%s' '[{\"status\":\"closed\"}]' ;;
+  'show foo-10 --long --json')
+    printf '%s' '[{\"status\":\"closed\",\"notes\":\"Proper debrief content that is over forty characters long.\nwrapup-reviewed: 2026-05-28T00:00:00Z sha=abc clean=0\"}]' ;;
+  create*) echo \"\$*\" >> '$ws/.beads/runner-logs/bd-create-calls.log' ;;
+esac
+exit 0
+"
+mkdir -p "$ws/.claude/skills/wrapup" && echo stub > "$ws/.claude/skills/wrapup/SKILL.md"
+( cd "$ws" \
+  && git init -q 2>/dev/null \
+  && git -c user.email=t@t -c user.name=t add . \
+  && git -c user.email=t@t -c user.name=t commit -q -m 'work on foo-10 — closing it out' )
+echo 'sibling churn'        > "$ws/foreign.txt"
+echo 'package main'         > "$ws/own.go"     # this worker's own uncommitted new file
+printf '%s\n' '?? foreign.txt' > "$ws/.beads/runner-logs/dirty-baseline.txt"
+
+run_audit "$ws" "foo-10" "$shim" >/dev/null 2>&1
+
+inc_log="$ws/.beads/runner-logs/incidents.log"
+create_log="$ws/.beads/runner-logs/bd-create-calls.log"
+if [[ -s "$inc_log" ]] && grep -q "dirty_tree" "$inc_log" \
+   && grep -q "DISCIPLINE_BYPASS" "$inc_log" \
+   && [[ -s "$create_log" ]] && grep -q "discipline-bypass" "$create_log"; then
+  PASS=$((PASS+1)); echo "  PASS: T10 own dirt alongside foreign still fires dirty_tree + P1 bead"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES+=("T10")
+  echo "  FAIL: T10 expected dirty_tree DISCIPLINE_BYPASS + regression bead, got:"
+  [[ -s "$inc_log" ]] && cat "$inc_log" | sed 's/^/    incident: /' || echo "    (no incident)"
+  [[ -s "$create_log" ]] && cat "$create_log" | sed 's/^/    create: /' || echo "    (no bd create)"
 fi
 rm -rf "$ws" "$shim"
 

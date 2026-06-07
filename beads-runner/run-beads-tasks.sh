@@ -1591,6 +1591,7 @@ post_close_audit() {
   [[ "$status" == "closed" ]] || return 0
 
   local failures=()
+  local foreign_dirt=""   # claude-tools-f4ub: dirt outside this bead's change set
 
   # Check 1: close-without-commit — the primary signal for the bypass case.
   # Mirrors close-checklist.sh check 3 (--since='1 hour ago'). NOTE: uses
@@ -1606,19 +1607,45 @@ post_close_audit() {
     fi
   fi
 
-  # Check 2: dirty tree (excluding .beads/issues.jsonl, debrief, runner-log
-  # scratch, .stop-beads). Mirrors close-checklist.sh check 2 — a closed bead
-  # with a dirty tree means the worker's diff is about to be smuggled into the
-  # next bead's commit. issues.jsonl is excluded because bd close itself writes
-  # to it as a side-effect of flipping status; authoritative state is in Dolt
-  # (claude-tools-u4ms).
+  # Check 2: dirty tree — SCOPED to THIS bead's own uncommitted work
+  # (claude-tools-f4ub). Mirrors close-checklist.sh check 2. The tree is SHARED
+  # across concurrent sessions; the old whole-tree check filed a false P1
+  # DISCIPLINE_BYPASS when a sibling/aux session or a stray human edit left
+  # FOREIGN uncommitted files this worker never touched (the claude-tools-uxgpre
+  # false positive). A dirty path is THIS worker's OWN iff it appeared DURING the
+  # session (absent from the spawn-time baseline the runner snapshots at claim)
+  # OR it is in the bead's own commit set; everything else is FOREIGN —
+  # downgraded to a forensic incident below (option C), never a P1 regression
+  # bead. No baseline file ⇒ base_paths empty ⇒ every dirty path is OWN ⇒ the old
+  # whole-tree behavior, preserved. issues.jsonl/debrief/runner-logs/.stop-beads
+  # scratch stays excluded (BC-56/u4ms).
   if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
     local dirty
     dirty="$(git -C "$project_dir" status --porcelain --untracked-files=all 2>/dev/null \
       | grep -vE '^.{3}(\.beads/issues\.jsonl$|\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
       || true)"
     if [[ -n "$dirty" ]]; then
-      failures+=("dirty_tree")
+      local baseline_file base_paths commit_paths own_dirty="" _dl _dp
+      baseline_file="${BEADS_DIRTY_BASELINE:-$LOG_DIR/dirty-baseline.txt}"
+      base_paths=""
+      [[ -f "$baseline_file" ]] && base_paths="$(sed -E 's/^...//; s/.* -> //' "$baseline_file" 2>/dev/null || true)"
+      # NB: a path with a SPACE is quoted in porcelain ("a b.txt") but NOT in
+      # `git log --name-only` (a b.txt), so the commit-set rescue is space-blind
+      # for such names. The baseline leg IS symmetric (both sides porcelain), so
+      # foreign-detection is unaffected — only this rescue belt. Acceptable: a
+      # code repo's bead-committed paths are space-free in practice.
+      commit_paths="$(git -C "$project_dir" log --grep="$task_id" --since='1 hour ago' --name-only --format= 2>/dev/null | grep -v '^$' | sort -u || true)"
+      while IFS= read -r _dl; do
+        [[ -z "$_dl" ]] && continue
+        _dp="${_dl:3}"; _dp="${_dp##* -> }"
+        if printf '%s\n' "$base_paths" | grep -qxF -- "$_dp" \
+           && ! printf '%s\n' "$commit_paths" | grep -qxF -- "$_dp"; then
+          foreign_dirt+="$_dl"$'\n'
+        else
+          own_dirty+="$_dl"$'\n'
+        fi
+      done <<< "$dirty"
+      [[ -n "$own_dirty" ]] && failures+=("dirty_tree")
     fi
   fi
 
@@ -1639,6 +1666,14 @@ post_close_audit() {
   fi
 
   if (( ${#failures[@]} == 0 )); then
+    # claude-tools-f4ub: foreign-only dirt (every dirty path is outside this
+    # bead's change set — a concurrent sibling / aux session / stray human
+    # edit) is NOT a discipline bypass. Downgrade to a forensic incident only
+    # (option C): NEVER a P1 regression bead and NEVER a DISCIPLINE_BYPASS marker
+    # note, which would be a false accusation against a worker that closed clean.
+    if [[ -n "$foreign_dirt" ]]; then
+      record_incident "$task_id" "FOREIGN_DIRT_AT_CLOSE (outside change set; left for owner)" "${session_anchor:--}"
+    fi
     return 0
   fi
 
@@ -2081,6 +2116,27 @@ while true; do
   export CURRENT_TASK_ID
   mkdir -p "$LOG_DIR" 2>/dev/null || true
   printf '%s' "$TASK_ID" > "$LOG_DIR/current-task" 2>/dev/null || true
+  # claude-tools-f4ub: snapshot the PRE-WORKER dirty tree so the close-discipline
+  # checks (Stop hook + post_close_audit) can tell THIS worker's own uncommitted
+  # work (appeared during the session) from FOREIGN dirt (a concurrent sibling /
+  # aux session / stray human edit) already present at claim. Same scratch
+  # exclusion as the checks; best-effort. Exported so the worker's hook
+  # subprocess reads the exact file (survives a non-default LOG_DIR). Absent/
+  # empty ⇒ the checks fall back to whole-tree. ABSOLUTE so the hook resolves it
+  # even if it ever runs from a cwd other than the workspace root (a relative
+  # LOG_DIR would otherwise miss → silent whole-tree fallback).
+  case "$LOG_DIR" in
+    /*) BEADS_DIRTY_BASELINE="$LOG_DIR/dirty-baseline.txt" ;;
+    *)  BEADS_DIRTY_BASELINE="$PWD/$LOG_DIR/dirty-baseline.txt" ;;
+  esac
+  if command -v git >/dev/null 2>&1 && [[ -d "$PWD/.git" ]]; then
+    git status --porcelain --untracked-files=all 2>/dev/null \
+      | grep -vE '^.{3}(\.beads/issues\.jsonl$|\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
+      > "$BEADS_DIRTY_BASELINE" 2>/dev/null || true
+  else
+    : > "$BEADS_DIRTY_BASELINE" 2>/dev/null || true
+  fi
+  export BEADS_DIRTY_BASELINE
   bd update "$TASK_ID" --status=in_progress 2>/dev/null || true
   hb running "$TASK_ID"   # §4.2: actual=running + current_task_ref, re-registers liveness
   # gk17 / epic vvgy: emit a workspace_inventory snapshot at pickup so the

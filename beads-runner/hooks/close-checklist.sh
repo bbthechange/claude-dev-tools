@@ -257,23 +257,66 @@ if (( ${#orphan_descs[@]} > 0 )); then
   remediation+=("$msg")
 fi
 
-# Check 2: dirty tree ─────────────────────────────────────────────────────
+# Check 2: dirty tree — SCOPED to THIS bead's own uncommitted work ─────────
+# Exclude .beads/issues.jsonl (bd close itself writes to it as a side-effect;
+# authoritative state is in Dolt — claude-tools-u4ms), beads/* debrief files,
+# runner-logs, the .stop-beads signal file.
+# Use grep -vE on the porcelain output (2-char status code + space + path).
+# --untracked-files=all expands directory entries so an untracked
+# .beads/foo-debrief.txt appears as a file we can filter, not as `?? .beads/`.
+# (Note: `-u all` is wrong — git parses "all" as a pathspec; must use `=` or `-uall`.)
+#
+# claude-tools-f4ub: the working tree is SHARED — a concurrent sibling runner,
+# an aux/triage session, or a stray human edit can leave FOREIGN uncommitted
+# files this worker never touched. The old whole-tree check mis-attributed that
+# foreign dirt to this worker and BLOCKED the close advising "commit it / git
+# restore" — BOTH harmful (committing smuggles a foreign diff into this bead's
+# commit, the very thing this check exists to prevent; `git restore` DESTROYS
+# another actor's uncommitted work). So partition the dirt: a path is THIS
+# worker's OWN iff it appeared DURING the session (absent from the spawn-time
+# baseline the runner snapshots at claim) OR it is in the bead's own commit set;
+# everything else is FOREIGN and is left for its owner — never blocked, never
+# restore-advised. No baseline file (e.g. a hand-run worker) ⇒ base_paths empty
+# ⇒ every dirty path is OWN ⇒ the old whole-tree behavior, preserved.
 if command -v git >/dev/null 2>&1 && [[ -d "$project_dir/.git" ]]; then
-  # Exclude .beads/issues.jsonl (bd close itself writes to it as a side-effect;
-  # authoritative state is in Dolt — claude-tools-u4ms), beads/* debrief files,
-  # runner-logs, the .stop-beads signal file.
-  # Use grep -vE on the porcelain output (2-char status code + space + path).
-  # --untracked-files=all expands directory entries so an untracked
-  # .beads/foo-debrief.txt appears as a file we can filter, not as `?? .beads/`.
-  # (Note: `-u all` is wrong — git parses "all" as a pathspec; must use `=` or `-uall`.)
   dirty="$(git -C "$project_dir" status --porcelain --untracked-files=all 2>/dev/null \
     | grep -vE '^.{3}(\.beads/issues\.jsonl$|\.beads/[^/]*-debrief\.txt$|\.beads/runner-logs/|\.stop-beads$)' \
     || true)"
   if [[ -n "$dirty" ]]; then
-    failures+=("dirty_tree")
-    msg="Uncommitted changes in the working tree (issues.jsonl / debrief / runner-log scratch files excluded):"$'\n'"$dirty"$'\n\n'
-    msg+="Commit them — referencing the bead id ($task_id) in the message so 'git log --grep' can find them — or 'git restore <path>' / 'git clean' if they were exploratory. Do NOT close a bead with uncommitted work; the next runner iteration would smuggle this diff into an unrelated bead's commit."
-    remediation+=("$msg")
+    baseline_file="${BEADS_DIRTY_BASELINE:-$project_dir/.beads/runner-logs/dirty-baseline.txt}"
+    base_paths=""
+    [[ -f "$baseline_file" ]] && base_paths="$(sed -E 's/^...//; s/.* -> //' "$baseline_file" 2>/dev/null || true)"
+    # NB: a path with a SPACE is quoted in porcelain ("a b.txt") but NOT in
+    # `git log --name-only` (a b.txt), so the commit-set rescue is space-blind
+    # for such names. The baseline leg IS symmetric (both sides porcelain), so
+    # foreign-detection is unaffected — only this rescue belt. Acceptable: a
+    # code repo's bead-committed paths are space-free in practice.
+    commit_paths="$(git -C "$project_dir" log --grep="$task_id" --since='1 hour ago' --name-only --format= 2>/dev/null | grep -v '^$' | sort -u || true)"
+    own_dirty=""; foreign_dirty=""
+    while IFS= read -r _dl; do
+      [[ -z "$_dl" ]] && continue
+      _dp="${_dl:3}"; _dp="${_dp##* -> }"
+      if printf '%s\n' "$base_paths" | grep -qxF -- "$_dp" \
+         && ! printf '%s\n' "$commit_paths" | grep -qxF -- "$_dp"; then
+        foreign_dirty+="$_dl"$'\n'
+      else
+        own_dirty+="$_dl"$'\n'
+      fi
+    done <<< "$dirty"
+    own_dirty="${own_dirty%$'\n'}"; foreign_dirty="${foreign_dirty%$'\n'}"
+    if [[ -n "$own_dirty" ]]; then
+      failures+=("dirty_tree")
+      msg="Uncommitted changes to files THIS bead touched (issues.jsonl / debrief / runner-log scratch files excluded):"$'\n'"$own_dirty"$'\n\n'
+      msg+="Commit them — referencing the bead id ($task_id) in the message so 'git log --grep' can find them — or 'git restore <path>' / 'git clean' if they were exploratory. Do NOT close a bead with uncommitted work; the next runner iteration would smuggle this diff into an unrelated bead's commit."
+      if [[ -n "$foreign_dirty" ]]; then
+        msg+=$'\n\n'"NOTE — other uncommitted files are present but are OUTSIDE this bead's change set (a concurrent session or a stray edit owns them). Leave them: do NOT commit them under $task_id and do NOT 'git restore' them:"$'\n'"$foreign_dirty"
+      fi
+      remediation+=("$msg")
+    fi
+    # own_dirty empty + foreign_dirty present ⇒ foreign-only dirt: NOT this
+    # worker's bypass. Allow the close (don't append a failure). The runner's
+    # post-close audit records the forensic FOREIGN_DIRT incident; the hook must
+    # neither block nor advise commit/restore on a path the session didn't touch.
   fi
 fi
 
