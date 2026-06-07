@@ -436,6 +436,52 @@ ck "app.js renders the blueprint_focus bridge affordance"     has "blueprint_foc
 ck "app.js opens the bridge via its href (the deep-link target)" has "bp.href" "$(cat "$APP")"
 
 echo ""
+echo "── claude-tools-uxa2 (inbox-lifecycle §6.4): post-action render DERIVES from the engine record — no 0/1-resolved drift ──"
+# THE §6 BUG this kills: after the engine had RESOLVED the dossier (worker
+# re-dispatched, the §7.4 latch flipped), the Inbox still showed "0 / 1 resolved"
+# + the BLOCKING badge — a render/engine drift, i.e. a double-action vector. The
+# §6.4 contract: post-action UI state DERIVES from the engine response, NEVER a
+# hand-maintained in-memory counter; acquiring fresh state is a RE-FETCH. This
+# locks it: the SAME pure deriveDossierView, fed the pre- vs post-resolution §4
+# record, yields 0/1 then 1/1 — the number moves ONLY because the record moved.
+DID_SI="$(dg_generate "$GOOD" "$(gi dSI human_flag blocking "[$(item_ar si1)]")")"
+ck "T5 dg_generate produced the state-integrity fixture"        eq "$DID_SI" "dSI"
+PRE="$(iv deriveDossierView "$(GET dSI)")"
+ck "PRE-resolution render: rollup.resolved = 0 (item still open)"  eq "$(jqr "$PRE" '.rollup.resolved')" "0"
+ck "PRE-resolution render: all_resolved = false"                  eq "$(jqr "$PRE" '.rollup.all_resolved')" "false"
+ck "PRE-resolution render: the item is non-terminal (needs you)"  eq "$(jqr "$PRE" '.items[0].terminal')" "false"
+# the engine resolves it (the worker-side apply §5/§6 describe).
+PRE_ITEM="$(jq -c '.items[0]' <<<"$PRE")"
+SI_RESP="$(jq -c .response <<<"$(iv buildItemResponse "$PRE_ITEM" '{"action":"approve"}' 0)")"
+ckok "engine applies the response (T5 do_item_apply)"           do_item_apply "$GOOD" dSI si1 "$SI_RESP"
+# RE-FETCH — the same pure derive fed the NEW §4 record. The §6.4 invariant:
+# fresh state is a re-fetch, never an in-memory patch of the prior view.
+POST="$(iv deriveDossierView "$(GET dSI)")"
+ck "POST render: rollup.resolved = 1 (NOT the stale 0 — §6 drift fixed)" eq "$(jqr "$POST" '.rollup.resolved')" "1"
+ck "POST render: all_resolved = true (engine-derived, not patched)" eq "$(jqr "$POST" '.rollup.all_resolved')" "true"
+ck "POST render: the item now reads terminal off the §4 record"   eq "$(jqr "$POST" '.items[0].terminal')" "true"
+# the ack (deriveConfirm) reads the §7.4 latch off the SAME re-fetched record —
+# it cannot report "0/1 resolved" because there is no local resolved counter.
+CSI="$(iv deriveConfirm "$(GET dSI)")"
+ck "ack: 0 items still open (no 0/1-resolved drift in the receipt)" eq "$(jqr "$CSI" '.receipt.still_open')" "0"
+ck "ack: all_resolved true off the §7.4 latch (S-2, no Dolt read)" eq "$(jqr "$CSI" '.all_resolved')" "true"
+# the resolved count moved ONLY because the engine record moved: the render core
+# is a pure function of its input (no network/exec ⇒ no in-memory state to drift).
+ck "render core is pure — no fetch (no live state to drift, §6.4)" hasnt "fetch(" "$(cat "$VIEW")"
+ck "render core is pure — no child_process/exec"                  hasnt "child_process" "$(cat "$VIEW")"
+# STRUCTURAL LOCK — the app can never re-introduce a local resolved-count patch:
+ck "app writes the resolved-count DOM (progN) in EXACTLY ONE place" eq "$(grep -c "Dom.el('progN').textContent" "$APP")" "1"
+ck "…and that place (recount) derives it from engine state + staged form" has "alreadyTerminal + nowResolved" "$(cat "$APP")"
+ck "…'already resolved' comes from the engine item.terminal, not a counter" has "return x.terminal;" "$(cat "$APP")"
+ck "the render model (curView) is assigned in EXACTLY ONE place"  eq "$(grep -c "curView = v;" "$APP")" "1"
+ck "…and that view IS the re-fetched record's derive (loadDossier)" has "var v = IV.deriveDossierView(rec);" "$(cat "$APP")"
+ck "a re-fetch RESETS staged form state (no stale carry-over)"    has "formState = {}" "$(cat "$APP")"
+ck "submit/dismiss reconcile via an HONEST re-fetch (refetchAck)" has "function refetchAck" "$(cat "$APP")"
+ck "…refetchAck re-fetches the §4 record (not an optimistic patch)" has "/api/inbox/dossier?id=" "$(cat "$APP")"
+ck "…and derives the ack from THAT record (deriveConfirm, S-2)"   has "IV.deriveConfirm(rec)" "$(cat "$APP")"
+ck "defer/escalate/snooze reconcile via a full re-fetch (loadDossier)" has "loadDossier(id)" "$(cat "$APP")"
+
+echo ""
 echo "══════════════════════════════════════════════════════════════════════"
 echo " test-inbox (T6b, claude-tools-xre):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"

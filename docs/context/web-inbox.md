@@ -99,6 +99,15 @@ Four facts explain the page:
   landed" strictly from the re-fetched §4 Dossier's per-Item
   `state`/`consequence_applied` — the control-plane truth the Coordinator
   reconciles into beads — so "you don't need to go check" carries no Dolt-lag lie.
+- **Post-action UI state DERIVES from the engine record — no in-memory patch
+  (inbox-lifecycle §6.4; claude-tools-uxa2).** Every action reconciles by
+  RE-FETCHING the §4 record (`refetchAck`/`loadDossier`), never by hand-bumping a
+  local counter. The "N / total resolved" DOM (`progN`) is written in exactly ONE
+  place — `recount()`, deriving from `curView.items[].terminal` (engine-derived) +
+  staged `formState` (reset to `{}` on every re-fetch); `curView` is assigned in
+  exactly ONE place (`loadDossier`, from `deriveDossierView` of a fresh GET). This
+  is what kills the §6 "shows 0/1 resolved after the engine already resolved" drift.
+  Regression-locked by the `claude-tools-uxa2` section in `test-inbox.sh`.
 - **The deterministic/reconciler split is mirrored, never re-decided.**
   `isDeterministicResponse` is the exact mirror of `consequence.sh
   do__is_deterministic`. The preview must never promise "instant" for an
@@ -113,7 +122,7 @@ Four facts explain the page:
 **Tweak how a dossier field renders / add a tolerant fallback:**
 Edit the derive in `inbox-view.js` (e.g. `deriveDossierView`/`deriveItem`); push
 a labeled note into `degraded[]` for any gap. Then paint it in `app.js`. Drive it
-headless via `bash beads-runner/lib/test-inbox.sh` (81 assertions against the REAL
+headless via `bash beads-runner/lib/test-inbox.sh` (171 assertions against the REAL
 `dg_generate` producer + `do_item_apply` applier — not a hand-faked shape).
 
 **Add/change an inbox verb (a new button → engine op):**
@@ -204,4 +213,4 @@ When you finish a task here, append anything a future agent will need and didn't
 find: a new verb/proxy pattern, a moved derive, a fresh degraded-fallback, a new
 scar, a changed §5/§4.5 field, a PWA payload change. **Keep it concise — this doc
 earns its keep only if agents read all of it.** Delete stale lines; don't let it
-grow into a copy of the README or INTERFACE.md. Last substantive update: 2026-06-06.
+grow into a copy of the README or INTERFACE.md. Last substantive update: 2026-06-07.

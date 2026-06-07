@@ -294,6 +294,20 @@ Post-action UI state derives from the engine response, **never** hand-maintained
 - **Priority:** P3. **Type:** bug. **Label:** `runner-reliability`. **No `human-triage`.**
 - Consider waiting until Stage 3 lands and re-checking; may auto-resolve.
 
+### 6.6 RESOLVED — re-checked post-L1 (claude-tools-uxa2, 2026-06-07)
+
+Audited after the §5/L1 interaction fixes landed. The drift was **auto-fixed and
+is now structurally impossible**: post-action UI state derives entirely from a
+RE-FETCH of the §4 record (`app.js refetchAck`/`loadDossier`), never an in-memory
+patch. The "N / total resolved" DOM (`progN`) is written in exactly ONE place —
+`recount()`, off `curView.items[].terminal` (engine-derived) + staged `formState`
+(reset on every re-fetch); `curView` is assigned only by `loadDossier` from
+`deriveDossierView` of a fresh GET; the render core is pure (no fetch/exec, no live
+state to drift). The §6.4 contract holds. **Regression-locked** by the
+`claude-tools-uxa2` section in `beads-runner/lib/test-inbox.sh` (the SAME pure
+derive, fed the pre- vs post-resolution engine record, yields `0/1` then `1/1` —
+the count moves only because the record moved). No code fix was needed.
+
 ---
 
 ## 7. Stage 5 — Closure: when a dossier no longer matters, it leaves
