@@ -1,6 +1,6 @@
 # Handoff — UX v2 expansion: tracking, anti-drift, and how to drive it
 
-Last updated: 2026-06-03 · Author: the "architect" session (2026-05-31), refreshed by a triage session (2026-06-03)
+Last updated: 2026-06-06 · Author: the "architect" session (2026-05-31), triage 2026-06-03, audit 2026-06-06
 Audience: the next agent (or human) picking up the UX v2 overhaul — to keep it
 on-track, keep the parallel agents from drifting apart, and expand/adapt it.
 
@@ -263,42 +263,41 @@ bd dep cycles
 cat .beads/runner-logs/detached-runner.pid   # this ws's runner pid
 ```
 
-**Snapshot at triage (2026-06-03):**
-- Working tree on **`main`**, `89a4737`, **== origin/main**. Clean tree, no
-  stashes, 1 worktree, no dep cycles. (This workspace's runner pidfile pointed at
-  a dead pid at triage — fine; the daemon respawns on demand.)
-- **Offline regression gate GREEN** — `bash beads-runner/run-tests.sh` exits 0,
-  every tier (lib 46 / daemon 19 / hooks 3 / agents 1 / top 13 / cf / conformance
-  / contract), zero fails. (It cleans `tmp/` as it runs, so the scratch log
-  vanishes at the end — trust the exit code, not a leftover file.)
-- **ux-v2 (`mhcp`):** **46 closed** (`uxg1`/N2 push delivery CLOSED 2026-06-03,
-  live-verified — see §3.4), 2 open (`uxg6` + the epic), 0 blocked, 2 deferred
-  (`uxdec` decisions, `uxvi5` I5 daemon dispatch). The track is essentially built;
-  what remains is human-gated or P3 polish.
-- **v2-cutover (`v2cut`):** **12 closed** — the v1→v2 cutover MECHANISM landed and
-  rhythmGame is flipped to v2 + live-verified (clean STARTING→RECONCILE→DRAINED
-  boot). Open: `v2c5` (retire v1) + the epic. Deferred: `v2cut.6` — a deliberate
-  human go/no-go (watch rhythmGame run ONE real bead end-to-end, then flip the
-  rest ONE AT A TIME: thirsty → thirsty-backend → hangoutsBackend → claude-tools
-  LAST). Recipe in `docs/context/runner.md`; selector `daemon_m3_uses_v2`.
-- **NEW epic `claude-tools-rznj`** — the UX-v2 testing strategy: `rznj.1`
-  (`run-tests.sh`, the one offline gate) + `rznj.2` (A–D contract harness +
-  `web/shared/enums.js`) are CLOSED; `rznj.5` (offline CI on push — GitHub Actions
-  yes/no) is a deferred Brian decision. CLAUDE.md's run-tests.sh gate is this
-  epic's output.
-- **13 ready beads, all P3** Inbox/Cross-WS/Board follow-ups (`o2mk` `653d` `uxa2`
-  `1xx1` `uxgpre` `uxvl4` `uxvk5` `uxvj5` …) — the swarm drains these; none block.
-- Branches: `main` (live). `n2-uxg1-push-delivery` AND
-  `i5-rehearsal-deploy-divergence-fixes` are **both fully merged into main, 0
-  commits ahead** (verified `git log main..<branch>` empty) — safe to delete,
-  local + remote.
+**Snapshot at audit (2026-06-06):**
+- Working tree on **`main`**, **== origin/main**. No dep cycles.
+- **ux-v2 (`mhcp`):** **46+ closed**, incl. `uxgpre` (CLOSED 2026-06-06,
+  `e26678b`). NOTE: an earlier draft of this snapshot accused `uxgpre` of scope
+  creep (factoring `runner-card.js` into `web/shared/`); the `dirty_tree`
+  discipline-bypass audit (`claude-tools-1s85`) DISPROVED that — `uxgpre`
+  committed ONLY its 6 gate-policy / intake-preset / doc files, and no
+  `runner-card.js` exists anywhere in the tree. The `runner-card`/`tokens.css`
+  diff seen transiently was a concurrent sibling's UNCOMMITTED churn in the
+  shared tree that never landed. Open: `uxa2` `uxvl4` `uxvk5` `uxvj5` (P3,
+  swarm-workable), `uxdec` (deferred, human decisions — **4 days past its
+  2026-06-02 defer date**). `uxg6` CLOSED 2026-06-06. The track is essentially
+  built; what remains is human-gated or P3 polish.
+- **v2-cutover (`v2cut`):** **v2 is now on TWO workspaces** — rhythmGame (v2c4
+  pilot) AND claude-tools (self-host, flipped by Brian 2026-06-04, fully
+  live-verified: bpmap1/2/3 ran clean, heartbeat drain regression caught + fixed
+  as `claude-tools-zyxz`). thirsty / thirsty-backend / hangoutsBackend still v1.
+  Open: `v2c5` (retire v1) + the epic. Deferred: `v2cut.6` — a deliberate human
+  go/no-go to flip the remaining three ONE AT A TIME (thirsty → thirsty-backend
+  → hangoutsBackend). Go/no-go evidence is strong: self-host is the hardest case
+  and cut over cleanly. Recipe in `docs/context/runner.md`; selector
+  `daemon_m3_uses_v2`. (The earlier "claude-tools LAST" ordering in this doc is
+  now obsolete — claude-tools went first as the self-host canary.)
+- **`claude-tools-rznj`** — closed: `rznj.1` (`run-tests.sh`) + `rznj.2` (A–D
+  contract harness). `rznj.5` (GitHub Actions CI) deferred to Brian.
+- **P2 new bug `qlj0`** — `pushsubscriptionchange` handler missing from
+  `web/inbox/sw.js`. Without it a browser-rotated subscription silently stops
+  delivery. Fully spec'd in the bead, swarm-workable.
+- Branches: `main` (live). No remote branches besides `origin/main`.
 
 ---
 
 ## 6. Open decisions for Brian (do not guess — they gate impl)
-Tracked in **`claude-tools-uxdec`** (was deferred to 2026-06-02 — **that date has
-now PASSED (triage is 2026-06-03), so it is due**; surface it to Brian. Same for
-`uxvi5` and `rznj.5`, both defer-dated 2026-06-02):
+Tracked in **`claude-tools-uxdec`** (**overdue** — deferred to 2026-06-02, now
+2026-06-06; surface to Brian). `uxvi5` and `rznj.5` also defer-dated 2026-06-02:
 1. **v1-vs-v2 runner fork** for `uxvj4`/`uxvi1`/`uxvi5` — current default: build
    on v2 behind `v2c3` (the `v2cut` epic). Confirm.
 2. **§14.1 gate placement authority** — any agent (assumed) vs specific hats.
