@@ -136,10 +136,21 @@ affordance + extensibility is owned here. The picker UI was already
 catalog-driven from I4 (no UI bytes changed by uxgpre — `label`+`sublabel` is
 the deliberate phone altitude; `description` rides the API for wire/debug
 only). What uxgpre closed was the *extensibility* gap: the L2 verdict was
-per-preset code, and three lockstep axes were unchecked. A *special* preset
-that breaks the (entry_stage, gate) reductive contract — e.g. the
-enricher-bypassing `overview-request` — is a separate bead (L4 / uxvl4), not a
-catalog row.
+per-preset code, and three lockstep axes were unchecked.
+
+**Special presets (claude-tools-uxvl4 / L4 — `overview-request`):** a preset
+that breaks the `(entry_stage, gate)` reductive contract — makes **no bd task**
+and routes daemon-side — IS a catalog row (the catalog owns the row so the UI
+renders it + the write proxy allow-lists it), just a *special* one. It carries
+`entry_stage:null` + `gate_aggressiveness:null` + a `routing` discriminator
+(`schema_version` 2 added that optional field). The UI renders it like any other
+radio (no UI bytes changed — still `label`/`sublabel`-driven). The write proxy
+still allow-lists it by value via `ALLOWED_PRESET_VALUES` (no `index.js` change).
+The *behavior* lives in `daemon/intake-dispatch-poll.sh` (routes to a
+dossier-builder → `proactive_checkpoint` `timed-fyi`); `test-intake-presets.sh`
+exempts special rows from the spine checks and adds a check that every
+`routing`-set value is branched on in the daemon. See `agents/intake-presets.md`
+"Special presets (no bd task)" for the special add-a-preset shape.
 
 **The gate before `bd close` (the bgw lesson — web work is not done at commit):**
 ```bash
@@ -228,5 +239,6 @@ and didn't find here: a new form field + its downstream consumers, a moved
 proxy, a changed projection, a new preset-related invariant, a fresh scar. Keep
 it concise — this doc earns its keep only if agents read all of it. Delete lines
 that have gone stale; don't let it grow into a re-spec of the README or
-UX-DESIGN. Last substantive update: 2026-06-06 (uxgpre — generalized the
-preset picker: catalog-driven L2 verdict + hardened lockstep harness).
+UX-DESIGN. Last substantive update: 2026-06-06 (uxvl4 — the special
+`overview-request` preset: a no-bd-task catalog row, `routing:"overview-fyi"`,
+schema_version 2; routes daemon-side to a dossier-builder FYI).

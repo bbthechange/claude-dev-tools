@@ -22,8 +22,10 @@ by **claude-tools-uxgpre** (it generalized the L2 verdict derivation so
 adding a preset is a pure-data, harness-enforced one-PR change; see the
 playbook below). A *specific* preset that breaks the reductive contract is
 its own bead — e.g. `overview-request` (claude-tools-uxvl4 / L4), which
-produces **no bd task** and routes to a Blueprint/FYI, lives on the daemon
-dispatch side, not here.
+produces **no bd task** and routes to a Blueprint/FYI. It **has shipped**: it
+lives as a SPECIAL catalog row (the catalog still owns the row so the UI
+renders it + the write proxy allow-lists it) but its *behavior* is
+daemon-side. See "Special presets (no bd task)" below.
 
 ## The reductive contract
 
@@ -139,6 +141,40 @@ files. Anything else is a hint that the spine is being violated.
 That's it. One JSON row + one mirror row + one bullet + one `value:gate`
 enum row, all in one PR — and the harness fails the PR if any of those is
 missed.
+
+## Special presets (no bd task) — the `routing` escape hatch
+
+Most presets reduce to `(entry_stage, gate)`. A **special** preset deliberately
+does NOT: it produces no bd task and routes daemon-side. `schema_version 2`
+(claude-tools-uxvl4) added one optional field to support this:
+
+- **`routing`** (string, OPTIONAL). Present ⇒ the row is special and is EXEMPT
+  from the reductive-contract harness checks (stage enum, gate enum,
+  `PRESET_ENUM`, `gate-policy decide`, enricher-mention). A special row MUST then
+  carry `entry_stage:null` + `gate_aggressiveness:null` + a *known* `routing`
+  value. The only value today is **`overview-fyi`** — the `overview-request`
+  preset (L4): the daemon's `intake-dispatch-poll.sh` branches on the preset
+  VALUE and routes it to a dossier-builder → `proactive_checkpoint` `timed-fyi`
+  (a Blueprint refresh / FYI), instead of the enricher. No `bd create` runs.
+
+The **record only carries the preset `value`**, never `routing` — so the daemon
+branches on the value (`overview-request`), and the catalog `routing` field is
+the *signal* that drives the harness exemptions + the daemon-branch lockstep.
+
+**Adding a special preset is a different one-PR shape than the normal playbook:**
+
+1. Append a row to `agents/intake-presets.json` with `entry_stage:null`,
+   `gate_aggressiveness:null`, `routing:"<known>"`, plus value/label/sublabel/
+   description. Mirror it in `_presets-catalog.js` (lockstep, byte-identical
+   description).
+2. Do NOT add a `PRESET_ENUM` row or an enricher resolution bullet — a special
+   preset never reaches L2 or the enricher.
+3. Add a daemon branch in `daemon/intake-dispatch-poll.sh` that recognizes the
+   value and routes it (the `daemon_intake_dispatch_overview` pattern). If the
+   `routing` value is new, extend `KNOWN_ROUTING` in `test-intake-presets.sh`.
+4. `bash test-intake-presets.sh` — check 10 fails the PR if the special value is
+   not branched on in the daemon (else an unhandled special preset would fall
+   through to the enricher and choke on the null `entry_stage`).
 
 ## What deliberately stays out
 

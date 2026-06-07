@@ -116,12 +116,43 @@ The two "no" cells in the bottom row are the gap.
 
 **Gap B — intake-preset for dossier requests:**
 
+> **RESOLVED (claude-tools-uxvl4 / L4, 2026-06-06):** shipped. The open design
+> question below was settled in favour of the second option — **skip the
+> enricher; branch in the daemon.** What landed:
+>
+> 1. A new SPECIAL preset row `overview-request` in
+>    `beads-runner/agents/intake-presets.json` (mirrored in
+>    `web/functions/api/intake/_presets-catalog.js`, lockstep). It carries
+>    `entry_stage:null`, `gate_aggressiveness:null`, and a `routing:"overview-fyi"`
+>    discriminator (`schema_version` bumped 1→2 for the new optional field). It
+>    breaks the reductive (entry_stage, gate) contract on purpose and is exempt
+>    from the L1/L2 spine checks in `test-intake-presets.sh` — which gained a new
+>    check (10) that every `routing`-set value is branched on by name in the daemon.
+> 2. `beads-runner/daemon/intake-dispatch-poll.sh` branches in
+>    `daemon_intake_dispatch_one`: `preset == overview-request` →
+>    `daemon_intake_dispatch_overview`, which spawns a **dossier-builder** (NOT the
+>    enricher), shapes its `{body,items}` into a §4.1 envelope
+>    (`kind=overview`, `trigger=proactive_checkpoint`, `tier=timed-fyi`,
+>    `bead_ref=`the synthetic intake_id — §4.1 only needs a non-empty string), and
+>    emits via the same `dg_generate + no_emit/no_dispatch + tf_arm` sequence Flow F
+>    uses. **No `bd create` ever runs** (the s6/s4 invariant: assert no bead). The
+>    record is marked `processed` with `dispatch_state:"overview"` +
+>    `overview_dossier_id` (NO `enricher_bd_id`), and rides the I3
+>    failing(n)→gave_up retry machine on any miscarriage.
+> 3. The enricher was therefore NOT extended — it never receives an
+>    overview-request (the daemon branches before dispatch). A defensive bullet in
+>    `enricher.system.md` documents the bypass.
+> 4. `daemon_intake_parse_bd_id` was untouched — the overview path parses the
+>    builder's `{body,items}` JSON, not the enricher one-line summary.
+>
+> The original plan (below) is kept for the record.
+
 1. New row in `beads-runner/agents/intake-presets.json` — e.g. `overview-dossier` with `entry_stage:null` (no bd task produced) and a sentinel `gate_aggressiveness` value meaning "no bead, FYI dossier."
 2. Mirror in `beads-runner/web/functions/api/intake/_presets-catalog.js` (the playbook in `intake-presets.md` says "keep in lockstep").
 3. Extend `beads-runner/agents/enricher.system.md` with a fourth Step branch: if `preset` is the new overview value, **do not `bd create`**. Instead author the dossier body and push through `engine-bridge.sh write_polished` with `trigger=proactive_checkpoint`. Emit a new stdout summary `enricher: overview → wrote dossier <id> (intake <intake_id>)`.
 4. `daemon_intake_parse_bd_id` (`beads-runner/daemon/intake-dispatch-poll.sh:211-229`-ish) needs a new pattern for the overview outcome so it marks the intake processed.
 
-**Open design question (Gap B):** should overview intakes go through the **enricher** at all (whose contract is "bd is your only writer") or route directly to a **dossier-builder dispatch** in the daemon (skip the enricher entirely)? Author's read in `tmp/changes.md`: skip the enricher; dedup against bd isn't useful for an FYI. Have `intake-dispatch-poll.sh` branch on preset.
+**Open design question (Gap B) — RESOLVED, see the box above:** should overview intakes go through the **enricher** at all (whose contract is "bd is your only writer") or route directly to a **dossier-builder dispatch** in the daemon (skip the enricher entirely)? Author's read in `tmp/changes.md`: skip the enricher; dedup against bd isn't useful for an FYI. Have `intake-dispatch-poll.sh` branch on preset.
 
 ### 3.5 Tactical workaround for the existing rhythmGame intakes
 

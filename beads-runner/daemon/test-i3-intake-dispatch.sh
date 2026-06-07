@@ -544,6 +544,140 @@ unset DAEMON_INTAKE_SPECIALIST_OVERRIDE
 rm -rf "$WH" 2>/dev/null || true
 
 # ════════════════════════════════════════════════════════════════════════════
+# PART I — L4 (claude-tools-uxvl4): the `overview-request` preset → NO bd task,
+#   routes to a dossier-builder → proactive_checkpoint timed-fyi (Blueprint
+#   refresh / FYI). The s6/s4 testing invariant: assert NO bead is created.
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "── PART I — overview-request preset: dossier-builder FYI, NO bd task ──"
+
+# Hermetic local store (same posture as PART H): unset any live engine binding so
+# the per-workspace .co-store symlink is authoritative.
+unset COORDINATOR_URL COORDINATOR_TOKEN CO_STORE
+
+WI="$(mktemp -d)"
+WS_ALPHA_I="$WI/alpha-ws"
+I_STORE="$WI/shared-store"
+mkdir -p "$WS_ALPHA_I/.beads/runner-logs" "$I_STORE/records"
+ln -snf "$I_STORE" "$WS_ALPHA_I/.beads/runner-logs/.co-store"
+
+REGISTRY_PROJECT_REFS=("alpha")
+REGISTRY_DIRS=("$WS_ALPHA_I")
+REGISTRY_COORDINATOR_URLS=("")
+REGISTRY_TOKEN_KEYCHAIN_ITEMS=("")
+REGISTRY_LOADED=1
+
+# Builder stub: emits a valid {body, items[]} dossier (the dossier-builder I/O
+# contract) and logs its invocation args so we can assert --kind=dossier-builder.
+I_STUB_LOG="$WI/builder.log"
+STUB_BUILDER="$WI/stub-builder.sh"
+cat > "$STUB_BUILDER" <<EOF
+#!/bin/bash
+echo "ARGS: \$*" >> "$I_STUB_LOG"
+cat <<'JSON'
+{"body":{"dossier_schema_version":2,"tldr":"Where things stand.","sections":[{"heading":"State","prose":"All green."}],"diagrams":[],"full_detail":"A stand-alone paragraph of overview prose for the phone."},"items":[]}
+JSON
+EOF
+chmod +x "$STUB_BUILDER"
+
+# Engine override: capture the generation_input ($2 = gi.json temp file) and echo
+# a deterministic dossier id (rc 0 ⇒ "written"). Lets us assert the §4.1 envelope
+# WITHOUT sourcing the coordinator/dossier stack.
+I_GI_CAPTURE="$WI/gi.json"
+STUB_ENGINE="$WI/stub-engine.sh"
+cat > "$STUB_ENGINE" <<EOF
+#!/bin/bash
+# \$1=ws \$2=gi.json
+cat "\$2" > "$I_GI_CAPTURE" 2>/dev/null
+echo "fyi-overview-test-001"
+exit 0
+EOF
+chmod +x "$STUB_ENGINE"
+
+I_REC="$I_STORE/records/intake-request.intake-l4-overview.json"
+jq -cn '{schema_version:1,id:"intake-l4-overview",idea_text:"how is the runner rewrite going?",project_ref:"alpha",preset:"overview-request",processed:false,submitted_at:"2026-06-06T08:00:00Z"}' > "$I_REC"
+
+export DAEMON_INTAKE_SPECIALIST_OVERRIDE="$STUB_BUILDER"
+export DAEMON_INTAKE_OVERVIEW_ENGINE_OVERRIDE="$STUB_ENGINE"
+: > "$I3_LOGS"
+daemon_intake_dispatch_one "$(cat "$I_REC")"
+logs="$(cat "$I3_LOGS")"
+rec_i="$(cat "$I_REC")"
+
+has "$logs" "I3 overview-dispatch:"                "I1: overview branch taken (distinct log channel)"
+has "$(cat "$I_STUB_LOG" 2>/dev/null)" "--kind=dossier-builder" "I2: spawned the dossier-builder hat (NOT the enricher)"
+nothas "$(cat "$I_STUB_LOG" 2>/dev/null)" "--kind=enricher"     "I3: enricher was NOT spawned for overview-request"
+eq "$(printf '%s' "$rec_i" | jq -r '.processed')"            "true"     "I4: overview record marked processed (queue drains)"
+eq "$(printf '%s' "$rec_i" | jq -r '.dispatch_state')"       "overview" "I5: dispatch_state=overview (terminal, not 'created')"
+eq "$(printf '%s' "$rec_i" | jq -r '.overview_outcome')"     "written"  "I6: overview_outcome=written"
+eq "$(printf '%s' "$rec_i" | jq -r '.overview_dossier_id')"  "fyi-overview-test-001" "I7: overview_dossier_id captured from the engine write"
+# THE invariant (bead testing note): NO bd task is ever created for overview-request.
+eq "$(printf '%s' "$rec_i" | jq -r '.enricher_bd_id // "ABSENT"')" "ABSENT" "I8: NO enricher_bd_id — no bead was created (s6/s4 invariant)"
+nothas "$logs" "bd_id="                                       "I9: overview path logs no bd_id (it makes no bead)"
+
+# The §4.1 generation envelope is the FYI shape: kind=overview, trigger=
+# proactive_checkpoint, tier=timed-fyi, bead_ref=intake_id (synthetic anchor).
+gi="$(cat "$I_GI_CAPTURE" 2>/dev/null)"
+eq "$(printf '%s' "$gi" | jq -r '.kind')"      "overview"             "I10: generation_input kind=overview"
+eq "$(printf '%s' "$gi" | jq -r '.trigger')"   "proactive_checkpoint" "I11: generation_input trigger=proactive_checkpoint"
+eq "$(printf '%s' "$gi" | jq -r '.tier')"      "timed-fyi"            "I12: generation_input tier=timed-fyi"
+eq "$(printf '%s' "$gi" | jq -r '.bead_ref')"  "intake-l4-overview"   "I13: bead_ref anchored on the synthetic intake_id (no real bead)"
+eq "$(printf '%s' "$gi" | jq -r '.source.authored_by')" "agent"       "I14: source authored_by=agent (no degraded-fallback badge)"
+
+unset DAEMON_INTAKE_OVERVIEW_ENGINE_OVERRIDE
+
+# I15/I16 — builder failure rides the I3 retry machine (failing, not processed).
+I_REC2="$I_STORE/records/intake-request.intake-l4-fail.json"
+jq -cn '{schema_version:1,id:"intake-l4-fail",idea_text:"brief me",project_ref:"alpha",preset:"overview-request",processed:false,submitted_at:"2026-06-06T08:05:00Z"}' > "$I_REC2"
+STUB_BUILDER_FAIL="$WI/stub-builder-fail.sh"
+cat > "$STUB_BUILDER_FAIL" <<'EOF'
+#!/bin/bash
+echo '{"body":{},"items":[]}'
+exit 5
+EOF
+chmod +x "$STUB_BUILDER_FAIL"
+export DAEMON_INTAKE_SPECIALIST_OVERRIDE="$STUB_BUILDER_FAIL"
+: > "$I3_LOGS"
+daemon_intake_dispatch_one "$(cat "$I_REC2")"
+rec_i2="$(cat "$I_REC2")"
+eq "$(printf '%s' "$rec_i2" | jq -r '.processed')"      "false"   "I15: failed overview build stays processed=false (retries)"
+eq "$(printf '%s' "$rec_i2" | jq -r '.dispatch_state')" "failing" "I16: failed overview build ⇒ dispatch_state=failing"
+unset DAEMON_INTAKE_SPECIALIST_OVERRIDE
+
+# I17 — clean builder refusal is TERMINAL (processed, no retry, still no bead).
+I_REC3="$I_STORE/records/intake-request.intake-l4-refuse.json"
+jq -cn '{schema_version:1,id:"intake-l4-refuse",idea_text:"x",project_ref:"alpha",preset:"overview-request",processed:false,submitted_at:"2026-06-06T08:06:00Z"}' > "$I_REC3"
+STUB_BUILDER_REFUSE="$WI/stub-builder-refuse.sh"
+cat > "$STUB_BUILDER_REFUSE" <<'EOF'
+#!/bin/bash
+echo '{"refuse":true,"reason":"workspace too thin to anchor a real overview"}'
+EOF
+chmod +x "$STUB_BUILDER_REFUSE"
+export DAEMON_INTAKE_SPECIALIST_OVERRIDE="$STUB_BUILDER_REFUSE"
+: > "$I3_LOGS"
+daemon_intake_dispatch_one "$(cat "$I_REC3")"
+rec_i3="$(cat "$I_REC3")"
+eq "$(printf '%s' "$rec_i3" | jq -r '.processed')"                 "true"     "I17: clean refusal marks processed (no money-burning retry)"
+eq "$(printf '%s' "$rec_i3" | jq -r '.overview_outcome')"          "refused"  "I18: refusal recorded as overview_outcome=refused"
+eq "$(printf '%s' "$rec_i3" | jq -r '.enricher_bd_id // "ABSENT"')" "ABSENT"  "I19: refusal still creates NO bead"
+unset DAEMON_INTAKE_SPECIALIST_OVERRIDE
+
+# I20 — DAEMON_INTAKE_DISABLED=1 canary exercises mark-processed without tokens.
+I_REC4="$I_STORE/records/intake-request.intake-l4-canary.json"
+jq -cn '{schema_version:1,id:"intake-l4-canary",idea_text:"canary overview",project_ref:"alpha",preset:"overview-request",processed:false,submitted_at:"2026-06-06T08:07:00Z"}' > "$I_REC4"
+export DAEMON_INTAKE_DISABLED=1
+: > "$I3_LOGS"
+daemon_intake_dispatch_one "$(cat "$I_REC4")"
+logs="$(cat "$I3_LOGS")"
+rec_i4="$(cat "$I_REC4")"
+has "$logs" "DAEMON_INTAKE_DISABLED=1"                              "I20: overview canary branch fires"
+eq "$(printf '%s' "$rec_i4" | jq -r '.processed')"                 "true"    "I21: overview canary marks record processed"
+eq "$(printf '%s' "$rec_i4" | jq -r '.overview_outcome')"          "canary"  "I22: overview canary outcome tag"
+eq "$(printf '%s' "$rec_i4" | jq -r '.enricher_bd_id // "ABSENT"')" "ABSENT" "I23: overview canary creates NO bead"
+unset DAEMON_INTAKE_DISABLED
+rm -rf "$WI" 2>/dev/null || true
+
+# ════════════════════════════════════════════════════════════════════════════
 # PART G — daemon.sh wires intake-dispatch-poll.sh into the main loop
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

@@ -1,6 +1,6 @@
 {
-  "_comment": "Canonical entry-intent preset catalog (UX-DESIGN Flow A; I4 = claude-tools-vvh). Single source of truth for both the Intake UI (web/intake/) AND the enricher hat (agents/enricher.system.md). Adding a preset is one PR: append a row here, mirror it in web/functions/api/intake/_presets-catalog.js (keep in lockstep), add the prompt-resolution bullet in enricher.system.md. See intake-presets.md for the playbook. Order in `presets` is the UI radio order; the first entry is the default selection.",
-  "schema_version": 1,
+  "_comment": "Canonical entry-intent preset catalog (UX-DESIGN Flow A; I4 = claude-tools-vvh). Single source of truth for both the Intake UI (web/intake/) AND the enricher hat (agents/enricher.system.md). Adding a NORMAL preset is one PR: append a row here, mirror it in web/functions/api/intake/_presets-catalog.js (keep in lockstep), add the prompt-resolution bullet in enricher.system.md, add the value:gate row to PRESET_ENUM in gate-policy.sh. See intake-presets.md for the playbook. Order in `presets` is the UI radio order; the first entry is the default selection. SPECIAL presets (`routing` set, e.g. `overview-request`/L4/claude-tools-uxvl4) BREAK the reductive (entry_stage, gate_aggressiveness) contract on purpose: they produce NO bd task and route on the daemon dispatch side. They carry `entry_stage:null` + `gate_aggressiveness:null` + a `routing` discriminator, are exempt from the L1/L2 spine checks in test-intake-presets.sh, and MUST be branched on by name in daemon/intake-dispatch-poll.sh (the harness enforces that lockstep). schema_version 2 added the optional `routing` field.",
+  "schema_version": 2,
   "presets": [
     {
       "value": "autonomous-until-stuck",
@@ -17,6 +17,15 @@
       "entry_stage": "ux",
       "gate_aggressiveness": "gate-human",
       "description": "Bead lands at stage:ux and is routed to the Inbox as \"ready to pair\" — the runner does NOT auto-pick-up. The human asked to be IN the stage, not just approve its output."
+    },
+    {
+      "value": "overview-request",
+      "label": "Just catch me up",
+      "sublabel": "Status overview — no new task.",
+      "entry_stage": null,
+      "gate_aggressiveness": null,
+      "routing": "overview-fyi",
+      "description": "Special (claude-tools-uxvl4 / L4): creates NO bd task. The daemon's intake-dispatch-poll branches on this value and routes it to a dossier-builder that publishes a proactive_checkpoint timed-fyi (a Blueprint refresh / FYI) to the Inbox — it never enters the enricher or the L1 stage / L2 gate spine. The idea_text is the framing of what to brief on."
     }
   ]
 }

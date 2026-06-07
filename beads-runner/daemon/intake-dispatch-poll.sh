@@ -87,6 +87,23 @@ DAEMON_INTAKE_SPECIALIST_OVERRIDE="${DAEMON_INTAKE_SPECIALIST_OVERRIDE:-}"
 # pre-L3 behaviour; not recommended).
 INTAKE_MAX_ATTEMPTS="${INTAKE_MAX_ATTEMPTS:-3}"
 
+# L4 (claude-tools-uxvl4) — the SPECIAL `overview-request` preset. An intake
+# carrying this preset produces NO bd task: instead of the enricher, the daemon
+# routes it to a dossier-builder that authors a proactive_checkpoint timed-fyi
+# (a Blueprint refresh / FYI) and publishes it to the engine + phone. This is
+# the daemon-side branch the catalog's `routing:"overview-fyi"` row points at
+# (test-intake-presets.sh check 10 enforces this value is branched on here). The
+# enricher is never spawned for it (dedup-against-bd is meaningless for an FYI;
+# inbox-lifecycle §3.4 Gap B "skip the enricher" resolution).
+INTAKE_OVERVIEW_PRESET="${INTAKE_OVERVIEW_PRESET:-overview-request}"
+
+# Test override: a script replacing the engine-write subshell for the overview
+# FYI emit. Called as "<override> <ws> <gi.json>", rc 0 ⇒ written, and it should
+# echo the dossier id on stdout (mirrors DAEMON_FLOW_F_ENGINE_OVERRIDE). Lets the
+# overview-branch test verify dispatch wiring without sourcing the coordinator
+# stack or hitting an engine.
+DAEMON_INTAKE_OVERVIEW_ENGINE_OVERRIDE="${DAEMON_INTAKE_OVERVIEW_ENGINE_OVERRIDE:-}"
+
 # daemon_intake_idea_hash <idea_text> → short hex hash (privacy-preserving)
 #   sha256 first 12 hex chars. The full text is NEVER logged. The hash gives
 #   a stable handle for grepping a specific tap across logs (Brian: "did
@@ -341,6 +358,300 @@ daemon_intake_parse_error_reason() {
   esac
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# L4 (claude-tools-uxvl4) — the `overview-request` preset path: NO bd task,
+# route to a dossier-builder → proactive_checkpoint timed-fyi (Blueprint refresh
+# / FYI). inbox-lifecycle §3.4 Gap B. The machinery deliberately mirrors Flow F's
+# proactive overview dispatch (daemon/flow-f-overview-poll.sh): same builder I/O
+# (specialist.sh --kind=dossier-builder → {body,items}), same §4.1 generation
+# envelope (kind=overview, tier=timed-fyi), same engine emit (dg_generate +
+# no_emit/no_dispatch + tf_arm). The differences are (1) trigger=proactive_check-
+# point (this is a human-initiated FYI, not a stage close), (2) bead_ref is the
+# synthetic intake_id (an overview-request has no bd task — §4.1 only needs a
+# non-empty string), and (3) it rides the I3 intake retry/state machine
+# (failing(n)→gave_up) so a flaky builder can't silently burn money.
+# ════════════════════════════════════════════════════════════════════════════
+
+# daemon_intake__build_overview_builder_input <dossier_id> <bead_ref> <ws> <idea_text>
+#   The dossier-builder stdin (agents/dossier-builder.system.md input contract).
+#   Framed as a PROACTIVE OVERVIEW (like Flow F) rather than worker-stuck, and —
+#   crucially — telling the builder that bead_ref is a SYNTHETIC intake id, NOT a
+#   bd task: it must survey the workspace broadly instead of `bd show`-ing a
+#   nonexistent bead.
+daemon_intake__build_overview_builder_input() {
+  local did="${1:-}" bref="${2:-}" ws="${3:-}" idea="${4:-}"
+  local context_dump
+  context_dump="OVERVIEW REQUEST (UX-DESIGN Flow A, claude-tools-uxvl4 / L4): Brian asked from his phone to be CAUGHT UP — he tapped the \"just catch me up\" intake preset, which makes NO bd task. This is a PROACTIVE OVERVIEW / status FYI dossier, NOT a worker-stuck decision dossier and NOT a request to start work. Brian's framing of what he wants briefed: \"${idea}\". IMPORTANT: \`bead_ref\` (\`$bref\`) is a SYNTHETIC intake id, NOT a bd task — do NOT \`bd show $bref\` (it does not exist). Instead survey the WORKSPACE: \`bd ready\`, \`bd list --status open\`, \`bd blocked\`, the recent history (\`git log --oneline -n 30\`), and the design/status docs (\`CLAUDE.md\`, \`README.md\`, any \`DESIGN.md\`/\`UX-DESIGN.md\`/\`INTERFACE.md\`/\`HANDOFF*.md\`). Produce the deep body Brian will read on his phone to understand 'here is where things stand and what is in flight', focused through the lens of his framing above. ITEMS DISCIPLINE: emit either an empty items[] (pure FYI) or items all of kind \`fyi-objectable\` (each a small claim Brian can push back on inside the 24h window). DO NOT emit a \`pick-option\` item — the human is not being asked to pick or to approve starting work. The tier is \`timed-fyi\`: silence auto-proceeds in 24h, an objection cancels follow-on. If the workspace is genuinely too thin/empty to anchor a real overview, refuse cleanly via the {\"refuse\":true,\"reason\":\"...\"} channel."
+  jq -cn \
+    --arg did "$did" \
+    --arg b   "$bref" \
+    --arg w   "$ws" \
+    --arg q   "Catch me up on this workspace: ${idea}" \
+    --arg cd  "$context_dump" \
+    '{dossier_id:$did, bead_ref:$b, workspace_dir:$w, question:$q, context_dump:$cd}'
+}
+
+# daemon_intake__build_overview_generation_input <dossier_id> <bead_ref> <builder_json>
+#   Wrap the dossier-builder's {body, items[]} into the §4.1 envelope
+#   (dg_generate's generation_input). Mirrors flow-f's builder, EXCEPT
+#   trigger=proactive_checkpoint (a human-initiated FYI; the §4.1 enum value for
+#   this path — inbox-lifecycle §3.4 step 3) and authored_by_reason names THIS
+#   producer so the §xdo no-fallback-badge fix (claude-tools-69u8) credits the
+#   agent body instead of logging a degraded jq fallback.
+daemon_intake__build_overview_generation_input() {
+  local did="${1:-}" bref="${2:-}" out="${3:-}"
+  printf '%s' "$out" | jq -c \
+    --arg did "$did" \
+    --arg b   "$bref" '
+      .body  as $body
+    | (.items // []) as $items
+    | { id: $did,
+        kind: "overview",
+        trigger: "proactive_checkpoint",
+        bead_ref: $b,
+        tier: "timed-fyi",
+        timer_fire_at: null,
+        source: {
+          tldr:        ($body.tldr // ""),
+          sections:    ($body.sections // []),
+          diagrams:    ($body.diagrams // []),
+          full_detail: ($body.full_detail // ""),
+          authored_by:        "agent",
+          authored_by_reason: "intake_overview_request"
+        },
+        items: $items }
+  ' 2>/dev/null
+}
+
+# _daemon_intake_overview_engine_write <ws> <pref> <curl> <tk_item> <gi_json>
+#   Persist the FYI dossier + emit/dispatch the §4.3 notification + arm the §2.2
+#   24h timed-fyi window. Byte-for-byte the same engine sequence as Flow F's
+#   _daemon_flow_f_engine_write (dg_generate → no_emit → no_dispatch → tf_arm);
+#   kept intake-local (with its own override hook) so the I3 path + its test stay
+#   self-contained rather than coupling to the flow-f file. Echoes the dossier id
+#   on success; nonzero exit on any failure (caller marks the intake failing).
+_daemon_intake_overview_engine_write() {
+  local ws="$1" pref="$2" curl="$3" tk_item="$4" gi="$5"
+  if [[ -n "$DAEMON_INTAKE_OVERVIEW_ENGINE_OVERRIDE" && -x "$DAEMON_INTAKE_OVERVIEW_ENGINE_OVERRIDE" ]]; then
+    local tmp
+    tmp="$(mktemp 2>/dev/null)" || return 1
+    printf '%s' "$gi" > "$tmp" 2>/dev/null
+    "$DAEMON_INTAKE_OVERVIEW_ENGINE_OVERRIDE" "$ws" "$tmp"
+    local rc=$?
+    rm -f "$tmp" 2>/dev/null
+    return "$rc"
+  fi
+  (
+    set +e
+    cd "$ws" 2>/dev/null || exit 1
+    export PROJECT_REF="$pref"
+    : "${CO_STORE:=$ws/.beads/runner-logs/.co-store}"
+    export CO_STORE
+    if [[ -n "$curl" ]]; then export COORDINATOR_URL="$curl"; fi
+    if [[ -n "$tk_item" ]] && command -v security >/dev/null 2>&1; then
+      local _tk
+      _tk="$(security find-generic-password -s "$tk_item" -w 2>/dev/null || true)"
+      [[ -n "$_tk" ]] && export COORDINATOR_TOKEN="$_tk"
+    fi
+    # shellcheck source=/dev/null
+    . "$DAEMON_REPO_LIB_DIR/stuck-routing.sh"     2>/dev/null || exit 1
+    # shellcheck source=/dev/null
+    . "$DAEMON_REPO_LIB_DIR/notification.sh"      2>/dev/null || exit 1
+    # shellcheck source=/dev/null
+    . "$DAEMON_REPO_LIB_DIR/co-http-transport.sh" 2>/dev/null || true
+    # shellcheck source=/dev/null
+    . "$DAEMON_REPO_LIB_DIR/timed-fyi.sh"         2>/dev/null || exit 1
+    command -v dg_generate >/dev/null 2>&1 || exit 1
+    command -v tf_arm      >/dev/null 2>&1 || exit 1
+    local bearer did nid
+    bearer="${COORDINATOR_TOKEN:-bearer-daemon-intake-overview}"
+    did="$(dg_generate "$bearer" "$gi" 2>/dev/null)" || exit 2
+    [[ -n "$did" ]] || exit 2
+    nid="$(no_emit "$bearer" "$did" 2>/dev/null)" || true
+    [[ -n "$nid" ]] && no_dispatch "$bearer" "$nid" "intake-overview" >/dev/null 2>&1 || true
+    tf_arm "$bearer" "$did" >/dev/null 2>&1 || exit 3
+    printf '%s' "$did"
+    exit 0
+  )
+}
+
+# daemon_intake_dispatch_overview <rec> <ws> <pref> <curl> <tk_item> \
+#                                 <intake_id> <idea_text> <hash> <attempts>
+#   The `overview-request` dispatch unit. ALWAYS returns 0 (a per-record failure
+#   must not abort the loop). Rides the I3 retry/state machine: counts the
+#   attempt + writes an in-flight `overview-building` marker before spawning;
+#   marks the record FAILING(n)/gave_up via daemon_intake_mark_failed on any
+#   miscarriage; marks it PROCESSED with dispatch_state="overview" (NO
+#   enricher_bd_id — the s6/s4 testing invariant: no bead is ever created) on a
+#   written FYI or a clean builder refusal.
+daemon_intake_dispatch_overview() {
+  local rec="$1" ws="$2" pref="$3" curl="$4" tk_item="$5"
+  local intake_id="$6" idea_text="$7" hash="$8" attempts="$9"
+  local n now_iso did marker ctx_file builder_out rc parsed refuse body items gi written updated reason
+
+  n=$((attempts + 1))
+  did="overview-intake-$(printf '%s' "$intake_id" | tr -c 'A-Za-z0-9._-' '_')"
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+
+  declare -F log >/dev/null 2>&1 && \
+    log "I3 overview-dispatch: workspace=$ws intake_id=$intake_id idea_hash=$hash dossier_id=$did (preset=$INTAKE_OVERVIEW_PRESET — NO bd task; proactive_checkpoint timed-fyi)"
+
+  # In-flight marker (best-effort) — the phone sees `overview-building` while the
+  # dossier-builder runs. dispatch_attempts counted at the START (matches the
+  # enricher path: an attempt that crashes still consumed a dispatch).
+  marker="$(printf '%s' "$rec" \
+              | jq -c \
+                  --argjson na "$n" \
+                  --arg la "$now_iso" \
+                  '. + {processed:false, dispatch_attempts:$na, last_attempt_at:$la, dispatch_state:"overview-building"} | del(.last_error)' \
+              2>/dev/null)"
+  [[ -n "$marker" ]] && \
+    _daemon_intake_put_record "$ws" "$pref" "$curl" "$tk_item" "$intake_id" "$marker" >/dev/null 2>&1
+
+  # Resolve the spawner: override > disabled-canary > real specialist.sh. The
+  # override reuses DAEMON_INTAKE_SPECIALIST_OVERRIDE (both the enricher and the
+  # dossier-builder are specialist.sh hats), so the I3 test stub covers both.
+  local spawner=() _override _disabled
+  _override="${DAEMON_INTAKE_SPECIALIST_OVERRIDE:-}"
+  _disabled="${DAEMON_INTAKE_DISABLED:-0}"
+  if [[ -n "$_override" ]]; then
+    if [[ ! -x "$_override" ]]; then
+      declare -F log >/dev/null 2>&1 && \
+        log "I3 overview-dispatch: refuse — DAEMON_INTAKE_SPECIALIST_OVERRIDE='$_override' not executable"
+      return 0
+    fi
+    spawner=("$_override")
+  elif [[ "$_disabled" == "1" ]]; then
+    # Canary: synthesise a stub dossier id, SKIP the real spawn + engine write,
+    # and mark processed so the mark-processed wiring is exercised without tokens
+    # or an engine. NO bd task is created (the invariant holds in the canary too).
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: DAEMON_INTAKE_DISABLED=1 ⇒ would invoke $DAEMON_SPECIALIST_SH --kind=dossier-builder --workspace=$ws + write a proactive_checkpoint timed-fyi (intake_id=$intake_id idea_hash=$hash); synthesising a stub so mark-processed exercises"
+    updated="$(printf '%s' "$rec" \
+                | jq -c \
+                    --arg did "stub-$did" \
+                    --argjson na "$n" \
+                    --arg pa "$now_iso" \
+                    '. + {processed:true, overview_dossier_id:$did, overview_outcome:"canary",
+                          processed_at:$pa, dispatch_attempts:$na, dispatch_state:"overview"} | del(.last_error)' \
+                2>/dev/null)"
+    if [[ -n "$updated" ]] && daemon_intake_mark_processed "$ws" "$pref" "$curl" "$tk_item" "$intake_id" "$updated"; then
+      declare -F log >/dev/null 2>&1 && \
+        log "I3 overview-dispatch: OK (canary) — workspace=$ws intake_id=$intake_id idea_hash=$hash dossier_id=stub-$did (no bd task; record marked processed)"
+    fi
+    return 0
+  else
+    if [[ ! -x "$DAEMON_SPECIALIST_SH" ]]; then
+      declare -F log >/dev/null 2>&1 && \
+        log "I3 overview-dispatch: refuse — specialist.sh missing/non-executable at $DAEMON_SPECIALIST_SH"
+      return 0
+    fi
+    spawner=("$DAEMON_SPECIALIST_SH")
+  fi
+
+  # Build the builder context + spawn the dossier-builder hat.
+  ctx_file="$(mktemp 2>/dev/null)" || {
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: refuse — mktemp failed for intake_id=$intake_id idea_hash=$hash"
+    return 0
+  }
+  daemon_intake__build_overview_builder_input "$did" "$intake_id" "$ws" "$idea_text" > "$ctx_file" 2>/dev/null
+
+  builder_out="$("${spawner[@]}" \
+                  --kind=dossier-builder \
+                  --workspace="$ws" \
+                  --context-file="$ctx_file" \
+                  2>/dev/null)"
+  rc=$?
+  rm -f "$ctx_file" 2>/dev/null
+
+  if [[ "$rc" -ne 0 ]]; then
+    reason="dossier-builder exit=$rc"
+    daemon_intake_mark_failed "$ws" "$pref" "$curl" "$tk_item" "$rec" "$intake_id" "$n" "$reason" >/dev/null 2>&1 || true
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: FAIL — dossier-builder exit=$rc workspace=$ws intake_id=$intake_id idea_hash=$hash attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (record left unprocessed; next cadence retries unless gave_up)"
+    return 0
+  fi
+
+  parsed="$(printf '%s' "$builder_out" | jq -c 'if type=="object" then . else null end' 2>/dev/null)"
+  if [[ -z "$parsed" || "$parsed" == "null" ]]; then
+    reason="dossier-builder stdout not a JSON object"
+    daemon_intake_mark_failed "$ws" "$pref" "$curl" "$tk_item" "$rec" "$intake_id" "$n" "$reason" >/dev/null 2>&1 || true
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: FAIL — builder stdout not JSON object workspace=$ws intake_id=$intake_id idea_hash=$hash attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (record left unprocessed; retries unless gave_up)"
+    return 0
+  fi
+
+  refuse="$(printf '%s' "$parsed" | jq -r '.refuse // false' 2>/dev/null)"
+  if [[ "$refuse" == "true" ]]; then
+    # A clean refusal (workspace too thin to brief) is TERMINAL, not a failure to
+    # retry — re-dispatching would just refuse again and burn money. Mark the
+    # intake PROCESSED with no dossier + no bead. Honest outcome surfaced on the
+    # record for forensics.
+    reason="$(printf '%s' "$parsed" | jq -r '.reason // ""' 2>/dev/null)"
+    updated="$(printf '%s' "$rec" \
+                | jq -c \
+                    --argjson na "$n" \
+                    --arg pa "$now_iso" \
+                    --arg rs "${reason:0:240}" \
+                    '. + {processed:true, overview_outcome:"refused", overview_refuse_reason:$rs,
+                          processed_at:$pa, dispatch_attempts:$na, dispatch_state:"overview"} | del(.last_error)' \
+                2>/dev/null)"
+    if [[ -n "$updated" ]]; then
+      daemon_intake_mark_processed "$ws" "$pref" "$curl" "$tk_item" "$intake_id" "$updated" >/dev/null 2>&1 || true
+    fi
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: REFUSED workspace=$ws intake_id=$intake_id idea_hash=$hash reason='${reason:0:120}' (no bd task, no dossier — honest refusal; record marked processed so it does not retry)"
+    return 0
+  fi
+
+  body="$(printf '%s' "$parsed"  | jq -c '.body // null' 2>/dev/null)"
+  items="$(printf '%s' "$parsed" | jq -c '.items // null' 2>/dev/null)"
+  if [[ "$body" == "null" || -z "$body" || "$items" == "null" ]]; then
+    reason="builder output missing body or items[]"
+    daemon_intake_mark_failed "$ws" "$pref" "$curl" "$tk_item" "$rec" "$intake_id" "$n" "$reason" >/dev/null 2>&1 || true
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: FAIL — builder output missing body or items[] workspace=$ws intake_id=$intake_id idea_hash=$hash attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (retries unless gave_up)"
+    return 0
+  fi
+
+  gi="$(daemon_intake__build_overview_generation_input "$did" "$intake_id" "$parsed")"
+  if [[ -z "$gi" ]]; then
+    reason="could not assemble generation input"
+    daemon_intake_mark_failed "$ws" "$pref" "$curl" "$tk_item" "$rec" "$intake_id" "$n" "$reason" >/dev/null 2>&1 || true
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: FAIL — could not assemble generation input workspace=$ws intake_id=$intake_id idea_hash=$hash attempt=$n/${INTAKE_MAX_ATTEMPTS:-3}"
+    return 0
+  fi
+
+  written="$(_daemon_intake_overview_engine_write "$ws" "$pref" "$curl" "$tk_item" "$gi" 2>/dev/null)"
+  if [[ -z "$written" ]]; then
+    reason="engine write returned no dossier id"
+    daemon_intake_mark_failed "$ws" "$pref" "$curl" "$tk_item" "$rec" "$intake_id" "$n" "$reason" >/dev/null 2>&1 || true
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: FAIL — engine write returned no id workspace=$ws intake_id=$intake_id idea_hash=$hash attempt=$n/${INTAKE_MAX_ATTEMPTS:-3} (retries unless gave_up)"
+    return 0
+  fi
+
+  # Success: mark processed with NO enricher_bd_id (the invariant: no bd task).
+  updated="$(printf '%s' "$rec" \
+              | jq -c \
+                  --arg did "$written" \
+                  --argjson na "$n" \
+                  --arg pa "$now_iso" \
+                  '. + {processed:true, overview_dossier_id:$did, overview_outcome:"written",
+                        processed_at:$pa, dispatch_attempts:$na, dispatch_state:"overview"} | del(.last_error)' \
+              2>/dev/null)"
+  if [[ -n "$updated" ]] && daemon_intake_mark_processed "$ws" "$pref" "$curl" "$tk_item" "$intake_id" "$updated"; then
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: OK — workspace=$ws intake_id=$intake_id idea_hash=$hash dossier_id=$written tier=timed-fyi (no bd task; FYI published + 24h timer armed; record marked processed)"
+  else
+    declare -F log >/dev/null 2>&1 && \
+      log "I3 overview-dispatch: WARN — FYI dossier_id=$written written but mark-processed put FAILED workspace=$ws intake_id=$intake_id idea_hash=$hash (will re-dispatch next cadence — engine write is idempotent on the deterministic dossier id)"
+  fi
+  return 0
+}
+
 # daemon_intake_dispatch_one <record_json>
 #   Process one intake-request record. ALWAYS returns 0 (a per-record failure
 #   must not abort the loop). Logs the dispatch attempt + outcome.
@@ -397,6 +708,17 @@ daemon_intake_dispatch_one() {
   fi
   curl="${REGISTRY_COORDINATOR_URLS[$idx]:-}"
   tk_item="${REGISTRY_TOKEN_KEYCHAIN_ITEMS[$idx]:-}"
+
+  # L4 (claude-tools-uxvl4) — the `overview-request` preset BRANCHES here: it
+  # makes NO bd task, so it never touches the enricher path below. Route it to a
+  # dossier-builder → proactive_checkpoint timed-fyi (Blueprint refresh / FYI).
+  # This is the daemon-side branch the catalog's routing:"overview-fyi" row
+  # points at (test-intake-presets.sh check 10 enforces this value is handled).
+  if [[ "$preset" == "$INTAKE_OVERVIEW_PRESET" ]]; then
+    daemon_intake_dispatch_overview "$rec" "$ws" "$pref" "$curl" "$tk_item" \
+      "$intake_id" "$idea_text" "$hash" "$attempts"
+    return 0
+  fi
 
   # Build the enricher context JSON — exactly the shape enricher.system.md
   # expects: intake_id, idea_text, project_ref, preset, submitted_at.

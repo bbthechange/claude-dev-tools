@@ -32,7 +32,15 @@
 #      preset that ships in the catalog + PRESET_ENUM is wired end-to-end
 #      through L2, not just present as data. This is the "added the data,
 #      forgot the wiring" failure this harness now owns (uxgpre).
-#   9. enricher.system.md names every catalog value (one-PR playbook step).
+#   9. enricher.system.md names every NORMAL catalog value (one-PR step).
+#  10. Every SPECIAL catalog value (a row with `routing` set — schema_version 2,
+#      claude-tools-uxvl4) is branched on BY NAME in daemon/intake-dispatch-
+#      poll.sh. A special preset breaks the reductive (entry_stage, gate)
+#      contract on purpose (no bd task; daemon-side routing), so it is EXEMPT
+#      from checks 2/3/5/8/9 — but it MUST carry entry_stage:null +
+#      gate_aggressiveness:null + a known `routing`, AND the daemon must know
+#      how to dispatch it (else an overview-request would fall through to the
+#      enricher and choke). This check closes that gap.
 #
 # Run: bash test-intake-presets.sh
 # Exit: 0 on ALL PASS, 1 on any failure (with a clear "DRIFT:" line).
@@ -44,6 +52,14 @@ JSON="$REPO_DIR/agents/intake-presets.json"
 MIRROR="$REPO_DIR/web/functions/api/intake/_presets-catalog.js"
 GATE="$REPO_DIR/gate-policy.sh"
 ENRICHER="$REPO_DIR/agents/enricher.system.md"
+DISPATCH="$REPO_DIR/daemon/intake-dispatch-poll.sh"
+
+# A SPECIAL preset (schema_version 2, claude-tools-uxvl4) carries a non-empty
+# `routing` discriminator and breaks the reductive (entry_stage, gate) contract:
+# no bd task, daemon-side routing. The known routing values (closed set — adding
+# one is a deliberate change wired through the daemon). Used to drive the
+# exemptions + the daemon-branch lockstep check below.
+KNOWN_ROUTING=(overview-fyi)
 
 PASS=0
 FAIL=0
@@ -89,16 +105,49 @@ fi
 i=0
 while [[ "$i" -lt "$rows" ]]; do
   row="$(jq -c ".presets[$i]" "$JSON")"
-  for k in value label sublabel entry_stage gate_aggressiveness description; do
+  val="$(printf '%s' "$row" | jq -r '.value')"
+  routing="$(printf '%s' "$row" | jq -r '.routing // ""')"
+
+  # Always-required fields (present for EVERY row, normal or special).
+  for k in value label sublabel description; do
     v="$(printf '%s' "$row" | jq -r --arg k "$k" '.[$k] // empty')"
     if [[ -z "$v" ]]; then
       bad "row $i missing required field '$k'"
     fi
   done
 
-  es="$(printf '%s' "$row" | jq -r '.entry_stage')"
-  ga="$(printf '%s' "$row" | jq -r '.gate_aggressiveness')"
-  val="$(printf '%s' "$row" | jq -r '.value')"
+  es="$(printf '%s' "$row" | jq -r '.entry_stage // "null"')"
+  ga="$(printf '%s' "$row" | jq -r '.gate_aggressiveness // "null"')"
+
+  if [[ -n "$routing" ]]; then
+    # ── SPECIAL preset (routing set) — exempt from the L1/L2 reductive contract.
+    # It MUST instead carry the special shape: entry_stage:null,
+    # gate_aggressiveness:null, and a KNOWN routing value. The daemon-branch
+    # lockstep is checked in its own section below.
+    found=0
+    for r in "${KNOWN_ROUTING[@]}"; do [[ "$r" == "$routing" ]] && { found=1; break; }; done
+    if [[ $found -eq 1 ]]; then
+      ok "row $i ($val): SPECIAL preset, routing=$routing is a known value (exempt from stage/gate spine)"
+    else
+      bad "DRIFT: row $i ($val): routing='$routing' is NOT a known special routing (${KNOWN_ROUTING[*]}) — add the daemon branch + extend KNOWN_ROUTING"
+    fi
+    es_raw="$(printf '%s' "$row" | jq -c '.entry_stage')"
+    ga_raw="$(printf '%s' "$row" | jq -c '.gate_aggressiveness')"
+    [[ "$es_raw" == "null" ]] && ok "row $i ($val): SPECIAL preset entry_stage is null (no bd task)" \
+      || bad "DRIFT: row $i ($val): SPECIAL preset must have entry_stage:null (got $es_raw)"
+    [[ "$ga_raw" == "null" ]] && ok "row $i ($val): SPECIAL preset gate_aggressiveness is null (no L2 gate)" \
+      || bad "DRIFT: row $i ($val): SPECIAL preset must have gate_aggressiveness:null (got $ga_raw)"
+    i=$((i+1))
+    continue
+  fi
+
+  # ── NORMAL preset — must reduce to (entry_stage ∈ STAGE_ENUM, gate ∈ verdicts).
+  for k in entry_stage gate_aggressiveness; do
+    v="$(printf '%s' "$row" | jq -r --arg k "$k" '.[$k] // empty')"
+    if [[ -z "$v" ]]; then
+      bad "row $i ($val) missing required field '$k' (a NORMAL preset must reduce to the spine; set `routing` to make it special)"
+    fi
+  done
 
   found=0
   for s in "${STAGE_ENUM_HARNESS[@]}"; do
@@ -129,11 +178,16 @@ echo "── Pages-side mirror agrees with canonical JSON"
 
 # Compare via node — it imports the ES module and dumps the field tuples
 # to a stable representation we can diff against jq's view of the JSON.
-canon_dump="$(jq -r '.presets[] | "\(.value)|\(.label)|\(.sublabel)|\(.entry_stage)|\(.gate_aggressiveness)|\(.description)"' "$JSON")"
+# NB: entry_stage/gate_aggressiveness may be null (a SPECIAL preset) and routing
+# may be absent (a NORMAL preset). Normalise null/absent → "" on BOTH sides so a
+# legitimate null doesn't read as a spurious "null" vs "" mismatch: jq `// ""`
+# and JS `?? ''` both collapse null/missing to "". `routing` is included so a
+# routing drift between the JSON and the mirror is caught here (schema_version 2).
+canon_dump="$(jq -r '.presets[] | "\(.value)|\(.label)|\(.sublabel)|\(.entry_stage // "")|\(.gate_aggressiveness // "")|\(.routing // "")|\(.description)"' "$JSON")"
 mirror_dump="$(cd "$(dirname "$MIRROR")" && node --input-type=module -e "
 import('./_presets-catalog.js').then(m => {
   const rows = m.PRESETS.map(p =>
-    [p.value, p.label, p.sublabel, p.entry_stage, p.gate_aggressiveness, p.description].join('|')
+    [p.value, p.label, p.sublabel, p.entry_stage ?? '', p.gate_aggressiveness ?? '', p.routing ?? '', p.description].join('|')
   );
   process.stdout.write(rows.join('\n'));
 });
@@ -193,7 +247,7 @@ else
     else
       bad "DRIFT: gate-policy.sh PRESET_ENUM is missing '$want' (catalog row, not in enum)"
     fi
-  done < <(jq -r '.presets[] | "\(.value)|\(.gate_aggressiveness)"' "$JSON")
+  done < <(jq -r '.presets[] | select((.routing // "") == "") | "\(.value)|\(.gate_aggressiveness)"' "$JSON")
 fi
 
 echo "── gate-policy.sh resolves a correct verdict for every catalog preset"
@@ -238,7 +292,7 @@ BDEOF
     else
       bad "DRIFT: gate-policy decide preset:$v → '$got' but catalog gate_aggressiveness=$ga expects '$want'"
     fi
-  done < <(jq -r '.presets[] | "\(.value)|\(.gate_aggressiveness)"' "$JSON")
+  done < <(jq -r '.presets[] | select((.routing // "") == "") | "\(.value)|\(.gate_aggressiveness)"' "$JSON")
   rm -rf "$GPWORK"
 fi
 
@@ -260,7 +314,32 @@ else
     else
       bad "DRIFT: enricher.system.md does NOT mention '$v' (catalog row, not in resolution table)"
     fi
-  done < <(jq -r '.presets[].value' "$JSON")
+  done < <(jq -r '.presets[] | select((.routing // "") == "") | .value' "$JSON")
+fi
+
+echo "── SPECIAL presets (routing set) are branched on by name in the daemon"
+
+# A special preset makes NO bd task and is NOT routed to the enricher — the
+# daemon (intake-dispatch-poll.sh) must branch on its VALUE and route it
+# elsewhere (overview-request → a proactive_checkpoint timed-fyi dossier). If a
+# special preset shipped in the catalog WITHOUT a daemon branch, an
+# overview-request intake would fall through to the enricher (which would try to
+# bd-create from a null entry_stage and choke). Grep is the cheapest lockstep:
+# the daemon source must mention the special value. (claude-tools-uxvl4 / L4.)
+special_vals="$(jq -r '.presets[] | select((.routing // "") != "") | .value' "$JSON")"
+if [[ -z "$special_vals" ]]; then
+  ok "no SPECIAL presets in the catalog (daemon-branch check vacuously holds)"
+elif [[ ! -f "$DISPATCH" ]]; then
+  bad "daemon/intake-dispatch-poll.sh missing — cannot verify special-preset branch wiring"
+else
+  while IFS= read -r v; do
+    [[ -n "$v" ]] || continue
+    if grep -qF "$v" "$DISPATCH"; then
+      ok "intake-dispatch-poll.sh branches on special preset '$v'"
+    else
+      bad "DRIFT: special preset '$v' has no branch in daemon/intake-dispatch-poll.sh (it would fall through to the enricher and choke)"
+    fi
+  done < <(printf '%s\n' "$special_vals")
 fi
 
 echo
