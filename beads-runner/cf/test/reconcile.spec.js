@@ -1135,6 +1135,46 @@ it("CF.3 J2 workSnapshot holds[] unifier — 3 mechanisms + gate_metadata join +
   const di = find(Hi, (h) => h.type === "dependency" && h.task_ref === "i-dep");
   jck("END-TO-END: a blocked held bead yields a dependency hold (blocked_on)", di && di.blocked_on === "i-99");
 
+  // ── mhcp.4 (claude-tools-mhcp.4) — held beads surface as Board CARDS on the GET
+  // path so the J5 holds-derived waiting_on is visible in PROD (not just inline).
+  // The sanctioned reversal of J2's lifecycle-exclusion FOR THE BOARD SURFACE:
+  // both seeded held beads are blocked/deferred (absent from in_progress/top_n),
+  // so before mhcp.4 they had a hold but NO lifecycle card (waiting_on dormant).
+  const Li = (s) => (SNAPi.lifecycle_columns && SNAPi.lifecycle_columns[s]) || [];
+  const cardG1 = Li("impl").find((c) => c.bead_ref === "i-g1") || null; // gated+deferred
+  const cardDep = Li("impl").find((c) => c.bead_ref === "i-dep") || null; // blocked
+  jck("mhcp.4 — a held (gated+deferred) bead now surfaces as a lifecycle CARD on the GET path", !!cardG1);
+  jck("mhcp.4 — a held (blocked) bead now surfaces as a lifecycle CARD on the GET path", !!cardDep);
+  jck("mhcp.4 — the held card lands in its OWN stage column (impl), not dropped/unstaged", cardG1 && cardG1.stage === "impl");
+  jck("mhcp.4 — the gated+deferred held card's waiting_on = GATE (precedence gate > scheduled)",
+    cardG1 && cardG1.waiting_on && cardG1.waiting_on.type === "gate" && cardG1.waiting_on.gate_id === "gate:audio-redesign");
+  jck("mhcp.4 — the gate held card counts the out-ranked defer in more:1", cardG1 && cardG1.waiting_on && cardG1.waiting_on.more === 1);
+  jck("mhcp.4 — the gate held card reuses gate_metadata unblocks_when (the live join)",
+    cardG1 && cardG1.waiting_on && cardG1.waiting_on.unblocks_when === "rewrite merged");
+  jck("mhcp.4 — the blocked held card's waiting_on = DEPENDENCY (blocked_on i-99)",
+    cardDep && cardDep.waiting_on && cardDep.waiting_on.type === "dependency" && cardDep.waiting_on.blocked_on === "i-99");
+
+  // mhcp.4 dedup guard — a bead in BOTH the active top_n list AND held_beads (not
+  // expected by design — the active lists exclude held work — but defended) must
+  // render EXACTLY ONCE; the ACTIVE occurrence wins (it carries verified/title).
+  const INVDUP = JSON.stringify({
+    report: "workspace_inventory", schema_version: 1, principal: "x", runner_id: "rdup",
+    project_ref: "projHoldsDup", observed_at: ago(2),
+    counts: { open: 0, ready: 1, in_progress: 0, blocked: 0 },
+    in_progress_beads: [],
+    top_n_beads: [{ bead_ref: "dup-1", title: "active view", status: "open", stage: "impl" }],
+    held_beads: [{ bead_ref: "dup-1", title: "held view", status: "blocked", stage: "design", labels: [], blocked_on: "x-9", deferred_until: null }],
+  });
+  jck("workspace-inventory-put with a dup-in-both bead accepted (200)", (await call(GOOD, "workspace-inventory-put", [INVDUP])).status === 200);
+  const SNAPdup = await callJson("work-snapshot", ["projHoldsDup", ""]);
+  const allDupCards = []
+    .concat(...["idea", "ux", "design", "impl", "docs", "tests", "done", ""].map(
+      (s) => (SNAPdup.lifecycle_columns && SNAPdup.lifecycle_columns[s]) || []))
+    .filter((c) => c.bead_ref === "dup-1");
+  jck("mhcp.4 dedup — a bead in both active+held renders EXACTLY ONCE", allDupCards.length === 1);
+  jck("mhcp.4 dedup — the ACTIVE occurrence wins (active stage impl, not held stage design)",
+    allDupCards[0] && allDupCards[0].stage === "impl");
+
   // ── tolerance: held_beads is OPTIONAL ADDITIVE — absent / malformed never 422s ─
   const invNoHeld = JSON.stringify({
     report: "workspace_inventory", schema_version: 1, principal: "x", runner_id: "r2",

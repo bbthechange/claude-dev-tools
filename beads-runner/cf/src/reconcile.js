@@ -1456,13 +1456,37 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     verified: b.verified === true,
     failure: normalizeFailure(b.failure),
   });
+  // J5-in-prod (claude-tools-mhcp.4) — held beads become lifecycle CARDS so the
+  // J5 holds-derived `waiting_on` reason is visible on the production Board, not
+  // just the inline/live-verify path. J2 deliberately kept held beads OUT of the
+  // lifecycle ladder (active in_progress/top_n only — no Board behaviour change);
+  // this is the sanctioned reversal of that for the Board surface (DESIGN J §7.5,
+  // gates.md mermaid "Board — J5 / held card shows its one reason"). The card
+  // SOURCE is now beads ∪ heldBeads, deduped by bead_ref — an ACTIVE occurrence
+  // wins (it carries verified/age the held entry lacks; held beads are blocked/
+  // deferred and excluded from the active lists, so overlap is not expected, but
+  // dedup keeps a stray duplicate from rendering twice). Each held card buckets
+  // by its own `stage` (default "unknown" ⇒ the honest "" unstaged lane) and the
+  // card() builder looks its `waiting_on` up from waitingOnByRef (built above from
+  // the SAME beads ∪ heldBeads), so a held card renders with its one most-actionable
+  // hold reason. SCOPED automatically: heldBeads is non-empty ONLY on the GET path
+  // (beads=="" ⇒ readHeldBeads); on the inline/oracle path heldBeads is [] so
+  // lifecycleBeads === beads and the differential twin is byte-unchanged.
+  const activeRefs = new Set(
+    beads.map((b) => (b && typeof b.bead_ref === "string" ? b.bead_ref : null)).filter(Boolean)
+  );
+  const lifecycleBeads = beads.concat(
+    heldBeads.filter(
+      (b) => b && typeof b.bead_ref === "string" && b.bead_ref.length > 0 && !activeRefs.has(b.bead_ref)
+    )
+  );
   const lifecycle_columns = {};
   for (const s of stages) {
-    lifecycle_columns[s] = beads
+    lifecycle_columns[s] = lifecycleBeads
       .filter((b) => (b.stage == null ? "" : b.stage) === s)
       .map(card);
   }
-  lifecycle_columns[""] = beads
+  lifecycle_columns[""] = lifecycleBeads
     .filter((b) => {
       const st = b.stage == null ? "" : b.stage;
       return stages.indexOf(st) === -1;

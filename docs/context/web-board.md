@@ -202,12 +202,19 @@ bash beads-runner/verify-pages-deploy.sh board   # must print mismatches=0
   free string. `deriveWaitingOn` turns it into the painted `{type,glyph,text}`
   one-liner; a held card NEVER renders without a reason (a gate with a null
   unblock_condition still shows "held by <gate> · no unblock condition yet").
-  An unheld card reads `waiting_on:null` ⇒ no waiting line. **Caveat:** in the
-  production GET path the lifecycle cards come from the inventory's *active*
-  in_progress/top_n lists (which carry no hold fields — held beads ride the
-  separate `held_beads` channel into `holds[]` only), so a card's inline reason
-  fires on the inline/live-verify path today; surfacing held beads as Board
-  cards in production is a follow-up (the Gates facet already lists them).
+  An unheld card reads `waiting_on:null` ⇒ no waiting line. **Prod surfacing
+  (claude-tools-mhcp.4):** the production GET path's lifecycle cards came ONLY
+  from the inventory's *active* in_progress/top_n lists (no hold fields — held
+  beads rode the separate `held_beads` channel into `holds[]` only), so J5's
+  inline reason was DORMANT in prod (every prod card read `waiting_on:null`).
+  mhcp.4 is the sanctioned reversal of J2's lifecycle-exclusion FOR THE BOARD
+  SURFACE: `workSnapshot` now builds the lifecycle card source from
+  `beads ∪ heldBeads`, deduped by bead_ref (the ACTIVE occurrence wins), keyed
+  by each held bead's `stage` (default `"unknown"` ⇒ the `""` unstaged lane).
+  Card-SOURCING only — `buildWaitingOnMap`/`deriveWaitingOn` are unchanged. It is
+  CF-GET-path-only (heldBeads is non-empty ONLY when `beads==""`), so the inline
+  path / `coordinator.sh` twin stay byte-identical (no bash change). Live-verified
+  on the prod Worker: cards-with-`waiting_on` went 0 → 138.
 
 ## Go deeper
 
@@ -229,7 +236,10 @@ honest-state invariant, a fresh scar, a changed control set. Keep new
 honest-state logic in `board-view.js` (not `app.js`) so the Node test covers it.
 **Keep it concise — this doc earns its keep only if agents read all of it.**
 Delete stale lines; don't let it grow into a copy of the README or INTERFACE.md.
-Last substantive update: 2026-06-03 (Q9-4 audit_coverage on the §9 strip,
+Last substantive update: 2026-06-07 (claude-tools-mhcp.4 — held beads now surface
+as lifecycle cards on the prod GET path, so J5 `waiting_on` is user-visible in
+prod; `workSnapshot` sources the card list from `beads ∪ heldBeads`. Earlier:
+2026-06-03 Q9-4 audit_coverage on the §9 strip,
 claude-tools-t5ud reader+surface; claude-tools-mhcp.2 added the writer —
 `defer-cascade-audit.sh audit` now emits the marker — the one queue_health field
 sourced from a marker file, not bd).
