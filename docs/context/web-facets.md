@@ -25,8 +25,10 @@ facet (Blueprint/Activity/Gates/Cross-WS) to live content.
   `active_domains`/`activity` into the renderer). (`activity` graduated in I3
   (claude-tools-uxvi3); `gates` in J3 (claude-tools-uxvj3); the map renderer
   `blueprint-view.js` landed in H2 (claude-tools-uxvh2).)
-- `web/cross-ws/` — the cross-workspace sync route. **SCAFFOLD ONLY** — nav shell
-  + an honest "ships with track K" placeholder; makes no `/api` call.
+- `web/cross-ws/` — the cross-workspace sync route. **REAL (K5, claude-tools-uxvk5)** —
+  the two-pane global surface: a federated coupling map (reuses the H2 *model*) + the
+  relay log. Reads ONLY `/api/cross-ws/relay` (`relay-log-tail`, B.3) + per-workspace
+  `/api/ws/blueprint` (B.2) — NO work-snapshot (A.3).
 
 **Not here (go to the right doc):**
 - The shared shell, nav, `Net`/`Dom` helpers, `_redirects` routing, deploy/verify
@@ -73,7 +75,7 @@ calls `Shell.parseWorkspacePath(location.pathname)` to learn `{ref, facet}`.
 | `workspace/` (`activity` facet) | **Real** (I3) — `ActivityView`: writer lane + aux pool + liveness dots + a distinct runner-health pip; pure view-model + `lib/test-activity-view.sh` + jsdom row. |
 | `workspace/` (`gates` facet) | **Real** (J3) — `GatesView`: the unified Hold view (gate editable: lift/edit-why/edit-unblock + add-a-gate; dependency/scheduled read-only; scheduled-under-its-gate); pure view-model + `lib/test-gates-view.sh` + jsdom row. Writes route through `/api/ws/gate-meta` (engine-direct) + `/api/control/gate-action` (host gate-apply/gate-lift). |
 | `workspace/` (blueprint) | **Real** — the system map. **→ For the diagram internals (layout, edges, toggles, drill-in, palette, scars) read `docs/context/web-blueprint.md`; the rest of this cell is its facet-nav history.** (H4, claude-tools-uxvh4) — `mountBlueprintFacet`: a drill-in customization map (rename/regroup/pin/hide via tap → `BlueprintCustomize` builders → `POST /api/ws/blueprint-put` section:"customization") + the §5.3 conflict-FYI keep/drop lane (`deriveLiveConflicts`) + a HIDDEN/unhide list. Reads its OWN §4 record via `GET /api/ws/blueprint?project_ref` PLUS, best-effort, `/api/board` for the §8.2 overlay. Reuses `BlueprintView` (H2 renderer) + the G5 overlay fields. **bpmap-1 (claude-tools-bpmap1) REPLACED the flat drill-in tree with a POSITIONED CANVAS** — `renderBlueprintMap`/`renderBlueprintNode` now consume each visible node's `n.layout{x,y,w,h}` (the [free] grow-to-fit geometry the H2 model already emitted but H3 discarded) to absolutely-place every box inside ONE pan/zoom-transformed `#bp-world` that holds an SVG `#bp-edge-layer` (UNDER, where bpmap-2 draws edges) + a `#bp-box-layer` (boxes OVER, painted shallow→deep). Pan = drag (pointer), zoom = wheel/pinch/± (cursor-anchored), auto-fit once. **THE SHARED RENDER CONTRACT** (world coords / one transform / edge-under-box layering) is the big comment block above `renderBlueprintMap` — bpmap-2 (edges + API boxes) + bpmap-3 (focus/dim/drill + folding the H4 edit affordances onto the box) bind to it. **bpmap-2 (claude-tools-bpmap2) LANDED the edges + §7 API boxes**: `renderBlueprintEdges` draws `view.edges` (already deepest-visible-resolved + bundled + density-filtered by H2 — it just DRAWS, never re-resolves) as curved SVG `<path>`s into `#bp-edge-layer` between each endpoint's `n.layout` box (`kind:'queue'`=async⇒dashed+amber; a toggleable kind/`·count` label per edge via the `🏷` control); `renderBlueprintApis` places each `view.apis` route as a `.bp-api` box straddling its domain's LEFT border (out=caller \| in=domain), and on an OPEN domain arrows it to the visible capability it targets (`api.calls`). A left-most domain (x=0) straddles into x<0, so the world now sizes over BOTH boxes AND api rects with a non-negative `originX/Y` offset on the box layer + the SVG `viewBox` origin (no change when there are no apis). **bpmap-3 (claude-tools-bpmap3) LANDED the §3.4.4 interactions**: tapping a box BODY = `toggleFocus` (the H2 model re-derived with `opts.focus` opens it + its ancestors and DIMS the unconnected — `dimmed`/`focused_self` are model fields the renderer just honors; `applyFocusViewport`/`bpFitToFocus`/`bpFitRect` zoom-to-fit on the focus rect, gated by a `bpFocusDirty` flag so the 30s refresh NEVER yanks the viewport); the `▸` caret stays a manual PEEK drill (`toggleOpen`, no zoom); `Esc` / a `← Back to system` banner button = `clearFocus` (focus-opened boxes auto-collapse via `open_source` pin>manual>focus, manual/pins survive, the world re-fits via `bpRefitDirty`). The H4 rename/regroup/pin/hide gestures were FOLDED ONTO THE BOX — the `⋯` button opens `buildNodeMenu`, a `.bp-node-pop` popover rendered INSIDE the selected card (anchored under the head so a tall focused domain doesn't clip it), REPLACING the removed flat `#bp-edit-panel` below the canvas (the conflict-FYI keep/drop + HIDDEN-restore lanes are unchanged; hiding the focused node clears focus so no stale miss-banner). Anti-regression: `jsdom/test/blueprint-canvas.test.js` (focus opens+rings `.bp-focus`+dims `.bp-dim`; body-tap focuses; the `⋯` popover replaces the flat panel; on top of bpmap-1's distinct-left/top + transformed-world assertions). **H3 (claude-tools-uxvh3) LANDED** the §8.3 narrative prose (`#bp-narrative`, TL;DR→headings, acronym-expand, ABOVE the map), the `?focus=<id>` deep-link (banner + `.bp-focus` + honest miss; bpmap-1 swapped `scrollIntoView` for a pan-to-center since the box is transform-placed), the `blueprint_meta` engine projection, and the overlay *wiring* (`extractBlueprintOverlay` → `opts.active_domains`/`activity`). |
-| `cross-ws/` | **Scaffold** — nav + placeholder; no `/api` call, no view-model. |
+| `cross-ws/` | **Real** (K5, claude-tools-uxvk5) — federated coupling map (H2 *model* reused) + relay-log list. The coupling source is the relay log itself (workspaces = unique from/to refs; edges = from→to exchanges), so it conforms to A.3 (no work-snapshot). |
 
 ## Key files
 
@@ -89,7 +91,8 @@ calls `Shell.parseWorkspacePath(location.pathname)` to learn `{ref, facet}`.
 | `workspace/blueprint-view.js` | `deriveBlueprintView(record, nowMs, opts)` (H2) → the Blueprint MAP model. **The ONE facet that reads its own §4 record (the `blueprint-get` body, B.2), NOT the work-snapshot** (§8.1 keeps the map out of the projection, fetched on demand). Ports the Diagrammer IP: §3.1 node taxonomy (top-level domains/client/store/vendor, drill-in capabilities, queues-as-edges), §3.2 edge-resolution to the deepest VISIBLE ancestor + bundle + macro/focus density, §3.3 APIs as boundary boxes, §3.4 focus/dim/drill, the §5.2 customization view-transform keyed by the §4 STABLE node id (rename/regroup/pin/hide), `makeNodeId`. Layout geometry is `[free]` (§3.5 — emitted, never asserted). One refusal = unknown-HIGHER schema_version; else degrade + `degraded[]`. **In-flight overlay (G5, §6.4/§8.2):** `opts.active_domains` (the FROZEN flat-union `blueprint_meta.active_domains` shape) and/or `opts.activity` (the B.1 `{writer,auxiliary}` sub-object — the only form carrying agent IDENTITY) light up worked domains — each active node resolves to its deepest VISIBLE ancestor box (the §3.2 edge IP), per-node `active`/`active_self`/`collision`/`collision_self`/`touchers` + an `overlay{active_ids,lit,collisions,touchers_by_node,unmapped}` summary + `counts.active`/`counts.collisions`. **Collision honesty:** ≥2 DISTINCT agents in one box ⇒ collision; one writer touching two domains does NOT (a flat union can't assert collision — identity unknown; an unmapped active id is honestly `unmapped[]`, never lit). Node test: `lib/test-blueprint-view.sh`. The **mount** is H4 (`mountBlueprintFacet`). **H3 (claude-tools-uxvh3)** added the pure §8.3 `narrative` block (TL;DR/headings + acronym-expand-on-first-use, tolerant) to `deriveBlueprintView`'s output, and the facet wires `?focus`/`active_domains`/`activity` into `opts`. **wmmc (claude-tools-wmmc)** added `deriveBlueprintThumb(record, now, {active_domains,activity})` — the §8.5 thumbnail reducer: it calls `deriveBlueprintView` with `scale:'thumb'` and SELECTS the top-level visible cells (`{id,label,kind,kind_known,active,collision}`) the Workspaces-hub card paints; refusal/null/overlay all propagate from the full renderer (no re-implementation). Now loaded on the Workspaces hub too (absolute `/workspace/blueprint-view.js`). |
 | `workspace/activity-view.js` | `deriveActivityView(snapshot, ref, nowMs)` (I3) → the writer lane (one\|null, the B.1 8-key shape), the auxiliary pool (0..N, the narrower 5-key shape), and a `runner_health` bucket DISTINCT from agent activity. Reads ONLY B.1 keys (must-protect #2); derived states render as "looks like" with always-"derived" confidence; liveness dots consumed verbatim (90/180 never re-derived); B.4 per-field tolerance + `degraded[]`; one refusal = unknown-HIGHER schema_version. |
 | `workspace/index.html` | The catch-all page `_redirects` rewrites all `/ws/*` to. **Every asset ref is ABSOLUTE** (the q6z7 lesson) — loads `/board/board-view.js` verbatim, never copied. |
-| `cross-ws/index.html` | Scaffold: mounts only `Shell.mount({active:'cross-ws'})`; states it ships with track K (K2 relay log, K5 coupling map). No JS view-model file exists. |
+| `cross-ws/cross-ws-view.js` | `deriveCrossWsView` / `federateCoupling` / `deriveRelayView` / `relayWorkspaceRefs` (K5). PURE + Node-tested (`lib/test-cross-ws-view.sh`). `federateCoupling` joins the relay log + per-ws blueprints into ONE schema_version:1 Diagrammer record (each ws a `domain` box, each from→to relay a `call` edge, each ws's top-level domains as drill-in `capability` children); `deriveRelayView` reshapes `relay-log-tail` B.3 to display rows (B.4 tolerant; the `SUPPORTED_BLUEPRINT_SCHEMA` gate is its one §0.3 refusal point). |
+| `cross-ws/app.js` | Glue: `relay-log-tail` → `relayWorkspaceRefs` → per-ref `blueprint-get` → `federateCoupling` → **`BlueprintView.deriveBlueprintView` (the H2 model, reused verbatim)** → a STATIC fit-to-width SVG painter (edges UNDER boxes, the §3 render contract; NOT the workspace facet's pan/zoom shell — /cross-ws layout is [free], DESIGN K §9) + the relay list. A down relay proxy degrades in-place (honest "unavailable" banner), never collapses the page. |
 | `lib/test-{workspaces,capacity}-view.sh` | Node-require differential tests for the two mature views (mirror `lib/test-board.sh`). Auto-enrolled in the `lib` tier. |
 
 ## Contracts & invariants (don't break these)
@@ -145,8 +148,8 @@ calls `Shell.parseWorkspacePath(location.pathname)` to learn `{ref, facet}`.
 4. Wire any new field into `app.js` (string-in, paint-out only).
 5. **Deploy + verify** (the bgw gate — see below). Code committed is NOT done.
 
-**Promote a placeholder facet to live content** (Cross-WS K5 — Blueprint/Activity/
-Gates have all shipped): the route, nav, and rewrite already exist. The work is
+**Promote a placeholder facet to live content** (all facets + Cross-WS have now
+shipped — Blueprint/Activity/Gates and Cross-WS K5): the route, nav, and rewrite already exist. The work is
 (a) the engine projection field in Contract B.1 + `workSnapshot()` (see
 `engine-cloudflare.md`), (b) a new pure `deriveXView` + a `lib/test-*-view.sh`,
 (c) the facet's `app.js`/host wiring. For `workspace/`, replace the
@@ -199,9 +202,22 @@ A web task is done when the deployed bytes match committed bytes, not at commit.
   distinct hub state) so it reads as non-attention in-flight — without the map it
   fell through to the `attempts>=1 ⇒ failing` branch and flashed a false attention
   signal. Mapping to `enriching` also inherits the t956 stale-flip for free.
-- **Don't make Cross-WS pretend.** It deliberately makes no `/api` call and invents
-  no exchanges — it states what track K will answer. Keep that honesty until the
-  K2/K5 projections actually exist; do not add a phantom data read.
+- **Cross-WS is LIVE now (K5) — its honesty is realized, not deferred.** It reads
+  real data (`relay-log-tail` + per-ws `blueprint-get`) and invents no exchanges:
+  an empty relay log ⇒ an honest "no coupling yet" + "no exchanges yet", a down
+  relay proxy ⇒ an honest "unavailable" banner (the page never collapses). Keep
+  that — degrade, never fabricate a coupling edge or a relay row.
+- **A page that runs `setInterval` (auto-refresh) MUST be torn down in its jsdom
+  test (K5 scar).** `node --test` will NOT exit while a jsdom window's interval is
+  live — the tier hangs at 0% CPU until a timeout. Every test that mounts such a
+  page closes its window in a `finally` (`window.close()`); cross-ws.test.js and
+  the existing blueprint-canvas/shell-router tests all do.
+- **`Net.getJSON` THROWS on a proxy `{ok:false}` (K5 scar).** A read proxy that
+  returns `{ok:false,error}` with a 5xx makes `Net.getJSON` REJECT (net.js reads
+  the body and throws). If a view wants to render an honest "unavailable" pane
+  rather than collapse the whole page, its `app.js` must `.catch` that rejection
+  back into the `{ok:false}` envelope its view-model degrades (cross-ws/app.js
+  `refresh()` does this for the relay read).
 - **"Wired but not live" (the bgw/4xe/2dk family).** Local Node test green + code
   committed is NOT acceptance for a web route — the phone reads the deployed Pages
   site. Always deploy + `verify-pages-deploy.sh` (mismatches=0) before `bd close`.
@@ -223,8 +239,13 @@ When you finish a task here, append what a future agent will need and didn't fin
 a facet that graduated from placeholder to live (update the maturity table!), a new
 view-model field, a moved/renamed module, a fresh scar. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete stale lines; don't let
-it grow into a re-spec of Contract C. Last substantive update: 2026-06-05
-(claude-tools-p5me — the Blueprint diagram REDESIGN [left→right banding + a DETAIL
+it grow into a re-spec of Contract C. Last substantive update: 2026-06-07
+(claude-tools-uxvk5 — Cross-WS K5 graduated Scaffold→Real: the two-pane /cross-ws
+[a federated coupling map reusing the H2 *model* via a static SVG painter + a
+relay-log list from relay-log-tail]; see the maturity table, the
+cross-ws-view.js/app.js key-file rows, and the two new scars [close the jsdom
+window for setInterval pages; Net.getJSON throws on a proxy {ok:false}]. On top of
+2026-06-05 claude-tools-p5me — the Blueprint diagram REDESIGN [left→right banding + a DETAIL
 toggle panel + palette + minimap + auto-frame] LIFTED the diagram internals into
 their own context doc: **read `docs/context/web-blueprint.md`** for the map
 model/renderer/layout/edges/toggles/scars. This doc now covers only the Blueprint's
