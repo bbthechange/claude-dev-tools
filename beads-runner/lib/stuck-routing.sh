@@ -154,6 +154,13 @@ sr__raise_bfh() {
            raised_at:$at,resolved:false,resolved_at:null}' > "$tmp" 2>/dev/null \
        && mv -f "$tmp" "$path" 2>/dev/null; then
       rc=0
+      # claude-tools-1xx1: a FRESH fork for this task_ref must start CLEAN — drop
+      # any stale DISMISSED sentinel left by a PRIOR (dismissed) fork on the same
+      # task_ref, else the poll would wrongly skip the hosted read for the new
+      # fork and never observe its answer. Only the create-new branch clears it; a
+      # same-fork idempotent re-raise (record already present) keeps it, which is
+      # correct — the existing dismissed dossier has nothing new to observe.
+      rm -f "$(sr__dismissed_dir)/$tref.json" 2>/dev/null || true
     else
       rm -f "$tmp" 2>/dev/null; echo "stuck-routing: bfh — write failed for '$tref'" >&2; rc=4
     fi
@@ -464,6 +471,7 @@ sr_reconcile_blocked_for_human() {
       # record hard-delete) below.
       sr__fold_ask_on_close "$tref"
       rm -f "$f" 2>/dev/null || true
+      rm -f "$(sr__dismissed_dir)/$tref.json" 2>/dev/null || true   # claude-tools-1xx1: sweep the poll's dismissed sentinel with the record
       echo "stuck-routing: reconcile — $tref is CLOSED; auto-closing the stale blocked-for-human record (work→control §7.9) instead of resurrecting it to blocked/open (claude-tools-2z14); folded the stale work-plane ask (claude-tools-d752)" >&2
       n=$((n+1))
       continue
@@ -474,6 +482,7 @@ sr_reconcile_blocked_for_human() {
       # NOT by reading bead status — Dolt lag cannot make this lie.
       bd update "$tref" --status=open >/dev/null 2>&1 || true
       rm -f "$f" 2>/dev/null || true
+      rm -f "$(sr__dismissed_dir)/$tref.json" 2>/dev/null || true   # claude-tools-1xx1: sweep the poll's dismissed sentinel with the record
     else
       # Still blocked-for-human ⇒ re-assert the work-plane truth idempotently.
       # `bd label add … human` (NOT `bd human <id>`, which no-ops in this bd
@@ -584,6 +593,25 @@ sr__answer_dir() {
   printf '%s/blocked-for-human-answer' "$d"
 }
 
+# sr__dismissed_dir — the DISMISSED-fork sentinel sibling namespace
+# (claude-tools-1xx1; mirrors sr__bfh_dir / sr__answer_dir). A one-shot marker
+# the poll writes when it observes a fork whose Dossier is fully TERMINAL with
+# NO human decision (every Item expired — the §5 "dismiss as stale", uxvl1). Its
+# SOLE purpose is to let the next poll SKIP the hosted `do_dossier_get` for a
+# fork that can never produce a resume answer — so a dismissed-but-not-yet-
+# bead-touched fork stops doing one hosted read every poll (~30s) indefinitely.
+# It does NOT flip S-2 (a `sr__resolve_bfh` would LIFT the block + re-dispatch
+# with an empty answer, the exact uxvl1 bug it must not reopen), so the bead
+# stays PARKED (bfh resolved:false) until the human acts on it directly
+# (close/reopen → L2/2z14 work→control auto-close). It is purely a poll-internal
+# read-suppression marker: NOT consulted by the reconcile, NOT a §4 record. It is
+# cleared whenever a FRESH fork is raised for the task_ref (sr__raise_bfh) and
+# swept when the bfh record is hard-deleted (sr_reconcile_blocked_for_human).
+sr__dismissed_dir() {
+  local d; d="$(co_store_dir 2>/dev/null)" || d="${CO_STORE:-${TMPDIR:-/tmp}/claude-beads-coordinator}"
+  printf '%s/blocked-for-human-dismissed' "$d"
+}
+
 # sr_resume_answer <task_ref> — echo the captured resume-answer record JSON
 #   (so the runner can splice the human decision into the resumed agent's
 #   prompt), or return 1 if no answer is pending for this task_ref. Read-only.
@@ -653,12 +681,13 @@ sr_format_resume_directive() {
 #   record. Echoes the count of forks newly observed-resolved; ALWAYS returns 0
 #   (a poll never aborts the runner — exactly like the reconcile).
 sr_poll_hosted_resolution() {
-  local bearer="${1:-}" only="${2:-}" dir adir n=0 f tref did dossier
+  local bearer="${1:-}" only="${2:-}" dir adir ddir n=0 f tref did dossier
   command -v do_dossier_get >/dev/null 2>&1 || { echo 0; return 0; }
   [[ -n "$bearer" ]] || bearer="bearer-runner-stuck"
   dir="$(sr__bfh_dir)"
   [[ -d "$dir" ]] || { echo 0; return 0; }
   adir="$(sr__answer_dir)"; mkdir -p "$adir" 2>/dev/null || true
+  ddir="$(sr__dismissed_dir)"; mkdir -p "$ddir" 2>/dev/null || true
   local files=()
   if [[ -n "$only" ]]; then
     do__safe_key "$only" 2>/dev/null || { echo 0; return 0; }
@@ -677,6 +706,17 @@ sr_poll_hosted_resolution() {
     # skip the network read.
     if [[ -f "$adir/$tref.json" ]]; then
       sr__resolve_bfh "$tref" || true
+      continue
+    fi
+    # [claude-tools-1xx1] A previously-observed DISMISSED fork (Dossier fully
+    # terminal, all Items expired, NO human decision) can never produce a resume
+    # answer — SKIP the hosted do_dossier_get so it stops re-reading every poll
+    # (~30s) indefinitely. DELIBERATELY no sr__resolve_bfh here: a resolve would
+    # lift the work-plane block + re-dispatch the worker with an empty answer (the
+    # exact uxvl1 §5 bug). The fork stays PARKED (bfh resolved:false) until the
+    # human acts on the bead directly (close/reopen → L2/2z14 work→control
+    # auto-close hard-deletes both the bfh record and this sentinel).
+    if [[ -f "$ddir/$tref.json" ]]; then
       continue
     fi
     # Observe the engine. NONZERO/empty (hosted 401, unreachable, not yet
@@ -706,6 +746,44 @@ sr_poll_hosted_resolution() {
       ( .items // [] ) | map(select(.state=="answered" or .state=="applied")) | .[0] // empty
     ' 2>/dev/null)" || decided_item=""
     if [[ -z "$decided_item" ]]; then
+      # No human decision on any Item. Two cases, kept DISTINCT:
+      #   • NOT-YET-ANSWERED — at least one Item is still `open`: the human has
+      #     not acted. KEEP polling (do NOT write a sentinel, else we'd stop
+      #     observing the eventual answer).
+      #   • DISMISSED-AS-STALE — every Item is terminal (all expired) with none
+      #     answered/applied: the human dropped the card (§5/uxvl1). No resume
+      #     answer can ever arrive, so write a one-shot DISMISSED sentinel
+      #     (claude-tools-1xx1) — the NEXT poll skips the hosted do_dossier_get
+      #     above WITHOUT flipping S-2 (a resolve would falsely resume). The fork
+      #     stays PARKED until the human acts on the bead directly.
+      # Computed from Item states directly (the §4.1 rollup is "NEVER A GATE",
+      # like decided_item above). DISMISSED == the Dossier HAS Items and NONE is
+      # still `open` or `answered` ⇒ every Item is `expired`. The ">0 Items"
+      # guard is load-bearing: an item-LESS Dossier rolls up `open` (NOT terminal
+      # — dossier.sh §4.1.1; items[] MAY legitimately be empty, dossier-gen.sh
+      # §5.2.1), so it must KEEP polling and must NEVER be mistaken for a dismiss
+      # and parked forever. (An `answered` Item can't actually be here — the outer
+      # `decided_item` already short-circuited — but mirroring the rollup's
+      # open|answered ⇒ not-terminal definition keeps the two checks from drifting.)
+      local terminal_state
+      terminal_state="$(printf '%s' "$dossier" | jq -r '
+        ( .items // [] ) as $i
+        | if ($i | length) > 0
+             and ( any($i[]; .state=="open" or .state=="answered") | not )
+          then "dismissed" else "keep" end
+      ' 2>/dev/null)" || terminal_state="keep"
+      if [[ "$terminal_state" == "dismissed" ]]; then
+        local dtmp now_d
+        now_d=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+        dtmp="$ddir/$tref.json.$$.tmp"
+        if jq -cn --arg tref "$tref" --arg did "$did" --arg at "$now_d" \
+             '{task_ref:$tref,dossier_id:$did,dismissed_at:$at}' > "$dtmp" 2>/dev/null \
+           && mv -f "$dtmp" "$ddir/$tref.json" 2>/dev/null; then
+          : # sentinel written ⇒ the next poll skips the hosted re-read
+        else
+          rm -f "$dtmp" 2>/dev/null || true
+        fi
+      fi
       continue
     fi
     # Build a self-contained, human-readable answer record: the chosen option's

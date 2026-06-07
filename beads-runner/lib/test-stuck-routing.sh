@@ -366,6 +366,76 @@ eq   "fork STAYS parked (bfh resolved:false — no false resume / no re-dispatch
 ckn  "NO resume-answer captured (a dismiss carries no decision to resume WITH)" \
        sr_resume_answer "$DSM"
 
+# ── claude-tools-1xx1 — a DISMISSED fork must STOP the per-poll hosted re-read.
+#    After the uxvl1 fix the dismissed fork stays PARKED (good), but the poll was
+#    still doing one hosted do_dossier_get on its all-expired Dossier EVERY poll
+#    (~30s) forever (an unbounded low-rate hosted read, accumulating per
+#    dismissal). The fix: the first poll above writes a one-shot DISMISSED
+#    sentinel; the NEXT poll SKIPS the hosted read — WITHOUT flipping S-2 (a
+#    resolve would re-open the uxvl1 false-resume bug).
+echo ""
+echo "── claude-tools-1xx1 — dismissed fork stops the per-poll hosted re-read ─────"
+ck   "first poll wrote a one-shot DISMISSED sentinel" \
+       test -f "$(sr__dismissed_dir)/$DSM.json"
+# Spy on do_dossier_get to PROVE the 2nd poll does ZERO hosted reads for the
+# dismissed fork: rename the real fn, wrap it with a byte-counter, restore after.
+DDG_SPY="$WORK/ddg-spy"; : > "$DDG_SPY"
+eval "_orig_ddg_spy() $(declare -f do_dossier_get | tail -n +2)"
+do_dossier_get() { printf 'x' >> "$DDG_SPY"; _orig_ddg_spy "$@"; }
+nDM2="$(sr_poll_hosted_resolution "$GOOD" "$DSM" 2>/dev/null)"
+unset -f do_dossier_get
+eval "do_dossier_get() $(declare -f _orig_ddg_spy | tail -n +2)"
+unset -f _orig_ddg_spy
+eq   "2nd poll did ZERO hosted do_dossier_get reads (sentinel skip)" \
+       "$(wc -c < "$DDG_SPY" | tr -d ' ')" "0"
+eq   "2nd poll still reports ZERO newly-resolved forks" "${nDM2:-x}" "0"
+eq   "fork STILL parked after the skip (bfh resolved:false — no false resume)" \
+       "$(BFHJQ "$DSM" '.resolved')" "false"
+ckn  "STILL no resume-answer captured (the skip carries no decision)" \
+       sr_resume_answer "$DSM"
+# A NOT-YET-ANSWERED fork (an Item still open) must NOT be sentinel'd — the poll
+# must keep observing it. A fresh fork with an open Item: no sentinel after poll.
+PND=stuck-pending-bead
+DIDP="$(sr_route_stuck "$GOOD" "$PND" worker_stuck "$ASK_JSON" 2>/dev/null)"
+eq   "pending fixture: the Item is still open" \
+       "$(DJQ "$DIDP" '[.items[]?|select(.state=="open")]|length')" "1"
+sr_poll_hosted_resolution "$GOOD" "$PND" >/dev/null 2>&1
+ckn  "a NOT-YET-ANSWERED fork is NOT sentinel'd (poll keeps observing it)" \
+       test -f "$(sr__dismissed_dir)/$PND.json"
+# An item-LESS Dossier rolls up `open` (NOT terminal — §4.1.1; items[] MAY be
+# empty), so a parked fork whose Dossier has ZERO Items must KEEP polling and
+# must NEVER be mistaken for a dismiss. Stub do_dossier_get to hand back an
+# extant-but-item-less Dossier for this fork and assert no sentinel is written.
+ZI=stuck-zeroitem-bead
+ZIDID="$(sr_dossier_id_for "$ZI")"
+sr__raise_bfh "$GOOD" "$ZI" "$ZIDID" worker_stuck >/dev/null 2>&1
+eval "_orig_ddg_zi() $(declare -f do_dossier_get | tail -n +2)"
+do_dossier_get() { if [[ "${2:-}" == "$ZIDID" ]]; then printf '%s' '{"items":[]}'; return 0; fi; _orig_ddg_zi "$@"; }
+sr_poll_hosted_resolution "$GOOD" "$ZI" >/dev/null 2>&1
+unset -f do_dossier_get
+eval "do_dossier_get() $(declare -f _orig_ddg_zi | tail -n +2)"
+unset -f _orig_ddg_zi
+ckn  "an item-LESS Dossier is NOT mistaken for a dismiss (no sentinel ⇒ keep polling)" \
+       test -f "$(sr__dismissed_dir)/$ZI.json"
+eq   "item-less fork stays parked (bfh resolved:false)" "$(BFHJQ "$ZI" '.resolved')" "false"
+# Closing the dismissed bead out of band sweeps BOTH the bfh record AND the
+# sentinel (no orphan accumulation — the §7.9 / claude-tools-2z14 close branch).
+printf '%s' "closed" > "$BDST/$DSM"
+nDMc="$(sr_reconcile_blocked_for_human "$GOOD" "$DSM" 2>/dev/null)"
+eq   "reconcile auto-closed the dismissed fork's record"  "$nDMc" "1"
+ckn  "closed bead ⇒ bfh record swept"                     sr_bfh_get "$DSM"
+ckn  "closed bead ⇒ DISMISSED sentinel swept too (no orphan)" \
+       test -f "$(sr__dismissed_dir)/$DSM.json"
+# A FRESH fork on a task_ref that was previously dismissed must start CLEAN: the
+# stale sentinel is cleared at raise time so the poll observes the new answer.
+RF=stuck-refork-bead
+RFDID="$(sr_dossier_id_for "$RF")"
+mkdir -p "$(sr__dismissed_dir)" 2>/dev/null
+printf '%s' '{"task_ref":"stuck-refork-bead","dossier_id":"x","dismissed_at":"t"}' > "$(sr__dismissed_dir)/$RF.json"
+sr_route_stuck "$GOOD" "$RF" worker_stuck "$ASK_JSON" >/dev/null 2>&1
+ckn  "a FRESH fork clears the stale DISMISSED sentinel at raise (re-fork starts clean)" \
+       test -f "$(sr__dismissed_dir)/$RF.json"
+
 # ── claude-tools-uxvl5 (inbox-lifecycle §4.4) — READABILITY GATE on the
 #    deterministic fallback template + the residual no_DG_AUTHOR_CMD jargon bug.
 #    When the dossier-builder agent is unreachable, sr_worker_ask's raw material
