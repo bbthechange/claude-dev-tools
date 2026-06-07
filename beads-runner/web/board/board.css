@@ -140,46 +140,14 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 .bead .sub.code{color:var(--amber-soft)}
 .bead .sub.verified{color:var(--mint)}
 
-/* per-project runners — honest state + S-1 liveness */
+/* per-project runners GRID — phone-first wrap → desktop. The per-runner CARD
+ * visuals (.runner box, state row, pill, current-task, rnote) + the F2 control
+ * row were EXTRACTED to /shared/tokens.css in claude-tools-758l so the Board, the
+ * per-workspace Board facet, and the Workspaces card render the runner state +
+ * desired-state controls identically (RunnerCard.renderStateRow/renderControls).
+ * Only the Board-specific GRID + the per-runner queue line (.rqh, above) stay
+ * here. */
 .runners{display:flex;flex-wrap:wrap;gap:10px;padding:0 14px}
-.runner{flex:1 1 240px;min-width:0;border:1px solid var(--line);border-radius:13px;
-  background:var(--panel);padding:13px 14px}
-.runner .rp{font-size:11px;color:var(--dim);letter-spacing:.06em;
-  margin-bottom:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.runner .rstate{display:flex;align-items:center;gap:9px;font-size:13px;
-  font-family:var(--font-display);letter-spacing:-.01em}
-.runner .pill{width:8px;height:8px;border-radius:50%;flex:none}
-.runner .pill.live{background:var(--mint);box-shadow:0 0 7px var(--mint)}
-.runner .pill.attention{background:var(--amber);box-shadow:0 0 7px var(--amber)}
-.runner .pill.unknown{background:var(--slate)}
-/* g2s — soft 'thinking' visual between 90s and 180s heartbeat age. Same
- * green family as live (the wire `liveness` IS still 'live' — S-1), but
- * desaturated and pulsing to read as "active but momentarily quiet" rather
- * than the bright steady-state live pill. */
-.runner .pill.thinking{background:var(--mint);opacity:.55;animation:thinking-pulse 1.6s ease-in-out infinite}
-.runner .rstate .pill.thinking + span{color:var(--dim)}
-@keyframes thinking-pulse{0%,100%{opacity:.35}50%{opacity:.75}}
-@media (prefers-reduced-motion:reduce){
-  .runner .pill.thinking{animation:none;opacity:.55}
-}
-/* S-1: a STALE runner is visually its OWN state — never the live green pill */
-.runner.stale{border-color:rgba(255,107,107,.32);
-  background:linear-gradient(160deg,rgba(255,107,107,.09),var(--panel))}
-.runner .pill.stale{background:var(--coral);box-shadow:0 0 7px var(--coral)}
-.runner.stale .rstate{color:var(--coral)}
-.runner .rnote{margin-top:8px;font-size:10px;color:var(--faint);letter-spacing:.04em}
-/* 8ag — secondary "currently working on" line under the workspace state pill.
- * Live-only (board-view.js drops it for stale runners — S-1). claude-tools-4g5o
- * — extended to optionally carry a TITLE from the §4.6 workspace_inventory join
- * after the em-dash; the title span is visually subordinate so the ref still
- * scans first. Falls back to ref-only when no title is present. */
-.runner .workspace-current-task{
-  display:block;margin-top:6px;font-family:var(--mono);font-size:11px;
-  color:var(--dim);letter-spacing:.02em;
-}
-.runner .workspace-current-task .workspace-current-task-title{
-  color:var(--faint);font-weight:normal;
-}
 /* .runner .rcap was removed in claude-tools-zdxd.5 (C4) — per-machine
  * usage now lives in the top-of-board .machines strip (MACHINE-STATE.md
  * v1 §4). The rule is retained only as a deletion marker so a CSS grep
@@ -227,57 +195,11 @@ a.warn:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-ra
 /* §4.D: gate disabled = un-banded neutral palette (numbers stay readable). */
 .mstrip.gate-disabled .mnum{color:var(--text)}
 
-/* F2 (claude-tools-8fh) — per-workspace desired-state toggle row.
- * Mobile-first: each button is ≥44×44px (Apple HIG / WCAG 2.5.5 minimum),
- * no hover-only state. ACTIVE = the button matching the current ACTUAL —
- * never desired (board-view.js enforces). The pending banner is its own
- * line so it can never be mistaken for the actual pill. */
-.runner .rctrls{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
-.runner .rbtn{
-  flex:1 1 auto;min-width:72px;min-height:44px;
-  padding:10px 12px;border-radius:9px;
-  font-family:var(--mono);font-size:12px;letter-spacing:.04em;
-  background:var(--panel-2);color:var(--text);
-  border:1px solid var(--line-2);
-  cursor:pointer;-webkit-tap-highlight-color:transparent;
-  touch-action:manipulation;
-  transition:background .15s, border-color .15s;
-}
-.runner .rbtn:focus-visible{outline:2px solid var(--sky);outline-offset:2px}
-.runner .rbtn:active{background:var(--ink-2)}
-.runner .rbtn.active{
-  background:rgba(79,214,160,.15);
-  border-color:rgba(79,214,160,.5);
-  color:var(--mint);
-  font-weight:500;
-}
-.runner.stale .rbtn.active{
-  /* S-1: a stale runner has NO live actual to highlight; the renderer drops
-   * `active`, but if somehow set we still suppress the green pill look. */
-  background:var(--panel-2);border-color:var(--line-2);color:var(--text);
-  font-weight:400;
-}
-.runner .rbtn.busy{opacity:.55;cursor:progress}
-.runner .rbtn:disabled{opacity:.55;cursor:not-allowed}
-
-.runner .rpending{
-  margin-top:9px;font-size:11px;letter-spacing:.04em;
-  padding:7px 10px;border-radius:8px;
-  background:rgba(255,180,84,.1);
-  border:1px solid rgba(255,180,84,.3);
-  color:var(--amber-soft);
-}
-.runner .rstale{
-  margin-top:8px;font-size:10px;letter-spacing:.04em;
-  color:var(--coral);
-}
-.runner .rerr{
-  margin-top:8px;font-size:11px;letter-spacing:.02em;
-  padding:7px 10px;border-radius:8px;
-  background:rgba(255,107,107,.1);
-  border:1px solid rgba(255,107,107,.35);
-  color:var(--coral);
-}
+/* The F2 desired-state control row (.rctrls/.rbtn/.rpending/.rstale/.rerr) was
+ * EXTRACTED to /shared/tokens.css in claude-tools-758l (shared by the Board, the
+ * per-workspace Board facet, and the Workspaces card). The control selectors are
+ * bare there (not scoped under .runner) so they render identically inside the
+ * Workspaces card's .ws-runner-controls too. */
 
 .errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
   background:rgba(255,107,107,.08);border-radius:14px;padding:18px}

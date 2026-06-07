@@ -37,6 +37,15 @@ PROXY="$HERE/../web/functions/api/board/index.js"
 WPROXY="$HERE/../web/functions/api/board/set-desired.js"
 APP="$HERE/../web/board/app.js"
 SHELL_HTML="$HERE/../web/board/index.html"
+# claude-tools-758l — the runner state row + the F2 control row were extracted to
+# the shared RunnerCard module (rendering) + tokens.css (the visuals). Structural
+# greps that used to target board/app.js + board.css now target these.
+RCARD="$HERE/../web/shared/runner-card.js"
+TOKENS="$HERE/../web/shared/tokens.css"
+# claude-tools-758l — the per-workspace Board FACET now also carries the F2
+# controls (UX-DESIGN-V2 §2/§4 Flow D). Its wiring lives in the shared
+# workspace/app.js; pin it structurally so a refactor can't silently drop it.
+WS_APP="$HERE/../web/workspace/app.js"
 [[ -f "$LIB"   ]] || { echo "FATAL: coordinator.sh not found at $LIB"; exit 2; }
 [[ -f "$VIEW"  ]] || { echo "FATAL: board-view.js not found at $VIEW"; exit 2; }
 command -v node >/dev/null 2>&1 || { echo "FATAL: node required for the Board renderer test"; exit 2; }
@@ -295,12 +304,32 @@ RS="$(jq -c '.runners[]|select(.project_ref=="projA")' <<<"$V2")"
 ck "stale runner: NO control button is active (S-1)"         eq "$(jq -r '[.controls[]|select(.active)]|length' <<<"$RS")" "0"
 ck "stale runner carries the 'may not apply quickly' note"   has "controls may not apply quickly" "$(jq -r '.stale_controls_note' <<<"$RS")"
 ck "stale warning names a 'last seen … ago' duration"        has "last seen" "$(jq -r '.stale_controls_note' <<<"$RS")"
-# Mobile-friendly CSS: ≥44px tap targets, no hover-only state.
+# Mobile-friendly CSS: ≥44px tap targets, no hover-only state. claude-tools-758l —
+# the control visuals moved to the SHARED tokens.css (bare selectors, so the same
+# CSS styles the Workspaces card's .ws-runner-controls too). board.css keeps only
+# the Board-specific .runners grid + .rqh.
 CSS="$HERE/../web/board/board.css"
 [[ -f "$CSS" ]] || bad "board.css present"
-ck "control buttons declare min-height ≥44px (tap target)"   has "min-height:44px" "$(cat "$CSS")"
-ck "control buttons set touch-action:manipulation (no 300ms)" has "touch-action:manipulation" "$(cat "$CSS")"
-ck "control buttons are NOT hover-only (have :active style)"  has ".rbtn:active" "$(cat "$CSS")"
+[[ -f "$TOKENS" ]] || bad "shared tokens.css present"
+ck "control buttons declare min-height ≥44px (tap target)"   has "min-height:44px" "$(cat "$TOKENS")"
+ck "control buttons set touch-action:manipulation (no 300ms)" has "touch-action:manipulation" "$(cat "$TOKENS")"
+ck "control buttons are NOT hover-only (have :active style)"  has ".rbtn:active" "$(cat "$TOKENS")"
+# The shared control selectors are BARE (not scoped under .runner) so they also
+# style the Workspaces card's .ws-runner-controls wrapper.
+ck "shared .rctrls selector is bare (not .runner .rctrls)"   has ".rctrls{" "$(cat "$TOKENS")"
+ck "board.css no longer carries the .rbtn control styles"    hasnt ".rbtn{" "$(cat "$CSS")"
+# STRUCTURAL — board/app.js now DELEGATES the state row + control row to the
+# shared RunnerCard (the dedupe this task exists for), not an inline DOM build.
+ck "app.js delegates the state row to RunnerCard.renderStateRow" has "RunnerCard.renderStateRow" "$(cat "$APP")"
+ck "app.js delegates the control row to RunnerCard.renderControls" has "RunnerCard.renderControls" "$(cat "$APP")"
+# claude-tools-758l — the per-workspace Board FACET carries the same F2 controls
+# (one tap from the workspace card; Flow D). Structural: the facet renders the
+# shared controls + POSTs the SAME set-desired proxy with the ws-board actor, and
+# the old "NO set-desired control here" read-only posture is gone.
+ck "ws board facet renders RunnerCard.renderControls"        has "RunnerCard.renderControls" "$(cat "$WS_APP")"
+ck "ws board facet POSTs /api/board/set-desired"             has "/api/board/set-desired" "$(cat "$WS_APP")"
+ck "ws board facet stamps the ws-board actor (C4 breadcrumb)" has "ui:ws-board" "$(cat "$WS_APP")"
+ck "ws board facet dropped the old 'NO set-desired' posture"  hasnt "NO set-desired controls here" "$(cat "$WS_APP")"
 ck "shell HTML viewport tag enables mobile sizing"           has "width=device-width" "$(cat "$SHELL_HTML")"
 
 echo "── EXIT-6: 8ag — workspace strip surfaces a LIVE runner's current_task_ref ──"
@@ -341,9 +370,12 @@ ck "Case F — live runner with empty task ⇒ current_task null"    eq "$(jq -r
 # STRUCTURAL — app.js renders the secondary line from r.current_task using
 # the .workspace-current-task class so a future renderer change cannot
 # silently drop the line for live runners.
-ck "app.js renders r.current_task as the secondary line"         has "r.current_task" "$(cat "$APP")"
-ck "app.js uses the .workspace-current-task class for the line"  has "workspace-current-task" "$(cat "$APP")"
-ck "board.css styles .workspace-current-task (secondary text)"   has "workspace-current-task" "$(cat "$CSS")"
+# claude-tools-758l — the secondary current-task line is now rendered by the shared
+# RunnerCard.renderStateRow (consumed by all three runner surfaces); the CSS lives
+# in the shared tokens.css.
+ck "runner-card renders r.current_task as the secondary line"    has "r.current_task" "$(cat "$RCARD")"
+ck "runner-card uses the .workspace-current-task class"          has "workspace-current-task" "$(cat "$RCARD")"
+ck "tokens.css styles .workspace-current-task (secondary text)"  has "workspace-current-task" "$(cat "$TOKENS")"
 
 echo "── EXIT-6b: 4g5o — workspace strip surfaces TITLE alongside current_task_ref ──"
 # claude-tools-4g5o — the CF projection now joins workspace_inventory's
@@ -380,9 +412,9 @@ VE_M="$(render_snap "$VE_SNAP")"
 RE_M="$(jq -c '.runners[]|select(.project_ref=="projG5")' <<<"$VE_M")"
 ck "Case E — view model carries current_task ref"               eq "$(jq -r '.current_task' <<<"$RE_M")" "claude-tools-xyz"
 ck "Case E — view model carries current_task_title"             eq "$(jq -r '.current_task_title' <<<"$RE_M")" "Short title"
-ck "Case E — app.js renders r.current_task_title (uses field)"  has "r.current_task_title" "$(cat "$APP")"
-ck "Case E — app.js uses .workspace-current-task-title class"   has "workspace-current-task-title" "$(cat "$APP")"
-ck "Case E — board.css styles the subordinate title span"       has "workspace-current-task-title" "$(cat "$CSS")"
+ck "Case E — runner-card renders r.current_task_title (uses field)" has "r.current_task_title" "$(cat "$RCARD")"
+ck "Case E — runner-card uses .workspace-current-task-title class"  has "workspace-current-task-title" "$(cat "$RCARD")"
+ck "Case E — tokens.css styles the subordinate title span"         has "workspace-current-task-title" "$(cat "$TOKENS")"
 # Case F — ref present, no title ⇒ view's title=null (fallback to ref-only).
 VF_SNAP="$(mk_snap_rs claude-tools-xyz 'null')"
 RF_M="$(jq -c '.runners[]|select(.project_ref=="projG5")' <<<"$(render_snap "$VF_SNAP")")"
@@ -402,8 +434,8 @@ LONG='A very long workspace_inventory bead title that is well past sixty charact
 VH_SNAP="$(mk_snap_rs claude-tools-xyz "$(jq -n --arg t "$LONG" '$t')")"
 RH_M="$(jq -c '.runners[]|select(.project_ref=="projG5")' <<<"$(render_snap "$VH_SNAP")")"
 ck "Case H — view preserves the full long title"                eq "$(jq -r '.current_task_title|length' <<<"$RH_M")" "${#LONG}"
-ck "Case H — app.js truncates titles >60 chars"                 has ".length > 60" "$(cat "$APP")"
-ck "Case H — app.js appends an ellipsis after truncation"       has "'…'" "$(cat "$APP")"
+ck "Case H — runner-card truncates titles >60 chars"            has ".length > 60" "$(cat "$RCARD")"
+ck "Case H — runner-card appends an ellipsis after truncation"  has "'…'" "$(cat "$RCARD")"
 # A STALE runner's last-reported task is honestly unknown (S-1) — and so is
 # any joined title. The view model must drop BOTH for a stale runner.
 STALE_SNAP="$(jq -cn '{schema_version:1,principal:"PRINCIPAL_V1",read_only:true,
@@ -462,9 +494,10 @@ co_request "$GOOD" heartbeat "$(hb_line hostTI projTI idle "" "$(ago 120)")" >/d
 RTI="$(jq -c '.runners[]|select(.project_ref=="projTI")' <<<"$(render "$(co_request "$GOOD" work-snapshot projTI "[]" 2>/dev/null)")")"
 ck "Edge — actual=idle in thinking window stays 'live'"        eq "$(jq -r '.state_class' <<<"$RTI")" "live"
 # CSS — the new class is declared with a presentation matching the live family
-# but visibly distinct (opacity/animation), and is reduced-motion safe.
-ck "board.css declares .pill.thinking"                         has ".pill.thinking" "$(cat "$CSS")"
-ck "board.css thinking style is reduced-motion safe"           has "prefers-reduced-motion" "$(cat "$CSS")"
+# but visibly distinct (opacity/animation), and is reduced-motion safe. The pill
+# visuals moved to the shared tokens.css in claude-tools-758l.
+ck "tokens.css declares .pill.thinking"                        has ".pill.thinking" "$(cat "$TOKENS")"
+ck "tokens.css thinking style is reduced-motion safe"          has "prefers-reduced-motion" "$(cat "$TOKENS")"
 
 echo "── EXIT-8: MACHINE-STATE.md v1 §4 — top-of-board capacity strip (zdxd.5) ──"
 # The §4.A per-machine strip is the ONE place per-machine usage surfaces; the

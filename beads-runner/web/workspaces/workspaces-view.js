@@ -51,6 +51,19 @@
   // spare-only, unknown) is honestly NOT active even when live.
   var ACTUAL_HEALTHY_ACTIVE = { running: 1, idle: 1, starting: 1 };
 
+  // claude-tools-758l — the four FROZEN desired-states the per-workspace toggle
+  // row exposes (UX-DESIGN-V2 §2 "one tap from the workspace card"; §4 Flow D).
+  // Pinned in the SAME order as board-view.js's DESIRED_CONTROLS and
+  // set-desired.js's ALLOWED_STATES so a UI typo and an engine typo cannot drift
+  // apart (a local copy by design — the hub does NOT depend on board-view.js).
+  // The label is presentation; `state` is the wire value the F1 client sends.
+  var DESIRED_CONTROLS = [
+    { state: 'running',    label: 'Run' },
+    { state: 'paused',     label: 'Pause' },
+    { state: 'spare-only', label: 'Spare-only' },
+    { state: 'stopped',    label: 'Stop' }
+  ];
+
   // L3 (claude-tools-uxvl3; inbox-lifecycle §9.5 #4) — the intake state thread
   // the §4.5 producer surfaces in the top-level `intake[]` lane. FROZEN order:
   // received → enriching → created  /  failing → gave-up. `failing`/`gave-up`
@@ -183,13 +196,22 @@
     };
   }
 
-  /* deriveWorkspacesView(snapshot, nowMs?) → the whole hub view model.
+  /* deriveWorkspacesView(snapshot, nowMs?, opts?) → the whole hub view model.
    * On an unknown HIGHER (or missing/non-integer) schema_version it returns an
    * ERROR view (§0.3 — refuse, never best-effort-render). Otherwise:
    *   { ok:true, principal, schema_version, cards:[…], decisions_total }
-   * one card per snapshot.projects[]. */
-  function deriveWorkspacesView(snapshot, nowMs) {
+   * one card per snapshot.projects[].
+   *
+   * claude-tools-758l: `opts.pending_desired` is an optional
+   * { [project_ref]: { state } } map of client-side ephemeral "user just tapped"
+   * captures (the F2 desired-state controls now live ON the workspace card). It
+   * is NOT a contract field — the projection stays authoritative and this overlay
+   * can NEVER promote actual; it only supplies the per-card "waiting for runner to
+   * honor" banner (same discipline as board-view.js's pending_desired). */
+  function deriveWorkspacesView(snapshot, nowMs, opts) {
     var snap = snapshot && typeof snapshot === 'object' ? snapshot : {};
+    var pendingMap = (opts && opts.pending_desired && typeof opts.pending_desired === 'object'
+      && !Array.isArray(opts.pending_desired)) ? opts.pending_desired : {};
 
     var sv = snap.schema_version;
     if (typeof sv !== 'number' || Math.floor(sv) !== sv) {
@@ -345,6 +367,27 @@
       else if (mismatch || hasFailure || intake.attention_count > 0) health = 'attention';
       else health = 'ok';
 
+      // claude-tools-758l — the F2 desired-state CONTROL row on the card (the
+      // four Run/Pause/Spare-only/Stop buttons). `active` is the button matching
+      // the CURRENT ACTUAL (NEVER desired — principle 4); a stale runner has NO
+      // active button (S-1: no honest live state to highlight). Same derivation
+      // as board-view.js deriveRunner so the three surfaces agree.
+      var controls = DESIRED_CONTROLS.map(function (c) {
+        return {
+          state: c.state,
+          label: c.label,
+          active: liveness === 'live' && actual === c.state
+        };
+      });
+      // Pending banner — client-side ephemeral (the tap capture). Only surfaced
+      // until the projection's actual catches up; NEVER promotes actual.
+      var pend = pendingMap[ref] || null;
+      var pState = (pend && typeof pend.state === 'string') ? pend.state : null;
+      var pendingDesired = (pState && pState !== actual) ? pState : null;
+      var pendingLabel = pendingDesired
+        ? 'desired: ' + pendingDesired + ' (waiting for runner to honor)'
+        : null;
+
       return {
         project_ref: ref,
         liveness: liveness,
@@ -363,6 +406,11 @@
         intake: intake,
         // H3 — the Blueprint card chip (thumbnail freshness + in-flight count).
         blueprint: blueprint,
+        // claude-tools-758l — the F2 desired-state controls (consumed by
+        // RunnerCard.renderControls in the card) + the ephemeral pending banner.
+        controls: controls,
+        pending_desired: pendingDesired,
+        pending_label: pendingLabel,
         // DERIVED — labeled. The UI MUST surface this as "derived from board".
         stage_counts: stageCounts,
         stage_total: stageTotal,
@@ -410,6 +458,7 @@
     prefixMatch: prefixMatch,
     STAGE_ORDER: STAGE_ORDER,
     INTAKE_STATE_ORDER: INTAKE_STATE_ORDER,
+    DESIRED_CONTROLS: DESIRED_CONTROLS,
     SUPPORTED_SNAPSHOT_SCHEMA: SUPPORTED_SNAPSHOT_SCHEMA
   };
 });

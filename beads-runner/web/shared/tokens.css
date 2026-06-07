@@ -97,3 +97,93 @@ body{
   pointer-events:none;
 }
 #offline-badge[hidden]{display:none}
+
+/* ── per-project RUNNER CARD (shared) — extracted from board.css + workspace.css
+ *    in claude-tools-758l so the Board (/board), the per-workspace Board facet
+ *    (/ws/<ref>/board), and the Workspaces card (/workspaces) render the runner's
+ *    honest state row + the Flow-D desired-state controls IDENTICALLY (one source
+ *    of truth: RunnerCard.renderStateRow / renderControls in /shared/runner-card.js).
+ *
+ *    STATE-ROW selectors stay scoped under .runner (renderStateRow always mounts
+ *    into a .runner box on the Board + facet). The CONTROL selectors are BARE so
+ *    the four buttons + the pending/stale/error notes also style correctly inside
+ *    the Workspaces card's .ws-runner-controls wrapper (which is NOT a .runner).
+ *    Presentation only — every honest-state decision lives in board-view.js /
+ *    workspaces-view.js. The Board keeps its own .runners GRID + per-runner .rqh
+ *    queue line in board.css (those are Board-specific). ── */
+.runner{flex:1 1 240px;min-width:0;border:1px solid var(--line);border-radius:13px;
+  background:var(--panel);padding:13px 14px}
+.runner .rp{font-size:11px;color:var(--dim);letter-spacing:.06em;
+  margin-bottom:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.runner .rstate{display:flex;align-items:center;gap:9px;font-size:13px;
+  font-family:var(--font-display);letter-spacing:-.01em}
+.runner .pill{width:8px;height:8px;border-radius:50%;flex:none}
+.runner .pill.live{background:var(--mint);box-shadow:0 0 7px var(--mint)}
+.runner .pill.attention{background:var(--amber);box-shadow:0 0 7px var(--amber)}
+.runner .pill.unknown{background:var(--slate)}
+/* g2s — soft 'thinking' visual between 90s and 180s heartbeat age (wire liveness
+ * stays 'live' — S-1; this is presentation only). */
+.runner .pill.thinking{background:var(--mint);opacity:.55;animation:thinking-pulse 1.6s ease-in-out infinite}
+.runner .rstate .pill.thinking + span{color:var(--dim)}
+@keyframes thinking-pulse{0%,100%{opacity:.35}50%{opacity:.75}}
+@media (prefers-reduced-motion:reduce){.runner .pill.thinking{animation:none;opacity:.55}}
+/* S-1: a STALE runner is visually its OWN state — never the live green pill. */
+.runner.stale{border-color:rgba(255,107,107,.32);
+  background:linear-gradient(160deg,rgba(255,107,107,.09),var(--panel))}
+.runner .pill.stale{background:var(--coral);box-shadow:0 0 7px var(--coral)}
+.runner.stale .rstate{color:var(--coral)}
+.runner .rnote{margin-top:8px;font-size:10px;color:var(--faint);letter-spacing:.04em}
+/* 8ag/4g5o — secondary "currently working on" line (ref + optional title). */
+.runner .workspace-current-task{display:block;margin-top:6px;font-family:var(--mono);
+  font-size:11px;color:var(--dim);letter-spacing:.02em}
+.runner .workspace-current-task .workspace-current-task-title{color:var(--faint);font-weight:normal}
+
+/* F2 (claude-tools-8fh) desired-state CONTROL row — BARE selectors (style inside
+ * .runner AND the Workspaces card's .ws-runner-controls). Mobile-first: each
+ * button ≥44×44px, no hover-only state. ACTIVE = the button matching the current
+ * ACTUAL — never desired (the view-models enforce). */
+.rctrls{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
+.rbtn{
+  flex:1 1 auto;min-width:72px;min-height:44px;
+  padding:10px 12px;border-radius:9px;
+  font-family:var(--mono);font-size:12px;letter-spacing:.04em;
+  background:var(--panel-2);color:var(--text);
+  border:1px solid var(--line-2);
+  cursor:pointer;-webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+  transition:background .15s, border-color .15s;
+}
+.rbtn:focus-visible{outline:2px solid var(--sky);outline-offset:2px}
+.rbtn:active{background:var(--ink-2)}
+.rbtn.active{
+  background:rgba(79,214,160,.15);
+  border-color:rgba(79,214,160,.5);
+  color:var(--mint);
+  font-weight:500;
+}
+/* S-1: a stale runner has NO live actual to highlight; the renderer drops
+ * `active`, but if somehow set we still suppress the green pill look. */
+.runner.stale .rbtn.active{
+  background:var(--panel-2);border-color:var(--line-2);color:var(--text);
+  font-weight:400;
+}
+.rbtn.busy{opacity:.55;cursor:progress}
+.rbtn:disabled{opacity:.55;cursor:not-allowed}
+.rpending{
+  margin-top:9px;font-size:11px;letter-spacing:.04em;
+  padding:7px 10px;border-radius:8px;
+  background:rgba(255,180,84,.1);
+  border:1px solid rgba(255,180,84,.3);
+  color:var(--amber-soft);
+}
+.rstale{
+  margin-top:8px;font-size:10px;letter-spacing:.04em;
+  color:var(--coral);
+}
+.rerr{
+  margin-top:8px;font-size:11px;letter-spacing:.02em;
+  padding:7px 10px;border-radius:8px;
+  background:rgba(255,107,107,.1);
+  border:1px solid rgba(255,107,107,.35);
+  color:var(--coral);
+}

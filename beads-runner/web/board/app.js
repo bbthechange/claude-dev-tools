@@ -37,6 +37,11 @@
 
   var REFRESH_MS = 30000; // re-poll so a runner going stale surfaces (§4.2/S-1)
   var BoardView = window.BoardView;
+  // claude-tools-758l — the shared runner-card renderer + Dom helper. The runner
+  // state row + the F2 control row are now built by RunnerCard so the Board, the
+  // per-workspace Board facet, and the Workspaces card render them identically.
+  var RunnerCard = window.RunnerCard;
+  var Dom = window.Dom;
 
   // F2 — per-workspace ephemeral capture of "user just tapped X". Map keyed
   // by project_ref; entry is cleared on the first refresh whose projection
@@ -284,57 +289,13 @@
     runners.forEach(function (r) {
       var box = mk('div', 'runner' + (r.liveness === 'stale' ? ' stale' : ''));
       box.appendChild(mk('div', 'rp', r.project_ref));
-      var st = mk('div', 'rstate');
-      st.appendChild(mk('span', 'pill ' + r.state_class));
-      st.appendChild(mk('span', null, r.state_label));
-      box.appendChild(st);
-      // 8ag — a live runner's current task ref as a secondary line under the
-      // pill. claude-tools-4g5o — extended to optionally include a TITLE from
-      // the §4.6 workspace_inventory join (graceful fallback to ref-only when
-      // the projection has no title). Dropped for stale runners by the view
-      // (S-1: their last task is honestly unknown).
-      if (r.current_task) {
-        var line = mk('code', 'workspace-current-task', r.current_task);
-        if (r.current_task_title) {
-          // Em-dash separator + a visually subordinate title span so the user
-          // can still scan refs quickly. Truncate to 60 chars with ellipsis.
-          var t = r.current_task_title;
-          if (t.length > 60) t = t.slice(0, 60) + '…';
-          line.appendChild(document.createTextNode(' — '));
-          line.appendChild(mk('span', 'workspace-current-task-title', t));
-        }
-        box.appendChild(line);
-      }
-      // S-1: the last-reported actual of a stale runner is muted CONTEXT,
-      // never promoted to a live state (board-view.js guarantees this).
-      if (r.actual_note) box.appendChild(mk('div', 'rnote', r.actual_note));
-      // F2 — per-row toggle controls. Buttons reflect ACTUAL; the active
-      // pill is the current actual state (never desired).
-      var controlsBox = mk('div', 'rctrls');
-      (r.controls || []).forEach(function (c) {
-        var btn = mk('button', 'rbtn' + (c.active ? ' active' : ''), c.label);
-        btn.setAttribute('type', 'button');
-        btn.setAttribute(
-          'aria-label',
-          'Set ' + r.project_ref + ' desired-state to ' + c.state
-        );
-        btn.setAttribute('aria-pressed', c.active ? 'true' : 'false');
-        btn.dataset.state = c.state;
-        btn.addEventListener('click', function () {
-          postSetDesired(r.project_ref, c.state, btn);
-        });
-        controlsBox.appendChild(btn);
-      });
-      box.appendChild(controlsBox);
-      // Pending banner (principle 4): "desired: X (waiting for runner to
-      // honor)" — secondary line, never promoted to actual.
-      if (r.pending_label) {
-        box.appendChild(mk('div', 'rpending', r.pending_label));
-      }
-      // Stale-controls warning: still tappable, but honestly flagged.
-      if (r.stale_controls_note) {
-        box.appendChild(mk('div', 'rstale', r.stale_controls_note));
-      }
+      // claude-tools-758l — the state row (pill + label + current task +
+      // actual_note + stale-controls note) and the F2 control row (the four
+      // Run/Pause/Spare-only/Stop buttons + pending banner) are now built by the
+      // shared RunnerCard so all three runner surfaces render identically. The
+      // postSetDesired callback stays local (this page owns its §9.1 write seam).
+      box.appendChild(RunnerCard.renderStateRow(r, Dom));
+      box.appendChild(RunnerCard.renderControls(r, postSetDesired, Dom));
       // Q1 (claude-tools-uxvq1) — per-project §9 queue health (B.1). A compact
       // secondary line under the runner controls: the empty-queue explainer +
       // a runaway-velocity flag, scoped to THIS workspace's queue. `.alarm`

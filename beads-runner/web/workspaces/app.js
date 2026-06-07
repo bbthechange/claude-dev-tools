@@ -21,8 +21,19 @@
   var REFRESH_MS = 30000; // re-poll so a workspace going stale surfaces (§4.2/S-1)
   var WV = window.WorkspacesView;
   var BV = window.BlueprintView; // wmmc — the H2 map renderer, reused at thumb scale
+  var RC = window.RunnerCard;    // claude-tools-758l — shared F2 desired-state controls
   var Net = window.Net;
   var Dom = window.Dom;
+
+  // claude-tools-758l — the F2 desired-state write seam, now ON the workspace card
+  // (UX-DESIGN-V2 §2 "one tap from the workspace card"; §4 Flow D). Same shape as
+  // board/app.js: an ephemeral per-ref "user just tapped X" capture (cleared the
+  // first refresh whose projection reports actual === X) + the actor breadcrumb
+  // (C4 captured-not-enforced). In memory only — a reload starts honest.
+  // lastSnapshot lets a tap re-render the pending banner without re-fetching.
+  var pendingDesired = {};
+  var WS_ACTOR = 'ui:workspaces';
+  var lastSnapshot = null;
 
   var el = {
     loading: Dom.el('loading'),
@@ -274,6 +285,55 @@
     }
   }
 
+  // claude-tools-758l — clear honored pending entries: a project whose ACTUAL now
+  // matches its pending state has converged (the daemon honored the tap), so the
+  // pending banner is dropped. Mirrors board/app.js's clearHonoredPending.
+  function clearHonoredPending(snapshot) {
+    var projects = Array.isArray(snapshot && snapshot.projects) ? snapshot.projects : [];
+    projects.forEach(function (p) {
+      var ref = p && p.project_ref;
+      if (!ref || !pendingDesired[ref]) return;
+      var actual = p.runner_state && p.runner_state.actual;
+      if (actual && actual === pendingDesired[ref].state) delete pendingDesired[ref];
+    });
+  }
+
+  // claude-tools-758l — the F2 write: POST to the Board's set-desired proxy (the
+  // server-side bearer; the client carries no secret — §9.1/§9.2). On success
+  // capture the ephemeral pending overlay + re-render (honest, never optimistic:
+  // ACTUAL is unchanged until the next refresh reports it), and force an early
+  // refresh so the user sees actual catch up sooner. Actor = the workspaces-card
+  // breadcrumb (C4 captured-not-enforced).
+  function postSetDesired(projectRef, state, btn) {
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+    Net.postJSON('/api/board/set-desired', {
+      project_ref: projectRef,
+      desired: { state: state, actor: WS_ACTOR }
+    })
+      .then(function () {
+        pendingDesired[projectRef] = { state: state, set_at_ms: Date.now() };
+        if (lastSnapshot) {
+          render(WV.deriveWorkspacesView(lastSnapshot, Date.now(),
+            { pending_desired: pendingDesired }));
+        }
+        window.setTimeout(refresh, 1500);
+      })
+      .catch(function (e) {
+        // Honest surfacing — show the error inline on the controls (.rerr is
+        // shared CSS). btn.parentNode is .rctrls; its parent is .ws-runner-controls.
+        var note = Dom.mk('div', 'rerr',
+          'set-desired failed: ' + (e && e.message ? e.message : String(e)));
+        if (btn && btn.parentNode && btn.parentNode.parentNode) {
+          var existing = btn.parentNode.parentNode.querySelector('.rerr');
+          if (existing) existing.remove();
+          btn.parentNode.parentNode.appendChild(note);
+        }
+      })
+      .then(function () {
+        if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
+      });
+  }
+
   function renderCard(card) {
     // The card is a container; its BODY links into that workspace's Board (the hub
     // is the anchor — no scavenger hunt; UX-DESIGN-V2 §2). The Blueprint thumbnail
@@ -324,6 +384,18 @@
     if (intakeStrip) a.appendChild(intakeStrip);
     a.appendChild(Dom.mk('div', 'ws-go', 'OPEN BOARD →'));
     root.appendChild(a);
+
+    // claude-tools-758l — the F2 desired-state controls (Run/Pause/Spare-only/Stop)
+    // as a THIRD sibling of the card body (UX-DESIGN-V2 §2 "one tap from the
+    // workspace card"; §4 Flow D). It sits OUTSIDE the <a> body so a tap changes
+    // state without navigating (and a link can't nest a button row anyway). The
+    // card object already carries controls[]/pending_label from workspaces-view.js,
+    // so RunnerCard.renderControls consumes it directly.
+    if (RC) {
+      var ctrlWrap = Dom.mk('div', 'ws-runner-controls');
+      ctrlWrap.appendChild(RC.renderControls(card, postSetDesired, Dom));
+      root.appendChild(ctrlWrap);
+    }
 
     // The Blueprint thumbnail is its OWN deep-link into /ws/<ref>/blueprint — a
     // sibling of the board link, never nested inside it (l75z; §6.6/§8.5).
@@ -376,7 +448,13 @@
   function refresh() {
     Net.getJSON('/api/board')
       .then(function (snapshot) {
-        render(WV.deriveWorkspacesView(snapshot, Date.now()));
+        // claude-tools-758l — hold the snapshot so a tap can re-render the pending
+        // banner without re-fetching, and clear any pending entry the daemon has
+        // honored BEFORE deriving (the banner disappears honestly, not on a timer).
+        lastSnapshot = snapshot;
+        clearHonoredPending(snapshot);
+        render(WV.deriveWorkspacesView(snapshot, Date.now(),
+          { pending_desired: pendingDesired }));
       })
       .catch(function (e) {
         showError(e && e.message ? e.message : String(e));

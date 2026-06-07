@@ -196,6 +196,16 @@
 
 .ws-go{margin-top:12px;font-size:11px;letter-spacing:.16em;color:var(--sky)}
 
+/* claude-tools-758l — the F2 desired-state controls on the card (Run/Pause/
+ * Spare-only/Stop). A separator section like .ws-blueprint/.ws-stages; the
+ * buttons themselves use the SHARED .rctrls/.rbtn/.rpending/.rerr classes
+ * (/shared/tokens.css), so they look identical to the Board's runner controls.
+ * This is a sibling of the card-body <a> (a tap changes state, never navigates).
+ * The shared .rctrls already carries its own top margin, so this wrapper only
+ * supplies the divider. */
+.ws-runner-controls{margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+.ws-runner-controls .rctrls{margin-top:0}
+
 .errbox{margin:32px 18px;border:1px solid rgba(255,107,107,.34);
   background:rgba(255,107,107,.08);border-radius:14px;padding:18px}
 .err-h{color:var(--coral);font-size:13px;letter-spacing:.12em;

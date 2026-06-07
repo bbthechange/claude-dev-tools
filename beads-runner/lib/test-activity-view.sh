@@ -215,10 +215,11 @@ ck "app.js posts 'escalate' to the dossier-write control proxy" \
    has "/api/control/escalate" "$(cat "$APP")"
 ck "app.js stuck-actions render only on a maybe-stuck writer" \
    has "writer.state === 'maybe-stuck'" "$(cat "$APP")"
-# (We deliberately do NOT assert hasnt "set-desired" on app.js — the board facet
-# carries "NO set-desired control here" explanatory comments, so the substring is
-# present though no set-desired WRITE call is. The control writes are the two
-# /api/control/* proxies asserted above; neither is the set-desired verb.)
+# (We deliberately do NOT assert hasnt "set-desired" on app.js — since
+# claude-tools-758l the per-workspace Board facet DOES carry the F2 set-desired
+# write (the Run/Pause/Spare-only/Stop controls now live one tap from the
+# workspace card; UX-DESIGN-V2 §2/§4 Flow D). The ACTIVITY facet's own writes are
+# still only the two /api/control/* proxies asserted above; neither is set-desired.)
 # The pure view-model stays write-free regardless (the producer↔renderer seam).
 ck "activity-view.js (the pure core) still makes no write call" \
    hasnt "postJSON" "$(cat "$VIEW")"

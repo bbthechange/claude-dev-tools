@@ -229,7 +229,14 @@ ck "workspaces-view.js touches NO DOM (no document.)"        hasnt "document." "
 ck "app.js reads the §4.5 projection via Net.getJSON('/api/board')" has "Net.getJSON('/api/board')" "$(cat "$APP")"
 ck "app.js mounts the persistent shell as active:'workspaces'" has "active: 'workspaces'" "$(cat "$APP")"
 ck "app.js owns a 30s auto-refresh"                          has "REFRESH_MS = 30000" "$(cat "$APP")"
-ck "app.js has NO write path (no POST / set-desired)"        hasnt "set-desired" "$(cat "$APP")"
+# claude-tools-758l — the hub now CARRIES the F2 desired-state write path (the
+# Run/Pause/Spare-only/Stop controls on the card; UX-DESIGN-V2 §2/§4 Flow D). It
+# goes through the SAME set-desired proxy the Board uses, with the workspaces-card
+# actor breadcrumb. (The pure view-model still has no fetch/POST — section G top.)
+ck "app.js writes via Net.postJSON('/api/board/set-desired')" has "Net.postJSON('/api/board/set-desired'" "$(cat "$APP")"
+ck "app.js stamps the workspaces-card actor (C4 breadcrumb)"  has "ui:workspaces" "$(cat "$APP")"
+ck "app.js references the shared RunnerCard module"          has "window.RunnerCard" "$(cat "$APP")"
+ck "app.js renders the shared controls (RC.renderControls)"  has "RC.renderControls(" "$(cat "$APP")"
 # Absolute asset paths (q6z7) — a relative ./x would 404 under /workspaces.
 ck "index.html links /shared/tokens.css FIRST"               has 'href="/shared/tokens.css"' "$(cat "$HTML")"
 ck "index.html links /workspaces/workspaces.css"             has 'href="/workspaces/workspaces.css"' "$(cat "$HTML")"
@@ -238,6 +245,7 @@ ck "index.html loads /shared/dom.js (absolute)"              has 'src="/shared/d
 ck "index.html loads /shared/shell.js (absolute)"            has 'src="/shared/shell.js"' "$(cat "$HTML")"
 ck "index.html loads /workspaces/workspaces-view.js"         has 'src="/workspaces/workspaces-view.js"' "$(cat "$HTML")"
 ck "index.html loads /workspaces/app.js (absolute)"          has 'src="/workspaces/app.js"' "$(cat "$HTML")"
+ck "index.html loads /shared/runner-card.js (758l)"          has 'src="/shared/runner-card.js"' "$(cat "$HTML")"
 ck "index.html has NO relative ./ asset path"                hasnt 'src="./' "$(cat "$HTML")"
 ck "index.html header is the .apphead 'Workspaces' chrome"   has 'class="apphead"' "$(cat "$HTML")"
 ck "css labels the derived-from-board tally honestly"        has "derived from board" "$(cat "$APP")"
@@ -321,6 +329,42 @@ ck "echo card health stays 'ok'"                            eq "$(jq -r '.cards[
 # Global leak counter + sort both reflect the single stale-enriching attention.
 ck "intake_attention_total=1 (delta stale-enriching only)"  eq "$(jq -r '.intake_attention_total' <<<"$VSE")" "1"
 ck "delta (attention) sorts before echo (live ok)"          eq "$(jq -r '[.cards[].project_ref]|join(",")' <<<"$VSE")" "delta,echo"
+
+echo "── L: F2 desired-state controls on the card (claude-tools-758l) ──"
+# Every card exposes the four FROZEN desired-states in order; `active` reflects
+# the current ACTUAL (never desired — principle 4); a stale runner has NO active
+# button (S-1: no honest live state to highlight).
+ck "every card exposes 4 desired-state controls"             eq "$(jq -r '[.cards[]|select((.controls|length)==4)]|length' <<<"$V")" "3"
+ck "controls are the FROZEN states in order"                 eq "$(jq -r '.cards[]|select(.project_ref=="alpha").controls|map(.state)|join(",")' <<<"$V")" "running,paused,spare-only,stopped"
+ck "alpha (live, running): the running control is active"     eq "$(jq -r '.cards[]|select(.project_ref=="alpha").controls[]|select(.state=="running").active' <<<"$V")" "true"
+ck "alpha: exactly ONE control active"                       eq "$(jq -r '[.cards[]|select(.project_ref=="alpha").controls[]|select(.active)]|length' <<<"$V")" "1"
+# charlie is live actual=running but desired=stopped — active follows ACTUAL.
+ck "charlie active follows ACTUAL (running), not desired"     eq "$(jq -r '.cards[]|select(.project_ref=="charlie").controls[]|select(.state=="running").active' <<<"$V")" "true"
+ck "charlie stopped control NOT active (never desired)"      eq "$(jq -r '.cards[]|select(.project_ref=="charlie").controls[]|select(.state=="stopped").active' <<<"$V")" "false"
+# bravo is stale ⇒ no active control (S-1).
+ck "bravo (stale): NO control active (S-1)"                  eq "$(jq -r '[.cards[]|select(.project_ref=="bravo").controls[]|select(.active)]|length' <<<"$V")" "0"
+ck "alpha pending_label null without a pending tap"          eq "$(jq -r '.cards[]|select(.project_ref=="alpha").pending_label' <<<"$V")" "null"
+
+# Pending overlay (opts.pending_desired) — the per-card "waiting for runner to
+# honor" banner. It NEVER promotes actual (the tapped button does not light up).
+render_pend() { printf '%s' "$1" | node -e '
+  let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+    const WV=require(process.argv[1]);
+    let snap; try{snap=JSON.parse(s);}catch(e){snap=s;}
+    const opts=JSON.parse(process.argv[3]);
+    process.stdout.write(JSON.stringify(WV.deriveWorkspacesView(snap, Number(process.argv[2]), opts)));
+  });' "$VIEW" "$NOW_MS" "$2"; }
+VP="$(render_pend "$FIX" '{"pending_desired":{"alpha":{"state":"stopped"}}}')"
+CAP="$(jq -c '.cards[]|select(.project_ref=="alpha")' <<<"$VP")"
+ck "alpha pending_desired surfaced (stopped)"                eq "$(jq -r '.pending_desired' <<<"$CAP")" "stopped"
+ck "alpha pending_label 'waiting for runner to honor'"       has "waiting for runner to honor" "$(jq -r '.pending_label' <<<"$CAP")"
+ck "pending NEVER promotes actual — running stays active"    eq "$(jq -r '.controls[]|select(.state=="running").active' <<<"$CAP")" "true"
+ck "pending does NOT activate the tapped button (stopped)"   eq "$(jq -r '.controls[]|select(.state=="stopped").active' <<<"$CAP")" "false"
+# A pending state already equal to actual ⇒ no banner (already converged).
+VP2="$(render_pend "$FIX" '{"pending_desired":{"alpha":{"state":"running"}}}')"
+ck "pending==actual ⇒ no pending_label (already honored)"    eq "$(jq -r '.cards[]|select(.project_ref=="alpha").pending_label' <<<"$VP2")" "null"
+# The view-model stays pure — exposing controls added no fetch/POST/DOM.
+ck "DESIRED_CONTROLS exported (parity with board-view.js)"   eq "$(printf '%s' "$(node -e 'console.log(require(process.argv[1]).DESIRED_CONTROLS.map(c=>c.state).join(","))' "$VIEW")")" "running,paused,spare-only,stopped"
 
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"

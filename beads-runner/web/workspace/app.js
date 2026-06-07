@@ -37,6 +37,18 @@
   var GatesView = window.GatesView; // J3 (claude-tools-uxvj3)
   var BlueprintView = window.BlueprintView; // H2 (claude-tools-uxvh2) — pure map read-model
   var BlueprintCustomize = window.BlueprintCustomize; // H4 (claude-tools-uxvh4) — pure write-side
+  var RunnerCard = window.RunnerCard; // claude-tools-758l — shared runner state row + F2 controls
+
+  // claude-tools-758l — the Board facet's F2 desired-state write seam, now ON the
+  // per-workspace Board facet (UX-DESIGN-V2 §2 "one tap from the workspace card";
+  // §4 Flow D). Same shape as board/app.js: an ephemeral per-ref "user just tapped
+  // X" capture (cleared the first refresh whose projection reports actual === X) +
+  // the actor breadcrumb (C4 captured-not-enforced). In memory only — a reload
+  // starts honest. lastBoardSnapshot lets a tap re-render the pending banner
+  // without re-fetching.
+  var boardPendingDesired = {};
+  var WS_BOARD_ACTOR = 'ui:ws-board';
+  var lastBoardSnapshot = null;
 
   // Which track ships each STILL-placeholder facet (honest placeholder copy).
   // 'activity' graduated in I3, 'gates' in J3, 'blueprint' in H4 — none listed
@@ -177,11 +189,69 @@
   function refreshBoard() {
     Net.getJSON('/api/board')
       .then(function (snapshot) {
-        var view = BoardView.deriveBoardView(snapshot, Date.now());
+        // claude-tools-758l — hold the snapshot so a tap can re-render the pending
+        // banner without re-fetching, and clear any pending entry the daemon has
+        // honored (actual caught up) BEFORE deriving, so the banner disappears
+        // honestly — never on a timer.
+        lastBoardSnapshot = snapshot;
+        clearHonoredBoardPending(snapshot);
+        var view = BoardView.deriveBoardView(snapshot, Date.now(),
+          { pending_desired: boardPendingDesired });
         renderBoard(view);
       })
       .catch(function (e) {
         showBoardError(e && e.message ? e.message : String(e));
+      });
+  }
+
+  // claude-tools-758l — clear honored pending entries: any project whose ACTUAL
+  // now matches its pending state has converged (the daemon honored the tap), so
+  // the pending banner is dropped. Mirrors board/app.js's clearHonoredPending.
+  function clearHonoredBoardPending(snapshot) {
+    var projects = Array.isArray(snapshot && snapshot.projects) ? snapshot.projects : [];
+    projects.forEach(function (p) {
+      var ref = p && p.project_ref;
+      if (!ref || !boardPendingDesired[ref]) return;
+      var actual = p.runner_state && p.runner_state.actual;
+      if (actual && actual === boardPendingDesired[ref].state) {
+        delete boardPendingDesired[ref];
+      }
+    });
+  }
+
+  // claude-tools-758l — the F2 write: POST to the Board's set-desired proxy (the
+  // server-side bearer; the client carries no secret — §9.1/§9.2). On success
+  // capture the ephemeral pending overlay + re-render (honest, never optimistic:
+  // ACTUAL is unchanged until the next refresh reports it), and force an early
+  // refresh so the user sees actual catch up sooner. The actor is the ws-board
+  // breadcrumb (C4 captured-not-enforced).
+  function postBoardSetDesired(projectRef, state, btn) {
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+    Net.postJSON('/api/board/set-desired', {
+      project_ref: projectRef,
+      desired: { state: state, actor: WS_BOARD_ACTOR }
+    })
+      .then(function () {
+        boardPendingDesired[projectRef] = { state: state, set_at_ms: Date.now() };
+        if (lastBoardSnapshot) {
+          renderBoard(BoardView.deriveBoardView(lastBoardSnapshot, Date.now(),
+            { pending_desired: boardPendingDesired }));
+        }
+        window.setTimeout(refreshBoard, 1500);
+      })
+      .catch(function (e) {
+        // Honest surfacing — show the error inline on the runner row (.rerr is
+        // shared CSS). btn.parentNode is .rctrls; its parent is the .runner box.
+        var note = Dom.mk('div', 'rerr',
+          'set-desired failed: ' + (e && e.message ? e.message : String(e)));
+        if (btn && btn.parentNode && btn.parentNode.parentNode) {
+          var existing = btn.parentNode.parentNode.querySelector('.rerr');
+          if (existing) existing.remove();
+          btn.parentNode.parentNode.appendChild(note);
+        }
+      })
+      .then(function () {
+        if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
       });
   }
 
@@ -221,29 +291,14 @@
     runners.forEach(function (r) {
       var box = Dom.mk('div', 'runner' + (r.liveness === 'stale' ? ' stale' : ''));
       box.appendChild(Dom.mk('div', 'rp', r.project_ref));
-      var st = Dom.mk('div', 'rstate');
-      st.appendChild(Dom.mk('span', 'pill ' + r.state_class));
-      st.appendChild(Dom.mk('span', null, r.state_label));
-      box.appendChild(st);
-      // A live runner's current task (ref + optional title). Dropped for stale
-      // runners by the view model (S-1: their last task is honestly unknown).
-      if (r.current_task) {
-        var line = Dom.mk('code', 'workspace-current-task', r.current_task);
-        if (r.current_task_title) {
-          var t = r.current_task_title;
-          if (t.length > 60) t = t.slice(0, 60) + '…';
-          line.appendChild(document.createTextNode(' — '));
-          line.appendChild(Dom.mk('span', 'workspace-current-task-title', t));
-        }
-        box.appendChild(line);
-      }
-      // Stale runner's last-reported actual is muted CONTEXT, never promoted.
-      if (r.actual_note) box.appendChild(Dom.mk('div', 'rnote', r.actual_note));
-      if (r.stale_controls_note) {
-        box.appendChild(Dom.mk('div', 'rstale', r.stale_controls_note));
-      }
-      // NOTE: NO set-desired controls here — control stays on the global /board
-      // (this facet is read-oriented; it never widens the write path).
+      // claude-tools-758l — the shared runner state row (pill + label + current
+      // task + actual_note + stale-controls note) followed by the F2 control row
+      // (Run/Pause/Spare-only/Stop + pending banner). The per-workspace Board
+      // facet now carries the desired-state controls too — UX-DESIGN-V2 §2 wants
+      // them ONE tap from the workspace card (Flow D); they are no longer
+      // global-/board-only. The write seam stays page-local (postBoardSetDesired).
+      box.appendChild(RunnerCard.renderStateRow(r, Dom));
+      box.appendChild(RunnerCard.renderControls(r, postBoardSetDesired, Dom));
       runnerHost.appendChild(box);
     });
   }

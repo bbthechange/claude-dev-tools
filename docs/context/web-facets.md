@@ -79,8 +79,8 @@ calls `Shell.parseWorkspacePath(location.pathname)` to learn `{ref, facet}`.
 
 | File | Role |
 |---|---|
-| `workspaces/workspaces-view.js` | `deriveWorkspacesView(snapshot, nowMs)` → one card per `projects[]`: honest `state_label`, `current_task`, per-workspace `decisions` (sliced from global `waiting_on_you` by ref-prefix), DERIVED `stage_counts`, per-workspace `intake` thread (L3 — sliced from the top-level `intake[]` by EXACT `project_ref`), the H3 `blueprint` chip (from `blueprint_meta`; wmmc added `active_domains`+`updated_at` for the thumb), `health`. Sorts attention/stale first. Also returns global `decisions_total` + `intake_attention_total`. **Pure — adds NO fetch** (the thumb fetch is shell-side, app.js). |
-| `workspaces/app.js` | Shell glue: read `/api/board`, paint cards (each a `<div class="ws-card">` whose BODY is an `<a class="ws-card-main">` into `/ws/<ref>/board`), surface `decisions_total` prominently. Read-only. **wmmc** added the §8.5 LIVE mini-MAP thumbnail: the H3 ▦ chip glyph upgrades in place to a real thumbnail (top-level boxes, lit where work is in flight) via `BlueprintView.deriveBlueprintThumb` on a **lazy** per-card `/api/ws/blueprint` fetch (IntersectionObserver-gated; cached by ref/`updated_at`). First paint is still ONE `/api/board` read — the thumb is a post-paint enhancement; a null/empty/errored map read leaves the meta glyph (honest fallback). **l75z** made the whole Blueprint chip a deep-link `<a class="ws-blueprint">` → `/ws/<ref>/blueprint` (the §6.6 "link to the diagram"; `blueprint.href` was already lib-tested) — that is why the card root is a `<div>` with TWO sibling anchors (board body + Blueprint footer): a link cannot nest a link. |
+| `workspaces/workspaces-view.js` | `deriveWorkspacesView(snapshot, nowMs)` → one card per `projects[]`: honest `state_label`, `current_task`, per-workspace `decisions` (sliced from global `waiting_on_you` by ref-prefix), DERIVED `stage_counts`, per-workspace `intake` thread (L3 — sliced from the top-level `intake[]` by EXACT `project_ref`), the H3 `blueprint` chip (from `blueprint_meta`; wmmc added `active_domains`+`updated_at` for the thumb), `health`. Sorts attention/stale first. Also returns global `decisions_total` + `intake_attention_total`. **claude-tools-758l** added per-card `controls[]` (the four FROZEN desired-states, `active` = ACTUAL) + `pending_label`/`pending_desired` (from an optional `opts.pending_desired` map) for the card's F2 controls. **Pure — adds NO fetch** (the thumb fetch is shell-side, app.js; the set-desired POST is app.js-side too). |
+| `workspaces/app.js` | Shell glue: read `/api/board`, paint cards (each a `<div class="ws-card">` whose BODY is an `<a class="ws-card-main">` into `/ws/<ref>/board`), surface `decisions_total` prominently. **claude-tools-758l** added the ONE write path: a `.ws-runner-controls` sibling div per card rendered by `RunnerCard.renderControls` → `postSetDesired` POSTs `/api/board/set-desired` (actor `ui:workspaces`) with a local `pendingDesired` overlay + `clearHonoredPending`. **wmmc** added the §8.5 LIVE mini-MAP thumbnail: the H3 ▦ chip glyph upgrades in place to a real thumbnail (top-level boxes, lit where work is in flight) via `BlueprintView.deriveBlueprintThumb` on a **lazy** per-card `/api/ws/blueprint` fetch (IntersectionObserver-gated; cached by ref/`updated_at`). First paint is still ONE `/api/board` read — the thumb is a post-paint enhancement; a null/empty/errored map read leaves the meta glyph (honest fallback). **l75z** made the whole Blueprint chip a deep-link `<a class="ws-blueprint">` → `/ws/<ref>/blueprint` (the §6.6 "link to the diagram"; `blueprint.href` was already lib-tested) — that is why the card root is a `<div>` with TWO sibling anchors (board body + Blueprint footer): a link cannot nest a link. |
 | `capacity/capacity-view.js` | `deriveCapacityView(snapshot, nowMs)` → `machines[]` (detailed per-machine bands + allowed line, **logically identical** to `board-view.js deriveMachine`) + `modes[]` (one honest actual mode per project). |
 | `capacity/app.js` | Shell glue: paint the detailed machine cards + mode rows; `machines_empty` → "no telemetry yet" banner (§3.C). |
 | `workspace/app.js` | The workspace-shell glue. `parseWorkspacePath` → `{ref, facet}`; `board` facet **reuses `window.BoardView`** scoped to `ctx.ref`; `activity` facet **reuses `window.ActivityView`** (stuck actions are I4); `gates` facet **reuses `window.GatesView`** (J3); `blueprint` facet (H4) **reuses `window.BlueprintView` + `window.BlueprintCustomize`** in `mountBlueprintFacet` — the customization map + conflict-FYI write path. No facet is a `mountPlaceholder` anymore (`FACET_TRACK = {}`). |
@@ -121,8 +121,20 @@ calls `Shell.parseWorkspacePath(location.pathname)` to learn `{ref, facet}`.
   (FROZEN MACHINE-STATE.md v1 / D2) and mirror `daemon/usage-poll.sh:_usage_poll_compute_allowed`.
   Bands are driven by `threshold_in_effect`, never a hardcoded 70. A divergence is
   a D2 drift — reopen D2, never silently edit one side.
-- **The workspace facets are READ-oriented.** The `board` facet has NO set-desired
-  control (control stays on the global `/board`); it never widens the write path.
+- **Runner desired-state controls now live ON the card + facet (claude-tools-758l).**
+  The Run/Pause/Spare-only/Stop controls were extracted to the shared
+  `web/shared/runner-card.js` (`RunnerCard.renderStateRow` + `renderControls`) +
+  shared CSS in `tokens.css`, and wired onto the **Workspaces card**
+  (`workspaces/app.js` `renderCard` → a `.ws-runner-controls` sibling of the card
+  `<a>`) and the **per-workspace `board` facet** (`workspace/app.js`
+  `renderScopedRunners`). Both POST the SAME `/api/board/set-desired` proxy the
+  global Board uses, with a page-local `pendingDesired` overlay + `postSetDesired`
+  (actor `ui:workspaces` / `ui:ws-board`; C4 captured-not-enforced). So Flow D is
+  now "one tap from the workspace card" (UX-DESIGN-V2 §2/§4), not global-/board-only.
+  The pure view-models stay honest: `controls[].active` reflects ACTUAL (never
+  desired), a stale runner has no active button (S-1), and the pending banner is a
+  separate line that never promotes actual. `workspaces-view.js` exposes
+  `controls[]`/`pending_label` per card (`deriveWorkspacesView(snap, now, {pending_desired})`).
 
 ## Common changes (recipes)
 

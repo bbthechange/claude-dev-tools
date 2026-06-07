@@ -13,9 +13,12 @@ scar). A web task is NOT done at commit.
 
 **Owns / scope (the files this doc covers):**
 - `beads-runner/web/shared/` — `net.js` (`getJSON`/`postJSON`), `dom.js`
-  (`mk`/`clear`/`el`), `shell.js` (`deriveNav`/`mount`/`parseWorkspacePath`),
-  `enums.js` (Contract D closed sets), `tokens.css` (design tokens + nav chrome),
-  `sw.js` + `sw-register.js` (the shared off-network read worker; §2.4).
+  (`mk`/`clear`/`el`), `runner-card.js` (`RunnerCard.renderStateRow`/`renderControls`
+  — the shared per-runner state row + F2 desired-state controls; claude-tools-758l),
+  `shell.js` (`deriveNav`/`mount`/`parseWorkspacePath`),
+  `enums.js` (Contract D closed sets), `tokens.css` (design tokens + nav chrome
+  + the shared runner-card visuals), `sw.js` + `sw-register.js` (the shared
+  off-network read worker; §2.4).
 - `beads-runner/web/functions/api/**` — the Pages-Function proxies (one per op).
 - `beads-runner/web/_headers`, `beads-runner/web/_redirects` — Pages config.
 - `beads-runner/verify-pages-deploy.sh` — the deploy-landed byte-compare gate.
@@ -74,6 +77,7 @@ Four structural facts explain almost everything:
 |---|---|
 | `web/shared/net.js` | `Net.getJSON`/`postJSON`. Same-origin, credential-less. Reads body as text FIRST so a non-JSON 5xx surfaces honestly; `{ok:false,error}` envelopes throw the message verbatim. **No place to attach an `Authorization` header — by design.** UMD. |
 | `web/shared/dom.js` | `Dom.el`/`clear`/`mk`. `mk` uses `textContent` (never `innerHTML`) — XSS-safe by construction. UMD. |
+| `web/shared/runner-card.js` | `RunnerCard.renderStateRow(r, Dom)` (pill+label+current-task+notes) + `renderControls(r, onSetDesired, Dom)` (the four Run/Pause/Spare-only/Stop buttons + pending banner). Returns DocumentFragments; presentation only (no network — the caller owns the POST via `onSetDesired`). Shared by the Board, the `/ws/<ref>/board` facet, and the Workspaces card so the runner state+controls render identically. CSS in `tokens.css` (bare control selectors). claude-tools-758l. |
 | `web/shared/shell.js` | The nav. `deriveNav(opts)` is PURE (Node-testable like a view-model) → `{global[], workspace}`; `mount(opts)` paints it into `#shell-nav`; `parseWorkspacePath(pathname)` reads `/ws/<ref>/<facet>`. `GLOBAL`/`FACETS` orders are FROZEN. UMD. |
 | `web/shared/enums.js` | `Enums.*` — the Contract D closed sets shared verbatim with the engine (activity state, liveness dot+windows, done sub-state, notification tier, hold type, gate scope). `Object.freeze`d. Conformance test asserts byte-equivalence to the engine constant + §5.2. UMD. |
 | `web/shared/tokens.css` | The `:root` design tokens + reset, linked FIRST by every page; also owns the `.shell-nav` chrome painted by `shell.js` + the `#offline-badge` chrome painted by `sw-register.js`. Presentation only. |

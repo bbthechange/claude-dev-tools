@@ -59,6 +59,9 @@
        split/merge builders + conflict keep/drop + deriveLiveConflicts. Loaded
        AFTER the renderer (the app uses both) and BEFORE app.js. -->
   <script src="/workspace/blueprint-customize.js"></script>
+  <!-- claude-tools-758l: the shared runner-card renderer (state row + F2 controls).
+       The per-workspace Board facet now carries the desired-state controls too. -->
+  <script src="/shared/runner-card.js"></script>
   <script src="/workspace/app.js"></script>
   <!-- claude-tools-4zrn: shared offline-read service worker (last-known snapshot
        off-network; UX-DESIGN-V2 §2.4). Covers every /ws/<ref>/<facet>. NOT on
