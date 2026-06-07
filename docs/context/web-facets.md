@@ -192,7 +192,13 @@ A web task is done when the deployed bytes match committed bytes, not at commit.
   `INTAKE_ENRICHING_STALE_MS` (15m) keeps its honest `state:'enriching'` but
   gains `stale:true`/`attention:true` (and bumps `attention_count` + card health).
   The engine projection stays honest about the marker; the freshness call is the
-  view's (the S-1 liveness-at-read-time posture).
+  view's (the S-1 liveness-at-read-time posture). **5jps folded `overview-building`
+  into this same bucket:** the L4 overview-request writes a `dispatch_state:"overview-building"`
+  in-flight marker (processed:false, dispatch_attempts:n) before spawning its
+  minutes-long dossier-builder; `deriveIntakeState` maps it to `enriching` (not a
+  distinct hub state) so it reads as non-attention in-flight — without the map it
+  fell through to the `attempts>=1 ⇒ failing` branch and flashed a false attention
+  signal. Mapping to `enriching` also inherits the t956 stale-flip for free.
 - **Don't make Cross-WS pretend.** It deliberately makes no `/api` call and invents
   no exchanges — it states what track K will answer. Keep that honesty until the
   K2/K5 projections actually exist; do not add a phantom data read.

@@ -1706,7 +1706,15 @@ function deriveIntakeState(rec) {
   if (rec.gave_up === true || ds === "gave_up") return "gave-up";
   if (ds === "overview") return "overview"; // L4 overview-request: FYI/Blueprint written, no bd task (distinct from `created`)
   if (rec.processed === true || ds === "created") return "created";
-  if (ds === "enriching") return "enriching";
+  // `overview-building` (claude-tools-5jps) is the L4 overview-request in-flight
+  // marker the daemon writes (processed:false, dispatch_attempts:n) right before
+  // spawning the overview dossier-builder. It has no distinct hub state, so reuse
+  // the generic in-flight `enriching` bucket — a non-attention state — rather than
+  // falling through to the attempts>=1 ⇒ `failing` branch (which would flash a
+  // false attention signal for the minutes-long builder run). This also inherits
+  // the t956 stale-`enriching`→attention flip: an overview-building record that
+  // loses its daemon mid-run is still honestly surfaced.
+  if (ds === "enriching" || ds === "overview-building") return "enriching";
   if (ds === "failing") return "failing";
   const attempts = Number.isInteger(rec.dispatch_attempts) ? rec.dispatch_attempts : 0;
   if (attempts >= 1) return "failing"; // attempted-but-not-yet-terminal ⇒ failing

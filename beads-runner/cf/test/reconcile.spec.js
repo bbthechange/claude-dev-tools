@@ -378,9 +378,22 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     overview_dossier_id: "overview-intake-intake-ov", overview_outcome: "written",
     processed_at: "2026-05-31T07:08:00Z", submitted_at: "2026-05-31T07:06:00Z",
   })]);
+  // claude-tools-5jps — the L4 overview-request IN-FLIGHT marker. The daemon
+  // (daemon_intake_dispatch_overview) writes processed:false, dispatch_attempts:n,
+  // dispatch_state:"overview-building" right before spawning the (minutes-long)
+  // overview dossier-builder. With dispatch_attempts>=1 it would, WITHOUT the fix,
+  // fall through to the attempts>=1 ⇒ `failing` branch — a false attention signal
+  // for a healthy in-flight request. It must derive the non-attention in-flight
+  // `enriching` bucket, exactly like the enricher path's "enriching" marker.
+  await call(GOOD, "put", ["intake-request", "intake-ovb", JSON.stringify({
+    schema_version: 1, id: "intake-ovb", idea_text: "building the overview", project_ref: "projA",
+    preset: "overview-request", processed: false, dispatch_attempts: 1,
+    dispatch_state: "overview-building", last_attempt_at: "2026-05-31T07:09:00Z",
+    submitted_at: "2026-05-31T07:07:00Z",
+  })]);
   const SNAPi = await callJson("work-snapshot", ["", BEADS]);
   ck("L3 — intake[] is a top-level array (peer to machines[]/waiting_on_you[])", Array.isArray(SNAPi.intake));
-  ck("L3 — every seeded intake-request is surfaced", SNAPi.intake.length === 6);
+  ck("L3 — every seeded intake-request is surfaced", SNAPi.intake.length === 7);
   const byId = Object.fromEntries(SNAPi.intake.map((x) => [x.intake_id, x]));
   ck("L3 — `received` state (no attempt yet)", byId["intake-recv"].state === "received");
   ck("L3 — `enriching` in-flight marker surfaces", byId["intake-enr"].state === "enriching");
@@ -388,6 +401,7 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
   ck("L4 — `overview` terminal surfaces distinctly from `created` (claude-tools-t1uc)", byId["intake-ov"].state === "overview");
   ck("L4 — overview-request carries NO bd_ref (no bead was created)", byId["intake-ov"].bd_ref === null);
   ck("L4 — overview-request carries its own project_ref + idea_excerpt", byId["intake-ov"].project_ref === "projA" && byId["intake-ov"].idea_excerpt === "refresh the blueprint");
+  ck("5jps — `overview-building` in-flight marker derives `enriching`, NOT `failing` (no false attention)", byId["intake-ovb"].state === "enriching");
   ck("L3 — `failing` with the retry count (the 19-silent-retry leak)", byId["intake-fail"].state === "failing" && byId["intake-fail"].attempts === 2);
   ck("L3 — `failing` carries last_error", byId["intake-fail"].last_error === "specialist exit=7");
   ck("L3 — `gave-up` terminal-failure surfaces (gave_up flag wins)", byId["intake-dead"].state === "gave-up");
