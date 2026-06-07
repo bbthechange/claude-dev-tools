@@ -242,6 +242,25 @@ the oracle/conformance runs deterministic and offline. The live-Worker probe
   `git-pin-main.sh` re-pins HEAD to trunk each iteration; a daemon-stripped PATH
   resolves `claude` to Node v25 which crashes it (`node25-prime.sh`); SIGKILL'd
   workers leak LIVE-bd fixtures (`sweep-fixtures.sh` self-heals at gate start).
+- **`sr_poll_hosted_resolution` now has THREE poll-owned sibling namespaces, and a
+  DISMISSED fork must STOP re-reading the hosted dossier (claude-tools-1xx1,
+  `stuck-routing.sh`).** A `worker_stuck` fork the human DISMISSED-as-stale (every
+  Item `expired`, no `answered|applied`) is correctly PARKED by uxvl1 — but the
+  poll kept doing one hosted `do_dossier_get` on its all-expired dossier EVERY
+  poll (~30s) forever (unbounded low-rate read, per-dismissal). Fix: a third
+  poll-owned sibling namespace `sr__dismissed_dir` (beside `sr__bfh_dir` /
+  `sr__answer_dir`) — the poll writes a one-shot sentinel when the dossier is
+  fully TERMINAL and skips the hosted read next time. TWO invariants a future edit
+  must NOT break: (1) the skip path NEVER calls `sr__resolve_bfh` (a resolve lifts
+  the block + re-dispatches with an EMPTY answer = the uxvl1 false-resume bug it
+  exists to prevent — the fork stays `resolved:false` until the human acts on the
+  bead directly); (2) "fully terminal" REQUIRES `>0 Items` AND none `open|answered`
+  — an item-LESS dossier rolls up `open` (NOT terminal, §4.1.1) and MUST keep
+  polling (else a parked item-less fork stalls forever). The sentinel is cleared
+  on a FRESH `sr__raise_bfh` (re-fork) and swept at both reconcile hard-delete
+  sites. Runner/daemon-side only — NO CF twin (no poll op in `cf/src/stuck.js`),
+  like `sr__answer_dir`. Lock: the claude-tools-1xx1 section of `test-stuck-routing.sh`
+  (a `do_dossier_get` spy proving the 2nd poll does zero hosted reads).
 
 ## Go deeper
 
@@ -259,7 +278,11 @@ When you finish a task in this area, append anything a future agent will need an
 didn't find here: a renamed/moved lib, a new env override, a fresh oracle clause,
 a new MUST-NOT boundary, a scar. **Keep it concise — this doc earns its keep only
 if agents read all of it.** Delete stale lines; never let it grow into a copy of
-INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-06 (§4 write-through
+INTERFACE.md or the lib headers it points at. Last substantive update: 2026-06-07 (a DISMISSED
+worker_stuck fork now STOPS re-reading its all-expired hosted dossier every poll — third poll-owned
+sibling namespace `sr__dismissed_dir`; the skip NEVER calls `sr__resolve_bfh` and "terminal" requires
+`>0 Items` so an item-less dossier keeps polling — claude-tools-1xx1; see the new scar above). Prior:
+2026-06-06 (§4 write-through
 cache of 2xx hosted responses RE-ACTIVATED in PROD — `get`/`lease-*` cached, `runner_state`/`poll`/
 `work-snapshot` carved out; best-effort, differential-equivalent — claude-tools-cx7t). Prior: local-agent
 lease-cache now stores a §4.4 ENVELOPE — generation+ttl+expires — so a restart/blip recovers the
