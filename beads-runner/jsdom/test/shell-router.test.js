@@ -176,6 +176,7 @@ const GLOBAL_PAGES = [
   { route: '/inbox',      dir: 'inbox',      view: 'inbox-view.js',      active: 'inbox' },
   { route: '/workspaces', dir: 'workspaces', view: 'workspaces-view.js', active: 'workspaces' },
   { route: '/capacity',   dir: 'capacity',   view: 'capacity-view.js',   active: 'capacity' },
+  { route: '/cross-ws',   dir: 'cross-ws',   view: 'cross-ws-view.js',   active: 'cross-ws' }, // K5 (claude-tools-uxvk5): shipped — same pure-view+app.js+mount shape as its siblings
 ];
 for (const g of GLOBAL_PAGES) {
   test(`B — ${g.route} page loads ${g.view} and mounts Shell active:'${g.active}'`, () => {
@@ -188,16 +189,16 @@ for (const g of GLOBAL_PAGES) {
       `${g.dir}/app.js must mount the persistent nav with active:'${g.active}'`);
   });
 }
-test("B — /cross-ws is the honest placeholder: mounts Shell active:'cross-ws', loads no network module (K5 ships content)", () => {
+test('B — /cross-ws ships live content (K5, claude-tools-uxvk5): reuses the H2 model + reads relay-log-tail + blueprint-get, no longer a placeholder', () => {
   const idx = read(path.join(WEB, 'cross-ws', 'index.html'));
-  assert.match(idx, /\/shared\/shell\.js/, 'cross-ws loads the shell module');
-  assert.match(idx, /Shell\.mount\(\{\s*active:\s*'cross-ws'/, "cross-ws mounts the nav active:'cross-ws'");
-  // It invents no data: the honest structural signal is that it loads no network
-  // module and makes no live call (assert the absence of the net.js script + a
-  // real fetch( — NOT the bare "/api/" substring, which legitimately appears in a
-  // comment explaining what the page does NOT do; §8: never grep a comment).
-  assert.doesNotMatch(idx, /<script[^>]+\/shared\/net\.js/, 'cross-ws loads no network module — nothing to read until track K');
-  assert.doesNotMatch(idx, /fetch\(|getJSON\(/, 'cross-ws makes no live call');
+  // K5 REUSES the H2 blueprint MODEL for the coupling map (the deriveBlueprintThumb
+  // precedent on the Workspaces hub) — the federated slice is handed to it.
+  assert.match(idx, /\/workspace\/blueprint-view\.js/, 'cross-ws loads the H2 blueprint model for the coupling map');
+  // It now reads live (the placeholder era loaded NO network module — K5 inverts that).
+  assert.match(idx, /<script[^>]+\/shared\/net\.js/, 'cross-ws loads the network module (it reads relay-log-tail + blueprint-get)');
+  const app = read(path.join(WEB, 'cross-ws', 'app.js'));
+  assert.match(app, /getJSON\(['"]\/api\/cross-ws\/relay/, 'cross-ws app.js reads relay-log-tail (B.3)');
+  assert.match(app, /getJSON\(['"]\/api\/ws\/blueprint/, 'cross-ws app.js reads per-workspace blueprint-get (B.2)');
 });
 test('B — apex /board page loads board-view.js + app.js (the global Board; Board is also the workspace facet)', () => {
   const idx = read(path.join(WEB, 'board', 'index.html'));

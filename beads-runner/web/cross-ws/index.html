@@ -6,15 +6,19 @@
 <meta name="color-scheme" content="dark">
 <title>Beads Runner — Cross-WS</title>
 <!--
-  CROSS-WS (label: cross-ws) — the global cross-workspace surface ROUTE + nav
-  shell (UX-DESIGN-V2 §2.1; Brian B2/C4). This is the HONEST placeholder only:
-  the real content — the FE↔BE coupling map (track K5) and the relay log
-  (track K2 builds relay_log + relay-log-tail) — DOES NOT EXIST YET. This page
-  deliberately makes NO /api call and fabricates NO exchange/coupling data; it
-  states what the surface will answer once track K lands.
-  Asset refs are ABSOLUTE (/shared/*, /cross-ws/*) because /cross-ws is a Pages
-  rewrite to /cross-ws/ — a relative ./x would resolve against the clean URL and
-  404 (the q6z7 lesson). Tokens.css is linked FIRST, then the page CSS.
+  CROSS-WS (label: cross-ws) — the global cross-workspace surface (K5,
+  claude-tools-uxvk5; DESIGN K §6 / UX-DESIGN-V2 §8.4). Two panes, one question
+  at a glance: "Are the workspaces in sync, and did any relay need me?"
+    1. COUPLING MAP — a FEDERATED Blueprint slice handed to the H2 renderer
+       (deriveBlueprintView) verbatim: each workspace a box, each relay a
+       coupling edge. The federation is the only K5-specific code (cross-ws-view.js).
+    2. RELAY LOG — the auditable trail of exchanges from relay-log-tail (B.3),
+       the detail behind the batched FYIs (K3).
+  Reads ONLY relay-log-tail (B.3, via /api/cross-ws/relay) + blueprint-get (B.2,
+  via /api/ws/blueprint) — the §9.1 chokepoint, no work-snapshot (A.3). No write
+  path. Asset refs are ABSOLUTE (/shared/*, /workspace/*, /cross-ws/*) because
+  /cross-ws is a Pages rewrite to /cross-ws/ — a relative ./x resolves against
+  the clean URL and 404s (the q6z7 lesson). tokens.css is linked FIRST.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -23,51 +27,59 @@
 <link rel="stylesheet" href="/cross-ws/cross-ws.css">
 </head>
 <body>
-  <main class="app" id="app">
+  <main class="app" id="app" aria-live="polite">
     <header class="apphead">
-      <div class="t"><span class="dot pending" id="health-dot"></span>Cross-WS</div>
-      <div class="who" title="ships with track K">not yet wired</div>
+      <div class="t"><span class="dot pending" id="head-dot"></span>Cross-WS</div>
+      <div class="who" id="who" title="The §9.1 constant principal">—</div>
     </header>
 
-    <div class="scroll">
-      <section class="placeholder" aria-label="Cross-WS placeholder">
-        <div class="ph-tag">NOT YET WIRED</div>
-        <h1 class="ph-h">The cross-workspace surface ships with track K.</h1>
-        <p class="ph-b">
-          This route and its persistent nav are in place, but the two things that
-          will live here have not been built yet:
-        </p>
-        <ul class="ph-list">
-          <li><span class="k">relay log</span><span class="when">track K2 — builds <code>relay_log</code> + <code>relay-log-tail</code></span></li>
-          <li><span class="k">FE↔BE coupling map</span><span class="when">track K5</span></li>
-        </ul>
-        <p class="ph-ask">
-          Once those land, this surface answers one question at a glance:
-          <em>Are the workspaces in sync, and did any relay need me?</em>
-        </p>
-        <p class="ph-foot">No data is shown because none exists yet — this page makes no API call and invents no exchanges.</p>
+    <div class="scroll" id="scroll">
+      <p class="loading" id="loading">Reading the relay log…</p>
+
+      <section id="cw" hidden>
+        <!-- COUPLING MAP — the federated Blueprint slice (reuse H2) -->
+        <div class="section">
+          <div class="sl">COUPLING MAP · workspaces &amp; their relays <span class="ln"></span></div>
+          <div class="cw-map" id="cw-map"></div>
+          <p class="cw-empty" id="map-empty" hidden>No cross-workspace coupling yet — no relay exchanges have linked two workspaces.</p>
+          <p class="cw-degraded" id="map-degraded" hidden></p>
+        </div>
+
+        <!-- RELAY LOG — the auditable trail (relay-log-tail) -->
+        <div class="section">
+          <div class="sl">RELAY LOG · cross-workspace exchanges <span class="ln"></span></div>
+          <p class="cw-summary" id="relay-summary"></p>
+          <div class="relay" id="relay"></div>
+          <p class="cw-empty" id="relay-empty" hidden>No cross-workspace exchanges yet — nothing has been relayed between workspaces.</p>
+          <p class="cw-degraded" id="relay-degraded" hidden></p>
+        </div>
+      </section>
+
+      <section class="errbox" id="errbox" hidden>
+        <div class="err-h">Cannot render Cross-WS</div>
+        <p class="err-b" id="err-b"></p>
       </section>
     </div>
 
-    <footer class="foot">
-      <span>cross-workspace surface · placeholder</span>
+    <footer class="foot" id="foot">
+      <span id="foot-status">read-only · relay-log-tail + blueprint-get · no write path</span>
       <span class="foot-sep">·</span>
-      <span>content arrives with track K (K2 relay log · K5 coupling map)</span>
+      <span id="foot-updated">—</span>
     </footer>
   </main>
 
-  <!-- Shared chrome: absolute src so the rewrite at /cross-ws still loads them. -->
+  <!-- Absolute paths (see header comment). Shared modules first, then the H2
+       blueprint model REUSED for the coupling map (/workspace/blueprint-view.js,
+       the same module the Workspaces hub loads for its thumbnail), then the
+       page view-model, then the app glue. -->
+  <script src="/shared/net.js"></script>
   <script src="/shared/dom.js"></script>
   <script src="/shared/shell.js"></script>
-  <script>
-    // Mount ONLY the persistent nav shell (Cross-WS active). No view-model, no
-    // /api/board fetch, no relay-log-tail call — there is nothing to read yet.
-    if (window.Shell) window.Shell.mount({ active: 'cross-ws' });
-  </script>
+  <script src="/workspace/blueprint-view.js"></script>
+  <script src="/cross-ws/cross-ws-view.js"></script>
+  <script src="/cross-ws/app.js"></script>
   <!-- claude-tools-4zrn: shared offline-read service worker (last-known snapshot
-       off-network; UX-DESIGN-V2 §2.4). Caches only the app shell — Cross-WS has
-       no live read yet (track K), so there is no API to cache. NOT on the
-       Inbox (S-1). -->
+       off-network; UX-DESIGN-V2 §2.4). NOT on the Inbox (S-1). -->
   <script src="/shared/sw-register.js"></script>
 </body>
 </html>
