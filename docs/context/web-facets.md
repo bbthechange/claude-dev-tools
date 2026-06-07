@@ -174,9 +174,17 @@ A web task is done when the deployed bytes match committed bytes, not at commit.
   `claude-tools-web` does not greedily swallow `claude-tools-web-extra`'s beads.
   **The L3 `intake` slice is the exception:** intake-request records carry
   `project_ref` DIRECTLY (the Flow-A submitter chose the workspace), so the hub
-  matches it EXACTLY, not by prefix. A terminal-success (`created`) intake ages
-  off the hub after 6h (`INTAKE_CREATED_RECENT_MS`) — the bead is the artifact,
-  the hub is not its grave; `failing`/`gave-up` never age out (they're the leak).
+  matches it EXACTLY, not by prefix. A terminal-success (`created` OR `overview`)
+  intake ages off the hub after 6h (`INTAKE_CREATED_RECENT_MS`) — the artifact is
+  the bead/FYI, the hub is not its grave; `failing`/`gave-up` never age out
+  (they're the leak). **t1uc added `overview`:** the L4 overview-request preset
+  drains to a Blueprint/FYI with NO bd task, marking the record
+  `dispatch_state:"overview"` (no `enricher_bd_id`). `deriveIntakeState` returns
+  `overview` BEFORE the `processed` gate so it does not collapse into `created`
+  (which reads as "a bead was made"); it is non-attention terminal-success,
+  rendered as a violet "overview FYI" chip. It has NO bash work-snapshot twin —
+  the whole `intake[]` lane is a CF-only projection (`readIntake`, like
+  `machines[]`), so the change touched only `reconcile.js` + the web hub.
   **t956 also flips a STALE `enriching` to attention:** `enriching` comes from
   the daemon's in-flight marker, so a daemon that died mid-enrich would read a
   confident "enriching" forever. `deriveIntakeForWorkspace` derives staleness at

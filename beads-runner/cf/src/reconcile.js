@@ -1684,17 +1684,27 @@ function deriveRunnerHealth(rec) {
 
 // ── deriveIntakeState — the L3 (claude-tools-uxvl3) phone-visible state thread ─
 // inbox-lifecycle §9.5 #4. Maps an intake-request record onto ONE state of the
-// frozen thread: received → enriching → created  /  failing → gave-up. Prefers
-// the daemon's explicit `dispatch_state` marker (intake-dispatch-poll.sh writes
-// "enriching" before each spawn and "created"/"failing"/"gave_up" at the
-// outcome); falls back to deriving from {gave_up, processed, dispatch_attempts}
-// for legacy records written before L3. Terminal states win: a gave-up record
-// is gave-up even if a stale `dispatch_state` lingers; a created record is
-// created. The 19-silent-retry leak is exactly `failing`/`gave-up` going
-// unsurfaced — so those must never collapse into "received".
+// frozen thread: received → enriching → created  /  failing → gave-up, plus the
+// L4 (claude-tools-uxvl4) special `overview` terminal. Prefers the daemon's
+// explicit `dispatch_state` marker (intake-dispatch-poll.sh writes "enriching"
+// before each enricher spawn, "overview" when the overview-request preset
+// drained a Blueprint/FYI, and "created"/"failing"/"gave_up" at the outcome);
+// falls back to deriving from {gave_up, processed, dispatch_attempts} for legacy
+// records written before L3. Terminal states win: a gave-up record is gave-up
+// even if a stale `dispatch_state` lingers; a created record is created.
+//
+// `overview` (claude-tools-t1uc) is the L4 overview-request terminal: that path
+// marks the record processed:true with dispatch_state:"overview" + an
+// overview_dossier_id and NO enricher_bd_id — an FYI/Blueprint refresh was
+// written, NOT a bd task. It is checked BEFORE the processed gate so it does not
+// collapse into "created" (which reads as "a bead was made"); it is honest
+// terminal-success, never an attention state. The 19-silent-retry leak is
+// exactly `failing`/`gave-up` going unsurfaced — so those must never collapse
+// into "received".
 function deriveIntakeState(rec) {
   const ds = typeof rec.dispatch_state === "string" ? rec.dispatch_state : "";
   if (rec.gave_up === true || ds === "gave_up") return "gave-up";
+  if (ds === "overview") return "overview"; // L4 overview-request: FYI/Blueprint written, no bd task (distinct from `created`)
   if (rec.processed === true || ds === "created") return "created";
   if (ds === "enriching") return "enriching";
   if (ds === "failing") return "failing";

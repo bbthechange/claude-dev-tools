@@ -66,14 +66,18 @@
 
   // L3 (claude-tools-uxvl3; inbox-lifecycle §9.5 #4) — the intake state thread
   // the §4.5 producer surfaces in the top-level `intake[]` lane. FROZEN order:
-  // received → enriching → created  /  failing → gave-up. `failing`/`gave-up`
+  // received → enriching → created  /  failing → gave-up, plus the L4
+  // (claude-tools-uxvl4 / t1uc) special `overview` terminal. `failing`/`gave-up`
   // are the ATTENTION states (the 19-silent-retry leak); `received`/`enriching`
-  // are in-flight; `created` is terminal-success.
-  var INTAKE_STATE_ORDER = ['gave-up', 'failing', 'enriching', 'received', 'created'];
+  // are in-flight; `created` and `overview` are terminal-success. `overview` is
+  // the overview-request preset draining a Blueprint/FYI (NO bd task) — distinct
+  // from `created` (which reads as "a bead was made") and NOT an attention state.
+  var INTAKE_STATE_ORDER = ['gave-up', 'failing', 'enriching', 'received', 'created', 'overview'];
   var INTAKE_ATTENTION = { 'gave-up': 1, failing: 1 };
-  // A terminal-success (`created`) intake's bead is already on the Board — we
-  // show it only briefly as a thread-completion confirmation, then let it age
-  // off the hub (the record persists in the engine; the hub is not its grave).
+  // A terminal-success (`created`/`overview`) intake is already done — we show it
+  // only briefly as a thread-completion confirmation, then let it age off the hub
+  // (the record persists in the engine; the hub is not its grave). `created`'s
+  // bead is on the Board; `overview` wrote an FYI/Blueprint refresh (no bead).
   var INTAKE_CREATED_RECENT_MS = 6 * 60 * 60 * 1000; // 6h
 
   // Stale-enriching honesty (claude-tools-t956). `enriching` is set from the
@@ -128,10 +132,11 @@
    * `project_ref` DIRECTLY (the Flow A submitter chose the workspace), so this
    * is an EXACT match — not the ref-prefix inference stage_counts/decisions use.
    * Returns { counts, items, attention_count, total }:
-   *   • counts — a tally per thread state (received/enriching/created/failing/gave-up).
+   *   • counts — a tally per thread state (received/enriching/created/overview/failing/gave-up).
    *   • items  — the ones worth rendering on the hub: every in-flight/attention
-   *     intake (received/enriching/failing/gave-up) ALWAYS, plus a `created` one
-   *     only while it is recent (a brief "→ became <bead>" confirmation that ages
+   *     intake (received/enriching/failing/gave-up) ALWAYS, plus a terminal-success
+   *     (`created`/`overview`) one only while it is recent (a brief confirmation —
+   *     "→ became <bead>" for created, "overview FYI" for overview — that ages
    *     out). Sorted by INTAKE_STATE_ORDER (gave-up first — surface the leak).
    *   • attention_count — failing + gave-up + STALE-enriching (claude-tools-t956:
    *     an enriching record whose last_attempt_at is older than
@@ -142,7 +147,7 @@
    * stale enriching item keeps its honest `state:'enriching'` but carries
    * `stale:true` + `attention:true`. */
   function deriveIntakeForWorkspace(rawIntake, ref, now) {
-    var counts = { received: 0, enriching: 0, created: 0, failing: 0, 'gave-up': 0 };
+    var counts = { received: 0, enriching: 0, created: 0, overview: 0, failing: 0, 'gave-up': 0 };
     var items = [];
     var staleEnriching = 0;
     rawIntake.forEach(function (i) {
@@ -150,11 +155,14 @@
       if (typeof i.project_ref !== 'string' || i.project_ref !== ref) return;
       var st = (typeof i.state === 'string' && counts[i.state] !== undefined) ? i.state : 'received';
       counts[st] += 1;
+      // `created` (bead made) and `overview` (FYI/Blueprint written, no bead) are
+      // both terminal-success: a brief confirmation chip that ages off the hub.
+      var terminal = st === 'created' || st === 'overview';
       // Which timestamp is the relevant "age" for this state.
-      var ts = st === 'created' ? i.processed_at
+      var ts = terminal ? i.processed_at
              : (st === 'gave-up' ? i.gave_up_at : i.last_attempt_at) || i.submitted_at;
-      var show = st !== 'created';
-      if (st === 'created') {
+      var show = !terminal;
+      if (terminal) {
         var pat = Date.parse(i.processed_at || '');
         show = !isNaN(pat) && (now - pat) <= INTAKE_CREATED_RECENT_MS;
       }
@@ -192,7 +200,7 @@
       counts: counts,
       items: items,
       attention_count: counts.failing + counts['gave-up'] + staleEnriching,
-      total: counts.received + counts.enriching + counts.created + counts.failing + counts['gave-up']
+      total: counts.received + counts.enriching + counts.created + counts.overview + counts.failing + counts['gave-up']
     };
   }
 

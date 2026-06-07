@@ -147,6 +147,10 @@
 .ws-intake-row.state-received .ws-intake-chip{color:var(--slate)}
 .ws-intake-row.state-created .ws-intake-chip{color:var(--mint);
   border-color:rgba(120,220,170,.4)}
+/* claude-tools-t1uc — overview-request terminal: an FYI/Blueprint refresh (no
+   bead). Violet keeps it visibly distinct from created's mint "bead made". */
+.ws-intake-row.state-overview .ws-intake-chip{color:#a78bfa;
+  border-color:rgba(167,139,250,.4)}
 .ws-intake-row.attn .ws-intake-chip{color:var(--coral);
   border-color:rgba(255,107,107,.5);background:rgba(255,107,107,.08);
   font-weight:600}

@@ -168,7 +168,10 @@ the live host plus the bead landing is. See `web-shell.md` for the deploy detail
 The "I submitted but nothing happened" black hole is closed. The daemon
 (`daemon/intake-dispatch-poll.sh`) writes a **state thread** onto each
 intake-request as it processes it — `dispatch_state` ∈ `received → enriching →
-created` / `failing` / `gave_up`, plus `dispatch_attempts` (the `(n)` in
+created` / `failing` / `gave_up`, plus the L4 special `overview` terminal (the
+`overview-request` preset drained a Blueprint/FYI, NO bd task —
+`deriveIntakeState` returns it BEFORE the `processed` gate so it reads distinctly
+from `created`, claude-tools-t1uc), plus `dispatch_attempts` (the `(n)` in
 `failing(n)`), `last_error`, `last_attempt_at`, `gave_up_at`. It caps retries at
 `INTAKE_MAX_ATTEMPTS` (default 3) — the fix for the 19-silent-retry/~$19 night —
 and a `gave_up:true` record is terminal (the dispatch loop SKIPS it; it stays

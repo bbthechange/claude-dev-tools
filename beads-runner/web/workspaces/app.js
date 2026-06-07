@@ -96,6 +96,10 @@
     if (it.state === 'failing') return 'failing' + (it.attempts ? ' (' + it.attempts + ')' : '');
     if (it.state === 'gave-up') return 'gave up' + (it.attempts ? ' after ' + it.attempts : '');
     if (it.state === 'created') return 'created';
+    // claude-tools-t1uc — the L4 overview-request terminal: an FYI/Blueprint
+    // refresh was written, NO bd task. Distinct from `created` so the chip does
+    // not read as "a bead was made".
+    if (it.state === 'overview') return 'overview FYI';
     // claude-tools-t956 — a stale `enriching` (daemon died mid-enrich) is loud:
     // it carries the `attn` row class via it.attention; say so on the chip too.
     if (it.state === 'enriching' && it.stale) return 'enriching (stalled)';

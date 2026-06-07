@@ -112,6 +112,9 @@ FIX="$(jq -cn --arg shb "$STALE_HB" '{
     { intake_id:"intake-a-old", project_ref:"alpha", preset:"autonomous-until-stuck",
       state:"created", attempts:1, idea_excerpt:"an old idea long done", bd_ref:"alpha-10",
       outcome:"created", processed_at:"2026-05-10T00:00:00Z", submitted_at:"2026-05-10T00:00:00Z" },
+    { intake_id:"intake-a-ov", project_ref:"alpha", preset:"overview-request",
+      state:"overview", attempts:1, idea_excerpt:"refresh the blueprint",
+      processed_at:"2026-05-18T23:00:00Z", submitted_at:"2026-05-18T22:55:00Z" },
     { intake_id:"intake-c-fail", project_ref:"charlie", preset:"collaborative-stage",
       state:"failing", attempts:2, idea_excerpt:"a flaky charlie idea",
       last_error:"specialist exit=7", last_attempt_at:"2026-05-18T23:00:00Z",
@@ -186,16 +189,20 @@ echo "── F: sort — attention/stale first, then live, then by project_ref �
 ck "card order is bravo(stale), charlie(attention), alpha(ok-live)" \
    eq "$(jq -r '[.cards[].project_ref]|join(",")' <<<"$V")" "bravo,charlie,alpha"
 
-echo "── I: L3 intake state thread (received/enriching/created/failing(n)/gave-up) ──"
+echo "── I: L3 intake state thread (received/enriching/created/overview/failing(n)/gave-up) ──"
 # alpha — non-attention thread: enriching + a recent created (shows) + an OLD
-# created (ages off the hub). alpha health must STAY ok (intake didn't bump it).
+# created (ages off the hub) + a recent overview-request FYI (L4 t1uc — shows,
+# non-attention, NOT counted as created). alpha health must STAY ok.
 CAI="$(jq -c '.cards[]|select(.project_ref=="alpha").intake' <<<"$V")"
 ck "alpha intake counts enriching=1"                          eq "$(jq -r '.counts.enriching' <<<"$CAI")" "1"
 ck "alpha intake counts created=2 (recent + old both tallied)" eq "$(jq -r '.counts.created' <<<"$CAI")" "2"
-ck "alpha intake has 0 attention (no failing/gave-up)"        eq "$(jq -r '.attention_count' <<<"$CAI")" "0"
-ck "alpha renders only 2 items (old created aged off the hub)" eq "$(jq -r '.items|length' <<<"$CAI")" "2"
+ck "alpha intake counts overview=1 (t1uc — distinct from created)" eq "$(jq -r '.counts.overview' <<<"$CAI")" "1"
+ck "alpha intake has 0 attention (no failing/gave-up; overview is success)" eq "$(jq -r '.attention_count' <<<"$CAI")" "0"
+ck "alpha renders 3 items (enriching + recent created + overview; old created aged off)" eq "$(jq -r '.items|length' <<<"$CAI")" "3"
 ck "alpha's aged-off created (alpha-10) is NOT rendered"      hasnt "intake-a-old" "$(jq -c '.items' <<<"$CAI")"
 ck "alpha's recent created (alpha-50) IS rendered"           has "intake-a-ok" "$(jq -c '.items' <<<"$CAI")"
+ck "alpha's overview-request FYI IS rendered"                has "intake-a-ov" "$(jq -c '.items' <<<"$CAI")"
+ck "alpha's overview item is non-attention (terminal success, no leak)" eq "$(jq -r '[.items[]|select(.state=="overview")][0].attention' <<<"$CAI")" "false"
 ck "alpha card health stays 'ok' (non-attention intake)"     eq "$(jq -r '.cards[]|select(.project_ref=="alpha").health' <<<"$V")" "ok"
 # charlie — a failing(2) intake. charlie was already attention (mismatch) so the
 # sort is unchanged; the retry count must surface (the 19-silent-retry leak).

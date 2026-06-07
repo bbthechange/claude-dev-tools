@@ -368,13 +368,26 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     gave_up: true, gave_up_at: "2026-05-31T07:10:00Z", last_error: "specialist exit=7",
     submitted_at: "2026-05-31T07:04:00Z",
   })]);
+  // L4 (claude-tools-t1uc) — the special `overview-request` terminal. processed:true
+  // with dispatch_state:"overview" + overview_dossier_id and NO enricher_bd_id: an
+  // FYI/Blueprint refresh was written, not a bd task. Must derive `overview` (NOT
+  // `created`), with bd_ref:null since there is no bead.
+  await call(GOOD, "put", ["intake-request", "intake-ov", JSON.stringify({
+    schema_version: 1, id: "intake-ov", idea_text: "refresh the blueprint", project_ref: "projA",
+    preset: "overview-request", processed: true, dispatch_attempts: 1, dispatch_state: "overview",
+    overview_dossier_id: "overview-intake-intake-ov", overview_outcome: "written",
+    processed_at: "2026-05-31T07:08:00Z", submitted_at: "2026-05-31T07:06:00Z",
+  })]);
   const SNAPi = await callJson("work-snapshot", ["", BEADS]);
   ck("L3 — intake[] is a top-level array (peer to machines[]/waiting_on_you[])", Array.isArray(SNAPi.intake));
-  ck("L3 — every seeded intake-request is surfaced", SNAPi.intake.length === 5);
+  ck("L3 — every seeded intake-request is surfaced", SNAPi.intake.length === 6);
   const byId = Object.fromEntries(SNAPi.intake.map((x) => [x.intake_id, x]));
   ck("L3 — `received` state (no attempt yet)", byId["intake-recv"].state === "received");
   ck("L3 — `enriching` in-flight marker surfaces", byId["intake-enr"].state === "enriching");
   ck("L3 — `created` terminal-success surfaces with bd_ref", byId["intake-ok"].state === "created" && byId["intake-ok"].bd_ref === "projA-77");
+  ck("L4 — `overview` terminal surfaces distinctly from `created` (claude-tools-t1uc)", byId["intake-ov"].state === "overview");
+  ck("L4 — overview-request carries NO bd_ref (no bead was created)", byId["intake-ov"].bd_ref === null);
+  ck("L4 — overview-request carries its own project_ref + idea_excerpt", byId["intake-ov"].project_ref === "projA" && byId["intake-ov"].idea_excerpt === "refresh the blueprint");
   ck("L3 — `failing` with the retry count (the 19-silent-retry leak)", byId["intake-fail"].state === "failing" && byId["intake-fail"].attempts === 2);
   ck("L3 — `failing` carries last_error", byId["intake-fail"].last_error === "specialist exit=7");
   ck("L3 — `gave-up` terminal-failure surfaces (gave_up flag wins)", byId["intake-dead"].state === "gave-up");
