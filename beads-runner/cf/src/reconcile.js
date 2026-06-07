@@ -1046,6 +1046,83 @@ function buildHolds(beads, gateMetaMap) {
   return gateHolds.concat(depHolds, schedHolds);
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// J5 (claude-tools-uxvj5) — the Board "waiting on" inline (DESIGN J §7.5 / B.1
+// cards[].waiting_on). Derives each card's `waiting_on` from the SAME work-truth
+// holds[] (§3) instead of the legacy runner-stamped passthrough, so the Board
+// reason and the Gates facet can never disagree (one derivation, no second
+// projection). A held bead shows its ONE most-actionable reason with the
+// deterministic precedence dependency > gate > scheduled (a hard block outranks
+// a chosen gate outranks a date); `more` carries the count of the OTHER holds on
+// the same bead for the [free] "+N more" affordance (§7.5 / §10). The gate
+// branch reuses the gate hold's `unblocks_when` (CF: from gate_metadata; bash
+// twin: null — the same shape-parity posture buildHolds follows). B.4: a bead
+// under no hold is absent from the map ⇒ the card reads waiting_on:null (honest
+// "not held", never a fabricated reason).
+// ════════════════════════════════════════════════════════════════════════════
+function buildWaitingOnMap(beads, holds) {
+  // gate label → its gate hold (the unblocks_when the metadata join produced),
+  // from the SAME holds[] so the inline reason can't drift from the facet.
+  const gateByLabel = new Map();
+  for (const h of holds) {
+    if (h && h.type === "gate" && typeof h.id === "string") gateByLabel.set(h.id, h);
+  }
+  const map = new Map();
+  for (const b of beads) {
+    if (!b || typeof b !== "object" || Array.isArray(b)) continue;
+    const ref = typeof b.bead_ref === "string" && b.bead_ref.length > 0 ? b.bead_ref : null;
+    if (!ref || map.has(ref)) continue; // first occurrence wins (dedup over beads ∪ heldBeads)
+    const blockedOn =
+      typeof b.blocked_on === "string" && b.blocked_on.length > 0 ? b.blocked_on : null;
+    const gateLabels = Array.isArray(b.labels)
+      ? b.labels.filter((x) => typeof x === "string" && GATE_LABEL_RE.test(x))
+      : [];
+    const deferredUntil =
+      typeof b.deferred_until === "string" && b.deferred_until.length > 0
+        ? b.deferred_until
+        : null;
+    const present =
+      (blockedOn ? 1 : 0) + (gateLabels.length > 0 ? 1 : 0) + (deferredUntil ? 1 : 0);
+    if (present === 0) continue; // not held ⇒ no waiting_on (B.4 — card reads null)
+    const more = present - 1; // §7.5 — the OTHER holds beyond the most-actionable one
+    let wo;
+    // precedence: dependency > gate > scheduled (§7.5)
+    if (blockedOn) {
+      wo = {
+        type: "dependency",
+        task_ref: ref,
+        blocked_on: blockedOn,
+        unblocks_when: `${blockedOn} closes`,
+        editable: false,
+        more,
+      };
+    } else if (gateLabels.length > 0) {
+      const gl = gateLabels[0];
+      const gh = gateByLabel.get(gl) || null;
+      wo = {
+        type: "gate",
+        gate_id: gl,
+        task_ref: ref,
+        unblocks_when:
+          gh && typeof gh.unblocks_when === "string" ? gh.unblocks_when : null,
+        editable: true,
+        more,
+      };
+    } else {
+      wo = {
+        type: "scheduled",
+        task_ref: ref,
+        deferred_until: deferredUntil,
+        unblocks_when: deferredUntil,
+        editable: false,
+        more,
+      };
+    }
+    map.set(ref, wo);
+  }
+  return map;
+}
+
 async function workSnapshot(co, principal, proj, beadsStr) {
   // Work-truth read (beads/Dolt). Default empty array if absent/invalid — the
   // Coordinator never fabricates work-truth (Dolt is the source).
@@ -1129,7 +1206,12 @@ async function workSnapshot(co, principal, proj, beadsStr) {
   // /gates facet always asks per-project), so it is built once and attached to
   // each entry below as a NAMED sub-object (ARCH §6 — never a loose flat key).
   const gateMetaMap = await readGateMeta(co);
-  const holds = buildHolds(beads.concat(heldBeads), gateMetaMap);
+  const allHeldSource = beads.concat(heldBeads);
+  const holds = buildHolds(allHeldSource, gateMetaMap);
+  // J5 (claude-tools-uxvj5) — per-card waiting_on, derived from the SAME holds
+  // source (§7.5). Keyed by bead_ref so the card() builder below looks up its
+  // bead's one most-actionable hold instead of a runner-stamped field.
+  const waitingOnByRef = buildWaitingOnMap(allHeldSource, holds);
   const projects = [];
   for (const pr of projs) {
     if (!pr) continue;
@@ -1356,7 +1438,11 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     stage: b.stage == null ? "" : b.stage,
     priority: b.priority ?? null,
     age: b.age ?? null,
-    waiting_on: b.waiting_on ?? null,
+    // J5 (claude-tools-uxvj5) — waiting_on is now DERIVED from holds[] (§7.5),
+    // not the legacy runner-stamped passthrough. A held bead carries its one
+    // most-actionable hold {type, unblocks_when, gate_id|task_ref, editable,
+    // more}; an unheld bead reads null (B.4 — the card renders no waiting line).
+    waiting_on: waitingOnByRef.get(b.bead_ref) ?? null,
     // GAP G2 (claude-tools-uxg2) — the done·code vs done·verified sub-state
     // (UX-DESIGN-V2.md §3 / principle 11: the headline defence against
     // 'wired-but-not-live'). A per-card boolean passthrough of the work-truth

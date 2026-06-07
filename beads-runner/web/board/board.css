@@ -102,7 +102,15 @@
 .bead .bt{font-size:11px;line-height:1.35;color:var(--text);margin-bottom:7px}
 .bead .bf{display:flex;align-items:center;justify-content:space-between;
   font-size:9px;color:var(--faint);gap:6px}
-.bead .bf .wo{color:var(--dim)}
+/* J5 (claude-tools-uxvj5) — the inline hold reason (DESIGN J §7.5). A held card
+ * ALWAYS shows its one "waiting on" line. The Gate (ours, editable) tints amber
+ * to read as the actionable hold; Dependency/Scheduled stay dim (beads-native,
+ * read-only). Ellipsis so a long unblock condition never breaks the row layout;
+ * min-width:0 lets the flex child actually shrink to allow it. */
+.bead .bf .wo{color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;flex:1 1 auto;text-align:right}
+.bead .bf .wo.wo-gate{color:#e0b341}
+.bead .bf .wo.wo-dependency,.bead .bf .wo.wo-scheduled{color:var(--dim)}
 /* L3 (claude-tools-2bf): the per-card "which live workspace is running this
  * bead" badge. Rendered only when a LIVE runner has it as current_task_ref
  * (board-view.js drops it for stale runners — S-1). Same dim-text register

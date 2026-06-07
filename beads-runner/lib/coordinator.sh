@@ -2058,6 +2058,29 @@ co__work_snapshot() {
                              and ($cls | startswith("TOOL_ERROR"))))
                    end) }
     end'
+  # claude-tools-uxvj5 (DESIGN J §7.5) — per-card waiting_on, DERIVED from the
+  # work-truth holds the same way buildHolds derives holds[] (not the legacy
+  # runner-stamped passthrough). A held bead shows its ONE most-actionable
+  # reason, precedence dependency > gate > scheduled; `more` = the count of the
+  # OTHER holds on the same bead (the "+N more" affordance). A TRUE differential
+  # twin of CF buildWaitingOnMap for dependency/scheduled; the gate branch's
+  # unblocks_when degrades to null (no gate_metadata store here — the holds[]
+  # shape-parity posture). Unheld bead ⇒ null (B.4 — no waiting line).
+  local waiting_on_derive='
+    ( if (.blocked_on|type)=="string" and (.blocked_on != "") then .blocked_on else null end ) as $bo
+    | ( (.labels // []) | map(select(type=="string" and test("^gate:[a-z0-9][a-z0-9-]*$"))) ) as $gl
+    | ( if (.deferred_until|type)=="string" and (.deferred_until != "") then .deferred_until else null end ) as $du
+    | ( (if $bo then 1 else 0 end) + (if ($gl|length)>0 then 1 else 0 end) + (if $du then 1 else 0 end) ) as $present
+    | ($present - 1) as $more
+    | (.bead_ref // null) as $ref
+    | if $present == 0 then null
+      elif $bo then {type:"dependency", task_ref:$ref, blocked_on:$bo,
+                     unblocks_when:($bo+" closes"), editable:false, more:$more}
+      elif ($gl|length)>0 then {type:"gate", gate_id:$gl[0], task_ref:$ref,
+                     unblocks_when:null, editable:true, more:$more}
+      else {type:"scheduled", task_ref:$ref, deferred_until:$du,
+                     unblocks_when:$du, editable:false, more:$more}
+      end'
   jq -cn \
      --argjson sv 1 \
      --arg principal "$principal" \
@@ -2073,14 +2096,14 @@ co__work_snapshot() {
          ( reduce $stages[] as $s ({}; . + {($s): [ $beads[]
              | select((.stage // "") == $s)
              | {bead_ref, title, stage:(.stage // ""), priority,
-                age, waiting_on:(.waiting_on // null),
+                age, waiting_on: ('"$waiting_on_derive"'),
                 verified:(.verified == true),
                 failure: ('"$normalize_failure"')} ]})
            + { "": [ $beads[]
              | select(((.stage // "") as $st
                  | ($stages|index($st)) == null))
              | {bead_ref, title, stage:(.stage // ""), priority,
-                age, waiting_on:(.waiting_on // null),
+                age, waiting_on: ('"$waiting_on_derive"'),
                 verified:(.verified == true),
                 failure: ('"$normalize_failure"')} ] } ),
        waiting_on_you:$waiting_on_you}' 2>/dev/null \

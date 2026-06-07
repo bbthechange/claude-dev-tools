@@ -79,6 +79,46 @@
     return cls.indexOf('TOOL_ERROR') === 0;
   }
 
+  /* deriveWaitingOn(w) → the J5 (claude-tools-uxvj5) inline "waiting on" reason
+   * for a held lifecycle card (DESIGN J §7.5). The projection's cards[].waiting_on
+   * is now the holds[]-DERIVED object {type, unblocks_when, gate_id|task_ref,
+   * editable, more} (was a runner-stamped free string). This turns it into the
+   * one-line view-model the column paints: {type, glyph, text, editable, more}.
+   *
+   * The §7.5 invariant the renderer must honor: "a held card never renders
+   * without a reason." So EVERY recognized hold yields non-empty text — a gate
+   * whose unblock_condition is still null (placed before metadata existed, B.4)
+   * degrades to "held by <gate_id> · no unblock condition yet", never a blank.
+   * An unheld card (waiting_on null) returns null ⇒ no waiting line. Tolerant by
+   * construction: a malformed/unknown hold still shows an honest "held" line
+   * rather than throwing or rendering "[object Object]". Presentation only —
+   * never invents a hold the projection didn't carry. */
+  function deriveWaitingOn(w) {
+    if (!w || typeof w !== 'object') return null;
+    var type = (typeof w.type === 'string' && w.type) ? w.type : 'held';
+    var cond = (typeof w.unblocks_when === 'string' && w.unblocks_when) ? w.unblocks_when : null;
+    var more = (typeof w.more === 'number' && w.more > 0) ? w.more : 0;
+    var glyph, text;
+    if (type === 'dependency') {
+      glyph = '⛓'; // ⛓ — a hard block (beads-native)
+      text = 'blocked' + (cond ? ' · ' + cond
+        : (typeof w.blocked_on === 'string' && w.blocked_on ? ' on ' + w.blocked_on : ''));
+    } else if (type === 'gate') {
+      glyph = '⛔'; // ⛔ — our editable Gate
+      var gid = (typeof w.gate_id === 'string' && w.gate_id) ? w.gate_id : 'gate';
+      text = 'held by ' + gid + (cond ? ' · unblocks when ' + cond
+        : ' · no unblock condition yet');
+    } else if (type === 'scheduled') {
+      glyph = '⏰'; // ⏰ — a defer date (beads-native)
+      text = 'deferred' + (cond ? ' until ' + cond : '');
+    } else {
+      glyph = '⏸'; // ⏸ — unknown hold shape, still surfaced honestly
+      text = 'held' + (cond ? ' · ' + cond : '');
+    }
+    if (more > 0) text += ' (+' + more + ' more)';
+    return { type: type, glyph: glyph, text: text, editable: w.editable === true, more: more };
+  }
+
   // F2 (claude-tools-8fh) — the four FROZEN desired-states the per-workspace
   // toggle row exposes. Pinned in the same order as set-desired.js's
   // ALLOWED_STATES so a UI typo and an engine typo cannot drift apart. The
@@ -559,7 +599,11 @@
             stage: c.stage || '',
             priority: (c.priority === 0 || c.priority) ? c.priority : null,
             age: c.age || null,
-            waiting_on: c.waiting_on || null,
+            // J5 (claude-tools-uxvj5) — the inline hold reason (DESIGN J §7.5).
+            // Derived from the holds[]-sourced cards[].waiting_on object into the
+            // one-line {type,glyph,text,editable,more} the column paints; null
+            // when the bead is not held (no waiting line).
+            waiting_on: deriveWaitingOn(c.waiting_on),
             // L3 — which live runner is on this bead, if any (null when no
             // live workspace has it as current_task_ref). Presentation-only:
             // we never invent a runner; a stale runner's last task does NOT

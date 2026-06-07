@@ -288,9 +288,14 @@ it("CF.3 reconcile/liveness/work-snapshot is behaviour-identical to lib/coordina
     "per-bead failure metadata carried (Flow G tiers 1–2)",
     SNAP.lifecycle_columns.impl[0].failure.class === "UNKNOWN_FAILURE"
   );
+  // J5 (claude-tools-uxvj5, DESIGN J §7.5) — `waiting_on` is now DERIVED from
+  // holds[], NOT the legacy runner-stamped passthrough. claude-tools-99 carries a
+  // runner-stamped `waiting_on:"review"` but is NOT held (no blocked_on/gate/defer),
+  // so its card reads null (honest "not held"). The held-card derivation + shape +
+  // precedence is asserted in the dedicated CF.3 J5 block below.
   ck(
-    "card carries the one thing it waits on (§4.5)",
-    SNAP.lifecycle_columns.impl[0].waiting_on === "review"
+    "J5 — a runner-stamped waiting_on no longer passes through; an UNHELD card reads null (§7.5)",
+    SNAP.lifecycle_columns.impl[0].waiting_on === null
   );
   // GAP G2 (claude-tools-uxg2) — the per-card `verified` flag (§3 / principle
   // 11). STRICT boolean on EVERY card: literal true ⇒ done·verified, anything
@@ -1163,6 +1168,101 @@ it("CF.3 J2 workSnapshot holds[] unifier — 3 mechanisms + gate_metadata join +
     console.log("FAILED:\n  - " + jfails.join("\n  - "));
   }
   expect(jFAIL, `J2 holds[] clauses failed: ${jfails.join("; ")}`).toBe(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// J5 (claude-tools-uxvj5) — Board cards[].waiting_on DERIVED from holds[] (DESIGN
+// J §7.5 / B.1). A held lifecycle card carries its ONE most-actionable hold
+// reason inline (precedence dependency > gate > scheduled; `more` = the other
+// holds), sourced from the SAME work-truth holds[] computed in §3 — not the
+// legacy runner-stamped passthrough. The gate branch reuses the gate_metadata
+// join's unblocks_when (the live CF path). An unheld card reads null (B.4).
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 J5 cards[].waiting_on derived from holds[] — precedence + shape + unheld-null (claude-tools-uxvj5)", async () => {
+  let jPASS = 0;
+  let jFAIL = 0;
+  const jfails = [];
+  function jck(name, cond) {
+    if (cond) { jPASS++; console.log(`  ✓ ${name}`); }
+    else { jFAIL++; jfails.push(name); console.log(`  ✗ ${name}`); }
+  }
+  const colOf = (snap, stage) =>
+    (snap.lifecycle_columns && snap.lifecycle_columns[stage]) || [];
+  const cardOf = (snap, stage, ref) => colOf(snap, stage).find((c) => c.bead_ref === ref) || null;
+
+  // Seed a J5-specific gate_metadata row so the gate branch's unblocks_when is
+  // a real string (the live CF metadata join — distinct from the J2 fixture).
+  const setMeta = await call(GOOD, "gate-meta-set", [
+    JSON.stringify({
+      id: "j5-redesign",
+      why: "the rewrite is mid-flight",
+      unblock_condition: "rewrite lands",
+      owner: "you",
+      scope: "cohort",
+    }),
+  ]);
+  jck("gate-meta-set seeded the J5 gate row (200)", setMeta.status === 200);
+
+  // Inline work-truth (the bash-twin / live-verify path) — every bead is in a
+  // lifecycle stage so it lands as a card AND carries its hold field(s).
+  const J5BEADS = JSON.stringify([
+    { bead_ref: "j5-dep", title: "Blocked", stage: "impl", blocked_on: "j5-77a" },
+    { bead_ref: "j5-gate", title: "Gated", stage: "impl", labels: ["gate:j5-redesign", "stage:impl"] },
+    { bead_ref: "j5-sched", title: "Deferred", stage: "design", deferred_until: "2026-07-01" },
+    // precedence: dependency > gate (a hard block outranks a chosen gate) — more:1
+    { bead_ref: "j5-both", title: "Blocked AND gated", stage: "ux", blocked_on: "j5-88b", labels: ["gate:j5-redesign"] },
+    // precedence: gate > scheduled (a chosen gate outranks a date) — more:1
+    { bead_ref: "j5-gd", title: "Gated AND deferred", stage: "docs", labels: ["gate:j5-redesign"], deferred_until: "2026-08-01" },
+    // not held: a runner-stamped string must NOT pass through (source replaced)
+    { bead_ref: "j5-none", title: "Free", stage: "tests", waiting_on: "review", labels: ["stage:tests", "gateway"] },
+  ]);
+  const SNAP = await callJson("work-snapshot", ["projJ5", J5BEADS]);
+
+  // dependency hold → the inline reason
+  const dep = cardOf(SNAP, "impl", "j5-dep");
+  jck("dependency card carries waiting_on (an OBJECT, not a string)", dep && dep.waiting_on && typeof dep.waiting_on === "object");
+  jck("dependency waiting_on.type = dependency", dep && dep.waiting_on.type === "dependency");
+  jck("dependency unblocks_when = '<ref> closes'", dep && dep.waiting_on.unblocks_when === "j5-77a closes");
+  jck("dependency blocked_on carried on the card reason", dep && dep.waiting_on.blocked_on === "j5-77a");
+  jck("dependency editable:false (beads-native — read-only)", dep && dep.waiting_on.editable === false);
+  jck("dependency more:0 (the only hold)", dep && dep.waiting_on.more === 0);
+
+  // gate hold → reuses the gate_metadata unblocks_when
+  const gate = cardOf(SNAP, "impl", "j5-gate");
+  jck("gate card carries waiting_on.type = gate", gate && gate.waiting_on && gate.waiting_on.type === "gate");
+  jck("gate waiting_on.gate_id carries the gate:<id> label", gate && gate.waiting_on.gate_id === "gate:j5-redesign");
+  jck("gate unblocks_when reused from gate_metadata (the live join)", gate && gate.waiting_on.unblocks_when === "rewrite lands");
+  jck("gate editable:true (our native hold — the ONLY editable type)", gate && gate.waiting_on.editable === true);
+
+  // scheduled hold → the defer date
+  const sched = cardOf(SNAP, "design", "j5-sched");
+  jck("scheduled card carries waiting_on.type = scheduled", sched && sched.waiting_on && sched.waiting_on.type === "scheduled");
+  jck("scheduled unblocks_when = the defer date", sched && sched.waiting_on.unblocks_when === "2026-07-01");
+  jck("scheduled editable:false (beads-native)", sched && sched.waiting_on.editable === false);
+
+  // precedence dependency > gate, with the gate counted in `more`
+  const both = cardOf(SNAP, "ux", "j5-both");
+  jck("precedence: blocked+gated ⇒ DEPENDENCY wins (a hard block outranks a gate)", both && both.waiting_on.type === "dependency");
+  jck("precedence: the out-ranked gate is counted in more:1", both && both.waiting_on.more === 1);
+
+  // precedence gate > scheduled, with the defer counted in `more`
+  const gd = cardOf(SNAP, "docs", "j5-gd");
+  jck("precedence: gated+deferred ⇒ GATE wins (a chosen gate outranks a date)", gd && gd.waiting_on.type === "gate");
+  jck("precedence: the out-ranked defer is counted in more:1", gd && gd.waiting_on.more === 1);
+
+  // unheld card → null (the runner-stamped 'review' is NOT passed through)
+  const none = cardOf(SNAP, "tests", "j5-none");
+  jck("unheld card present in its column", !!none);
+  jck("J5 source change: a runner-stamped waiting_on does NOT pass through (null)", none && none.waiting_on === null);
+
+  // read-only: the derivation mutates nothing (§4.5)
+  const before = await recordSig();
+  await callJson("work-snapshot", ["projJ5", J5BEADS]);
+  jck("read-only — waiting_on derivation mutates ZERO records (§4.5)", (await recordSig()) === before);
+
+  console.log(`\n══ CF.3 J5 cards[].waiting_on (vs DESIGN J §7.5 + B.1): PASS=${jPASS} FAIL=${jFAIL} ══`);
+  if (jFAIL > 0) console.log("FAILED:\n  - " + jfails.join("\n  - "));
+  expect(jFAIL, `J5 waiting_on clauses failed: ${jfails.join("; ")}`).toBe(0);
 });
 
 // ════════════════════════════════════════════════════════════════════════════

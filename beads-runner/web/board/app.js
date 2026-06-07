@@ -152,7 +152,17 @@
         bf.appendChild(mk('span', null,
           (card.priority != null ? 'P' + card.priority : '·') +
           (card.age ? ' · ' + card.age : '')));
-        if (card.waiting_on) bf.appendChild(mk('span', 'wo', card.waiting_on));
+        // J5 (claude-tools-uxvj5): the inline hold reason (DESIGN J §7.5). The
+        // view-model carries {type,glyph,text,...}; a held card ALWAYS shows its
+        // one reason (never a stalled task with no "why"). The per-type class
+        // (wo-gate/wo-dependency/wo-scheduled) lets board.css tint Gate (ours,
+        // editable) vs the beads-native holds. mk uses textContent (XSS-safe).
+        if (card.waiting_on) {
+          var wo = mk('span', 'wo wo-' + card.waiting_on.type,
+            card.waiting_on.glyph + ' ' + card.waiting_on.text);
+          wo.setAttribute('title', card.waiting_on.text);
+          bf.appendChild(wo);
+        }
         // L3 (claude-tools-2bf): which live workspace currently has this bead
         // as its current_task_ref. Null ⇒ no live runner ⇒ nothing rendered
         // (S-1: a stale runner's last task isn't "currently working").

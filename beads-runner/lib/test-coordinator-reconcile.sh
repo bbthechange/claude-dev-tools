@@ -186,7 +186,12 @@ ck "projection lifecycle column keyed by stage: (idea)"       eq "$(jq -r '.life
 ck "an unknown stage buckets under \"\" (honest, not silently impl)" \
    eq "$(jq -r '.lifecycle_columns[""][0].bead_ref' <<<"$SNAP")" "claude-tools-77"
 ck "per-bead failure metadata carried (Flow G tiers 1–2)"     eq "$(jq -r '.lifecycle_columns.impl[0].failure.class' <<<"$SNAP")" "UNKNOWN_FAILURE"
-ck "card carries the one thing it waits on (§4.5)"            eq "$(jq -r '.lifecycle_columns.impl[0].waiting_on' <<<"$SNAP")" "review"
+# J5 (claude-tools-uxvj5, DESIGN J §7.5) — waiting_on is DERIVED from holds[],
+# NOT the runner-stamped passthrough. claude-tools-99 stamps waiting_on:"review"
+# but is NOT held (no blocked_on/gate/defer) ⇒ its card reads null. The held-card
+# shape + precedence is the EXIT-3e bash-twin block below.
+ck "J5 — runner-stamped waiting_on no longer passes through; UNHELD card is null (§7.5)" \
+   eq "$(jq -r '.lifecycle_columns.impl[0].waiting_on' <<<"$SNAP")" "null"
 # GAP G2 (claude-tools-uxg2) — the per-card `verified` flag (§3 / principle 11),
 # byte-parallel with the cf/src/reconcile.js twin. Strict boolean: only literal
 # true ⇒ done·verified; absent/false ⇒ done·code.
@@ -287,6 +292,38 @@ ck "scheduled editable:false (beads-native — read-only, C3)"      eq "$(jq -r 
 ck "a bead with no hold trigger produces no hold (t-x absent)"    eq "$(jq -r '[.[]|select(.task_ref=="t-x")]|length' <<<"$HOLDS")" "0"
 SNAPhe="$(co_request "$GOOD" work-snapshot projA '[]' 2>/dev/null)"
 ck "no work-truth beads ⇒ holds:[] (honest empty)"               eq "$(jq -rc '.projects[0].holds' <<<"$SNAPhe")" "[]"
+
+echo "── EXIT-3e: uxvj5 — cards[].waiting_on DERIVED from holds[] (DESIGN J §7.5), bash twin ──"
+# Per-card waiting_on, derived the same way buildHolds derives holds[] (NOT the
+# runner-stamped passthrough). A held card shows its ONE most-actionable reason,
+# precedence dependency > gate > scheduled; `more` = the OTHER holds. A TRUE twin
+# of CF buildWaitingOnMap for dependency/scheduled; the gate unblocks_when
+# degrades to null (no gate_metadata store here — the holds[] shape-parity
+# posture). Every bead is in a stage so it lands as a card AND carries its hold.
+BEADS_WO='[{"bead_ref":"w-dep","title":"Blocked","stage":"impl","blocked_on":"w-77a"},{"bead_ref":"w-gate","title":"Gated","stage":"impl","labels":["gate:audio-redesign","stage:impl"]},{"bead_ref":"w-sched","title":"Deferred","stage":"design","deferred_until":"2026-07-01"},{"bead_ref":"w-both","title":"Blocked AND gated","stage":"ux","blocked_on":"w-88b","labels":["gate:audio-redesign"]},{"bead_ref":"w-gd","title":"Gated AND deferred","stage":"docs","labels":["gate:audio-redesign"],"deferred_until":"2026-08-01"},{"bead_ref":"w-none","title":"Free","stage":"tests","waiting_on":"review","labels":["stage:tests","gateway"]}]'
+SNAPwo="$(co_request "$GOOD" work-snapshot projWo "$BEADS_WO" 2>/dev/null)"
+woDep="$(jq -c '.lifecycle_columns.impl[]|select(.bead_ref=="w-dep").waiting_on' <<<"$SNAPwo")"
+ck "dependency card waiting_on is an OBJECT (not a string)"       eq "$(jq -r 'type' <<<"$woDep")" "object"
+ck "dependency waiting_on.type = dependency"                      eq "$(jq -r '.type' <<<"$woDep")" "dependency"
+ck "dependency unblocks_when = '<ref> closes'"                    eq "$(jq -r '.unblocks_when' <<<"$woDep")" "w-77a closes"
+ck "dependency editable:false (beads-native)"                     eq "$(jq -r '.editable' <<<"$woDep")" "false"
+ck "dependency more:0 (the only hold)"                            eq "$(jq -r '.more' <<<"$woDep")" "0"
+woGate="$(jq -c '.lifecycle_columns.impl[]|select(.bead_ref=="w-gate").waiting_on' <<<"$SNAPwo")"
+ck "gate card waiting_on.type = gate"                             eq "$(jq -r '.type' <<<"$woGate")" "gate"
+ck "gate waiting_on.gate_id carries the gate:<id> label"          eq "$(jq -r '.gate_id' <<<"$woGate")" "gate:audio-redesign"
+ck "gate unblocks_when null in bash twin (no gate_metadata store)" eq "$(jq -r '.unblocks_when' <<<"$woGate")" "null"
+ck "gate editable:true (the ONLY editable hold type)"             eq "$(jq -r '.editable' <<<"$woGate")" "true"
+woSched="$(jq -c '.lifecycle_columns.design[]|select(.bead_ref=="w-sched").waiting_on' <<<"$SNAPwo")"
+ck "scheduled waiting_on.type = scheduled"                        eq "$(jq -r '.type' <<<"$woSched")" "scheduled"
+ck "scheduled unblocks_when = the defer date"                     eq "$(jq -r '.unblocks_when' <<<"$woSched")" "2026-07-01"
+woBoth="$(jq -c '.lifecycle_columns.ux[]|select(.bead_ref=="w-both").waiting_on' <<<"$SNAPwo")"
+ck "precedence: blocked+gated ⇒ DEPENDENCY wins"                  eq "$(jq -r '.type' <<<"$woBoth")" "dependency"
+ck "precedence: the out-ranked gate counted in more:1"            eq "$(jq -r '.more' <<<"$woBoth")" "1"
+woGd="$(jq -c '.lifecycle_columns.docs[]|select(.bead_ref=="w-gd").waiting_on' <<<"$SNAPwo")"
+ck "precedence: gated+deferred ⇒ GATE wins"                       eq "$(jq -r '.type' <<<"$woGd")" "gate"
+ck "precedence: the out-ranked defer counted in more:1"           eq "$(jq -r '.more' <<<"$woGd")" "1"
+ck "J5 source change: a runner-stamped waiting_on does NOT pass through (null)" \
+   eq "$(jq -r '.lifecycle_columns.tests[]|select(.bead_ref=="w-none").waiting_on' <<<"$SNAPwo")" "null"
 
 echo "── EXIT-3: NO write path from any reader (read-only invariant) ──"
 sig() { ( cd "$CO_STORE/records" 2>/dev/null && ls -1 2>/dev/null | sort | shasum ); }

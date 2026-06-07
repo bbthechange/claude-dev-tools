@@ -71,7 +71,7 @@ Three facts explain almost everything:
 
 | File | Role |
 |---|---|
-| `web/board/board-view.js` | The pure core. `deriveBoardView(snapshot, nowMs?, opts?)` is the entry; helpers `deriveRunner`, `deriveMachine`, `deriveQueueHealth`, `formatAgo`/`formatAgeSeconds`/`formatPct`. Holds `STAGE_ORDER`, `DESIRED_CONTROLS`, `NET_VELOCITY_ALARM_THRESHOLD`, `SUPPORTED_SNAPSHOT_SCHEMA`, the `SILENT_CLASSES` back-compat set, the §0.3 reject. |
+| `web/board/board-view.js` | The pure core. `deriveBoardView(snapshot, nowMs?, opts?)` is the entry; helpers `deriveRunner`, `deriveMachine`, `deriveQueueHealth`, `deriveWaitingOn` (J5 — the held-card inline hold reason), `formatAgo`/`formatAgeSeconds`/`formatPct`. Holds `STAGE_ORDER`, `DESIRED_CONTROLS`, `NET_VELOCITY_ALARM_THRESHOLD`, `SUPPORTED_SNAPSHOT_SCHEMA`, the `SILENT_CLASSES` back-compat set, the §0.3 reject. |
 | `web/board/app.js` | Browser glue. `refresh()` (the GET + render + auto-poll), `postSetDesired()` (the one POST), `render*` painters, the ephemeral `pendingDesired` overlay + `clearHonoredPending`. **claude-tools-758l:** `renderRunners` now delegates the runner state row + the F2 control row to the shared `RunnerCard.renderStateRow`/`renderControls` (`web/shared/runner-card.js`); the runner-card CSS moved to `web/shared/tokens.css` (bare control selectors). board.css keeps only the `.runners` grid + `.rqh`. `postSetDesired` stays local. |
 | `web/board/index.html` | The shell DOM: status strip, WAITING-ON-YOU lane, lifecycle spine, machine strip, runners grid. Mounts `Shell.mount({active:null})`. Asset links are absolute (`/board/*`, `/shared/*`) — also served at `/` via `web/_redirects` (q6z7). |
 | `web/board/board.css` | Responsive phone-first → desktop. Band classes (`band-green/amber/red/neutral/stale/missing`), `.silent`/`.failbead`, `.sub.verified`/`.sub.code` (done substate), `.rbtn.active`. |
@@ -193,6 +193,21 @@ bash beads-runner/verify-pages-deploy.sh board   # must print mismatches=0
 - **Unset proxy bindings ⇒ honest 503, never a fabricated projection.** The
   client surfaces the proxy's `{ok:false,error}` envelope verbatim (covers
   502 Coordinator-unreachable / 503 unconfigured / bearer-rejected).
+- **`cards[].waiting_on` is now a holds-DERIVED OBJECT, not a string (J5,
+  claude-tools-uxvj5, DESIGN J §7.5).** The producer (`workSnapshot` +
+  `buildWaitingOnMap`, mirrored in the `coordinator.sh` twin) sets each held
+  card's `waiting_on` to its ONE most-actionable hold `{type, unblocks_when,
+  gate_id|task_ref, editable, more}` — precedence `dependency > gate > scheduled`,
+  `more` = the count of the other holds — instead of the old runner-stamped
+  free string. `deriveWaitingOn` turns it into the painted `{type,glyph,text}`
+  one-liner; a held card NEVER renders without a reason (a gate with a null
+  unblock_condition still shows "held by <gate> · no unblock condition yet").
+  An unheld card reads `waiting_on:null` ⇒ no waiting line. **Caveat:** in the
+  production GET path the lifecycle cards come from the inventory's *active*
+  in_progress/top_n lists (which carry no hold fields — held beads ride the
+  separate `held_beads` channel into `holds[]` only), so a card's inline reason
+  fires on the inline/live-verify path today; surfacing held beads as Board
+  cards in production is a follow-up (the Gates facet already lists them).
 
 ## Go deeper
 

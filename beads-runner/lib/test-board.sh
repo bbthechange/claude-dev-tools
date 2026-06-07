@@ -112,7 +112,12 @@ ck "lane shows the open-item count (1 open of 2)"                eq "$(jq -r '.w
 ck "lane is a POINTER into T6b's Inbox (deep-link, not body)"    has "/inbox#dOpen" "$(jq -r '.waiting_on_you[0].inbox_href' <<<"$V")"
 ck "lane does NOT carry dossier body/items (T6b owns content)"   eq "$(jq -r '.waiting_on_you[0]|has("body") or has("items")' <<<"$V")" "false"
 ck "lifecycle spine present, FROZEN idea→done (+\"\" honest)"     eq "$(jq -r '[.lifecycle[].stage]|join(",")' <<<"$V")" "idea,ux,design,impl,docs,tests,done,"
-ck "impl column carries the bead, with its 'waiting_on'"         eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].waiting_on' <<<"$V")" "review"
+# J5 (claude-tools-uxvj5, DESIGN J §7.5) — waiting_on is now the holds[]-DERIVED
+# object, NOT the runner-stamped string. claude-tools-99 stamps "review" but is
+# NOT held ⇒ the rendered card carries waiting_on:null (no inline reason). The
+# held-card render (glyph + reason text) is EXIT-1c below.
+ck "J5 — an UNHELD card renders no waiting line (runner-stamped 'review' dropped)" \
+   eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].waiting_on' <<<"$V")" "null"
 ck "unknown stage 'weird' bucketed honestly under \"\" (not impl)" eq "$(jq -r '.lifecycle[]|select(.stage=="").cards[0].bead_ref' <<<"$V")" "claude-tools-77"
 # GAP G2 (claude-tools-uxg2): the renderer splits `done` into done·verified vs
 # done·code off the per-card `verified` flag (§3 / principle 11). The sub-state
@@ -146,6 +151,29 @@ co_request "$GOOD" heartbeat "$(hb_line hostW projW running claude-tools-99 "$(a
 SNAP_L3S="$(co_request "$GOOD" work-snapshot "" "$BEADS" 2>/dev/null)"
 V_L3S="$(render "$SNAP_L3S")"
 ck "stale runner's last task is NOT attributed (S-1)"           eq "$(jq -r '.lifecycle[]|select(.stage=="impl").cards[0].runner' <<<"$V_L3S")" "null"
+
+echo "── EXIT-1c: J5 — a held card renders its inline hold reason (DESIGN J §7.5) ──"
+# The renderer turns the holds[]-derived cards[].waiting_on object into the
+# one-line {type,glyph,text} the column paints. The §7.5 invariant: a held card
+# NEVER renders without a reason — even a gate whose unblock_condition is still
+# null (bash twin: no gate_metadata store) shows "held by <gate> · no unblock
+# condition yet". Precedence dependency > gate > scheduled; `more` ⇒ "(+N more)".
+BEADS_J5='[{"bead_ref":"j5-dep","title":"Blocked","stage":"impl","blocked_on":"j5-77a"},{"bead_ref":"j5-gate","title":"Gated","stage":"design","labels":["gate:audio-redesign"]},{"bead_ref":"j5-sched","title":"Deferred","stage":"ux","deferred_until":"2026-07-01"},{"bead_ref":"j5-both","title":"Blocked+gated","stage":"docs","blocked_on":"j5-88b","labels":["gate:audio-redesign"]}]'
+SNAP_J5="$(co_request "$GOOD" work-snapshot projJ5 "$BEADS_J5" 2>/dev/null)"
+V_J5="$(render "$SNAP_J5")"
+woDepT="$(jq -c '.lifecycle[]|select(.stage=="impl").cards[]|select(.bead_ref=="j5-dep").waiting_on' <<<"$V_J5")"
+ck "held card waiting_on is a rendered object (type+glyph+text)"  eq "$(jq -r 'has("type") and has("glyph") and has("text")' <<<"$woDepT")" "true"
+ck "dependency renders its glyph + unblock condition (never blank)" has "j5-77a closes" "$(jq -r '.text' <<<"$woDepT")"
+ck "dependency view type carried (for the per-type CSS tint)"      eq "$(jq -r '.type' <<<"$woDepT")" "dependency"
+woGateT="$(jq -c '.lifecycle[]|select(.stage=="design").cards[]|select(.bead_ref=="j5-gate").waiting_on' <<<"$V_J5")"
+ck "gate with null unblock (bash twin) STILL renders a reason (§7.5)" has "no unblock condition yet" "$(jq -r '.text' <<<"$woGateT")"
+ck "gate reason names the gate:<id> label"                        has "gate:audio-redesign" "$(jq -r '.text' <<<"$woGateT")"
+ck "gate view editable:true (the actionable hold)"                eq "$(jq -r '.editable' <<<"$woGateT")" "true"
+woSchedT="$(jq -c '.lifecycle[]|select(.stage=="ux").cards[]|select(.bead_ref=="j5-sched").waiting_on' <<<"$V_J5")"
+ck "scheduled renders 'deferred until <date>'"                    has "deferred until 2026-07-01" "$(jq -r '.text' <<<"$woSchedT")"
+woBothT="$(jq -c '.lifecycle[]|select(.stage=="docs").cards[]|select(.bead_ref=="j5-both").waiting_on' <<<"$V_J5")"
+ck "precedence: blocked+gated ⇒ dependency reason wins"           eq "$(jq -r '.type' <<<"$woBothT")" "dependency"
+ck "a second hold surfaces as '(+1 more)' in the reason text"     has "(+1 more)" "$(jq -r '.text' <<<"$woBothT")"
 
 echo "── EXIT-2: S-1 — an OFFLINE runner shows STALE, never running ──"
 # projA's last heartbeat ages past STALE_AFTER (no further beats) ⇒ the
