@@ -467,6 +467,107 @@ out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "P
 assert_block_stop "T28 baseline-but-in-commit-set → still blocks (own)" "$out" "tracked.txt"
 rm -rf "$ws" "$shim"
 
+echo "[Close-detector over-match — anchor on invoked subcommand (claude-tools-9efz)]"
+
+# OM1: read-only `bd list --status closed` query → NOT a close → allow.
+# (Invoked subcommand is `list`, a read-only verb; the old whole-string grep of
+# Pattern B matched the `--status closed` and falsely gated this.)
+ws=$(mkworkspace); shim=$(mkshim_dir)
+out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd list --status closed"}}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "OM1 bd list --status closed (read-only query) → allow" "$out"
+rm -rf "$ws" "$shim"
+
+# OM2: read-only `bd list -s closed` short form → allow (verb=list, Pattern C gated).
+ws=$(mkworkspace); shim=$(mkshim_dir)
+out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd list -s closed"}}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "OM2 bd list -s closed (read-only query) → allow" "$out"
+rm -rf "$ws" "$shim"
+
+# OM3: `bd create -d '...bd close foo bar...'` — a close MENTIONED in a quoted
+# argument. Invoked subcommand is `create`, so Pattern A must NOT fire and (the
+# old bug) multi_id_close must NOT trip on the `foo bar baz` inside the text.
+ws=$(mkworkspace); shim=$(mkshim_dir)
+out=$(run_hook "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"s1\",\"cwd\":\"$ws\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"bd create -d 'fix the thing, then bd close foo bar baz'\"}}" "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "OM3 bd create -d '...bd close foo bar...' (quoted mention) → allow" "$out"
+rm -rf "$ws" "$shim"
+
+echo "[Wrapup marker PRODUCER — transcript proof persists the marker (claude-tools-9efz)]"
+
+# A long debrief with NO marker, so the producer/marker behavior is the only
+# variable (debrief check stays satisfied).
+PROD_NOTES="a sufficiently long debrief here describing what was done, well over the forty char threshold"
+# Shim that RECORDS every `bd update` to $rec and serves marker-absent notes.
+# $rec is baked into the shim body by the caller before write_shim.
+prod_shim() {  # prod_shim <shimdir> <rec> <notes>
+  write_shim "$1" bd "
+case \"\$1\" in
+  update) printf '%s\n' \"\$*\" >> '$2' ;;
+  show) case \"\$*\" in *'--long'*) printf '%s' '[{\"status\":\"open\",\"notes\":\"$3\"}]';; *) printf '%s' '[{\"status\":\"open\"}]';; esac ;;
+esac"
+}
+assert_recorded() {  # assert_recorded <name> <rec> <needle>
+  if grep -qF "$3" "$2" 2>/dev/null; then
+    PASS=$((PASS+1)); echo "  PASS: $1"
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("$1"); echo "  FAIL: $1 → expected '$3' in $2, got:"; sed 's/^/    /' "$2" 2>/dev/null
+  fi
+}
+assert_not_recorded() {  # assert_not_recorded <name> <rec>
+  if [[ ! -s "$2" ]]; then
+    PASS=$((PASS+1)); echo "  PASS: $1"
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("$1"); echo "  FAIL: $1 → expected NO bd update, got:"; sed 's/^/    /' "$2" 2>/dev/null
+  fi
+}
+
+# P1: Stop + transcript proves wrapup + NO marker → allow AND the hook persists
+# the wrapup-reviewed marker (the producer the post-close audit needs).
+ws=$(mkworkspace); shim=$(mkshim_dir); rec="$ws/.beads/runner-logs/bd-update.log"; : > "$rec"
+prod_shim "$shim" "$rec" "$PROD_NOTES"
+tp=$(write_transcript "$ws" "$(skill_line wrapup)")
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "P1 Stop transcript-proven + no marker → allow" "$out"
+assert_recorded "P1b producer persisted wrapup-reviewed marker" "$rec" "update foo --append-notes=wrapup-reviewed:"
+rm -rf "$ws" "$shim"
+
+# P2: Stop + transcript proves wrapup + marker ALREADY present → allow, NO
+# double-write (idempotent).
+ws=$(mkworkspace); shim=$(mkshim_dir); rec="$ws/.beads/runner-logs/bd-update.log"; : > "$rec"
+prod_shim "$shim" "$rec" "$PROD_NOTES; wrapup-reviewed: 2026-01-01 sha=abc clean=0"
+tp=$(write_transcript "$ws" "$(skill_line wrapup)")
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'","transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "P2 Stop transcript-proven + marker present → allow" "$out"
+assert_not_recorded "P2b no double-write when marker already present" "$rec"
+rm -rf "$ws" "$shim"
+
+# P3: PreToolUse `bd close` + transcript proves wrapup + NO marker → allow AND
+# persist the marker BEFORE the close (so the post-close audit later finds it).
+ws=$(mkworkspace); shim=$(mkshim_dir); rec="$ws/.beads/runner-logs/bd-update.log"; : > "$rec"
+prod_shim "$shim" "$rec" "$PROD_NOTES"
+tp=$(write_transcript "$ws" "$(skill_line wrapup)")
+out=$(run_hook '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"'"$ws"'","tool_name":"Bash","tool_input":{"command":"bd close foo"},"transcript_path":"'"$tp"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "P3 PreToolUse close + transcript-proven + no marker → allow" "$out"
+assert_recorded "P3b producer persisted marker on the close path" "$rec" "update foo --append-notes=wrapup-reviewed:"
+rm -rf "$ws" "$shim"
+
+# P4: NO transcript + marker present → allow via the (b) marker fallback, and
+# the producer must NOT fire (proof was the marker, not the transcript).
+ws=$(mkworkspace); shim=$(mkshim_dir); rec="$ws/.beads/runner-logs/bd-update.log"; : > "$rec"
+prod_shim "$shim" "$rec" "$PROD_NOTES; wrapup-reviewed: 2026-01-01 sha=abc clean=0"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_allow "P4 no transcript + marker → allow (marker fallback)" "$out"
+assert_not_recorded "P4b producer does not fire on the marker-only path" "$rec"
+rm -rf "$ws" "$shim"
+
+# P5: NO transcript + NO marker → block (wrapup_not_invoked) AND the producer
+# must NEVER fabricate a marker for an unproven wrapup.
+ws=$(mkworkspace); shim=$(mkshim_dir); rec="$ws/.beads/runner-logs/bd-update.log"; : > "$rec"
+prod_shim "$shim" "$rec" "$PROD_NOTES"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
+assert_block_stop "P5 no transcript + no marker → block" "$out" "has not been invoked"
+assert_not_recorded "P5b producer never fabricates a marker for unproven wrapup" "$rec"
+rm -rf "$ws" "$shim"
+
 echo
 echo "──────────────────────────────────────────────────────────"
 echo "Tests: $PASS passed, $FAIL failed"

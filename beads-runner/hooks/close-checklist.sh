@@ -10,6 +10,12 @@
 #   4. /wrapup was invoked — proven by EITHER signal (claude-tools-fh87):
 #        (a) a Skill(<wrapup-pattern>) tool_use in this session's transcript, OR
 #        (b) a wrapup-reviewed marker in bd notes (durable audit trail)
+#      When proven by (a) and no marker exists yet, the hook PERSISTS the
+#      wrapup-reviewed marker (claude-tools-9efz) so the after-the-session
+#      post_close_audit — which cannot read the pruned transcript — has a real
+#      producer for its sole wrapup signal. This is the marker's reliable,
+#      content-decoupled producer (it no longer depends on each workspace's
+#      wrapup SKILL.md remembering to write it).
 #   5. a debrief was appended to bd notes
 #
 # Emits ONE comprehensive block per round so the agent can fix all failures in
@@ -114,14 +120,28 @@ if [[ -z "$task_id" ]]; then
 fi
 
 # ── 3. Gate: PreToolUse only on close-shaped commands ───────────────────────
-# Fail-open matcher: if the command looks anything like closing a bead, fire
-# the hook. False positive cost = one extra log entry; false negative cost =
-# the discipline gate is bypassed. Catches:
+# Fail-open matcher: if the command actually INVOKES closing a bead, fire the
+# hook. False positive cost = one extra log entry; false negative cost = the
+# discipline gate is bypassed. Catches:
 #   bd close <ids>         bd done <ids>          (and aliases)
 #   bd update <id> --status=closed
 #   bd update <id> --status closed
 #   bd update <id> --status='closed' / "closed"   (shell-quoted value)
 #   bd update <id> -s closed / -s 'closed' / -s "closed"
+#
+# claude-tools-9efz — anchor on the ACTUALLY-INVOKED bd subcommand, not a raw
+# substring grep of the whole command. The old grep over-matched TWO read-only /
+# non-close shapes (each hit live during the thirsty-gwib triage): a `bd close`
+# MENTIONED in a quoted argument (`bd create -d "...bd close foo bar..."`, which
+# also tripped multi_id_close) and a status QUERY (`bd list --status closed` /
+# `bd list -s closed`). Both are now excluded by requiring the invoked
+# subcommand — the verb of the FIRST `bd` at a command position — to be the real
+# close verb: `close`/`done` for the direct form, the mutating `update` for the
+# `--status/-s closed` form. `grep -o` yields matches left-to-right, so `head -1`
+# is the invoked subcommand; a later `bd close` in the string is an argument.
+# (Residual: a compound `bd list; bd close foo` in ONE Bash call classifies on
+# `list` and is missed here — the Stop hook is the backstop. Acceptable: workers
+# issue a close as its own command, not chained behind a read-only query.)
 is_close_cmd=0
 multi_id_close=0
 if [[ "$event_name" == "PreToolUse" ]]; then
@@ -129,15 +149,22 @@ if [[ "$event_name" == "PreToolUse" ]]; then
     log_event allow "" '{"reason":"not_bash_tool"}'
     exit 0
   fi
-  # Pattern A: `bd close|done <args>` direct form
-  if printf '%s' "$tool_command" | grep -qE '\bbd[[:space:]]+(close|done)([[:space:]]|$)'; then
+  # The invoked subcommand: the verb of the first `bd` at a command boundary.
+  # BSD sed (macOS) does not support `\b`; the `(^|[^[:alnum:]_])` boundary
+  # ensures `mybd close` doesn't match but `bd close`, `/usr/bin/bd close`,
+  # `;bd close`, `FOO=1 bd close` etc. do. Strip through the last space to leave
+  # the bare verb.
+  bd_first_verb="$(printf '%s' "$tool_command" \
+    | grep -oE '(^|[^[:alnum:]_])bd[[:space:]]+[a-z][a-z-]*' 2>/dev/null \
+    | head -1 | sed -E 's/^.*[[:space:]]//')"
+
+  # Pattern A: `bd close|done <args>` direct form — only when close/done is the
+  # invoked subcommand.
+  if [[ "$bd_first_verb" == "close" || "$bd_first_verb" == "done" ]]; then
     is_close_cmd=1
     # Extract args after `bd close|done` and count non-flag tokens (the ids).
     # If >1 id, deny — checks below only validate CURRENT_TASK_ID; closing
     # sibling beads in the same call would bypass discipline for the others.
-    # BSD sed (macOS) does not support `\b`; use an explicit boundary class.
-    # `(^|[^[:alnum:]_])bd ` ensures `mybd close` doesn't match but `bd close`,
-    # `/usr/bin/bd close`, `;bd close`, etc. do.
     args="$(printf '%s' "$tool_command" | sed -nE 's/.*(^|[^[:alnum:]_])bd[[:space:]]+(close|done)[[:space:]]+(.*)/\3/p')"
     # Strip trailing pipe/redirect tail so `bd close foo | tail` doesn't count `tail` as an id.
     # Single regex (not sequential `${var%%X*}` strips): the old four-step form ran the strips
@@ -155,13 +182,19 @@ if [[ "$event_name" == "PreToolUse" ]]; then
       multi_id_close=1
     fi
   fi
-  # Pattern B: `--status … closed` (any whitespace/quote/=  between flag and value)
-  if printf '%s' "$tool_command" | grep -qE -- '--status[=[:space:]]+["'"'"']?closed(["'"'"'[:space:]]|$)'; then
-    is_close_cmd=1
-  fi
-  # Pattern C: `-s … closed` (short form)
-  if printf '%s' "$tool_command" | grep -qE -- '(^|[[:space:]])-s[=[:space:]]+["'"'"']?closed(["'"'"'[:space:]]|$)'; then
-    is_close_cmd=1
+  # Pattern B/C: `--status|-s … closed` — require the invoked subcommand to be
+  # the status-MUTATING verb `update` (the close verb for the status form). A
+  # read-only `bd list --status closed` / `bd list -s closed` query must NOT
+  # match; `bd close`/`bd done` carry no `--status` so they stay Pattern A.
+  if [[ "$bd_first_verb" == "update" ]]; then
+    # Pattern B: `--status … closed` (any whitespace/quote/= between flag and value)
+    if printf '%s' "$tool_command" | grep -qE -- '--status[=[:space:]]+["'"'"']?closed(["'"'"'[:space:]]|$)'; then
+      is_close_cmd=1
+    fi
+    # Pattern C: `-s … closed` (short form)
+    if printf '%s' "$tool_command" | grep -qE -- '(^|[[:space:]])-s[=[:space:]]+["'"'"']?closed(["'"'"'[:space:]]|$)'; then
+      is_close_cmd=1
+    fi
   fi
   if (( is_close_cmd == 0 )); then
     log_event allow "" '{"reason":"not_close_cmd"}'
@@ -369,6 +402,7 @@ shopt -u nullglob
 if (( ${#_wrapup_skills[@]} > 0 )); then
   wrapup_ok=0
   wrapup_checkable=0  # did we have ANY way to verify? if not, skip (don't block)
+  wrapup_via_transcript=0  # claude-tools-9efz: track HOW we proved it (producer gate)
 
   # (a) transcript signal
   transcript_path="$(jqr '.transcript_path // empty')"
@@ -382,7 +416,7 @@ if (( ${#_wrapup_skills[@]} > 0 )); then
       # so the default "wrapup*" catches a plugin-installed wrapup too, while a
       # deliberately namespaced BEADS_WRAPUP_SKILL_PATTERN still matches the full.
       # shellcheck disable=SC2053  — RHS glob match against the configured pattern is intentional
-      if [[ "$_skill" == $wrapup_pattern || "${_skill##*:}" == $wrapup_pattern ]]; then wrapup_ok=1; break; fi
+      if [[ "$_skill" == $wrapup_pattern || "${_skill##*:}" == $wrapup_pattern ]]; then wrapup_ok=1; wrapup_via_transcript=1; break; fi
     done < <(grep -F '"name":"Skill"' "$transcript_path" 2>/dev/null \
                | while IFS= read -r _line; do
                    printf '%s' "$_line" \
@@ -396,6 +430,32 @@ if (( ${#_wrapup_skills[@]} > 0 )); then
     notes="$(bd show "$task_id" --long --json 2>/dev/null | jq -r '.[0].notes // ""' 2>/dev/null)"
     if printf '%s' "$notes" | grep -q 'wrapup-reviewed:'; then
       wrapup_ok=1
+    fi
+  fi
+
+  # (c) PRODUCER (claude-tools-9efz): persist a durable 'wrapup-reviewed:' marker
+  # when wrapup is proven by the TRANSCRIPT but no marker is recorded yet. This
+  # is the missing producer that makes the post-close audit honest: the audit
+  # (run-beads-tasks.sh post_close_audit / runner.sh) runs AFTER the session,
+  # when the stream-json is pruned, so the MARKER is its ONLY wrapup signal — yet
+  # nothing else reliably writes it (the per-workspace wrapup skill's optional
+  # marker step is exactly the per-workspace drift this hybrid Check 4 was built
+  # to stop depending on). The hook already HOLDS the transcript proof, so it is
+  # the natural content-decoupled producer. Write here, ONCE, idempotently,
+  # best-effort (never block the close on a marker-write hiccup). At PreToolUse
+  # this runs BEFORE the gated `bd close`, so the marker is in notes by close
+  # time; at Stop it backstops a non-Bash close path the Bash-only PreToolUse
+  # matcher can't see. Gated on wrapup_via_transcript so we NEVER fabricate a
+  # marker for a bead whose wrapup wasn't actually run (the marker-only path (b)
+  # already has its marker; an unproven path stays blocked, never papered over).
+  if (( wrapup_via_transcript == 1 )) && command -v bd >/dev/null 2>&1; then
+    marker_notes="$(bd show "$task_id" --long --json 2>/dev/null | jq -r '.[0].notes // ""' 2>/dev/null)"
+    if ! printf '%s' "$marker_notes" | grep -q 'wrapup-reviewed:'; then
+      _wr_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')"
+      _wr_sha="$(git -C "$project_dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
+      if bd update "$task_id" --append-notes="wrapup-reviewed: $_wr_ts via=close-hook sha=$_wr_sha session=$session_id" >/dev/null 2>&1; then
+        log_event marker_persisted "" "$(jq -nc --arg via close-hook '{wrapup_marker:"persisted",via:$via}' 2>/dev/null || printf '%s' '{}')"
+      fi
     fi
   fi
 

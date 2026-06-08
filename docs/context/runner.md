@@ -504,6 +504,32 @@ was lost).
   paths, `git log` doesn't). Locks: `hooks/test-close-checklist.sh` T25–T28,
   `test-post-close-audit.sh` T9–T10, `conformance/assertions/bc-56-post-close-audit-tree.sh` C7.
 
+- **The `wrapup-reviewed:` marker now has a real PRODUCER — the close hook
+  (claude-tools-9efz).** `post_close_audit`'s `wrapup_not_invoked` check
+  (run-beads-tasks.sh:1652 / runner.sh:1399) treats a `wrapup-reviewed:` line in
+  bead notes as its SOLE wrapup signal — it runs AFTER the session, when the
+  stream-json is pruned, so it genuinely cannot read the transcript. But nothing
+  reliably WROTE that marker (the per-workspace wrapup `SKILL.md` marker step is
+  optional and was empty in thirsty — only 3 of 741 closed beads carried it), so
+  the audit fired a spurious P1 `discipline-bypass` bead on essentially every
+  clean runner close (thirsty-rxue→gwib was instance #1). Fix: `hooks/close-checklist.sh`
+  Check 4 — which already holds the transcript and proves wrapup via a
+  `Skill(wrapup*)` tool_use — now PERSISTS the `wrapup-reviewed:` marker
+  (`via=close-hook`) when proven-by-transcript AND the marker is absent
+  (idempotent, best-effort, gated on `wrapup_via_transcript` so it NEVER
+  fabricates a marker for an unproven wrapup). At PreToolUse this writes BEFORE
+  the gated `bd close`; at Stop it backstops a non-Bash close. The audit itself
+  is UNCHANGED — it just now finds the marker. Don't "fix" this by weakening the
+  audit; the marker's producer is the hook. Lock: `hooks/test-close-checklist.sh`
+  P1–P5. **Residual (Option 3, follow-up):** a close via a non-Bash path (e.g.
+  the `beads:close` plugin skill) the Bash-only PreToolUse matcher can't see,
+  AND a Stop hook that never fired (the rxue forensic — undetermined), writes no
+  marker → audit still flags. The PreToolUse close-detector was also tightened in
+  the same fix: it anchors on the actually-invoked `bd` subcommand (first
+  `bd <verb>` at a command boundary), so a `bd close` MENTIONED in a quoted arg
+  (`bd create -d "...bd close..."`) or a read-only `bd list --status/-s closed`
+  query no longer trips the gate (each hit live during the gwib triage).
+
 ## Go deeper
 
 - `beads-runner/BEHAVIORAL-CONTRACT.md` — the full BC-NN contract (read the clause
@@ -522,7 +548,11 @@ status change, a fresh scar, a changed spawn/selection rule. Update the v1-LIVE 
 v2-OFFLINE status the moment the cutover lands — that single fact reframes the
 whole doc. **Keep it concise — this doc earns its keep only if agents read all of
 it.** Delete lines that have gone stale; do not let it grow into a second copy of
-BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-07 (close-discipline dirty-tree
+BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-08 (the `wrapup-reviewed:` marker
+now has a real PRODUCER — the close hook persists it from transcript proof so `post_close_audit`
+stops filing spurious `wrapup_not_invoked` P1 beads on clean closes; the PreToolUse close-detector
+now anchors on the invoked `bd` subcommand to kill the quoted-mention / read-only-query over-match
+— claude-tools-9efz; see the new scar above). Prior: 2026-06-07 (close-discipline dirty-tree
 check is now BEAD-SCOPED, not whole-tree — a FOREIGN uncommitted file no longer trips a false
 P1 DISCIPLINE_BYPASS or a harmful hook block; spawn-time `BEADS_DIRTY_BASELINE` snapshot at
 claim + bead-commit-set attribution + `FOREIGN_DIRT_AT_CLOSE` downgrade — claude-tools-f4ub;
