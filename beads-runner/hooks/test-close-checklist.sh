@@ -74,7 +74,10 @@ run_hook() {  # run_hook <input_json> <env-prefix-line> → stdout + stderr; exi
   # bead and block — a false RED that depends on ambient session state, not code.
   # Also scrub BEADS_DIRTY_BASELINE so an ambient runner-session value can't leak
   # into the dirty-tree scoping (claude-tools-f4ub); tests set it explicitly.
-  bash -c "unset BEADS_RUNNER_SESSION CURRENT_TASK_ID BEADS_DIRTY_BASELINE; $envs '$HOOK'" <<<"$input"
+  # And scrub BEADS_HOOK_LOG (claude-tools-1uzd) so a runner-session ambient log
+  # path can't leak into a test that doesn't set it explicitly (the L-tests set
+  # it per-invocation, which still wins after this unset).
+  bash -c "unset BEADS_RUNNER_SESSION CURRENT_TASK_ID BEADS_DIRTY_BASELINE BEADS_HOOK_LOG; $envs '$HOOK'" <<<"$input"
 }
 
 assert_allow() {  # assert_allow <name> <stdout>
@@ -566,6 +569,53 @@ prod_shim "$shim" "$rec" "$PROD_NOTES"
 out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws")
 assert_block_stop "P5 no transcript + no marker → block" "$out" "has not been invoked"
 assert_not_recorded "P5b producer never fabricates a marker for unproven wrapup" "$rec"
+rm -rf "$ws" "$shim"
+
+# ── L: hook-events.jsonl decision logging (claude-tools-1uzd) ────────────────
+# Regression-lock the silent log-drop bug: log_event calls that OMIT the 3rd
+# (extra) arg — `log_event block "$csv"` (EVERY block) and `log_event allow ""`
+# (EVERY clean pass) — used to default `extra` to the LITERAL string `{\}`
+# (invalid JSON), so `jq --argjson extra` failed and `2>/dev/null || true`
+# swallowed it: NOTHING was written. hook-events.jsonl then recorded only the
+# gating-allows (not_close_cmd etc., which pass explicit JSON) and NEVER a block
+# or a clean pass — the exact artifact that made the thirsty-rxue forensic
+# mis-read a detected-and-blocked Bash close as "zero close detections → a
+# non-Bash close path". Every written line must also be VALID JSON.
+assert_logged() {  # assert_logged <name> <logfile> <expected-last-decision>
+  local name="$1" log="$2" want="$3" got
+  if [[ ! -s "$log" ]]; then
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("$name"); echo "  FAIL: $name → log file empty (line was dropped)"; return
+  fi
+  if ! jq -e . "$log" >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("$name"); echo "  FAIL: $name → log has INVALID JSON:"; sed 's/^/    /' "$log"; return
+  fi
+  got="$(jq -r '.decision' "$log" 2>/dev/null | tail -1)"
+  if [[ "$got" == "$want" ]]; then
+    PASS=$((PASS+1)); echo "  PASS: $name"
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES+=("$name"); echo "  FAIL: $name → expected last decision=$want, got=$got:"; sed 's/^/    /' "$log"
+  fi
+}
+
+# L1: a BLOCKED close (Stop, wrapup_not_invoked) is RECORDED to hook-events.jsonl
+# (the dropped path). stdout still denies; the log line must also land.
+ws=$(mkworkspace); shim=$(mkshim_dir); rec="$ws/.beads/runner-logs/bd-update.log"; : > "$rec"
+prod_shim "$shim" "$rec" "$PROD_NOTES"
+hlog="$ws/.beads/runner-logs/hook-events.jsonl"; : > "$hlog"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws BEADS_HOOK_LOG=$hlog")
+assert_block_stop "L1 block emitted to stdout" "$out" "has not been invoked"
+assert_logged "L1b block decision recorded to hook-events.jsonl" "$hlog" "block"
+rm -rf "$ws" "$shim"
+
+# L2: a clean PASS (all checks ok, marker present) is RECORDED as allow (also a
+# previously-dropped `log_event allow ""` path) — so a clean Stop is no longer
+# invisible in the forensic record.
+ws=$(mkworkspace); shim=$(mkshim_dir); rec="$ws/.beads/runner-logs/bd-update.log"; : > "$rec"
+prod_shim "$shim" "$rec" "$PROD_NOTES; wrapup-reviewed: 2026-01-01 sha=abc clean=0"
+hlog="$ws/.beads/runner-logs/hook-events.jsonl"; : > "$hlog"
+out=$(run_hook '{"hook_event_name":"Stop","session_id":"s1","cwd":"'"$ws"'"}' "PATH=$shim:\$PATH BEADS_RUNNER_SESSION=1 CURRENT_TASK_ID=foo CLAUDE_PROJECT_DIR=$ws BEADS_HOOK_LOG=$hlog")
+assert_allow "L2 clean pass → empty stdout (allow)" "$out"
+assert_logged "L2b clean-pass allow recorded to hook-events.jsonl" "$hlog" "allow"
 rm -rf "$ws" "$shim"
 
 echo

@@ -89,7 +89,18 @@ log_event() {  # log_event <decision> <failed_csv> [extra_json]
   [[ -z "$LOG_FILE" ]] && return 0
   local now decision failed extra
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')"
-  decision="$1"; failed="${2:-}"; extra="${3:-{\}}"
+  decision="$1"; failed="${2:-}"; extra="${3:-}"
+  # claude-tools-1uzd: the old `${3:-{\}}` default expanded to the LITERAL
+  # 3-char string `{\}` (brace, backslash, brace) — INVALID JSON — so
+  # `jq --argjson extra` failed and the `2>/dev/null || true` swallowed it,
+  # silently DROPPING every log_event call that omits the 3rd arg: the
+  # clean-pass `log_event allow ""` (line ~479) and EVERY `log_event block`
+  # (line ~491). Result: hook-events.jsonl recorded only the gating-allows
+  # (not_close_cmd etc., which pass explicit JSON) and NEVER a block or a
+  # clean pass — which made the thirsty-rxue forensic mis-read a Bash close
+  # that WAS detected-and-blocked as "zero close detections → non-Bash path"
+  # (the false premise this bead chain rests on). Default to a valid `{}`.
+  [[ -z "$extra" ]] && extra='{}'
   jq -nc \
     --arg ts "$now" \
     --arg event "$event_name" \

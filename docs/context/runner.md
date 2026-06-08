@@ -521,14 +521,36 @@ was lost).
   the gated `bd close`; at Stop it backstops a non-Bash close. The audit itself
   is UNCHANGED — it just now finds the marker. Don't "fix" this by weakening the
   audit; the marker's producer is the hook. Lock: `hooks/test-close-checklist.sh`
-  P1–P5. **Residual (Option 3, follow-up):** a close via a non-Bash path (e.g.
-  the `beads:close` plugin skill) the Bash-only PreToolUse matcher can't see,
-  AND a Stop hook that never fired (the rxue forensic — undetermined), writes no
-  marker → audit still flags. The PreToolUse close-detector was also tightened in
-  the same fix: it anchors on the actually-invoked `bd` subcommand (first
-  `bd <verb>` at a command boundary), so a `bd close` MENTIONED in a quoted arg
+  P1–P5. The PreToolUse close-detector was also tightened in the same fix: it
+  anchors on the actually-invoked `bd` subcommand (first `bd <verb>` at a command
+  boundary), so a `bd close` MENTIONED in a quoted arg
   (`bd create -d "...bd close..."`) or a read-only `bd list --status/-s closed`
   query no longer trips the gate (each hit live during the gwib triage).
+- **Option 3 RESOLVED — the rxue "non-Bash close" was a LOGGING ILLUSION, not a
+  bypass (claude-tools-1uzd).** Forensic on the rxue *transcript* (the authoritative
+  record): rxue closed via **Bash** `bd close thirsty-rxue 2>&1 | tail -N`, and the
+  Bash matcher DID detect-and-block it (wrapup_not_invoked ×3, orphan_bg_tasks ×1)
+  then allowed the 5th attempt once `/wrapup` had run — it was NEVER a non-Bash
+  close. The "54 not_close_cmd, ZERO close detections" that read as a bypass was a
+  `log_event` bug: the `extra` default `${3:-{\}}` expanded to the LITERAL invalid
+  JSON `{\}`, so `jq --argjson extra` failed and `2>/dev/null || true` swallowed it
+  — silently DROPPING every `log_event` that omits the 3rd arg: EVERY `block` and
+  the clean-pass `log_event allow ""`. Only the gating-allows (explicit JSON)
+  survived, so the file looked like "all not_close_cmd". Fixed (default `{}`; lock
+  `hooks/test-close-checklist.sh` L1/L2). **Gap (a) non-Bash close is MOOT in
+  practice:** `beads:close` does NOT shell out to `bd close` — its command body
+  says "use the beads MCP `close` tool" — but NO beads MCP is registered for runner
+  workers (global `mcpServers` = ask-workspace/askbrian only; thirsty project +
+  beads plugin ship none), so a worker invoking the skill falls back to gated
+  `bd close` Bash. Do NOT speculatively wire a `Skill`/MCP matcher (the bead's own
+  rule); IF a beads MCP is ever registered for workers, add a
+  `mcp__beads__close`/`Skill(beads:close)` PreToolUse matcher then. **Gap (b) Stop
+  no-fire:** the Stop hook genuinely does not fire/log on the headless `claude -p`
+  success path (1 Stop in 615 events, that one a `stop_hook_active` yield) — but NOT
+  from the POST_TERMINAL watchdog (it never SIGKILLed rxue; the worker exited clean),
+  and a clean-pass Stop would have been invisible anyway under the same log bug. The
+  marker producer therefore correctly leans on the **PreToolUse** path (9efz), which
+  rxue's Bash close hits (verified: the current detector gates all 5 rxue close forms).
 
 ## Go deeper
 
@@ -548,7 +570,12 @@ status change, a fresh scar, a changed spawn/selection rule. Update the v1-LIVE 
 v2-OFFLINE status the moment the cutover lands — that single fact reframes the
 whole doc. **Keep it concise — this doc earns its keep only if agents read all of
 it.** Delete lines that have gone stale; do not let it grow into a second copy of
-BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-08 (the `wrapup-reviewed:` marker
+BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-08 (close-checklist `log_event`
+silent-drop bug fixed — the `${3:-{\}}` extra-default expanded to invalid JSON so EVERY `block`
+and clean-pass `allow` was dropped from hook-events.jsonl, which is what made the thirsty-rxue
+forensic mis-read a detected-and-blocked Bash close as a "non-Bash close path"; Option 3 RESOLVED,
+gap (a) MOOT/no beads MCP for workers, gap (b) Stop-no-fire confirmed structural but not from the
+watchdog — claude-tools-1uzd; see the resolved scar above). Prior: 2026-06-08 (the `wrapup-reviewed:` marker
 now has a real PRODUCER — the close hook persists it from transcript proof so `post_close_audit`
 stops filing spurious `wrapup_not_invoked` P1 beads on clean closes; the PreToolUse close-detector
 now anchors on the invoked `bd` subcommand to kill the quoted-mention / read-only-query over-match
