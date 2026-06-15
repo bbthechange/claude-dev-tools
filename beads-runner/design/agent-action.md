@@ -375,5 +375,23 @@ daemon-executes-out-of-loop split hold, these don't couple to another agent:
   snapshot*, that goes through A.3 first);
 - op/table **names within this flow** before it ships (A.4 — rename freely, match
   the set);
-- a `RUNNER_HONOR_AGENT_ACTION=0` escape hatch and a `agent_actions` GC of old
-  `done`/`failed` rows — both cheap later adds, neither needed for v1.
+- a `RUNNER_HONOR_AGENT_ACTION=0` escape hatch — a cheap later add, not needed for v1.
+
+**LANDED (claude-tools-jzzw, incident 2026-06-14): the `agent_actions` TTL/GC.**
+The "GC of old `done`/`failed` rows" anticipated above shipped, widened from a
+nicety to a correctness fix. The daemon is the queue's ONLY consumer; when it ran
+STALE for ~2 weeks every Run/Stop tap piled up un-acked and then REPLAYED EN MASSE
+on the daemon's restart. Two bounds (in `gcAgentActions`, keyed on the fixed-width
+RFC-3339 Z `requested_at` ⇒ lexicographic == chronological):
+- **TTL** (`AGENT_ACTION_TTL_SECONDS`, default 3600s) — a pending intent older than
+  the TTL is STALE: `agent-action-pending` never returns it (so it can't replay) and
+  the enqueue-path GC flips it to a terminal **`expired`** (a 4th `status` value,
+  engine-internal — NOT a valid daemon ack). These are interactive taps; one nobody
+  consumed within the TTL is superseded (set-desired is last-writer-wins) or names a
+  worker long gone (nudge/kill).
+- **RETENTION** (`AGENT_ACTION_RETENTION_SECONDS`, default 86400s) — a terminal row
+  (`done`/`failed`/`expired`) older than the window is deleted, bounding the table.
+GC piggybacks on every enqueue (inside `co._serialize`); the pending read stays pure
+(filter only, no mutation). Mirrored in the bash oracle twin (`lib/coordinator.sh`
+`co__agent_action_gc` + the pending TTL filter). Both `AGENT_ACTION_*` are
+Worker-env / shell-env overridable.

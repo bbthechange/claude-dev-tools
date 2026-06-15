@@ -327,6 +327,17 @@ _daemon_aa_poll_one() {
     [[ -n "$resp" ]] || exit 0
     n="$(printf '%s' "$resp" | jq -r 'if type=="object" then ((.actions // []) | length) else 0 end' 2>/dev/null)" || n=0
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    # Observability (claude-tools-jzzw): a large pending batch means the queue
+    # BACKED UP — the daemon was down / stale and taps piled un-acked. Surface it
+    # loudly so "the machine went dark" is visible, not silent (the 2026-06-14
+    # incident replayed dozens of intents with nothing flagging the backlog). The
+    # engine TTL already drops intents older than its window, so this counts only
+    # the still-live burst the daemon is about to drain. `log` is the daemon's
+    # helper (present when sourced by daemon.sh); guarded so the standalone unit
+    # test that sources this file alone stays quiet.
+    if [[ "$n" -gt "${DAEMON_AA_BACKLOG_WARN:-10}" ]] && command -v log >/dev/null 2>&1; then
+      log "WARN agent-action queue BACKLOG: $n pending intents for workspace=$pref (claude-tools-jzzw) — daemon likely restarted after a down/stale window; draining now"
+    fi
     i=0
     while [[ "$i" -lt "$n" ]]; do
       aj="$(printf '%s' "$resp" | jq -c ".actions[$i]" 2>/dev/null)" || aj=""

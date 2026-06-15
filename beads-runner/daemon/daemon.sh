@@ -100,6 +100,20 @@ NOTIF_DIGEST_SWEEP_INTERVAL="${BEADS_DAEMON_NOTIF_DIGEST_SWEEP_INTERVAL:-86400}"
 # surfaces within ≤this interval, then N2's blocking sweep (~30s) pushes it.
 # [free] to tune tighter if pair-surface latency ever needs it.
 TIMER_DUE_POLL_INTERVAL="${BEADS_DAEMON_TIMER_DUE_POLL_INTERVAL:-60}"
+# jzzw (claude-tools-jzzw, incident 2026-06-14): SELF-STALENESS check cadence. A
+# long-lived bash daemon sources every *-poll.sh ONCE at boot and never re-reads
+# them, so a daemon that booted before a poll landed silently lacks it forever
+# (here: missed the I4 agent-action drainer + local-first M3 for ~2 weeks; every
+# phone tap piled un-acked and runners wedged with nothing flagging it). On this
+# cadence the daemon compares its sourced files' mtimes against its own start and
+# RE-EXECs (same PID under launchd, fresh source) when newer. 60s default.
+STALENESS_CHECK_INTERVAL="${BEADS_DAEMON_STALENESS_CHECK_INTERVAL:-60}"
+# Off-switch for the self re-exec (e.g. unit tests that source this file). Default
+# ON — the whole point is that a code update can no longer go unnoticed.
+DAEMON_SELF_REEXEC="${BEADS_DAEMON_SELF_REEXEC:-1}"
+# Captured ONCE, as early as possible — the epoch at which THIS process loaded its
+# source. NOT exported, so a re-exec'd child recomputes a fresh value (no loop).
+DAEMON_SELF_START_EPOCH="${DAEMON_SELF_START_EPOCH:-$(date +%s 2>/dev/null || echo 0)}"
 
 # ─── source the per-machine library (DESIGN §3.2 retraction-of-topology
 # is about TIER, not about the library — the daemon still source's it) ────
@@ -197,17 +211,83 @@ log() {
   printf '%s [daemon pid=%d] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$*"
 }
 
+# ─── self-staleness detection (claude-tools-jzzw) ──────────────────────────
+# _daemon_file_mtime <path> → integer mtime (epoch s); 0 if unreadable. BSD
+# (macOS, the daemon's real home) stat first, then GNU stat (Linux/CI).
+_daemon_file_mtime() {
+  local f="${1:-}"
+  [[ -n "$f" && -e "$f" ]] || { echo 0; return 0; }
+  stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0
+}
+
+# daemon_newest_source_mtime → the newest mtime among the files THIS process
+# sourced at boot: daemon.sh + every *-poll.sh + the named non-poll helpers it
+# `.`-sources. The *-poll.sh glob AUTO-ENROLLS future poll jobs (the daemon.md
+# "adding a new daemon poll job" recipe); the test-*.sh suites and the
+# non-sourced operator scripts (install/uninstall/render-plist/check-plist-drift/
+# live-smoke/one-shot-outbox-drain) are EXCLUDED so editing them never bounces
+# the daemon. Keep this set in sync with the `.` source block above.
+daemon_newest_source_mtime() {
+  local newest=0 f b m
+  for f in "$DAEMON_DIR/daemon.sh" "$DAEMON_DIR"/*-poll.sh \
+           "$DAEMON_DIR/workspace-registry.sh" "$DAEMON_DIR/m6-dispatch.sh" \
+           "$DAEMON_DIR/aux-dispatch-gate.sh"; do
+    [[ -e "$f" ]] || continue
+    # The *-poll.sh glob ALSO matches the test-*-poll.sh suites (test-m2-usage-poll.sh,
+    # test-m4-hosted-resolution-poll.sh, test-timer-due-poll.sh, test-agent-action-poll.sh)
+    # — the daemon does NOT source those, so editing/running a test must not bounce
+    # the live daemon. Skip any test-* basename (claude-tools-jzzw review catch).
+    b="${f##*/}"
+    [[ "$b" == test-* ]] && continue
+    m="$(_daemon_file_mtime "$f")"
+    [[ "$m" =~ ^[0-9]+$ ]] || m=0
+    [[ "$m" -gt "$newest" ]] && newest="$m"
+  done
+  echo "$newest"
+}
+
+# daemon_source_is_stale [boot_epoch] [now] → rc 0 (STALE) iff a sourced file's
+# mtime is STRICTLY NEWER than this process's start AND not in the future. A
+# future mtime is clock-skew, never a real edit — rejecting it (newest ≤ now)
+# prevents a re-exec loop on a bad clock. Pure + arg-injectable ⇒ unit-testable.
+daemon_source_is_stale() {
+  local boot="${1:-$DAEMON_SELF_START_EPOCH}" now="${2:-$(date +%s 2>/dev/null || echo 0)}" newest
+  newest="$(daemon_newest_source_mtime)"
+  [[ "$boot" =~ ^[0-9]+$ && "$newest" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
+  [[ "$newest" -gt "$boot" && "$newest" -le "$now" ]]
+}
+
+# daemon_reexec_if_stale — the self-heal. If the source is newer than boot, log
+# loudly and RE-EXEC: `exec` replaces the process image keeping the SAME PID
+# under launchd, re-sourcing every poll fresh. exec does NOT fire the EXIT trap,
+# so the pidfile is left in place — acquire_pidfile recognizes its OWN pid after
+# the re-exec and reclaims it. Returns 1 (did nothing) when not stale / disabled.
+daemon_reexec_if_stale() {
+  [[ "$DAEMON_SELF_REEXEC" == "1" ]] || return 1
+  daemon_source_is_stale || return 1
+  local newest; newest="$(daemon_newest_source_mtime)"
+  log "STALE SOURCE DETECTED (claude-tools-jzzw): a sourced file mtime=$newest is newer than this process start=$DAEMON_SELF_START_EPOCH — re-executing to load fresh code (prevents the 2026-06-14 silent-stale-daemon incident: a poll that landed after boot would otherwise never run)"
+  exec /bin/bash "$DAEMON_DIR/daemon.sh"
+}
+
 # ─── single-instance pidfile ──────────────────────────────────────────────
 acquire_pidfile() {
   mkdir -p "$DAEMON_CACHE_DIR" "$DAEMON_LOG_DIR" "$DAEMON_CONFIG_DIR"
   if [ -f "$DAEMON_PIDFILE" ]; then
     local existing
     existing="$(cat "$DAEMON_PIDFILE" 2>/dev/null || true)"
-    if [ -n "$existing" ] && kill -0 "$existing" 2>/dev/null; then
+    # A pidfile holding OUR OWN pid is the expected post-re-exec state (exec keeps
+    # the PID, skips the EXIT trap that would have released it) — reclaim it, do
+    # NOT mistake ourselves for a second daemon (claude-tools-jzzw).
+    if [ -n "$existing" ] && [ "$existing" != "$$" ] && kill -0 "$existing" 2>/dev/null; then
       log "FATAL: another daemon is already running (pid=$existing); refusing to double-start"
       exit 1
     fi
-    log "stale pidfile found (pid=$existing not alive); reclaiming"
+    if [ "$existing" = "$$" ]; then
+      log "reclaiming own pidfile after self re-exec (pid=$$)"
+    else
+      log "stale pidfile found (pid=$existing not alive); reclaiming"
+    fi
     rm -f "$DAEMON_PIDFILE"
   fi
   echo $$ > "$DAEMON_PIDFILE"
@@ -350,8 +430,21 @@ main() {
   local _last_notif_delivery_poll=0
   local _last_notif_digest_sweep=0
   local _last_timer_due_poll=0
+  local _last_staleness_check=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
+    # jzzw (claude-tools-jzzw): FIRST, before any poll, check whether our own
+    # source has been updated since we booted. If so we re-exec into fresh code
+    # (same PID under launchd) — this NEVER RETURNS when stale. Done first so a
+    # code update is picked up at the top of the very next eligible tick rather
+    # than running one more pass of stale logic. At boot the sources are ≤ our
+    # start epoch, so this is a no-op until a real post-boot edit lands.
+    local _now0
+    _now0="$(date +%s 2>/dev/null || echo 0)"
+    if [ "$((_now0 - _last_staleness_check))" -ge "$STALENESS_CHECK_INTERVAL" ]; then
+      _last_staleness_check="$_now0"
+      daemon_reexec_if_stale || true
+    fi
     # M4 (claude-tools-8jb): on cadence, poll every registered workspace for
     # answered dossiers and capture the resume-answer into the workspace's
     # local store. This is the "always listening" piece — the old
@@ -507,4 +600,11 @@ main() {
   exit 0
 }
 
-main "$@"
+# Run main only when EXECUTED (launchd runs `/bin/bash daemon.sh`, so $0 == this
+# file), NOT when a unit test sources it to exercise the helpers in isolation
+# (claude-tools-jzzw). The self-staleness functions above are pure + arg-injectable
+# precisely so test-daemon-staleness.sh can source this file without launching the
+# daemon. acquire_pidfile / the heartbeat loop still run identically when exec'd.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

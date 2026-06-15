@@ -158,7 +158,20 @@ The drift check is the "done means verified" gate for any plist change.
   kickstart -k gui/$UID/com.beads-runner.daemon` and it self-heals (drains the queue,
   writes local desired, respawns runners). NOTE `kickstart -k` also reaps runners
   sharing the daemon's process group, so they ALL respawn fresh (a feature here).
-  There is no auto-staleness-detector yet — that's the open fix in jzzw.
+  **FIXED (jzzw): the daemon now SELF-DETECTS this and re-execs.** Each heartbeat
+  (gated by `STALENESS_CHECK_INTERVAL`, 60s) `daemon_reexec_if_stale` compares the
+  newest mtime of its sourced files (`daemon.sh` + `*-poll.sh` glob + the named
+  non-poll helpers; `test-*.sh` and operator scripts excluded) against the captured
+  `DAEMON_SELF_START_EPOCH`; on a strictly-newer-and-not-future mtime it logs
+  `STALE SOURCE DETECTED` and `exec`s `/bin/bash daemon.sh` (same PID under launchd,
+  fresh source). `exec` skips the EXIT trap, so the pidfile is left in place —
+  `acquire_pidfile` reclaims its OWN pid post-exec (the `existing == $$` arm). The
+  future-mtime guard (`newest ≤ now`) prevents a clock-skew re-exec loop; the child
+  recomputes a fresh epoch because `DAEMON_SELF_START_EPOCH` is NOT exported.
+  Off-switch `BEADS_DAEMON_SELF_REEXEC=0`. NOTE the self re-exec only refreshes the
+  DAEMON's code (not the runners — `exec` doesn't reap the process group the way
+  `kickstart -k` does); a stale-RUNNER detector is a separate open follow-up. `main`
+  is now guarded (`[[ BASH_SOURCE == $0 ]]`) so tests can source daemon.sh.
 - **Process-count inflation.** Do not count `claude`/`run-beads-tasks` processes to
   decide liveness — the authoritative signal is the per-workspace
   `detached-runner.pid`. A `pgrep` heuristic double-counts and mis-spawns.
@@ -256,8 +269,13 @@ didn't find here: a new poll job + its cadence env, a changed liveness oracle, a
 moved/renamed helper, a fresh plist scar, a new invariant. **Keep it concise — this
 doc earns its keep only if agents read all of it.** Delete lines that have gone
 stale; don't let it grow into a copy of DESIGN.md or the README. Last substantive
-update: 2026-06-06 (local-first: the daemon is the second desired-state reader + the
-cold-start change-request consumer — claude-tools-dky8 / P1 claude-tools-y6j9). Prior:
+update: 2026-06-14 (jzzw: the daemon SELF-STALENESS re-exec — `daemon_reexec_if_stale`
+self-heals a daemon running code older than its source; the `expired`-status
+`agent_actions` TTL/GC engine-side bounds the queue so taps can't replay en masse;
+`agent-action-poll.sh` logs a `WARN ... queue BACKLOG` when a large pending batch
+lands — see the FIXED scar above). Prior: 2026-06-06 (local-first: the daemon is the
+second desired-state reader + the cold-start change-request consumer —
+claude-tools-dky8 / P1 claude-tools-y6j9). Prior:
 2026-06-05 (claude-tools-49rx added the blueprint-update `fyi-pending`
 lane — a transient timed-fyi failure after the map write parks the gi and
 re-emits ONLY the FYI next cadence instead of re-running the now-idempotent hat;

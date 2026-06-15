@@ -14,10 +14,14 @@
 -- cf/src/agent-action.js (the machine-state.js ensureSchema pattern); this file
 -- is the deploy-path source of truth (A.1 step 5).
 --
--- `status` is at-most-once bookkeeping (pending → done|failed), NOT a §4
+-- `status` is at-most-once bookkeeping (pending → done|failed|expired), NOT a §4
 -- lifecycle: nobody get()s an action by id later, it is never versioned, it
--- never enters the read projection; once acked it is dead weight a [free] GC
--- may sweep.
+-- never enters the read projection. The anticipated GC LANDED in claude-tools-jzzw
+-- (incident 2026-06-14): cf/src/agent-action.js `gcAgentActions` expires pendings
+-- past AGENT_ACTION_TTL_SECONDS to a terminal `expired` (so a long daemon-down
+-- window can't replay a backlog en masse) and deletes terminal rows past
+-- AGENT_ACTION_RETENTION_SECONDS. The schema is unchanged — `expired` is just a
+-- 4th value of the existing `status TEXT` column, no migration needed.
 CREATE TABLE IF NOT EXISTS agent_actions (
   action_id    TEXT NOT NULL PRIMARY KEY,  -- engine-minted, opaque, idempotency key
   workspace    TEXT NOT NULL,              -- project_ref (the daemon filters on this)

@@ -18,8 +18,11 @@ set -u
 # ambient hosted endpoint. co-http-transport.sh only overrides co_request when
 # COORDINATOR_URL is set, so a dev machine with the daemon configured would
 # otherwise leak its live URL into the e2e subshell (the lib/conformance suites
-# are hermetic for the same reason — they never set COORDINATOR_URL).
-unset COORDINATOR_URL COORDINATOR_TOKEN 2>/dev/null || true
+# are hermetic for the same reason — they never set COORDINATOR_URL). CO_STORE is
+# unset for the same reason: the set-desired arm writes ${CO_STORE:-<ws default>},
+# so a leaked ambient CO_STORE (the daemon exports one) would redirect the local
+# write away from the per-ws path the assertions read (claude-tools-jzzw).
+unset COORDINATOR_URL COORDINATOR_TOKEN CO_STORE 2>/dev/null || true
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 

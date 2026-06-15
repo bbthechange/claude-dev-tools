@@ -752,6 +752,56 @@ co__agent_action_dir()  { printf '%s/agent_actions' "$(co__ensure_store)"; }
 co__agent_action_path() { printf '%s/%s.json' "$(co__agent_action_dir)" "$1"; }
 co__agent_action_ensure_dir() { mkdir -p "$(co__agent_action_dir)" 2>/dev/null || true; }
 
+# ── TTL / GC (claude-tools-jzzw) — the bash-oracle twin of agent-action.js's
+# gcAgentActions. The queue's only consumer is the daemon; when it ran stale for
+# ~2 weeks (incident 2026-06-14) every tap piled up un-acked and then replayed en
+# masse on restart. A pending intent past the TTL is STALE (the pending read never
+# returns it + the enqueue-path GC flips it 'expired'); a terminal row past the
+# retention window is deleted so the namespace stays bounded. Env-overridable,
+# defaults parallel to the JS constants.
+co__agent_action_ttl_secs()       { echo "${AGENT_ACTION_TTL_SECONDS:-3600}"; }      # 1h
+co__agent_action_retention_secs() { echo "${AGENT_ACTION_RETENTION_SECONDS:-86400}"; } # 24h
+
+# co__rfc3339_minus <seconds> — an RFC-3339 Z timestamp <seconds> before now. BSD
+# date (macOS) first, then GNU date (Linux/CI). The fixed-width Z shape means a
+# lexicographic compare against `requested_at` == chronological (matches JS cutoffZ).
+co__rfc3339_minus() {
+  local s="${1:-0}"
+  date -u -v-"${s}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$(( $(date +%s 2>/dev/null || echo 0) - s ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || echo ""
+}
+
+# co__agent_action_gc — expire stale pendings (pass 1) + delete old terminal rows
+# (pass 2), mirroring the JS gcAgentActions two-statement order. Best-effort; rc 0.
+co__agent_action_gc() {
+  local dir ttl_cut ret_cut f st req now full
+  dir="$(co__agent_action_dir)"; [[ -d "$dir" ]] || return 0
+  ttl_cut="$(co__rfc3339_minus "$(co__agent_action_ttl_secs)")"
+  ret_cut="$(co__rfc3339_minus "$(co__agent_action_retention_secs)")"
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  for f in "$dir"/*.json; do
+    [[ -e "$f" ]] || continue
+    st="$(jq -r '.status // ""' "$f" 2>/dev/null)" || continue
+    [[ "$st" == "pending" ]] || continue
+    req="$(jq -r '.requested_at // ""' "$f" 2>/dev/null)" || req=""
+    [[ -n "$req" && -n "$ttl_cut" && "$req" < "$ttl_cut" ]] || continue
+    full="$(jq -c --arg now "$now" \
+      '. + {status:"expired", acked_at:$now, result_json:"{\"ok\":false,\"message\":\"expired: pending past TTL, never consumed (claude-tools-jzzw)\"}"}' \
+      "$f" 2>/dev/null)" || continue
+    printf '%s\n' "$full" > "$f.$$.tmp" 2>/dev/null && mv -f "$f.$$.tmp" "$f" 2>/dev/null || rm -f "$f.$$.tmp" 2>/dev/null
+  done
+  for f in "$dir"/*.json; do
+    [[ -e "$f" ]] || continue
+    st="$(jq -r '.status // ""' "$f" 2>/dev/null)" || continue
+    [[ "$st" != "pending" ]] || continue
+    req="$(jq -r '.requested_at // ""' "$f" 2>/dev/null)" || req=""
+    [[ -n "$req" && -n "$ret_cut" && "$req" < "$ret_cut" ]] || continue
+    rm -f "$f" 2>/dev/null || true
+  done
+  return 0
+}
+
 # co__agent_action_enqueue <principal> <envelope_json> — §2.2 validate + mint +
 # write pending. Echoes {ok:true,action_id} on success, {ok:false,error} + rc 3
 # on a bad envelope (the closed enum + per-intent required fields). principal is
@@ -798,6 +848,9 @@ co__agent_action_enqueue() {
     return 3
   fi
   co__agent_action_ensure_dir
+  # GC piggybacks on enqueue (claude-tools-jzzw): expire stale pendings + reap old
+  # terminal rows so the queue stays bounded and can't replay a backlog en masse.
+  co__agent_action_gc
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
   aid="aa-$(date -u +%Y%m%dT%H%M%S 2>/dev/null)-${RANDOM}${RANDOM}-$$"
   local full path
@@ -815,13 +868,18 @@ co__agent_action_enqueue() {
 # Echoes {actions:[{action_id,workspace,intent,target,args,owner,requested_at}…]}
 # for status==pending, optionally scoped to one workspace, sorted by requested_at.
 co__agent_action_pending() {
-  local ws="${1:-}" dir f one collected="" rows
+  local ws="${1:-}" dir f one collected="" rows ttl_cut
   co__agent_action_ensure_dir
   dir="$(co__agent_action_dir)"
+  # TTL filter (claude-tools-jzzw): a pending intent past the TTL is STALE and is
+  # never returned, so the daemon drains only recent taps (no en-masse replay). An
+  # empty cutoff (date helper failed) fails OPEN — never silently drop everything.
+  ttl_cut="$(co__rfc3339_minus "$(co__agent_action_ttl_secs)")"
   for f in "$dir"/*.json; do
     [[ -e "$f" ]] || continue
-    one="$(jq -c --arg ws "$ws" '
+    one="$(jq -c --arg ws "$ws" --arg cut "$ttl_cut" '
       if (.status=="pending") and ($ws=="" or .workspace==$ws)
+         and ($cut=="" or (.requested_at >= $cut))
       then {action_id, workspace, intent, target, args, owner, requested_at}
       else empty end' "$f" 2>/dev/null)" || continue
     [[ -n "$one" ]] || continue

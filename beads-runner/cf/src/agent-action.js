@@ -21,9 +21,15 @@
 // machine_state_reports precedent). It BYPASSES _writeRecord/validateRecord/the
 // schema.js §4 registry, is STRUCTURALLY ABSENT from workSnapshot() (A.3) and
 // from every notification body (A.2) — a control queue must never page anyone by
-// itself. `status` is at-most-once bookkeeping (pending→done|failed), NOT a §4
-// lifecycle (§2.1 rebuttal): nobody get()s an action by id, it is never
+// itself. `status` is at-most-once bookkeeping (pending→done|failed|expired), NOT
+// a §4 lifecycle (§2.1 rebuttal): nobody get()s an action by id, it is never
 // versioned, it never enters the read-model.
+//
+// TTL/GC (claude-tools-jzzw, incident 2026-06-14): the queue is bounded by a TTL
+// on pending rows + a retention sweep of terminal rows (see gcAgentActions). A
+// pending intent past the TTL is STALE — the pending read never returns it and
+// the GC flips it 'expired' — so a daemon coming back after a long stale/down
+// window drains only recent taps and never replays an accumulated backlog.
 //
 // THE CLOSED INTENT ENUM (host-effecting verbs ONLY, §3): nudge | kill-retry |
 // kill-gate | gate-apply | gate-lift. `escalate` is NOT here (it is a pure-engine
@@ -74,8 +80,75 @@ export const AGENT_ACTION_INTENTS = new Set([
 // UI-facing spare-only; the web proxy normalizes spare-only→spare-cycles).
 const DESIRED_STATES = new Set(["running", "paused", "spare-cycles", "stopped"]);
 
-// Terminal ack states (§2.2): the daemon reports exactly one of these.
+// Terminal ack states (§2.2): the daemon reports exactly one of these. NOTE
+// 'expired' is an ENGINE-INTERNAL terminal status (the TTL GC below), NOT a
+// valid daemon ack — it stays out of this set on purpose.
 const ACK_STATES = new Set(["done", "failed"]);
+
+// ── TTL / GC (claude-tools-jzzw, incident 2026-06-14) ───────────────────────
+// The daemon is the queue's ONLY consumer. When it ran STALE for ~2 weeks (it
+// sourced its code before the agent-action drainer landed), every Run/Stop/pause
+// tap piled up un-acked and then REPLAYED EN MASSE the moment the daemon finally
+// restarted. Two bounds close that, both keyed on the fixed-width RFC-3339 Z
+// `requested_at` string (lexicographic compare == chronological — nowZ order):
+//   • TTL — a pending intent older than AGENT_ACTION_TTL_SECONDS is STALE. The
+//     pending READ never returns it (so it can never replay) and the GC flips it
+//     to a terminal 'expired' (observable, never re-dispatched). These are
+//     interactive taps; one nobody consumed within the TTL is superseded by a
+//     later tap (set-desired is last-writer-wins) or names a worker long gone
+//     (nudge/kill) — owed to nobody. Tunable; a brief daemon bounce stays well
+//     inside an hour so a legitimately-recent tap still lands.
+//   • RETENTION — a terminal row (done|failed|expired) older than
+//     AGENT_ACTION_RETENTION_SECONDS is DELETED (the migration-anticipated
+//     "[free] GC of old done/failed rows", §-comment in 0011), bounding the table.
+// Both read an optional Worker-env override, else the default.
+const DEFAULT_AGENT_ACTION_TTL_SECONDS = 3600; // 1h
+const DEFAULT_AGENT_ACTION_RETENTION_SECONDS = 86400; // 24h
+function _envPositiveInt(co, key, dflt) {
+  const v = co && co.env ? co.env[key] : undefined;
+  const n = v === undefined || v === null ? NaN : parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : dflt;
+}
+function ttlSeconds(co) {
+  return _envPositiveInt(co, "AGENT_ACTION_TTL_SECONDS", DEFAULT_AGENT_ACTION_TTL_SECONDS);
+}
+function retentionSeconds(co) {
+  return _envPositiveInt(co, "AGENT_ACTION_RETENTION_SECONDS", DEFAULT_AGENT_ACTION_RETENTION_SECONDS);
+}
+// An RFC-3339 Z timestamp `secondsAgo` before now (same trimmed-ms shape as nowZ).
+function cutoffZ(secondsAgo) {
+  return new Date(Date.now() - secondsAgo * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+// gcAgentActions — expire stale pendings + delete old terminal rows. Two cheap
+// statements over the (workspace,status) index. MUST run inside co._serialize
+// (it mutates); the enqueue path already is, so it piggybacks there.
+//
+// The no-replay guarantee lives in the pending READ's `requested_at >= cutoff`
+// filter, NOT in this GC — so it holds regardless of GC cadence (GC fires only on
+// enqueue; in a no-tap period stale rows simply aren't returned and the table is
+// trimmed on the next tap). And because the read already hides an expired row, a
+// SLOW consumer that acks done/failed after its action was GC-expired (only
+// possible if a single host effect outran the whole TTL — sub-second vs 1h) just
+// harmlessly overwrites 'expired' with its truthful terminal status; the ack is
+// intentionally unconditional (the host effect did happen).
+async function gcAgentActions(co) {
+  const ttlCutoff = cutoffZ(ttlSeconds(co));
+  const retentionCutoff = cutoffZ(retentionSeconds(co));
+  await co.db
+    .prepare(
+      "UPDATE agent_actions SET status = 'expired', acked_at = ?, result_json = ? WHERE status = 'pending' AND requested_at < ?"
+    )
+    .bind(
+      nowZ(),
+      JSON.stringify({ ok: false, message: "expired: pending past TTL, never consumed (claude-tools-jzzw)" }),
+      ttlCutoff
+    )
+    .run();
+  await co.db
+    .prepare("DELETE FROM agent_actions WHERE status != 'pending' AND requested_at < ?")
+    .bind(retentionCutoff)
+    .run();
+}
 
 // ── lazy + idempotent DDL — the SEPARATE transient `agent_actions` namespace ──
 // Mirrors machine-state.js's ensureMachineStateSchema discipline (CREATE TABLE
@@ -195,6 +268,11 @@ async function agentActionEnqueue(co, principal, jsonStr) {
   // caller); never derive it from the principal.
   const owner = strOk(env.owner) ? env.owner : "you";
 
+  // GC piggybacks on every enqueue (we are already inside co._serialize): expire
+  // pendings past the TTL + reap old terminal rows so the queue stays bounded and
+  // a long daemon-down window can never replay weeks of intents (claude-tools-jzzw).
+  await gcAgentActions(co);
+
   const actionId = crypto.randomUUID();
   const requestedAt = nowZ();
   await co.db
@@ -220,19 +298,26 @@ async function agentActionEnqueue(co, principal, jsonStr) {
 // target/args are parsed back to objects for the daemon's convenience. Pure
 // read ⇒ NO serialize. Empty ⇒ {actions:[]}, never a throw.
 async function agentActionPending(co, workspace) {
+  // TTL filter (claude-tools-jzzw): a pending intent older than the TTL is STALE
+  // and is NEVER returned — so a daemon coming back after a long down/stale window
+  // drains only RECENT taps, never replays an accumulated backlog. Still a pure
+  // read (the stale rows are flipped to 'expired' by the enqueue-path GC, not here)
+  // ⇒ NO serialize.
+  const ttlCutoff = cutoffZ(ttlSeconds(co));
   let rows;
   if (strOk(workspace)) {
     rows = await co.db
       .prepare(
-        "SELECT action_id, workspace, intent, target_json, args_json, owner, requested_at FROM agent_actions WHERE status = 'pending' AND workspace = ? ORDER BY requested_at ASC"
+        "SELECT action_id, workspace, intent, target_json, args_json, owner, requested_at FROM agent_actions WHERE status = 'pending' AND requested_at >= ? AND workspace = ? ORDER BY requested_at ASC"
       )
-      .bind(workspace)
+      .bind(ttlCutoff, workspace)
       .all();
   } else {
     rows = await co.db
       .prepare(
-        "SELECT action_id, workspace, intent, target_json, args_json, owner, requested_at FROM agent_actions WHERE status = 'pending' ORDER BY requested_at ASC"
+        "SELECT action_id, workspace, intent, target_json, args_json, owner, requested_at FROM agent_actions WHERE status = 'pending' AND requested_at >= ? ORDER BY requested_at ASC"
       )
+      .bind(ttlCutoff)
       .all();
   }
   const actions = [];

@@ -213,3 +213,78 @@ it("I4 agent-action queue is contract-faithful to design/agent-action.md §2/§3
   expect(FAIL, `${FAIL} agent-action checks failed`).toBe(0);
   expect(PASS).toBeGreaterThan(30);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// jzzw (claude-tools-jzzw, incident 2026-06-14): the TTL/GC that bounds the queue
+// so a daemon coming back after a long stale/down window drains only RECENT taps
+// and never replays an accumulated backlog. requested_at is a fixed-width RFC-3339
+// Z string ⇒ lexicographic == chronological, so we drive the cases with raw rows.
+function rfc3339(secondsAgo) {
+  return new Date(Date.now() - secondsAgo * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+async function rawInsert(row) {
+  await env.DB.prepare(
+    "INSERT INTO agent_actions (action_id, workspace, intent, target_json, args_json, status, owner, requested_at, acked_at, result_json) VALUES (?,?,?,?,?,?,?,?,?,?)"
+  )
+    .bind(
+      row.action_id,
+      row.workspace,
+      row.intent,
+      JSON.stringify(row.target || {}),
+      JSON.stringify(row.args || {}),
+      row.status,
+      row.owner || "you",
+      row.requested_at,
+      row.acked_at || null,
+      row.result_json || null
+    )
+    .run();
+}
+async function statusOf(id) {
+  const r = await env.DB.prepare("SELECT status FROM agent_actions WHERE action_id = ?").bind(id).first();
+  return r ? r.status : null;
+}
+
+it("jzzw agent_actions TTL drops stale pendings on read + GC bounds the table", async () => {
+  PASS = 0; FAIL = 0; fails.length = 0;
+  await pending(GOOD, "x"); // first op materializes the lazy table
+  await freshStore();
+
+  const OLD = "2020-01-01T00:00:00Z"; // past BOTH the 1h TTL and the 24h retention
+  const RECENT = rfc3339(5); // 5s ago — well within the TTL
+
+  await rawInsert({ action_id: "old-pending", workspace: "jzzwWs", intent: "set-desired", status: "pending", requested_at: OLD, args: { state: "running" } });
+  await rawInsert({ action_id: "recent-pending", workspace: "jzzwWs", intent: "nudge", status: "pending", requested_at: RECENT, target: { bead_ref: "jzzwWs-1" } });
+  await rawInsert({ action_id: "old-done", workspace: "jzzwWs", intent: "nudge", status: "done", requested_at: OLD });
+  await rawInsert({ action_id: "recent-done", workspace: "jzzwWs", intent: "nudge", status: "done", requested_at: RECENT });
+
+  // ── TTL on the READ (no GC has run yet — the read is pure) ──────────────────
+  const pBefore = await pending(GOOD, "jzzwWs");
+  const ids = pBefore.body.actions.map((a) => a.action_id);
+  ck("pending read EXCLUDES the stale pending (TTL filter)", !ids.includes("old-pending"));
+  ck("pending read INCLUDES the recent pending", ids.includes("recent-pending"));
+  ck("the pure read mutated NOTHING (all 4 rows still present)", (await rowCount()) === 4);
+  ck("the stale pending is still physically 'pending' (read never expired it)", (await statusOf("old-pending")) === "pending");
+
+  // ── GC piggybacks on the next enqueue (runs inside co._serialize) ───────────
+  const en = await enqueue(GOOD, envelope({ workspace: "jzzwWs", intent: "nudge", target: { bead_ref: "jzzwWs-2" } }));
+  ck("a fresh enqueue still succeeds (GC is transparent)", en.status === 200 && en.body.ok === true);
+  ck("stale pending past retention is REAPED by GC (gone)", (await statusOf("old-pending")) === null);
+  ck("old terminal row past retention is REAPED by GC (gone)", (await statusOf("old-done")) === null);
+  ck("recent terminal row is RETAINED (within retention)", (await statusOf("recent-done")) === "done");
+  ck("recent pending survives GC (still pending)", (await statusOf("recent-pending")) === "pending");
+
+  // ── expire-to-terminal: a pending past the TTL but WITHIN retention ─────────
+  await freshStore();
+  const TWO_H_AGO = rfc3339(2 * 3600); // past the 1h TTL, inside the 24h retention
+  await rawInsert({ action_id: "midaged-pending", workspace: "jzzwWs", intent: "nudge", status: "pending", requested_at: TWO_H_AGO, target: { bead_ref: "m-1" } });
+  await enqueue(GOOD, envelope({ workspace: "jzzwWs", intent: "nudge", target: { bead_ref: "m-2" } })); // trigger GC
+  ck("mid-aged stale pending is FLIPPED to 'expired' (past TTL, within retention)", (await statusOf("midaged-pending")) === "expired");
+  const pMid = await pending(GOOD, "jzzwWs");
+  ck("an 'expired' row is never returned by pending", !pMid.body.actions.some((a) => a.action_id === "midaged-pending"));
+  ck("'expired' is NOT a valid daemon ack status", (await ack(GOOD, "midaged-pending", "expired")).status === 422);
+
+  if (FAIL > 0) console.log(`agent-action TTL FAILURES: ${fails.join(" | ")}`);
+  expect(FAIL, `${FAIL} agent-action TTL checks failed`).toBe(0);
+  expect(PASS).toBeGreaterThan(10);
+});
