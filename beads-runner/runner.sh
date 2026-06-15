@@ -57,6 +57,23 @@ set -uo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 
+# ── claude-tools-5772: self-staleness identity capture (sibling of the jzzw
+#    daemon fix) ─────────────────────────────────────────────────────────────
+# Capture the identity + start-epoch of THIS runner process so st_reconcile (the
+# between-tasks state — no worker is live there) can later detect that its sourced
+# lib/runner code has been updated since spawn and re-exec into the fresh code. A
+# long-lived runner otherwise sources its libs ONCE and runs STALE until respawned
+# (the daemon's own jzzw re-exec does NOT reap the runners). The re-exec body lives
+# in lib/runner-staleness.sh (sourced below); see BC-67 / runner.md.
+RUNNER_SELF_DIR="$RUNNER_DIR"
+RUNNER_SELF_PATH="$RUNNER_DIR/runner.sh"
+RUNNER_SELF_ARGV=("$@")
+# Captured ONCE; NOT exported, so a re-exec'd child recomputes a fresh epoch (the
+# jzzw no-loop property); the future-mtime guard is the second loop-breaker.
+RUNNER_SELF_START_EPOCH="${RUNNER_SELF_START_EPOCH:-$(date +%s 2>/dev/null || echo 0)}"
+# Off-switch (default ON). BEADS_RUNNER_SELF_REEXEC=0 disables.
+RUNNER_SELF_REEXEC="${BEADS_RUNNER_SELF_REEXEC:-1}"
+
 # ── L2 (claude-tools-1tu) gate-policy chokepoint ─────────────────────────────
 # The runner consults gate-policy.sh on every candidate pickup (st_reconcile).
 # A `gate-human:*` verdict means: do NOT auto-pick this bead up — surface it
@@ -420,6 +437,17 @@ fi
 if [[ -f "$RUNNER_DIR/hooks/build-settings.sh" ]]; then
   # shellcheck source=hooks/build-settings.sh
   source "$RUNNER_DIR/hooks/build-settings.sh"
+fi
+
+# ── self-staleness re-exec (claude-tools-5772) ────────────────────────────────
+# Sibling of the jzzw daemon fix, shared with v1 via lib/runner-staleness.sh.
+# OPTIONAL & guarded (BC-43 posture): an absent lib DEGRADES to a no-op stub so the
+# st_reconcile call below is safe and the runner keeps the legacy "stale until
+# respawn" behavior — never crashes. Called only in st_reconcile (between tasks).
+runner_reexec_if_stale() { return 1; }   # default no-op; overridden by the lib if present
+if [[ -f "$RUNNER_DIR/lib/runner-staleness.sh" ]]; then
+  # shellcheck source=lib/runner-staleness.sh
+  source "$RUNNER_DIR/lib/runner-staleness.sh"
 fi
 
 # ── BC-42 typed degradation primitive ────────────────────────────────────────
@@ -2365,6 +2393,18 @@ _drain_one_orphan() {
 # THE single reconcile point between tasks.
 st_reconcile() {
   CANDIDATE_ID=""; CANDIDATE_TITLE=""; CANDIDATE_DESC=""
+
+  # claude-tools-5772: BETWEEN-TASKS self-staleness re-exec. st_reconcile is the
+  # ONLY between-tasks state (RUN_TASK is the lone worker-bearing state, and it
+  # transitions POST_TASK→RECONCILE only after the worker fully exits), and it is
+  # re-entered on every loop AND on every paused/idle hold — so this single call
+  # site covers between-tasks AND a permanently-idle/paused runner. No worker is
+  # live here, so a re-exec loses no in-flight `claude -p`. NEVER RETURNS when
+  # stale (it execs); a no-op (rc 1) on the common fresh-source path. Done first,
+  # before _drain_outbox/stop/pin, so a code update is loaded before any stale
+  # logic runs this pass (a fresh process re-enters STARTING→RECONCILE and will
+  # then drain + honor any pending stop). See lib/runner-staleness.sh / BC-67.
+  runner_reexec_if_stale || true
 
   # §1.1/§2.4 drain (BC-45, claude-tools-zyxz): ship the durable UP queue ONCE
   # per reconcile pass, so the heartbeats the just-finished task (or st_starting)

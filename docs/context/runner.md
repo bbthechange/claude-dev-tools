@@ -184,11 +184,24 @@ was lost).
 
 ## Gotchas / scars
 
-- **Editing the running script is SAFE.** Bash slurps the whole script at start, so
-  an in-place edit to `run-beads-tasks.sh` does not affect the live process — it
-  takes effect on the **next respawn**. (This is also the ir7 self-modification
-  discipline: a runner editing its own running script is fine; just know the change
-  is deferred.)
+- **Editing the running script is SAFE — and now self-reloads BETWEEN TASKS
+  (claude-tools-5772).** Bash slurps the whole script at start, so an in-place edit
+  to `run-beads-tasks.sh` / `runner.sh` / any sourced `lib/*.sh` does not affect the
+  live process *mid-task* — but the runner now **self-detects** that its sourced
+  source is newer than its start epoch and **re-execs at the next between-tasks
+  point** (v1 loop-top + idle re-poll; v2 `st_reconcile`), so the change lands on
+  the next idle/between-task moment WITHOUT an external respawn. It is the sibling
+  of the jzzw daemon self re-exec (which does NOT reap the runners — that gap is
+  what this closes). `exec` keeps the SAME PID so the `detached-runner.pid` stays
+  valid; the re-exec is BETWEEN tasks ONLY so no in-flight `claude -p` is lost.
+  Watched set = the running script + `lib/*.sh` (glob, transitive libs included) +
+  `hooks/build-settings.sh`, EXCLUDING `test-*.sh` and `hooks/close-checklist.sh`
+  (the latter is re-read fresh per worker via `--settings`, never stale in-process).
+  Off-switch `BEADS_RUNNER_SELF_REEXEC=0`; future-mtime guard prevents a clock-skew
+  loop; the epoch is not exported so the child recomputes fresh (no loop). Lib
+  `lib/runner-staleness.sh`; BC-67; lock `lib/test-runner-staleness.sh`. (This is
+  also the ir7 self-modification discipline: a runner editing its own running
+  script is fine; the change is now picked up at the next between-tasks re-exec.)
 - **The `bd ready` poll is TTL-cached, and the two runners cache DIFFERENTLY
   (claude-tools-4a2e).** A short window (`READY_CACHE_SECONDS`) memoizes the ready
   ARRAY so a spinning runner (lease-deny 3s / gate-human / skip backoffs) stops
@@ -570,7 +583,14 @@ status change, a fresh scar, a changed spawn/selection rule. Update the v1-LIVE 
 v2-OFFLINE status the moment the cutover lands — that single fact reframes the
 whole doc. **Keep it concise — this doc earns its keep only if agents read all of
 it.** Delete lines that have gone stale; do not let it grow into a second copy of
-BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-08 (close-checklist `log_event`
+BEHAVIORAL-CONTRACT.md. Last substantive update: 2026-06-14 (claude-tools-5772: the
+runner now SELF-DETECTS stale sourced code and re-execs BETWEEN TASKS — the sibling
+of the jzzw daemon fix, which doesn't reap the runners. New shared lib
+`lib/runner-staleness.sh` sourced by BOTH runners; called at v1 loop-top + idle
+re-poll and v2 `st_reconcile`; same-PID `exec` keeps the pidfile valid; watched set
+= self + `lib/*.sh` + `hooks/build-settings.sh` minus `test-*`/close-checklist;
+off-switch `BEADS_RUNNER_SELF_REEXEC=0`; BC-67; lock `lib/test-runner-staleness.sh`.
+See the updated "Editing the running script is SAFE" scar above). Prior: 2026-06-08 (close-checklist `log_event`
 silent-drop bug fixed — the `${3:-{\}}` extra-default expanded to invalid JSON so EVERY `block`
 and clean-pass `allow` was dropped from hook-events.jsonl, which is what made the thirsty-rxue
 forensic mis-read a detected-and-blocked Bash close as a "non-Bash close path"; Option 3 RESOLVED,

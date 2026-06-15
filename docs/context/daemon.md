@@ -171,8 +171,13 @@ The drift check is the "done means verified" gate for any plist change.
   recomputes a fresh epoch because `DAEMON_SELF_START_EPOCH` is NOT exported.
   Off-switch `BEADS_DAEMON_SELF_REEXEC=0`. NOTE the self re-exec only refreshes the
   DAEMON's code (not the runners — `exec` doesn't reap the process group the way
-  `kickstart -k` does); a stale-RUNNER detector is a separate open follow-up. `main`
-  is now guarded (`[[ BASH_SOURCE == $0 ]]`) so tests can source daemon.sh.
+  `kickstart -k` does); **the stale-RUNNER follow-up is now CLOSED (claude-tools-5772):
+  each runner self-detects stale source and re-execs BETWEEN TASKS** (v1 loop-top +
+  idle, v2 `st_reconcile` — never mid-worker, so no in-flight `claude -p` is lost),
+  via the shared `lib/runner-staleness.sh` mirroring this detector. So a daemon
+  code-refresh that doesn't bounce the runners no longer strands them on old code —
+  they reload themselves at the next idle/between-task moment. See runner.md + BC-67.
+  `main` is now guarded (`[[ BASH_SOURCE == $0 ]]`) so tests can source daemon.sh.
 - **Process-count inflation.** Do not count `claude`/`run-beads-tasks` processes to
   decide liveness — the authoritative signal is the per-workspace
   `detached-runner.pid`. A `pgrep` heuristic double-counts and mis-spawns.

@@ -15,6 +15,25 @@
 
 set -euo pipefail
 
+# ── claude-tools-5772: self-staleness identity capture (sibling of the jzzw
+#    daemon fix) ─────────────────────────────────────────────────────────────
+# Capture, as early as possible, the identity + start-epoch of THIS runner process
+# so it can later (BETWEEN TASKS only — loop top / idle re-poll) detect that its
+# sourced lib/runner code has been updated since spawn and re-exec into the fresh
+# code. A long-lived runner otherwise sources its libs ONCE and runs STALE until
+# something respawns it (the daemon's own jzzw re-exec does NOT reap the runners).
+# The re-exec body lives in lib/runner-staleness.sh (sourced below); see BC-67.
+RUNNER_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+RUNNER_SELF_PATH="$RUNNER_SELF_DIR/run-beads-tasks.sh"
+RUNNER_SELF_ARGV=("$@")
+# Captured ONCE; NOT exported, so a re-exec'd child recomputes a fresh epoch (the
+# jzzw no-loop property); the future-mtime guard in runner_source_is_stale is the
+# second loop-breaker (clock skew).
+RUNNER_SELF_START_EPOCH="${RUNNER_SELF_START_EPOCH:-$(date +%s 2>/dev/null || echo 0)}"
+# Off-switch (default ON). BEADS_RUNNER_SELF_REEXEC=0 disables (tests, or a
+# debugging session that must not be bounced mid-loop).
+RUNNER_SELF_REEXEC="${BEADS_RUNNER_SELF_REEXEC:-1}"
+
 # ── Defaults (overridable in .beads/runner.sh) ───────────────────────────────
 
 PERMISSION_FLAGS=(
@@ -393,6 +412,17 @@ BS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/hooks/build-se
 if [[ -f "$BS_LIB" ]]; then
   # shellcheck source=hooks/build-settings.sh
   source "$BS_LIB"
+fi
+
+# claude-tools-5772: self-staleness re-exec (sibling of the jzzw daemon fix).
+# OPTIONAL & guarded like the LA/SR/NO/BS libs above (BC-43 posture): an absent lib
+# DEGRADES to a no-op stub, so the loop-top / idle re-poll calls below are safe and
+# the runner simply keeps the legacy "stale until respawn" behavior — never crashes.
+runner_reexec_if_stale() { return 1; }   # default no-op; overridden by the lib if present
+RST_LIB="$RUNNER_SELF_DIR/lib/runner-staleness.sh"
+if [[ -f "$RST_LIB" ]]; then
+  # shellcheck source=lib/runner-staleness.sh
+  source "$RST_LIB"
 fi
 
 STOP_FILE=".stop-beads"
@@ -1797,6 +1827,14 @@ while true; do
     break
   fi
 
+  # claude-tools-5772: BETWEEN-TASKS self-staleness re-exec. At the loop top NO
+  # worker is running (the prior iteration's claude -p has fully exited), so a
+  # re-exec here loses no in-flight work. Done AFTER the graceful-stop check (a
+  # pending stop wins) but BEFORE pin/capacity/select, so a code update is loaded
+  # before any stale logic runs this pass. NEVER RETURNS when stale (it execs);
+  # a no-op (rc 1) on the common fresh-source path. See lib/runner-staleness.sh.
+  runner_reexec_if_stale || true
+
   # claude-tools-trunkpin: pin HEAD back to main at the loop top, BEFORE the
   # next bead is claimed. The runner auto-commits per bead onto whatever branch
   # HEAD points at; once a worker wanders the tree onto a feature branch, all
@@ -1951,6 +1989,10 @@ while true; do
         break 2
       fi
       sleep "$IDLE_POLL_SECS"
+      # claude-tools-5772: a permanently-IDLE runner parks in THIS inner loop and
+      # never reaches the outer loop-top staleness check, so re-check here too. The
+      # runner is idle (no worker), so a re-exec is safe; NEVER RETURNS when stale.
+      runner_reexec_if_stale || true
       # Re-select (NOT a raw .[0] pick) so a workable bead arriving below an
       # unworkable head is picked up, and so an all-unworkable→workable flip
       # (e.g. a child closing) is honored.
