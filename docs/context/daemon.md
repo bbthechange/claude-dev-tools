@@ -145,6 +145,20 @@ The drift check is the "done means verified" gate for any plist change.
 
 ## Gotchas / scars
 
+- **A long-lived daemon runs STALE in-memory code (claude-tools-jzzw, incident
+  2026-06-14).** `daemon.sh` sources every `*-poll.sh` ONCE at boot; the running
+  process never re-reads them. So a daemon that booted before a poll landed silently
+  lacks that poll forever. Real failure: the daemon booted Jun 1, the agent-action
+  queue poll (I4) landed Jun 2 + local-first M3 (y6j9) Jun 6 — so for ~2 weeks every
+  phone Run/Stop tap piled up un-acked in the engine `agent_actions` queue (the daemon
+  that should drain it didn't have the drainer), no local `runner_state.*.json` was
+  ever written, and runners wedged (process alive, heartbeat stale for days). FIRST
+  CHECK when "taps do nothing": `ps -p $(cat ~/.cache/claude-tools/daemon.pid) -o lstart`
+  vs the mtime of `daemon/*.sh` — if the process predates the code, `launchctl
+  kickstart -k gui/$UID/com.beads-runner.daemon` and it self-heals (drains the queue,
+  writes local desired, respawns runners). NOTE `kickstart -k` also reaps runners
+  sharing the daemon's process group, so they ALL respawn fresh (a feature here).
+  There is no auto-staleness-detector yet — that's the open fix in jzzw.
 - **Process-count inflation.** Do not count `claude`/`run-beads-tasks` processes to
   decide liveness — the authoritative signal is the per-workspace
   `detached-runner.pid`. A `pgrep` heuristic double-counts and mis-spawns.
