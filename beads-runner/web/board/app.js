@@ -64,6 +64,9 @@
     healthHb: document.getElementById('health-hb'),
     healthHeadline: document.getElementById('health-headline'),
     healthTags: document.getElementById('health-tags'),
+    attnBanner: document.getElementById('attn-banner'),
+    attnHeadline: document.getElementById('attn-headline'),
+    attnList: document.getElementById('attn-list'),
     strip: document.getElementById('strip'),
     woy: document.getElementById('woy'),
     woyEmpty: document.getElementById('woy-empty'),
@@ -101,6 +104,24 @@
     clear(el.healthTags);
     h.tags.forEach(function (t) {
       el.healthTags.appendChild(mk('span', 'tg ' + t.kind, t.text));
+    });
+  }
+
+  /* renderAttention(a) — iz36 (claude-tools-iz36): the precise machine-attention
+   * banner. `a` is view.attention (decided in board-view.js from the engine's
+   * snapshot.attention; this only paints). Hidden unless a.needs_attention. */
+  function renderAttention(a) {
+    var on = !!a && a.needs_attention === true;
+    el.attnBanner.hidden = !on;
+    if (!on) { clear(el.attnList); el.attnHeadline.textContent = ''; return; }
+    el.attnHeadline.textContent = a.headline || '⚠ Machine needs attention';
+    clear(el.attnList);
+    (a.alerts || []).forEach(function (x) {
+      var li = mk('li', 'attn-item');
+      li.appendChild(mk('span', 'attn-ws', x.project_ref || '(workspace)'));
+      li.appendChild(mk('span', 'attn-detail', x.text ||
+        ('heartbeat stale' + (x.heartbeat_age_text ? ' ' + x.heartbeat_age_text : ''))));
+      el.attnList.appendChild(li);
     });
   }
 
@@ -387,6 +408,7 @@
     el.errbox.hidden = true;
     el.board.hidden = false;
     el.who.textContent = view.principal;
+    renderAttention(view.attention);
     renderHealth(view.health);
     renderWaiting(view.waiting_on_you);
     // Map WAITING-ON-YOU bead_refs → their stage column so the column reads

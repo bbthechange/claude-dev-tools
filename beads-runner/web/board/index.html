@@ -31,6 +31,15 @@
     <div class="scroll" id="scroll">
       <p class="loading" id="loading">Reading the projection…</p>
       <section class="board" id="board" hidden>
+        <!-- MACHINE-ATTENTION BANNER — iz36 (claude-tools-iz36): the precise,
+             sustained "a runner was wanted running but is wedged" alert. Hidden
+             unless snapshot.attention.needs_attention fires. Loudest element on
+             the board; distinct from the noisy stale/mismatch status chips. -->
+        <div class="attn-banner" id="attn-banner" hidden role="alert">
+          <div class="attn-headline" id="attn-headline"></div>
+          <ul class="attn-list" id="attn-list"></ul>
+        </div>
+
         <!-- STATUS STRIP — "is the machine healthy?" in one glance -->
         <div class="strip" id="strip">
           <div class="strip-top">

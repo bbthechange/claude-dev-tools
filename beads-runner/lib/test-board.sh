@@ -800,8 +800,57 @@ ck "board.css declares the runaway .qh-vel.alarm style"          has ".qh-vel.al
 ck "app.js paints the audit-coverage row (t5ud §9 row 4)"        has "qh.audit_coverage" "$(cat "$APP")"
 ck "board.css declares the .qh-cov audit-coverage style"         has ".qh-cov" "$(cat "$CSS")"
 
+echo "── EXIT-10: iz36 — machine-attention banner (sustained wedged-while-wanted) ──"
+# Drive the REAL producer: a runner WANTED running but heartbeat-stale for 5h
+# (process alive — actual=idle, NOT stopped) ⇒ co__work_snapshot emits a
+# top-level `attention` alert ⇒ board-view.js paints the precise banner. This is
+# the incident signature nothing surfaced. The banner CONSUMES the engine field
+# verbatim (no threshold re-derivation — A.3).
+co_request "$GOOD" set-desired projAttn running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostAttn projAttn idle "" "$(ago 18000)")" >/dev/null 2>&1
+SNAP_ATT="$(co_request "$GOOD" work-snapshot projAttn "[]" 2>/dev/null)"
+# Producer side — the §4.5 projection carries the new top-level key.
+ck "producer: work-snapshot carries a top-level attention object"  has '"attention"' "$SNAP_ATT"
+ck "producer: needs_attention is true for the wedged runner"       eq "$(jq -r '.attention.needs_attention' <<<"$SNAP_ATT")" "true"
+ck "producer: exactly one alert, kind=stale-runner"                eq "$(jq -r '[.attention.alerts[]|select(.kind=="stale-runner")]|length' <<<"$SNAP_ATT")" "1"
+ck "producer: alert names the wedged project_ref"                  eq "$(jq -r '.attention.alerts[0].project_ref' <<<"$SNAP_ATT")" "projAttn"
+ck "producer: alert carries the honest desired=running"            eq "$(jq -r '.attention.alerts[0].desired' <<<"$SNAP_ATT")" "running"
+# Renderer side — the banner view model.
+VATT="$(render "$SNAP_ATT")"
+ck "renderer: view.attention.needs_attention is true"              eq "$(jq -r '.attention.needs_attention' <<<"$VATT")" "true"
+ck "renderer: banner headline names 'needs attention'"             has "needs attention" "$(jq -r '.attention.headline' <<<"$VATT")"
+ck "renderer: banner lists the wedged workspace"                   eq "$(jq -r '.attention.alerts[0].project_ref' <<<"$VATT")" "projAttn"
+ck "renderer: alert text mentions 'wedged'"                        has "wedged" "$(jq -r '.attention.alerts[0].text' <<<"$VATT")"
+ck "renderer: an attention chip is in the health tags (loudest)"   has "needs attention" "$(jq -r '[.health.tags[].text]|join("|")' <<<"$VATT")"
+ck "renderer: attention fires ⇒ health.ok is false"                eq "$(jq -r '.health.ok' <<<"$VATT")" "false"
+# A deliberately STOPPED-but-wanted-running runner (actual=stopped, old hb) is
+# NOT a silent wedge — the daemon owns respawn. Must NOT raise an attention alert.
+co_request "$GOOD" set-desired projAttnDown running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostAD projAttnDown stopped "" "$(ago 18000)")" >/dev/null 2>&1
+SNAP_DOWN="$(co_request "$GOOD" work-snapshot projAttnDown "[]" 2>/dev/null)"
+ck "producer: dead (actual=stopped) ⇒ NO attention alert"          eq "$(jq -r '.attention.needs_attention' <<<"$SNAP_DOWN")" "false"
+# A FRESH live runner ⇒ no attention (the benign steady state).
+co_request "$GOOD" set-desired projAttnOk running "ui:x" >/dev/null 2>&1
+co_request "$GOOD" heartbeat "$(hb_line hostAO projAttnOk idle "" "$(ago 20)")" >/dev/null 2>&1
+SNAP_OK="$(co_request "$GOOD" work-snapshot projAttnOk "[]" 2>/dev/null)"
+VOK="$(render "$SNAP_OK")"
+ck "producer: fresh running+idle ⇒ no attention (benign steady state)" eq "$(jq -r '.attention.needs_attention' <<<"$SNAP_OK")" "false"
+ck "renderer: no attention ⇒ banner headline null"                 eq "$(jq -r '.attention.headline' <<<"$VOK")" "null"
+# Tolerance — an OLDER producer that omits `attention` ⇒ no banner, never a crash
+# or a fabricated alarm (the machines[]/intake[] degrade-to-empty discipline).
+NOATT='{"schema_version":1,"principal":"PRINCIPAL_V1","read_only":true,"projects":[],"lifecycle_columns":{},"waiting_on_you":[],"machines":[]}'
+VNOATT="$(render_snap "$NOATT")"
+ck "renderer: absent attention field ⇒ needs_attention false (tolerant)" eq "$(jq -r '.attention.needs_attention' <<<"$VNOATT")" "false"
+ck "renderer: absent attention field ⇒ ok view (no crash)"         eq "$(jq -r '.ok' <<<"$VNOATT")" "true"
+# STRUCTURAL — the banner is wired end to end (index.html mount, app.js painter,
+# board.css alarm style) so a refactor can't silently drop the surface.
+ck "index.html declares the #attn-banner mount"                    has 'id="attn-banner"' "$(cat "$SHELL_HTML")"
+ck "app.js exposes a renderAttention() painter"                    has "renderAttention" "$(cat "$APP")"
+ck "app.js paints view.attention"                                  has "view.attention" "$(cat "$APP")"
+ck "board.css declares the .attn-banner alarm style"               has ".attn-banner{" "$(cat "$CSS")"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════════════"
-echo " test-board (T6a + F2 8fh + C4 zdxd.5 + Q1 uxvq1 + Q9-4 t5ud):  PASS=$PASS  FAIL=$FAIL"
+echo " test-board (T6a + F2 8fh + C4 zdxd.5 + Q1 uxvq1 + Q9-4 t5ud + iz36):  PASS=$PASS  FAIL=$FAIL"
 echo "══════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]

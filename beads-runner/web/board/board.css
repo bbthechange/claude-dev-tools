@@ -21,6 +21,20 @@
 .scroll{flex:1;overflow-y:auto;padding:0 0 24px}
 .loading{padding:48px 22px;color:var(--dim);font-size:13px;letter-spacing:.08em}
 
+/* machine-attention banner — iz36 (claude-tools-iz36). The loudest element on
+   the board; shown ONLY when snapshot.attention.needs_attention fires (a
+   sustained wanted-running-but-wedged runner). Coral alarm framing, distinct
+   from the status-strip chips. */
+.attn-banner{margin:0 14px 16px;border:1px solid rgba(255,107,107,.5);border-radius:12px;
+  background:linear-gradient(180deg,rgba(255,107,107,.13),rgba(255,107,107,.05));
+  padding:14px 16px;box-shadow:0 0 0 1px rgba(255,107,107,.08)}
+.attn-headline{font-family:var(--font-display);font-size:16px;font-weight:500;
+  line-height:1.3;color:var(--coral);letter-spacing:-.01em;margin-bottom:9px}
+.attn-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.attn-item{display:flex;gap:9px;align-items:baseline;font-family:var(--font-mono);font-size:12px}
+.attn-item .attn-ws{color:#fff;font-weight:600;min-width:90px;letter-spacing:.02em}
+.attn-item .attn-detail{color:var(--amber-soft);flex:1}
+
 /* status strip */
 .strip{margin:0 14px 16px;border:1px solid var(--line);
   background:linear-gradient(180deg,var(--panel),var(--ink-2));

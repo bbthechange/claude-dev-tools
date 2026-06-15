@@ -1770,3 +1770,123 @@ it("CF.3 workSnapshot derives lifecycle_columns from stored workspace_inventory 
   }
   expect(qFAIL, `7qf7 clauses failed: ${qfails.join("; ")}`).toBe(0);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// iz36 (claude-tools-iz36) — top-level `attention` machine-attention alert
+// (Contract B.1, A.3). The GAP closed by incident claude-tools-jzzw: a runner
+// alive-but-heartbeat-stale-for-days while desired=running surfaced NOWHERE.
+// `attention` is the precise, SELF-DEBOUNCING signal both the Board banner and
+// the daemon attention-poll consume verbatim. Differential twin in
+// lib/coordinator.sh co__derive_attention (exercised by lib/test-board.sh).
+// ════════════════════════════════════════════════════════════════════════════
+it("CF.3 iz36 work-snapshot attention[] — sustained stale-runner alert (claude-tools-iz36)", async () => {
+  let aPASS = 0;
+  let aFAIL = 0;
+  const afails = [];
+  function ack(name, cond) {
+    if (cond) {
+      aPASS++;
+      // eslint-disable-next-line no-console
+      console.log(`  ✓ ${name}`);
+    } else {
+      aFAIL++;
+      afails.push(name);
+      // eslint-disable-next-line no-console
+      console.log(`  ✗ ${name}`);
+    }
+  }
+  // Seed one project's RunnerState: set desired (Coordinator-owned) + one §1.1
+  // heartbeat fixing actual + last_heartbeat_at (age = `ageSec` ago). A null
+  // heartbeat (cold start) is seeded by set-desired WITHOUT a heartbeat.
+  async function seed(ref, desired, actual, ageSec) {
+    await call(GOOD, "set-desired", [ref, desired, "ui:test"]);
+    if (actual !== null) {
+      await call(GOOD, "heartbeat", [hbLine("h-" + ref, ref, actual, "ct", ago(ageSec))]);
+    }
+  }
+  // Read the per-project snapshot so `attention` reflects ONLY this project
+  // (the top-level field is computed over the snapshot's projects[]).
+  async function attentionFor(ref) {
+    const s = await callJson("work-snapshot", [ref, ""]);
+    return s.attention;
+  }
+  const OLD = 5 * 3600; // 5 h — well past the 1 h default threshold
+  const FRESH = 30; // 30 s — fresh
+
+  // (1) desired=running + actual=idle + heartbeat 5 h stale ⇒ ALERT. THE incident.
+  await seed("iz36-wedged", "running", "idle", OLD);
+  const aWedged = await attentionFor("iz36-wedged");
+  ack("attention is PRESENT on the snapshot (never absent)", aWedged !== undefined && aWedged !== null);
+  ack("wedged (running+idle+5h stale) ⇒ needs_attention true", aWedged.needs_attention === true);
+  ack("wedged ⇒ exactly one alert", Array.isArray(aWedged.alerts) && aWedged.alerts.length === 1);
+  const al = (aWedged.alerts || [])[0] || {};
+  ack("alert kind is the closed 'stale-runner'", al.kind === "stale-runner");
+  ack("alert carries the project_ref", al.project_ref === "iz36-wedged");
+  ack("alert carries desired=running + actual=idle (the honest mismatch)", al.desired === "running" && al.actual === "idle");
+  ack("alert heartbeat_age_seconds is the real age (≈5 h, > threshold)", typeof al.heartbeat_age_seconds === "number" && al.heartbeat_age_seconds > 3600);
+  ack("alert detail mentions 'wedged'", typeof al.detail === "string" && /wedged/.test(al.detail));
+
+  // (2) desired=running + actual=running + FRESH heartbeat ⇒ NO alert (the
+  // benign steady state the noisy desired_actual_mismatch flag would NOT, but a
+  // FRESH heartbeat keeps this quiet).
+  await seed("iz36-healthy", "running", "running", FRESH);
+  const aHealthy = await attentionFor("iz36-healthy");
+  ack("healthy (running+running+fresh) ⇒ no attention", aHealthy.needs_attention === false && aHealthy.alerts.length === 0);
+
+  // (2b) desired=running + actual=IDLE + FRESH heartbeat ⇒ NO alert. THIS is the
+  // benign desired≠actual steady state that must NOT page (precision vs the
+  // pre-existing mismatch tag).
+  await seed("iz36-idlefresh", "running", "idle", FRESH);
+  const aIdleFresh = await attentionFor("iz36-idlefresh");
+  ack("running+idle but FRESH heartbeat ⇒ no attention (benign desired≠actual)", aIdleFresh.needs_attention === false);
+
+  // (3) desired=paused + idle + 5 h stale ⇒ NO alert (Brian paused it; not wanted-working).
+  await seed("iz36-paused", "paused", "idle", OLD);
+  const aPaused = await attentionFor("iz36-paused");
+  ack("paused + 5h stale ⇒ no attention (not wanted-working)", aPaused.needs_attention === false);
+
+  // (4) desired=running + actual=STOPPED + 5 h stale ⇒ NO alert (dead = the
+  // daemon's respawn job; also kills the Run-tap-on-stopped-workspace false alarm).
+  await seed("iz36-stopped", "running", "stopped", OLD);
+  const aStopped = await attentionFor("iz36-stopped");
+  ack("running + actual=stopped + 5h stale ⇒ no attention (dead, not a silent wedge)", aStopped.needs_attention === false);
+
+  // (5) desired=spare-cycles + idle + 5 h stale ⇒ ALERT (spare-cycles is wanted-working).
+  await seed("iz36-spare", "spare-cycles", "idle", OLD);
+  const aSpare = await attentionFor("iz36-spare");
+  ack("spare-cycles + 5h stale ⇒ needs_attention true", aSpare.needs_attention === true && aSpare.alerts[0].desired === "spare-cycles");
+
+  // (6) desired=running + NO heartbeat ever ⇒ NO alert (cold-start-safe — duration
+  // unestablishable). The OPPOSITE of deriveLiveness pessimism, on purpose.
+  await seed("iz36-nohb", "running", null, 0);
+  const aNoHb = await attentionFor("iz36-nohb");
+  ack("running + no heartbeat ever ⇒ no attention (cold-start-safe)", aNoHb.needs_attention === false);
+
+  // (7) ATTENTION_STALE_SECONDS env override moves the boundary. With the
+  // threshold dropped to 10 s, the FRESH (30 s) idle runner now alerts.
+  env.ATTENTION_STALE_SECONDS = "10";
+  const aLowered = await attentionFor("iz36-idlefresh");
+  delete env.ATTENTION_STALE_SECONDS;
+  ack("ATTENTION_STALE_SECONDS=10 ⇒ the 30s-stale idle runner now alerts (env-tunable boundary)", aLowered.needs_attention === true);
+  // and back to default ⇒ quiet again
+  const aRestored = await attentionFor("iz36-idlefresh");
+  ack("default threshold restored ⇒ the 30s runner is quiet again", aRestored.needs_attention === false);
+
+  // (8) all-projects mode aggregates: needs_attention true (we seeded ≥1 wedge).
+  const aAll = await callJson("work-snapshot", ["", ""]);
+  ack("all-projects mode — attention present + needs_attention true (≥1 wedge seeded)", !!aAll.attention && aAll.attention.needs_attention === true);
+  ack("all-projects alerts include the wedged + spare refs", aAll.attention.alerts.some((x) => x.project_ref === "iz36-wedged") && aAll.attention.alerts.some((x) => x.project_ref === "iz36-spare"));
+
+  // (9) Read-only: deriving attention mutates ZERO records.
+  const sigB = await recordSig();
+  await callJson("work-snapshot", ["", ""]);
+  ack("attention derivation is READ-ONLY (no record mutated)", (await recordSig()) === sigB && sigB.length > 0);
+
+  // eslint-disable-next-line no-console
+  console.log(`\n══ CF.3 iz36 attention alert (vs lib/coordinator.sh co__derive_attention + lib/test-board.sh): PASS=${aPASS} FAIL=${aFAIL} ══`);
+  if (aFAIL > 0) {
+    // eslint-disable-next-line no-console
+    console.log("FAILED:\n  - " + afails.join("\n  - "));
+  }
+  expect(aFAIL, `iz36 attention clauses failed: ${afails.join("; ")}`).toBe(0);
+});

@@ -71,7 +71,7 @@ Three facts explain almost everything:
 
 | File | Role |
 |---|---|
-| `web/board/board-view.js` | The pure core. `deriveBoardView(snapshot, nowMs?, opts?)` is the entry; helpers `deriveRunner`, `deriveMachine`, `deriveQueueHealth`, `deriveWaitingOn` (J5 — the held-card inline hold reason), `formatAgo`/`formatAgeSeconds`/`formatPct`. Holds `STAGE_ORDER`, `DESIRED_CONTROLS`, `NET_VELOCITY_ALARM_THRESHOLD`, `SUPPORTED_SNAPSHOT_SCHEMA`, the `SILENT_CLASSES` back-compat set, the §0.3 reject. |
+| `web/board/board-view.js` | The pure core. `deriveBoardView(snapshot, nowMs?, opts?)` is the entry; helpers `deriveRunner`, `deriveMachine`, `deriveQueueHealth`, `deriveWaitingOn` (J5 — the held-card inline hold reason), `formatAgo`/`formatAgeSeconds`/`formatPct`. Holds `STAGE_ORDER`, `DESIRED_CONTROLS`, `NET_VELOCITY_ALARM_THRESHOLD`, `SUPPORTED_SNAPSHOT_SCHEMA`, the `SILENT_CLASSES` back-compat set, the §0.3 reject. **iz36:** also derives `view.attention` (the precise machine-attention banner) from the engine's top-level `snapshot.attention` — consumed VERBATIM (the threshold is decided in `workSnapshot()`, NEVER re-derived here, A.3); folds `needs_attention` into `health.ok` + adds a loudest-weight chip. |
 | `web/board/app.js` | Browser glue. `refresh()` (the GET + render + auto-poll), `postSetDesired()` (the one POST), `render*` painters, the ephemeral `pendingDesired` overlay + `clearHonoredPending`. **claude-tools-758l:** `renderRunners` now delegates the runner state row + the F2 control row to the shared `RunnerCard.renderStateRow`/`renderControls` (`web/shared/runner-card.js`); the runner-card CSS moved to `web/shared/tokens.css` (bare control selectors). board.css keeps only the `.runners` grid + `.rqh`. `postSetDesired` stays local. |
 | `web/board/index.html` | The shell DOM: status strip, WAITING-ON-YOU lane, lifecycle spine, machine strip, runners grid. Mounts `Shell.mount({active:null})`. Asset links are absolute (`/board/*`, `/shared/*`) — also served at `/` via `web/_redirects` (q6z7). |
 | `web/board/board.css` | Responsive phone-first → desktop. Band classes (`band-green/amber/red/neutral/stale/missing`), `.silent`/`.failbead`, `.sub.verified`/`.sub.code` (done substate), `.rbtn.active`. |
@@ -147,6 +147,16 @@ bash beads-runner/verify-pages-deploy.sh board   # must print mismatches=0
 
 ## Gotchas / scars
 
+- **The pre-existing `mismatchRunners` chip ("⚠ N state mismatch") is NOISE
+  (iz36).** It keys off `desired_actual_mismatch` (`desired !== actual`), which is
+  `true` in the BENIGN desired=running/actual=idle steady state — so it cried wolf
+  constantly and got ignored, which is exactly why the jzzw wedge surfaced nowhere.
+  The iz36 `attention` banner is the PRECISE complement: it fires ONLY on a
+  SUSTAINED wanted-running-but-wedged runner (`desired ∈ {running,spare-cycles}` +
+  alive + heartbeat-stale-beyond-the-coarse-`ATTENTION_STALE_SECONDS`). The banner
+  consumes the engine's `snapshot.attention` VERBATIM — never re-derive the
+  threshold in the UI (A.3). De-noising/retiring the old mismatch chip is a possible
+  follow-up; it was left as-is to avoid churning its EXIT-clause tests.
 - **"Wired but not live" (the F1/F2/F3/G1/L3 family, bgw).** Code lands + local
   tests pass, but the deploy didn't land, so the phone never sees it. `bd close`
   without `mismatches=0` against the live host is the forbidden failure.
@@ -236,7 +246,10 @@ honest-state invariant, a fresh scar, a changed control set. Keep new
 honest-state logic in `board-view.js` (not `app.js`) so the Node test covers it.
 **Keep it concise — this doc earns its keep only if agents read all of it.**
 Delete stale lines; don't let it grow into a copy of the README or INTERFACE.md.
-Last substantive update: 2026-06-07 (claude-tools-mhcp.4 — held beads now surface
+Last substantive update: 2026-06-14 (iz36 — the precise machine-attention banner:
+`board-view.js` derives `view.attention` from the engine's top-level
+`snapshot.attention`, folded into `health.ok` + a loudest chip; the noisy
+`mismatchRunners` chip scar). Earlier: 2026-06-07 (claude-tools-mhcp.4 — held beads now surface
 as lifecycle cards on the prod GET path, so J5 `waiting_on` is user-visible in
 prod; `workSnapshot` sources the card list from `beads ∪ heldBeads`. Earlier:
 2026-06-03 Q9-4 audit_coverage on the §9 strip,

@@ -127,6 +127,25 @@ export function usagePollTtlSeconds(env) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 300;
 }
 
+// ── ATTENTION_STALE_SECONDS — the machine-attention alert boundary (iz36) ──────
+// The COARSE threshold for "this runner has been silently broken for long enough
+// to ALERT", DELIBERATELY distinct from STALE_AFTER (180 s, the S-1 display
+// liveness boundary). A runner can read `stale`/`wedged` on the Board at 180 s
+// for a benign reason (a long claude turn, a brief blip); an ALERT must be
+// high-precision, so it only fires when the heartbeat has been silent for HOURS —
+// well clear of STALE_AFTER and the M3 reconcile cadence (60 s) and any normal
+// spawn/SIGTERM round-trip. Default 3600 s (1 h); env-overridable (cadences/TTLs
+// are [free] per the design — a dropped/late alert is recoverable). `:-` keeps a
+// present non-empty value (the STALE_AFTER override discipline). The incident
+// this guards (claude-tools-jzzw) ran for DAYS, so 1 h catches it with huge
+// margin while never paging on a transient.
+export function attentionStaleSeconds(env) {
+  const v = env && env.ATTENTION_STALE_SECONDS;
+  if (v === undefined || v === null || String(v).length === 0) return 3600;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 3600;
+}
+
 // The §4.2 `actual` enum is CLOSED (INTERFACE.md §4.2): runner-reported state
 // ∈ {starting,running,idle,stopping,stopped,crashed}. An out-of-enum actual is
 // rejected at the §1.1 ingest door (a contract value, not free text). 1:1 with
@@ -1513,6 +1532,14 @@ async function workSnapshot(co, principal, proj, beadsStr) {
   // invisible again (inbox-lifecycle §9.5 #4). Honest [] when no intakes stored.
   const intake = await readIntake(co, principal);
 
+  // ── Top-level `attention` — the iz36 machine-attention alert (Contract B.1) ──
+  // ADDITIVE at schema_version 1 (the machines[]/intake[] precedent). DERIVED
+  // here from the per-project RunnerState already in `projects` so the Board (and
+  // the daemon attention-poll) consume ONE authoritative signal instead of each
+  // hand-deriving a threshold that drifts (A.3 "goes through B.1 first"). The
+  // bash co__work_snapshot emits the SAME twin (it has the same RunnerState).
+  const attention = deriveAttention(projects, Date.now(), co.env);
+
   return jsonRes({
     schema_version: 1,
     principal,
@@ -1522,6 +1549,7 @@ async function workSnapshot(co, principal, proj, beadsStr) {
     lifecycle_columns,
     waiting_on_you,
     intake,
+    attention,
   });
 }
 
@@ -1790,6 +1818,91 @@ function deriveRunnerHealth(rec) {
     state = "idle"; // fresh, no task — incl. cooldown/capacity-deny/skip/starvation (all heartbeat idle)
   }
   return { process, heartbeat, last_pickup_at: null, state };
+}
+
+// ── deriveAttention — the iz36 machine-attention alert (Contract B.1, A.3) ─────
+// THE GAP this closes (incident claude-tools-jzzw, 2026-06-14): work-snapshot
+// showed desired=running / heartbeat-stale-for-DAYS across every workspace and
+// NOTHING surfaced it. The raw facts were already in the projection (`liveness`,
+// `runner_health.state==="wedged"`, `desired_actual_mismatch`) but no precise,
+// low-false-positive signal aggregated them into "this machine needs a human."
+//
+// THE ALERT CONDITION (per project, derived from the SAME RunnerState the loop
+// already reconciled — so the bash co__work_snapshot twin computes it identically):
+//   desired ∈ {running, spare-cycles}     Brian WANTS work here (paused/stopped is
+//                                          honest, never an alert — he chose it).
+//   AND actual ∉ {stopped, crashed}        the process is ALIVE — the incident's
+//                                          exact "alive but heartbeat-stale" wedge.
+//                                          A `dead` runner is the daemon's respawn
+//                                          job (M3), not a SILENT wedge; excluding
+//                                          it also kills the false alarm a fresh
+//                                          Run-tap on a long-stopped workspace
+//                                          would otherwise raise (the tap changes
+//                                          only `desired`; `actual`/heartbeat are
+//                                          runner-owned and stay stopped+old until
+//                                          M3 respawns — see the §spawn round-trip
+//                                          caveat the task names).
+//   AND last_heartbeat_at is PARSEABLE     a missing/never heartbeat ⇒ staleness
+//                                          DURATION is unestablishable ⇒ DON'T page
+//                                          (a fresh spawn has no heartbeat yet —
+//                                          cold-start-safe; the OPPOSITE of the
+//                                          deriveLiveness pessimism, on purpose:
+//                                          liveness errs toward "stale" for honest
+//                                          DISPLAY, an alert errs toward "quiet").
+//   AND now − last_heartbeat_at > ATTENTION_STALE_SECONDS (coarse 1 h ≫ 180 s).
+//
+// WHY it is SELF-DEBOUNCING (no cross-poll state, no "sustained for N polls"
+// bookkeeping): the heartbeat AGE *is* the duration the runner has been silent,
+// so "> 1 h stale" already means "sustained > 1 h". A runner that is alive and
+// supposed to be working heartbeats (running OR idle) every ≤60 s in EVERY
+// waiting state (deriveRunnerHealth's safety invariant), so a >1 h-old heartbeat
+// on an alive runner is an unambiguous wedge — never a normal idle gap. This is
+// the precise complement to the Board's pre-existing (noisy) `desired_actual_
+// mismatch` flag, which is `true` in the benign desired=running/actual=idle
+// steady state and so cried wolf constantly.
+//
+// `kind` is a CLOSED enum, currently {"stale-runner"}; "runner-down" (dead while
+// wanted, needs a desired-set-at clock the daemon owns) and "queue-backlog" are
+// RESERVED for the follow-up. Pure derivation; no write path. Consumed verbatim
+// by web/board/board-view.js (the threshold is NOT re-derived in the UI — A.3).
+function fmtAgeShort(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return "?";
+  if (sec < 90) return sec + "s";
+  if (sec < 5400) return Math.round(sec / 60) + "m";
+  if (sec < 172800) return Math.round(sec / 3600) + "h";
+  return Math.round(sec / 86400) + "d";
+}
+function deriveAttention(projects, nowMs, env) {
+  const threshold = attentionStaleSeconds(env);
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const alerts = [];
+  for (const p of projects || []) {
+    const rs = p && p.runner_state ? p.runner_state : null;
+    if (!rs || typeof rs !== "object") continue;
+    const desired = rs.desired;
+    // wanted-working gate: only running / spare-cycles are "should be able to work"
+    if (desired !== "running" && desired !== "spare-cycles") continue;
+    const actual = rs.actual;
+    // process-alive gate: a deliberately/terminally down runner is honest, not a
+    // silent wedge (and excludes the Run-tap-on-stopped-workspace false alarm).
+    if (actual === "stopped" || actual === "crashed") continue;
+    const hb = typeof rs.last_heartbeat_at === "string" ? rs.last_heartbeat_at : "";
+    const hbMs = Date.parse(hb);
+    if (!Number.isFinite(hbMs)) continue; // no parseable heartbeat ⇒ don't page
+    const age = Math.floor((now - hbMs) / 1000);
+    if (!(age > threshold)) continue; // fresh enough ⇒ normal
+    alerts.push({
+      project_ref: p.project_ref,
+      kind: "stale-runner",
+      desired,
+      actual: actual ?? null,
+      heartbeat_age_seconds: age,
+      detail:
+        "desired " + desired + " but the runner heartbeat is " + fmtAgeShort(age) +
+        " stale (process alive — wedged)",
+    });
+  }
+  return { needs_attention: alerts.length > 0, alerts };
 }
 
 // ── deriveIntakeState — the L3 (claude-tools-uxvl3) phone-visible state thread ─

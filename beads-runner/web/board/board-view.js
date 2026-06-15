@@ -732,10 +732,55 @@
     qhTotals.audit_coverage = qhAcTotal > 0 ? { read: qhAcRead, total: qhAcTotal } : null;
     var queueHealth = deriveQueueHealth(qhTotals);
 
+    // iz36 (claude-tools-iz36) — the PRECISE machine-attention banner. Consumed
+    // VERBATIM from the engine's snapshot.attention (Contract B.1): the alert
+    // CONDITION + threshold are decided in workSnapshot()/co__derive_attention,
+    // NEVER re-derived here (A.3 — "goes through B.1 first; do not hand-derive it
+    // ad hoc in the web"). This is the DELIBERATE complement to the noisy
+    // `staleRunners`/`mismatchRunners` tags above: `desired_actual_mismatch` is
+    // `true` in the benign desired=running/actual=idle steady state (so the
+    // "N state mismatch" chip cries wolf constantly), whereas an `attention`
+    // alert fires ONLY on a SUSTAINED wanted-running-but-wedged runner — the
+    // incident signature nothing surfaced. Tolerant by construction: an older
+    // producer that omits the field ⇒ no banner (graceful, additive — the
+    // machines[]/intake[] degrade-to-empty discipline), never a fabricated alarm.
+    var rawAttn = (snap.attention && typeof snap.attention === 'object') ? snap.attention : null;
+    var attnAlerts = (rawAttn && Array.isArray(rawAttn.alerts)) ? rawAttn.alerts : [];
+    var attnActive = !!rawAttn && rawAttn.needs_attention === true && attnAlerts.length > 0;
+    var attention = {
+      needs_attention: attnActive,
+      count: attnActive ? attnAlerts.length : 0,
+      // The banner headline + a one-line-per-alert breakdown the painter renders.
+      // Presentation only: every string is the engine's field, formatted.
+      headline: attnActive
+        ? ('⚠ Machine needs attention — ' + attnAlerts.length + ' workspace' +
+           (attnAlerts.length === 1 ? '' : 's') +
+           ' wanted running but the runner is wedged')
+        : null,
+      alerts: attnAlerts.map(function (a) {
+        var ref = (a && a.project_ref) ? a.project_ref : '(unknown)';
+        var ageText = (a && typeof a.heartbeat_age_seconds === 'number')
+          ? formatAgeSeconds(a.heartbeat_age_seconds) : null;
+        return {
+          project_ref: ref,
+          kind: (a && a.kind) ? a.kind : 'stale-runner',
+          desired: (a && a.desired) ? a.desired : null,
+          actual: (a && a.actual) ? a.actual : null,
+          heartbeat_age_text: ageText,
+          // Prefer the engine's own detail string (single source of phrasing);
+          // fall back to a derived one-liner only if the producer omitted it.
+          text: (a && typeof a.detail === 'string' && a.detail)
+            ? a.detail
+            : (ref + ' — heartbeat stale' + (ageText ? ' ' + ageText : ''))
+        };
+      })
+    };
+
     var healthy =
       staleRunners.length === 0 &&
       mismatchRunners.length === 0 &&
-      failingCards === 0;
+      failingCards === 0 &&
+      !attnActive;
 
     var health = {
       ok: healthy,
@@ -766,6 +811,13 @@
       // even a single silent rotter outweighs many loud retries at a glance.
       tags: [
         { kind: 'runners', text: liveActive.length + ' active' },
+        // iz36 — the PRECISE attention chip (loudest weight). Sits FIRST among
+        // the warnings because it is the high-signal "a human is needed" fact,
+        // unlike the constantly-firing mismatch chip below it.
+        attnActive
+          ? { kind: 'bad', text: '⚠ ' + attention.count + ' need' +
+              (attention.count === 1 ? 's' : '') + ' attention' }
+          : null,
         staleRunners.length
           ? { kind: 'bad', text: '⚠ ' + staleRunners.length + ' stale' }
           : null,
@@ -824,6 +876,10 @@
       read_only: snap.read_only === true,
       schema_version: sv,
       health: health,
+      // iz36 — the precise machine-attention banner (Contract B.1 surface). app.js
+      // paints `attention.headline` + the per-alert breakdown as a prominent
+      // banner above the status strip; null/empty when nothing needs attention.
+      attention: attention,
       runners: runners,
       waiting_on_you: waiting,
       lifecycle: lifecycle,

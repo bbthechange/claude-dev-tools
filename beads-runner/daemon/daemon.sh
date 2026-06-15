@@ -100,6 +100,14 @@ NOTIF_DIGEST_SWEEP_INTERVAL="${BEADS_DAEMON_NOTIF_DIGEST_SWEEP_INTERVAL:-86400}"
 # surfaces within ≤this interval, then N2's blocking sweep (~30s) pushes it.
 # [free] to tune tighter if pair-surface latency ever needs it.
 TIMER_DUE_POLL_INTERVAL="${BEADS_DAEMON_TIMER_DUE_POLL_INTERVAL:-60}"
+# iz36 (claude-tools-iz36): the MACHINE-ATTENTION observability poll cadence. On
+# this beat the daemon reads the engine's `attention` read-model field and emits
+# an edge-triggered WARN per sustained wanted-running-but-wedged runner (the jzzw
+# incident the daemon log was the diagnosis site for). 60s default — the alert is
+# already sustained at the engine (heartbeat-age ≫ 1h threshold), so this only
+# governs how promptly the log reflects a change; sub-minute precision buys
+# nothing. [free] to tune.
+ATTENTION_POLL_INTERVAL="${BEADS_DAEMON_ATTENTION_POLL_INTERVAL:-60}"
 # jzzw (claude-tools-jzzw, incident 2026-06-14): SELF-STALENESS check cadence. A
 # long-lived bash daemon sources every *-poll.sh ONCE at boot and never re-reads
 # them, so a daemon that booted before a poll landed silently lacks it forever
@@ -204,6 +212,14 @@ DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # into it (and when no workspace is registered).
 # shellcheck disable=SC1091
 . "$DAEMON_DIR/timer-due-poll.sh"
+# iz36 (claude-tools-iz36): the MACHINE-ATTENTION observability poll — on cadence,
+# read the engine's `attention` read-model field and emit an edge-triggered WARN
+# per sustained wanted-running-but-wedged runner (the observability half of the
+# jzzw incident follow-up). Defines daemon_attention_poll_once. Strict no-op until
+# the main loop calls into it (and when no workspace / older engine without the
+# field). The phone-push surface is a tracked follow-up; this is the log signal.
+# shellcheck disable=SC1091
+. "$DAEMON_DIR/attention-poll.sh"
 
 log() {
   # one-line log helper; stdout is redirected to daemon-logs/stdout.log by
@@ -402,7 +418,7 @@ main() {
   acquire_pidfile
   write_rotation_marker
 
-  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s BLUEPRINT_UPDATE_POLL_INTERVAL=${BLUEPRINT_UPDATE_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s NOTIF_DELIVERY_POLL_INTERVAL=${NOTIF_DELIVERY_POLL_INTERVAL}s NOTIF_DIGEST_SWEEP_INTERVAL=${NOTIF_DIGEST_SWEEP_INTERVAL}s TIMER_DUE_POLL_INTERVAL=${TIMER_DUE_POLL_INTERVAL}s"
+  log "daemon starting; HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL}s HOSTED_RESOLUTION_POLL_INTERVAL=${HOSTED_RESOLUTION_POLL_INTERVAL}s DESIRED_STATE_POLL_INTERVAL=${DESIRED_STATE_POLL_INTERVAL}s INTAKE_POLL_INTERVAL=${INTAKE_POLL_INTERVAL}s FLOW_F_POLL_INTERVAL=${FLOW_F_POLL_INTERVAL}s BLUEPRINT_UPDATE_POLL_INTERVAL=${BLUEPRINT_UPDATE_POLL_INTERVAL}s WORK_CONTROL_POLL_INTERVAL=${WORK_CONTROL_POLL_INTERVAL}s USAGE_POLL_INTERVAL=${USAGE_POLL_INTERVAL}s NOTIF_DELIVERY_POLL_INTERVAL=${NOTIF_DELIVERY_POLL_INTERVAL}s NOTIF_DIGEST_SWEEP_INTERVAL=${NOTIF_DIGEST_SWEEP_INTERVAL}s TIMER_DUE_POLL_INTERVAL=${TIMER_DUE_POLL_INTERVAL}s ATTENTION_POLL_INTERVAL=${ATTENTION_POLL_INTERVAL}s"
   log "pidfile=$DAEMON_PIDFILE"
   log "log_dir=$DAEMON_LOG_DIR"
   log "workspaces_json=$WORKSPACES_JSON"
@@ -430,6 +446,7 @@ main() {
   local _last_notif_delivery_poll=0
   local _last_notif_digest_sweep=0
   local _last_timer_due_poll=0
+  local _last_attention_poll=0
   local _last_staleness_check=0
   while [ "$DRAIN_REQUESTED" -eq 0 ]; do
     log "heartbeat"
@@ -578,6 +595,19 @@ main() {
       _last_timer_due_poll="$_now"
       if declare -F daemon_timer_due_poll_once >/dev/null 2>&1; then
         daemon_timer_due_poll_once || true
+      fi
+    fi
+    # iz36 (claude-tools-iz36): the MACHINE-ATTENTION observability poll — on
+    # cadence (~60s, and at boot so a wedge that set in while the daemon was down
+    # surfaces promptly), read the engine's `attention` read-model field and
+    # edge-log a WARN per sustained wanted-running-but-wedged runner (RESOLVED
+    # when it clears). Boot-fire is safe: the marker set is edge-triggered, so a
+    # boot fire WARNs each still-open alert exactly once, never a backlog dump.
+    # Strict no-op when nothing needs attention / no workspace / older engine.
+    if [ "$((_now - _last_attention_poll))" -ge "$ATTENTION_POLL_INTERVAL" ] || [ "$_last_attention_poll" -eq 0 ]; then
+      _last_attention_poll="$_now"
+      if declare -F daemon_attention_poll_once >/dev/null 2>&1; then
+        daemon_attention_poll_once || true
       fi
     fi
     # claude-tools-1p0u: drain the daemon's OWN §1.1 outbox to the deployed

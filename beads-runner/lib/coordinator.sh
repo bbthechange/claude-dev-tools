@@ -1733,6 +1733,85 @@ co__derive_liveness() {
   if [[ "$(( now - hbe ))" -le "$stale" ]]; then echo live; else echo stale; fi
 }
 
+# ── ATTENTION_STALE_SECONDS — the iz36 machine-attention alert boundary ────────
+# The COARSE threshold for "this runner has been silently broken long enough to
+# ALERT", DELIBERATELY distinct from STALE_AFTER (180 s, the S-1 DISPLAY liveness
+# boundary). An ALERT must be high-precision, so it only fires after HOURS of
+# heartbeat silence — well clear of STALE_AFTER, the M3 reconcile cadence (60 s),
+# and any normal spawn/SIGTERM round-trip. Default 3600 s (1 h); env-overridable
+# (cadences/TTLs are [free] — a late/dropped alert is recoverable). 1:1 with the
+# CF accessor cf/src/reconcile.js attentionStaleSeconds.
+co__ATTENTION_STALE() {
+  # Mirror the JS attentionStaleSeconds guard EXACTLY: a present, non-negative
+  # INTEGER wins; anything else (unset, empty, non-numeric, negative, a float, a
+  # multi-token value) falls back to the 3600 default. Without this a fumbled env
+  # value (a) crashes the bash producer under the daemon's `set -uo pipefail` at
+  # the `-gt` arithmetic and (b) diverges from JS on the boundary — both break the
+  # "same decision" twin contract (claude-tools-iz36 review finding #1).
+  local v="${ATTENTION_STALE_SECONDS:-}"
+  if [[ "$v" =~ ^[0-9]+$ ]]; then echo "$v"; else echo 3600; fi
+}
+
+# co__derive_attention <projects_json> [now_epoch] — the iz36 top-level `attention`
+# alert object (Contract B.1, A.3). A TRUE differential twin of cf/src/reconcile.js
+# deriveAttention: derived from the SAME per-project RunnerState the proj loop
+# reconciled. Per project a {kind:"stale-runner"} alert fires iff
+#   desired ∈ {running,spare-cycles}   (Brian WANTS work here; paused/stopped is
+#                                        honest, never an alert)
+#   AND actual ∉ {stopped,crashed}      (process ALIVE — the incident's wedge; a
+#                                        dead runner is the daemon's respawn job,
+#                                        and excluding it kills the Run-tap-on-
+#                                        stopped-workspace false alarm)
+#   AND last_heartbeat_at is PARSEABLE  (no heartbeat ⇒ duration unestablishable ⇒
+#                                        DON'T page — cold-start-safe; the OPPOSITE
+#                                        of co__derive_liveness pessimism, on
+#                                        purpose: an alert errs toward quiet)
+#   AND now − last_heartbeat_at > ATTENTION_STALE_SECONDS.
+# Self-debouncing: heartbeat AGE *is* the sustained duration, so no cross-poll
+# state is needed. Echoes {needs_attention:bool, alerts:[…]}; honest empty object
+# on any failure. `heartbeat_age_seconds` here uses the bash clock — it may differ
+# from the CF value by <1 s (no test deep-compares CF vs bash live; the DECISION
+# is the twin, not the second-count).
+co__derive_attention() {
+  local projects="${1:-[]}" now="${2:-}" threshold n i
+  printf '%s' "$projects" | jq -e 'type=="array"' >/dev/null 2>&1 || projects='[]'
+  if [[ -z "$now" ]]; then
+    now=$(date -u +%s 2>/dev/null || echo "")
+  fi
+  threshold="$(co__ATTENTION_STALE)"
+  n=$(printf '%s' "$projects" | jq 'length' 2>/dev/null) || n=0
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  local alerts='[]' desired actual hb ref hbe age
+  if [[ -n "$now" ]]; then
+    for (( i=0; i<n; i++ )); do
+      desired=$(printf '%s' "$projects" | jq -r --argjson i "$i" '.[$i].runner_state.desired // ""' 2>/dev/null) || desired=""
+      [[ "$desired" == "running" || "$desired" == "spare-cycles" ]] || continue
+      actual=$(printf '%s' "$projects" | jq -r --argjson i "$i" '.[$i].runner_state.actual // ""' 2>/dev/null) || actual=""
+      [[ "$actual" == "stopped" || "$actual" == "crashed" ]] && continue
+      hb=$(printf '%s' "$projects" | jq -r --argjson i "$i" '.[$i].runner_state.last_heartbeat_at // ""' 2>/dev/null) || hb=""
+      hbe="$(co__rfc3339_to_epoch "$hb")" || continue   # no parseable heartbeat ⇒ no alert
+      age=$(( now - hbe ))
+      [[ "$age" -gt "$threshold" ]] || continue
+      ref=$(printf '%s' "$projects" | jq -r --argjson i "$i" '.[$i].project_ref // ""' 2>/dev/null) || ref=""
+      alerts=$(printf '%s' "$alerts" | jq -c \
+        --arg ref "$ref" --arg desired "$desired" --arg actual "$actual" \
+        --argjson age "$age" \
+        '. + [{project_ref:$ref, kind:"stale-runner", desired:$desired,
+               actual:(if $actual=="" then null else $actual end),
+               heartbeat_age_seconds:$age,
+               detail:("desired " + $desired + " but the runner heartbeat is "
+                       + (if $age<90 then ($age|tostring)+"s"
+                          elif $age<5400 then (($age/60)|round|tostring)+"m"
+                          elif $age<172800 then (($age/3600)|round|tostring)+"h"
+                          else (($age/86400)|round|tostring)+"d" end)
+                       + " stale (process alive — wedged)")}]' \
+        2>/dev/null) || alerts="$alerts"
+    done
+  fi
+  printf '%s' "$alerts" | jq -c '{needs_attention:(length>0), alerts:.}' 2>/dev/null \
+    || printf '{"needs_attention":false,"alerts":[]}'
+}
+
 # co__heartbeat <principal> <report_json>
 #   §1.1 item-3 INGEST of the upward actual-state+liveness heartbeat. Consumes
 #   T3's §1.1 outbox line VERBATIM (report=="heartbeat"). Enforces, in order:
@@ -2139,6 +2218,16 @@ co__work_snapshot() {
       else {type:"scheduled", task_ref:$ref, deferred_until:$du,
                      unblocks_when:$du, editable:false, more:$more}
       end'
+  # claude-tools-iz36 — top-level `attention` machine-attention alert (Contract
+  # B.1, A.3). DERIVED from the per-project RunnerState already in $proj_json so
+  # the Board + daemon consume ONE authoritative signal (never a hand-derived
+  # threshold). ADDITIVE at schema_version 1 (the machines[]/intake[] precedent);
+  # a TRUE differential twin (same RunnerState ⇒ same decision as CF deriveAttention).
+  local attention
+  attention="$(co__derive_attention "$proj_json" 2>/dev/null)" \
+    || attention='{"needs_attention":false,"alerts":[]}'
+  printf '%s' "$attention" | jq -e 'type=="object"' >/dev/null 2>&1 \
+    || attention='{"needs_attention":false,"alerts":[]}'
   jq -cn \
      --argjson sv 1 \
      --arg principal "$principal" \
@@ -2146,6 +2235,7 @@ co__work_snapshot() {
      --argjson projects "$proj_json" \
      --argjson beads "$beads" \
      --argjson waiting_on_you "$woy" \
+     --argjson attention "$attention" \
      '{schema_version:$sv,
        principal:$principal,
        read_only:true,
@@ -2164,8 +2254,9 @@ co__work_snapshot() {
                 age, waiting_on: ('"$waiting_on_derive"'),
                 verified:(.verified == true),
                 failure: ('"$normalize_failure"')} ] } ),
-       waiting_on_you:$waiting_on_you}' 2>/dev/null \
-    || printf '{"schema_version":1,"principal":"%s","read_only":true,"projects":[],"lifecycle_columns":{},"waiting_on_you":[]}' "$principal"
+       waiting_on_you:$waiting_on_you,
+       attention:$attention}' 2>/dev/null \
+    || printf '{"schema_version":1,"principal":"%s","read_only":true,"projects":[],"lifecycle_columns":{},"waiting_on_you":[],"attention":{"needs_attention":false,"alerts":[]}}' "$principal"
 }
 
 # ════════════════════════════════════════════════════════════════════════════

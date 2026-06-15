@@ -271,6 +271,42 @@ may not change meaning without an explicit amend.
 > is "read/total computed AND surfaced when an audit reports", not the specific marker
 > channel (Open-Q#3 latitude). schema_version stays 1.
 
+> **Amendment (iz36 claude-tools-iz36, 2026-06-14):** a top-level `attention`
+> object is added to the work-snapshot shape — the precise MACHINE-ATTENTION
+> alert the jzzw incident (runners alive-but-heartbeat-stale-for-days while
+> desired=running, surfaced nowhere) exposed as missing:
+> ```jsonc
+> "attention": {                    // NEW (iz36) — derived, top-level, additive at v1
+>   "needs_attention": true,        // any alert present?
+>   "alerts": [
+>     { "project_ref": "thirsty",
+>       "kind": "stale-runner",     // CLOSED enum; runner-down/queue-backlog RESERVED
+>       "desired": "running",       // ∈ {running, spare-cycles} (wanted-working)
+>       "actual": "idle",           // process ALIVE (∉ {stopped,crashed})
+>       "heartbeat_age_seconds": 18234,
+>       "detail": "desired running but the runner heartbeat is 5h stale (process alive — wedged)" }
+>   ]
+> }
+> ```
+> DERIVED in `workSnapshot()` (`cf/src/reconcile.js` `deriveAttention`) from the
+> per-project RunnerState already reconciled, with a TRUE bash-oracle twin
+> (`co__derive_attention` in `lib/coordinator.sh`) — unlike machines[]/intake[],
+> both producers emit it (same RunnerState ⇒ same decision). The ALERT CONDITION
+> (the precision that makes it NOT the noisy `desired_actual_mismatch` flag):
+> `desired ∈ {running,spare-cycles}` AND `actual ∉ {stopped,crashed}` (alive) AND
+> a PARSEABLE `last_heartbeat_at` older than `ATTENTION_STALE_SECONDS` (env, default
+> 3600 s — COARSE, deliberately ≫ STALE_AFTER 180 s, so a transient blip / long
+> claude turn / spawn round-trip never pages). SELF-DEBOUNCING: the heartbeat AGE
+> *is* the sustained duration, so no cross-poll state is needed. Cold-start-safe: a
+> null/never heartbeat does NOT alert (duration unestablishable — the opposite of
+> deriveLiveness pessimism, on purpose). SURFACES: (1) the Board banner
+> (`board-view.js` consumes the field VERBATIM — the threshold is NOT re-derived in
+> the UI, A.3); (2) the daemon `attention-poll.sh` edge-triggered WARN log. The
+> digest-tier PHONE push is a tracked follow-up (it needs a conformance-gated
+> dossier body + the §2.5 device live-verify). schema_version stays 1. REVERSIBLE:
+> the contract invariant is "a sustained wanted-running-but-wedged runner is
+> derived AND surfaced", not a specific threshold/kind set.
+
 ### B.2 `blueprint-get(project_ref)` → the `blueprint` §4 record body
 
 ```jsonc
