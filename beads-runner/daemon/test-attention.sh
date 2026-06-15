@@ -24,6 +24,7 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$HERE/attention-poll.sh"
+REPO_LIB="$(cd "$HERE/.." && pwd)/lib"
 
 PASS=0; FAIL=0
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$1"; PASS=$((PASS+1)); }
@@ -65,6 +66,15 @@ run_poll() {
     export DAEMON_ATTENTION_SNAPSHOT_OVERRIDE="$snap"
     export DAEMON_ATTENTION_DISABLED="${DIS:-0}"
     export DAEMON_ATTENTION_RELOG_SECONDS="${RELOG:-3600}"
+    # tv88 digest-push env. PUSHDIS defaults to 1 (canary-disabled) so PARTs A–F
+    # exercise the iz36 WARN behavior byte-unchanged; PART G flips it on.
+    export DAEMON_ATTENTION_PUSH_DISABLED="${PUSHDIS:-1}"
+    export DAEMON_ATTENTION_PUSH_CHANNEL="${PUSHCH:-machine-attention}"
+    export DAEMON_ATTENTION_ENGINE_OVERRIDE="${ENGOV:-}"
+    export CO_STORE="${COSTORE:-$STATE/attention-co-store}"
+    export DAEMON_REPO_DIR="$(cd "$HERE/.." && pwd)"
+    export DAEMON_REPO_LIB_DIR="$DAEMON_REPO_DIR/lib"
+    unset COORDINATOR_URL COORDINATOR_TOKEN 2>/dev/null || true
     # capture log() to a file (attention-poll prefixes "[attention] ")
     log() { printf '%s\n' "$*" >> "$LOGCAP"; }
     # shellcheck source=/dev/null
@@ -146,8 +156,79 @@ RELOG=0
 out8="$(run_poll "$SNAP_F")"
 case "$out8" in *"(ongoing)"*) bad "RELOG=0 still re-logged ($out8)";; *) ok "RELOG=0 ⇒ no re-log (edge+resolve only)";; esac
 
+# ── PART G — tv88 DIGEST PHONE PUSH ──────────────────────────────────────────
+echo ""
+echo "── PART G — edge ⇒ digest dossier+notification (canary on); dedup; N→1; canary off ──"
+
+# Helpers to read the local CO_STORE the real engine-write lands in.
+dossier_count() { ls "$1"/records/dossier.attention-*.json 2>/dev/null | wc -l | tr -d ' '; }
+notif_count()   { ls "$1"/records/notification.notif.attention-*.json 2>/dev/null | wc -l | tr -d ' '; }
+
+# G1 — a single alert with the canary ON drives the REAL dg_generate (the §5.1
+# write gate) against a local store: a conformant digest overview + a digest
+# notification on the shared channel must land, and the .pushed sentinel written.
+STATE="$WORK/g1"; COSTORE="$WORK/g1-store"; PUSHDIS=0; DIS=0; RELOG=3600; ENGOV=""
+SNAP_G="$(snap_with "thirsty:stale-runner:18000")"
+outg1="$(run_poll "$SNAP_G")"
+case "$outg1" in *"WARN MACHINE ATTENTION"*) ok "G1 still WARNs (observability half intact)";; *) bad "G1 lost the WARN ($outg1)";; esac
+case "$outg1" in *"PUSH digest dossier+notification emitted"*"tier=digest"*"channel=machine-attention"*) ok "G1 logs the digest PUSH";; *) bad "G1 no digest PUSH log ($outg1)";; esac
+DREC="$COSTORE/records/dossier.attention-thirsty__stale-runner.json"
+NREC="$COSTORE/records/notification.notif.attention-thirsty__stale-runner.json"
+if [[ -f "$DREC" ]]; then
+  okdoss="$(jq -r 'select(.kind=="overview" and .tier=="digest" and .trigger=="proactive_checkpoint" and (.bead_ref|length>0) and (.items|length==0) and (.body.dossier_schema_version|type=="number") and ((.body.tldr|length)>0) and ((.body.sections|length)>0) and (.body.diagrams==[])) | "ok"' "$DREC" 2>/dev/null)"
+  [[ "$okdoss" == "ok" ]] && ok "G1 conformant digest overview dossier passed the §5.1 write gate" || bad "G1 dossier not conformant ($(jq -c '{kind,tier,trigger,sv:.body.dossier_schema_version}' "$DREC" 2>/dev/null))"
+else
+  bad "G1 no dossier record written"
+fi
+if [[ -f "$NREC" ]]; then
+  oknotif="$(jq -r 'select(.tier=="digest" and .channel=="machine-attention" and .dispatched==true) | "ok"' "$NREC" 2>/dev/null)"
+  [[ "$oknotif" == "ok" ]] && ok "G1 digest notification routed to the machine-attention channel (dispatched)" || bad "G1 notification wrong ($(jq -c '{tier,channel,dispatched}' "$NREC" 2>/dev/null))"
+else
+  bad "G1 no notification record written"
+fi
+[[ -f "$STATE/attention-fired/thirsty__stale-runner.json.pushed" ]] && ok "G1 .pushed sentinel written (one-push dedup armed)" || bad "G1 no .pushed sentinel"
+
+# G2 — a SECOND distinct alert shares the channel ⇒ the rollup folds N→1 push
+# (must-protect #5). Same STATE/store so both notifications coexist.
+SNAP_G2="$(snap_with "thirsty:stale-runner:18000" "otherws:stale-runner:9000")"
+outg2="$(run_poll "$SNAP_G2")"
+[[ "$(notif_count "$COSTORE")" == "2" ]] && ok "G2 second distinct alert emits a second digest notification" || bad "G2 expected 2 notifications, got $(notif_count "$COSTORE")"
+rollup="$(cat "$COSTORE"/records/notification.notif.attention-*.json 2>/dev/null | (. "$REPO_LIB/notification.sh" 2>/dev/null; no__group_digests))"
+ndigest="$(printf '%s' "$rollup" | jq -r '.digests | length' 2>/dev/null)"
+ncount="$(printf '%s' "$rollup" | jq -r '.digests[0].count' 2>/dev/null)"
+[[ "$ndigest" == "1" && "$ncount" == "2" ]] && ok "G2 must-protect #5: 2 alerts fold to ONE channel group (count=2 → 1 daily push)" || bad "G2 rollup did not fold N→1 (groups=$ndigest count=$ncount)"
+
+# G3 — re-poll the same alert ⇒ NO new push (the .pushed sentinel dedups).
+before="$(notif_count "$COSTORE")"
+outg3="$(run_poll "$SNAP_G2")"
+case "$outg3" in *"PUSH digest dossier+notification emitted"*) bad "G3 RE-PUSHED an already-pushed alert (dedup broken)";; *) ok "G3 re-poll ⇒ no new PUSH (per-(project,kind) marker dedups)";; esac
+[[ "$(notif_count "$COSTORE")" == "$before" ]] && ok "G3 notification count unchanged on re-poll" || bad "G3 notification count grew ($before → $(notif_count "$COSTORE"))"
+
+# G4 — the CANARY default (disabled) WARNs but writes NO dossier (prod-safe dormant).
+STATE="$WORK/g4"; COSTORE="$WORK/g4-store"; PUSHDIS=1; ENGOV=""
+outg4="$(run_poll "$(snap_with "thirsty:stale-runner:18000")")"
+case "$outg4" in *"WARN MACHINE ATTENTION"*) ok "G4 canary-disabled still WARNs (iz36 half unchanged)";; *) bad "G4 lost the WARN ($outg4)";; esac
+case "$outg4" in *"PUSH digest"*) bad "G4 canary-disabled still PUSHED (not dormant!)";; *) ok "G4 canary-disabled ⇒ NO push log";; esac
+[[ "$(dossier_count "$COSTORE")" == "0" ]] && ok "G4 canary-disabled wrote NO dossier (prod-safe until device-verify)" || bad "G4 wrote a dossier while disabled"
+
+# G5 — the retry lane: an edge emit FAILURE leaves .pushed absent (retry-eligible);
+# a later succeeding poll lands the push. Use a failing then a passing override.
+STATE="$WORK/g5"; COSTORE="$WORK/g5-store"; PUSHDIS=0
+FAILOV="$WORK/fail-ov.sh"; printf '#!/bin/bash\nexit 1\n' > "$FAILOV"; chmod +x "$FAILOV"
+PASSOV="$WORK/pass-ov.sh"; printf '#!/bin/bash\ncat "$1" >> "%s/captured.jsonl"\necho "attention-thirsty__stale-runner"\n' "$WORK" > "$PASSOV"; chmod +x "$PASSOV"
+ENGOV="$FAILOV"
+outg5a="$(run_poll "$(snap_with "thirsty:stale-runner:18000")")"
+case "$outg5a" in *"PUSH WARN — digest emit failed"*) ok "G5 edge emit failure logs a PUSH WARN";; *) bad "G5 no failure WARN ($outg5a)";; esac
+[[ -f "$STATE/attention-fired/thirsty__stale-runner.json" ]] && ok "G5 marker present after failed edge" || bad "G5 marker missing"
+[[ -f "$STATE/attention-fired/thirsty__stale-runner.json.pushed" ]] && bad "G5 .pushed written despite failure (retry would never fire)" || ok "G5 .pushed ABSENT after failure ⇒ retry-eligible"
+ENGOV="$PASSOV"
+outg5b="$(run_poll "$(snap_with "thirsty:stale-runner:18000")")"
+case "$outg5b" in *"PUSH digest dossier+notification emitted"*) ok "G5 next poll RETRIES the push (ongoing branch)";; *) bad "G5 retry did not fire ($outg5b)";; esac
+[[ -f "$STATE/attention-fired/thirsty__stale-runner.json.pushed" ]] && ok "G5 .pushed written after successful retry (no further retries)" || bad "G5 .pushed not written after retry"
+PUSHDIS=1; ENGOV=""; COSTORE=""
+
 echo ""
 echo "════════════════════════════════════════════════════════════════════"
-echo " test-attention (iz36):  PASS=$PASS  FAIL=$FAIL"
+echo " test-attention (iz36 + tv88):  PASS=$PASS  FAIL=$FAIL"
 echo "════════════════════════════════════════════════════════════════════"
 [[ "$FAIL" -eq 0 ]]

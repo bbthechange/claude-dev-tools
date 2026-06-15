@@ -254,6 +254,13 @@ a moved file, a fresh scar. This is a **thin thread** across four tiers — keep
 that way; it earns its keep only if agents read all of it, and the tier-internals
 belong in the sibling docs (`engine-cloudflare.md`, `web-inbox.md`, `daemon.md`,
 `lib-shared.md`), not here. Delete lines that have gone stale. Last substantive
-update: 2026-06-06 (7n5c: the `pair_surfaced_for` one-shot guard closes the pair
-re-push gap — pairSurface now evicts on a re-schedule; h8e6: the `evictDelivery`
-re-push seam + the snooze/pair eviction asymmetry).
+update: 2026-06-15 (tv88: a NEW digest-tier PRODUCER — the daemon
+`attention-poll.sh` machine-attention push. Like Flow F it bypasses the closed
+§10.2 catalog and emits directly via `no_emit`+`no_dispatch` with a FIXED opaque
+channel `machine-attention`, so K3's rollup folds N wedged-runner alerts → ONE
+daily push (must-protect #5). NO new §4.3 field, NO new trigger — a pure
+read-side-channel add. Producer-side detail lives in `daemon.md`; canary-disabled
+until the device-verify, claude-tools-yhp8). Prior: 2026-06-06 (7n5c: the
+`pair_surfaced_for` one-shot guard closes the pair re-push gap — pairSurface now
+evicts on a re-schedule; h8e6: the `evictDelivery` re-push seam + the snooze/pair
+eviction asymmetry).
